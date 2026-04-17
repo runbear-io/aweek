@@ -2,6 +2,19 @@
  * aweek — Claude Code skill system for managing multiple AI agents.
  */
 export { AgentStore } from './storage/agent-store.js';
+// Shared agent-selection / storage helpers reused by every new /aweek:* skill.
+// See src/storage/agent-helpers.js for the rationale behind the extraction.
+export {
+  DEFAULT_DATA_DIR,
+  getDefaultDataDir,
+  resolveDataDir,
+  createAgentStore,
+  listAllAgents,
+  loadAgent,
+  getAgentChoices,
+  findAgentByQuery,
+  formatAgentChoice,
+} from './storage/agent-helpers.js';
 export { GoalStore } from './storage/goal-store.js';
 export { MonthlyPlanStore } from './storage/monthly-plan-store.js';
 export { WeeklyPlanStore } from './storage/weekly-plan-store.js';
@@ -86,6 +99,12 @@ export {
   getCurrentMonth,
   getCurrentWeek,
 } from './skills/create-agent.js';
+// Hire skill — consolidated replacement for the old create-agent skill.
+// Re-exports the same pipeline under hire-friendly names; see src/skills/hire.js.
+export {
+  hireAgent,
+  formatHireSummary,
+} from './skills/hire.js';
 export {
   adjustGoals,
   formatAdjustmentSummary,
@@ -416,3 +435,21 @@ export {
   formatAgentStatus,
   formatStatusReport,
 } from './skills/status.js';
+// Init skill (Sub-AC 2, 3, 4) — bootstrap primitives (`pnpm install`,
+// `.aweek/` tree), heartbeat crontab scaffolding, and the /aweek:hire
+// handoff wiring that runs as init's final interactive step.
+export {
+  AWEEK_SUBDIRS,
+  DEFAULT_DATA_DIR as INIT_DEFAULT_DATA_DIR,
+  DEFAULT_HIRE_PROMPT_TEXT,
+  DEFAULT_PACKAGE_MANAGER,
+  HIRE_SKILL_NAME,
+  buildHireLaunchInstruction,
+  ensureDataDir,
+  finalizeInit,
+  formatHireLaunchPrompt,
+  hasExistingAgents,
+  installDependencies,
+  resolveProjectDir as resolveInitProjectDir,
+  shouldLaunchHire,
+} from './skills/init.js';
