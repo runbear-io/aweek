@@ -1,6 +1,6 @@
 /**
  * Storage layer for execution records (idempotency tracking).
- * Persists execution entries as structured JSON under data/agents/<agentId>/executions/.
+ * Persists execution entries as structured JSON under .aweek/agents/<agentId>/executions/.
  * Each week gets its own file (keyed by Monday date) for clean rotation.
  * Files are the source of truth — human-readable and skill-readable.
  *
@@ -101,7 +101,7 @@ export function createExecutionRecord({ agentId, date, windowMs, status, taskId,
 
 export class ExecutionStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

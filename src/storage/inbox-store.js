@@ -1,6 +1,6 @@
 /**
  * Storage layer for agent inbox queues.
- * Persists inbox messages as structured JSON under data/agents/<agentId>/inbox.json.
+ * Persists inbox messages as structured JSON under .aweek/agents/<agentId>/inbox.json.
  * Each agent has a single inbox file containing an ordered array of messages.
  * Files are the source of truth — human-readable and skill-readable.
  *
@@ -16,7 +16,7 @@ const QUEUE_SCHEMA_ID = 'aweek://schemas/inbox-queue';
 
 export class InboxStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

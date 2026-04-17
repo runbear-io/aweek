@@ -131,7 +131,7 @@ Show the formatted delegation result. Highlight:
 
 ## Validation Rules
 
-- Both sender and recipient agents must exist in `data/agents/`
+- Both sender and recipient agents must exist in `.aweek/agents/`
 - Sender and recipient must be different agents (no self-delegation)
 - Task description: non-empty string, max 2000 characters
 - Priority: one of `critical`, `high`, `medium`, `low` (default: `medium`)
@@ -155,12 +155,12 @@ Each delegation creates a unique message with a generated ID. Re-enqueuing the e
 ## Inter-Agent Communication Model
 
 - Communication is **asynchronous** — the sender does not wait for completion
-- Messages land in the recipient's **inbox queue** (`data/agents/<agent-id>.inbox.json`)
+- Messages land in the recipient's **inbox queue** (`.aweek/agents/<agent-id>.inbox.json`)
 - The recipient processes inbox messages on their **next heartbeat tick**
 - Messages have a `status` field: `pending` -> `in-progress` -> `completed` / `failed`
 - Full traceability: each message has `from`, `to`, `sourceTaskId`, and timestamps
 
 ## Data Directory
 
-Agents are stored in `data/agents/<agent-id>.json` relative to the project root.
-Inbox queues are stored in `data/agents/<agent-id>.inbox.json` relative to the project root.
+Agents are stored in `.aweek/agents/<agent-id>.json` relative to the project root.
+Inbox queues are stored in `.aweek/agents/<agent-id>.inbox.json` relative to the project root.

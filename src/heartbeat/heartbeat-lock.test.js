@@ -458,7 +458,7 @@ describe('createHeartbeatLock()', () => {
 
   it('creates instance with default options', () => {
     const hbLock = createHeartbeatLock();
-    assert.equal(hbLock.lockDir, 'data/.heartbeat-locks');
+    assert.equal(hbLock.lockDir, '.aweek/.heartbeat-locks');
     assert.equal(hbLock.maxLockAgeMs, 90 * 60 * 1000);
   });
 

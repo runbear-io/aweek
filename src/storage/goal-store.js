@@ -1,6 +1,6 @@
 /**
  * Storage layer for agent goals.
- * Persists goals as JSON files under data/agents/<agentId>/goals/.
+ * Persists goals as JSON files under .aweek/agents/<agentId>/goals/.
  * Each goal is its own file for granular access and idempotent writes.
  * Files are the source of truth — human-readable and skill-readable.
  *
@@ -14,7 +14,7 @@ const SCHEMA_ID = 'aweek://schemas/goal';
 
 export class GoalStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

@@ -61,6 +61,6 @@ skills/
   aweek-approve-plan.md       # Skill definition for /aweek:approve-plan
   aweek-delegate-task.md      # Skill definition for /aweek:delegate-task
   aweek-resume-agent.md       # Skill definition for /aweek:resume-agent
-data/
+.aweek/
   agents/                     # Agent JSON files (created at runtime)
 ```

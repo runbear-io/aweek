@@ -1,6 +1,6 @@
 /**
  * Storage layer for activity logs.
- * Persists activity log entries as structured JSON under data/agents/<agentId>/logs/.
+ * Persists activity log entries as structured JSON under .aweek/agents/<agentId>/logs/.
  * Each week gets its own log file (keyed by Monday date) for clean rotation.
  * Files are the source of truth — human-readable and skill-readable.
  *
@@ -60,7 +60,7 @@ export function createLogEntry({ agentId, taskId, status, description, duration,
 
 export class ActivityLogStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

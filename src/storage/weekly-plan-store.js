@@ -1,6 +1,6 @@
 /**
  * Storage layer for agent weekly plans.
- * Persists weekly plans as JSON files under data/agents/<agentId>/weekly-plans/.
+ * Persists weekly plans as JSON files under .aweek/agents/<agentId>/weekly-plans/.
  * Each weekly plan is keyed by its week (YYYY-Www) for easy lookup.
  * Files are the source of truth — human-readable and skill-readable.
  *
@@ -14,7 +14,7 @@ const SCHEMA_ID = 'aweek://schemas/weekly-plan';
 
 export class WeeklyPlanStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

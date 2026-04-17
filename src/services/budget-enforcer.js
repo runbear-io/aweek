@@ -6,7 +6,7 @@
  * - Reads agent config to get weeklyTokenBudget
  * - Queries UsageStore for current week's total tokens
  * - If usage >= budget: sets budget.paused = true in agent config, writes alert flag
- * - Alert flags are written to data/agents/<agentId>/alerts/budget-exhausted-<week>.json
+ * - Alert flags are written to .aweek/agents/<agentId>/alerts/budget-exhausted-<week>.json
  * - Idempotent: re-checking an already-paused agent is a no-op (no duplicate alerts)
  * - Returns structured enforcement result for callers to act on
  *

@@ -1,7 +1,7 @@
 /**
  * Storage layer for artifact records.
  * Tracks deliverable files/documents produced by agent tasks.
- * Persists artifact manifests as structured JSON under data/agents/<agentId>/artifacts/.
+ * Persists artifact manifests as structured JSON under .aweek/agents/<agentId>/artifacts/.
  *
  * Each agent has a single manifest file (manifest.json) containing all artifact records.
  * Actual artifact files live in the project folder at their registered filePath.
@@ -89,7 +89,7 @@ export async function artifactFileExists(projectRoot, filePath) {
 
 export class ArtifactStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    * @param {string} [projectRoot] - Project root for resolving artifact files
    */
   constructor(baseDir, projectRoot) {

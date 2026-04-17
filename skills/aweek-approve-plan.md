@@ -14,7 +14,7 @@ You MUST follow this exact workflow when this skill is invoked. Use the project'
 
 ### Step 1: Select an Agent
 
-List all available agents by reading from the `data/agents/` directory, then ask the user to pick one.
+List all available agents by reading from the `.aweek/agents/` directory, then ask the user to pick one.
 
 ```bash
 node --input-type=module -e "
@@ -176,7 +176,7 @@ Show the formatted result. Highlight key outcomes:
 
 ## Validation Rules
 
-- Agent must exist in `data/agents/`
+- Agent must exist in `.aweek/agents/`
 - Agent must have a pending (unapproved) weekly plan
 - Decision must be: `approve`, `reject`, or `edit`
 - Edit operations:
@@ -206,4 +206,4 @@ The first weekly plan approval for any agent activates the heartbeat system. Thi
 
 ## Data Directory
 
-Agents are stored in `data/agents/<agent-id>.json` relative to the project root.
+Agents are stored in `.aweek/agents/<agent-id>.json` relative to the project root.

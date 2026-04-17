@@ -14,7 +14,7 @@ You MUST follow this exact workflow when this skill is invoked. Use the project'
 
 ### Step 1: Select an Agent
 
-List all available agents by reading from the `data/agents/` directory, then ask the user to pick one.
+List all available agents by reading from the `.aweek/agents/` directory, then ask the user to pick one.
 
 ```bash
 node --input-type=module -e "
@@ -207,7 +207,7 @@ Then ask: "Would you like to make more adjustments to this agent? (yes/no)"
 
 ## Validation Rules
 
-- Agent must exist in `data/agents/`
+- Agent must exist in `.aweek/agents/`
 - Goal horizons: `1mo`, `3mo`, `1yr`
 - Goal statuses: `active`, `completed`, `paused`, `dropped`
 - Objective statuses: `planned`, `in-progress`, `completed`, `dropped`
@@ -235,4 +235,4 @@ This skill enforces traceability at every level:
 
 ## Data Directory
 
-Agents are stored in `data/agents/<agent-id>.json` relative to the project root.
+Agents are stored in `.aweek/agents/<agent-id>.json` relative to the project root.

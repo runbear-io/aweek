@@ -67,8 +67,8 @@ export async function delegateTask(params, deps = {}) {
   const { fromAgentId, toAgentId, taskDescription } = validateDelegationParams(params);
   const options = params.options || {};
 
-  const agentStore = deps.agentStore || new AgentStore('data/agents');
-  const inboxStore = deps.inboxStore || new InboxStore('data/agents');
+  const agentStore = deps.agentStore || new AgentStore('.aweek/agents');
+  const inboxStore = deps.inboxStore || new InboxStore('.aweek/agents');
 
   // Verify sender exists
   const senderExists = await agentStore.exists(fromAgentId);

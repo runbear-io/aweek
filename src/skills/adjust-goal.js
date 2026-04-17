@@ -32,7 +32,7 @@ import { GOAL_HORIZONS } from '../schemas/goals.schema.js';
 import { OBJECTIVE_STATUSES } from '../schemas/monthly-plan.schema.js';
 
 /** Default data directory (relative to project root) */
-const DEFAULT_DATA_DIR = join(process.cwd(), 'data', 'agents');
+const DEFAULT_DATA_DIR = join(process.cwd(), '.aweek', 'agents');
 
 // ---------------------------------------------------------------------------
 // Input validation helpers
