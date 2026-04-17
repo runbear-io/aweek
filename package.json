@@ -1,0 +1,25 @@
+{
+  "name": "aweek",
+  "version": "1.0.0",
+  "description": "Claude Code skill system for managing multiple AI agents with scheduled routines",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "aweek": "./bin/aweek.js"
+  },
+  "scripts": {
+    "test": "node --test src/**/*.test.js",
+    "test:verbose": "node --test --test-reporter=spec src/**/*.test.js",
+    "lint": "node --check src/**/*.js",
+    "build": "node --check src/index.js",
+    "setup:skills": "bash scripts/setup-skills.sh"
+  },
+  "keywords": ["claude-code", "ai-agents", "scheduling"],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.7.0",
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}
