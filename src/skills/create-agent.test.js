@@ -161,8 +161,8 @@ describe('create-agent skill', () => {
       assert.ok(result.errors.some((e) => e.includes('valid objective')));
     });
 
-    it('should reject more than 10 tasks', () => {
-      const tasks = Array.from({ length: 11 }, (_, i) => ({
+    it('should reject more than 100 tasks', () => {
+      const tasks = Array.from({ length: 101 }, (_, i) => ({
         description: `Task ${i}`,
         objectiveIndex: 0,
       }));
