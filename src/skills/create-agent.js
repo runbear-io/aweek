@@ -1,10 +1,12 @@
 /**
- * Create-agent skill logic.
+ * Agent-creation skill logic.
  * Assembles agent config from user-provided data, validates, and saves.
- * Used by the /aweek:create-agent Claude Code skill.
+ *
+ * This module is the shared implementation reused by the /aweek:hire skill
+ * (via src/skills/hire.js). The core functions — identity/goal/objective/task
+ * validators and `assembleAndSaveAgent` — are deliberately framework-agnostic
+ * so additional skills can import them without duplicating logic.
  */
-import { join } from 'node:path';
-import { AgentStore } from '../storage/agent-store.js';
 import {
   createAgentConfig,
   createGoal,
@@ -14,9 +16,7 @@ import {
   createWeeklyPlan,
 } from '../models/agent.js';
 import { validateAgentConfig } from '../schemas/validator.js';
-
-/** Default data directory (relative to project root) */
-const DEFAULT_DATA_DIR = join(process.cwd(), '.aweek', 'agents');
+import { createAgentStore } from '../storage/agent-helpers.js';
 
 /**
  * Get the current month in YYYY-MM format.
@@ -259,7 +259,7 @@ export async function assembleAndSaveAgent({
   }
 
   // Save
-  const store = new AgentStore(dataDir || DEFAULT_DATA_DIR);
+  const store = createAgentStore(dataDir);
   await store.save(config);
 
   return { success: true, config };
@@ -290,7 +290,7 @@ export function formatAgentSummary(config) {
     `  Status: Weekly plan pending approval`,
     '',
     'Next steps:',
-    '  - Review the weekly plan with /aweek:approve-plan',
+    '  - Review the weekly plan with /aweek:plan',
     '  - Heartbeat will activate after first weekly plan approval',
   ].join('\n');
 }
