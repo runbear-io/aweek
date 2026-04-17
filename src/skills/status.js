@@ -11,11 +11,11 @@
  *
  * All reads are from file-based stores — files are the source of truth.
  */
-import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { ActivityLogStore } from '../storage/activity-log-store.js';
 import { UsageStore } from '../storage/usage-store.js';
 import { InboxStore } from '../storage/inbox-store.js';
+import { listAllAgents } from '../storage/agent-helpers.js';
 import { queryLock } from '../lock/lock-manager.js';
 
 /**
@@ -168,7 +168,6 @@ export async function gatherAllAgentStatuses({ dataDir, date, lockOpts }) {
   const week = getCurrentWeekString(now);
   const weekMonday = getMondayDate(now);
 
-  const agentStore = new AgentStore(dataDir);
   const stores = {
     weeklyPlanStore: new WeeklyPlanStore(dataDir),
     activityLogStore: new ActivityLogStore(dataDir),
@@ -176,12 +175,7 @@ export async function gatherAllAgentStatuses({ dataDir, date, lockOpts }) {
     inboxStore: new InboxStore(dataDir),
   };
 
-  let agents;
-  try {
-    agents = await agentStore.loadAll();
-  } catch {
-    agents = [];
-  }
+  const agents = await listAllAgents({ dataDir });
 
   if (agents.length === 0) {
     return {

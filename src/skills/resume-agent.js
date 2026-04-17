@@ -13,6 +13,7 @@
  */
 import { AgentStore } from '../storage/agent-store.js';
 import { UsageStore } from '../storage/usage-store.js';
+import { listAllAgents } from '../storage/agent-helpers.js';
 import {
   isAgentPaused,
   resumeAgent,
@@ -34,13 +35,7 @@ export const RESUME_ACTIONS = ['resume', 'top-up', 'cancel'];
 export async function listPausedAgents({ dataDir }) {
   if (!dataDir) throw new Error('dataDir is required');
 
-  const agentStore = new AgentStore(dataDir);
-  let allConfigs;
-  try {
-    allConfigs = await agentStore.loadAll();
-  } catch {
-    allConfigs = [];
-  }
+  const allConfigs = await listAllAgents({ dataDir });
 
   const paused = [];
   const active = [];
