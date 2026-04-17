@@ -19,10 +19,37 @@ import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { ExecutionStore } from '../storage/execution-store.js';
 import { UsageStore } from '../storage/usage-store.js';
+import { ActivityLogStore, createLogEntry } from '../storage/activity-log-store.js';
 import { createScheduler } from './scheduler.js';
 import { tickAgent } from './heartbeat-task-runner.js';
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
+
+/**
+ * Extract URLs and file paths from session stdout.
+ * Kept permissive — false positives are cheaper than missing an artifact.
+ *
+ * @param {string} text
+ * @returns {{ urls: string[], filePaths: string[] }}
+ */
+export function extractResources(text) {
+  if (!text || typeof text !== 'string') return { urls: [], filePaths: [] };
+
+  const urlRe = /https?:\/\/[^\s<>")\]]+/g;
+  const urls = Array.from(new Set(text.match(urlRe) || []));
+
+  // File paths: absolute unix paths OR relative paths with a file extension
+  const absPathRe = /(?:^|\s|=|"|')(\/[A-Za-z0-9._~/-]+)(?=[\s"'.,;)\]:]|$)/g;
+  const relPathRe = /(?:^|\s|=|"|')([A-Za-z0-9._-]+\/[A-Za-z0-9._/-]+\.[A-Za-z0-9]{1,6})(?=[\s"'.,;)\]:]|$)/g;
+
+  const filePaths = new Set();
+  let match;
+  while ((match = absPathRe.exec(text)) !== null) filePaths.add(match[1]);
+  while ((match = relPathRe.exec(text)) !== null) filePaths.add(match[1]);
+
+  return { urls, filePaths: Array.from(filePaths) };
+}
+
 
 /**
  * Run a heartbeat tick for a single agent.
@@ -35,10 +62,12 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
   const projectDir = opts.projectDir || process.cwd();
   const dataDir = join(projectDir, '.aweek');
 
-  const agentStore = new AgentStore(join(dataDir, 'agents'));
-  const weeklyPlanStore = new WeeklyPlanStore(join(dataDir, 'agents'));
-  const executionStore = new ExecutionStore(join(dataDir, 'executions'));
-  const usageStore = new UsageStore(join(dataDir, 'usage'));
+  const agentsDir = join(dataDir, 'agents');
+  const agentStore = new AgentStore(agentsDir);
+  const weeklyPlanStore = new WeeklyPlanStore(agentsDir);
+  const executionStore = new ExecutionStore(agentsDir);
+  const usageStore = new UsageStore(agentsDir);
+  const activityLogStore = new ActivityLogStore(agentsDir);
   const lockDir = join(dataDir, 'locks');
 
   const scheduler = createScheduler({ lockDir });
@@ -64,22 +93,96 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
 
   console.log(`[${agentId}] executing task: ${task.description}`);
 
-  // Step 3: Execute CLI session with token tracking
-  const execResult = await executeSessionWithTracking(agentId, identity, {
-    taskId: task.id,
-    description: task.description,
-    objectiveId: task.objectiveId,
-    week: tickResult.week,
-  }, {
-    cwd: projectDir,
-    usageStore,
-  });
+  const startedAt = new Date();
+  let execResult = null;
+  let error = null;
+  let finalStatus = 'completed';
 
-  // Step 4: Mark task as completed
-  await weeklyPlanStore.updateTaskStatus(agentId, tickResult.week, task.id, 'completed');
-  console.log(`[${agentId}] task completed: ${task.id}`);
+  try {
+    // Step 3: Execute CLI session with token tracking
+    execResult = await executeSessionWithTracking(agentId, identity, {
+      taskId: task.id,
+      description: task.description,
+      objectiveId: task.objectiveId,
+      week: tickResult.week,
+    }, {
+      cwd: projectDir,
+      usageStore,
+    });
+  } catch (err) {
+    error = err;
+    finalStatus = 'failed';
+    console.error(`[${agentId}] execution error: ${err.message}`);
+  }
 
-  // Step 5: Enforce budget
+  const completedAt = new Date();
+  const durationMs = completedAt.getTime() - startedAt.getTime();
+
+  // Step 4: Mark task status
+  await weeklyPlanStore.updateTaskStatus(
+    agentId,
+    tickResult.week,
+    task.id,
+    finalStatus === 'completed' ? 'completed' : 'failed',
+  );
+  console.log(`[${agentId}] task ${finalStatus}: ${task.id}`);
+
+  // Step 5: Write rich activity log entry
+  try {
+    const session = execResult?.sessionResult;
+    const stdout = session?.stdout || '';
+    const stderr = session?.stderr || '';
+    const resources = extractResources(stdout + '\n' + stderr);
+
+    const metadata = {
+      task: {
+        id: task.id,
+        description: task.description,
+        objectiveId: task.objectiveId,
+        priority: task.priority,
+        estimatedMinutes: task.estimatedMinutes,
+        week: tickResult.week,
+      },
+      execution: {
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs,
+        exitCode: session?.exitCode ?? null,
+        timedOut: session?.timedOut ?? false,
+      },
+      result: {
+        success: finalStatus === 'completed',
+        stdout: stdout.slice(0, 4000),
+        stderr: stderr.slice(0, 2000),
+      },
+      resources,
+      tokenUsage: execResult?.tokenUsage || null,
+      usageTracked: execResult?.usageTracked ?? false,
+    };
+
+    if (error) {
+      metadata.error = {
+        message: error.message,
+        stack: error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : undefined,
+      };
+    }
+
+    await activityLogStore.append(
+      agentId,
+      createLogEntry({
+        agentId,
+        taskId: task.id,
+        status: finalStatus,
+        description: task.description,
+        duration: durationMs,
+        metadata,
+      }),
+    );
+  } catch (logErr) {
+    console.warn(`[${agentId}] activity log warning: ${logErr.message}`);
+  }
+
+  // Step 6: Enforce budget
   try {
     await enforceBudget(agentId, {
       agentStore,
@@ -90,6 +193,7 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
     console.warn(`[${agentId}] budget enforcement warning: ${err.message}`);
   }
 
+  if (error) throw error;
   return { tickResult, execResult };
 }
 
