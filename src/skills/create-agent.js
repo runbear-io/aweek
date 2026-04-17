@@ -141,8 +141,8 @@ export function validateTasksInput(taskInputs, objectiveCount) {
 
   if (!Array.isArray(taskInputs) || taskInputs.length === 0) {
     errors.push('At least 1 task is required');
-  } else if (taskInputs.length > 10) {
-    errors.push('Maximum 10 tasks allowed');
+  } else if (taskInputs.length > 100) {
+    errors.push('Maximum 100 tasks allowed');
   }
 
   if (Array.isArray(taskInputs)) {
