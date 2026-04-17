@@ -33,7 +33,7 @@ import { enforceBudget } from '../services/budget-enforcer.js';
  */
 export async function runHeartbeatForAgent(agentId, opts = {}) {
   const projectDir = opts.projectDir || process.cwd();
-  const dataDir = join(projectDir, 'data');
+  const dataDir = join(projectDir, '.aweek');
 
   const agentStore = new AgentStore(join(dataDir, 'agents'));
   const weeklyPlanStore = new WeeklyPlanStore(join(dataDir, 'agents'));
@@ -101,7 +101,7 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
  */
 export async function runHeartbeatForAll(opts = {}) {
   const projectDir = opts.projectDir || process.cwd();
-  const agentsDir = join(projectDir, 'data', 'agents');
+  const agentsDir = join(projectDir, '.aweek', 'agents');
 
   let files;
   try {

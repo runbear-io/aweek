@@ -28,7 +28,7 @@ export const RESUME_ACTIONS = ['resume', 'top-up', 'cancel'];
  * List all paused agents with their budget details.
  *
  * @param {object} opts
- * @param {string} opts.dataDir - Base data directory (e.g., ./data/agents)
+ * @param {string} opts.dataDir - Base data directory (e.g., ./.aweek/agents)
  * @returns {Promise<{ paused: object[], active: string[], total: number }>}
  */
 export async function listPausedAgents({ dataDir }) {

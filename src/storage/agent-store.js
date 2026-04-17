@@ -11,7 +11,7 @@ const SCHEMA_ID = 'aweek://schemas/agent-config';
 
 export class AgentStore {
   /**
-   * @param {string} baseDir - Root directory for agent data (e.g., ./data/agents)
+   * @param {string} baseDir - Root directory for agent data (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

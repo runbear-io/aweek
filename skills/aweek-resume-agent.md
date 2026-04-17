@@ -20,7 +20,7 @@ Run the following to discover which agents are paused:
 node --input-type=module -e "
 import { listPausedAgents, formatPausedAgentsList } from './src/skills/resume-agent.js';
 
-const result = await listPausedAgents({ dataDir: 'data/agents' });
+const result = await listPausedAgents({ dataDir: '.aweek/agents' });
 console.log(formatPausedAgentsList(result));
 "
 ```
@@ -35,7 +35,7 @@ Once the user selects an agent, show detailed budget status:
 node --input-type=module -e "
 import { getPausedAgentDetails, formatPausedAgentDetails } from './src/skills/resume-agent.js';
 
-const details = await getPausedAgentDetails('AGENT_ID', { dataDir: 'data/agents' });
+const details = await getPausedAgentDetails('AGENT_ID', { dataDir: '.aweek/agents' });
 console.log(formatPausedAgentDetails(details));
 "
 ```
@@ -66,7 +66,7 @@ Run the chosen action:
 node --input-type=module -e "
 import { executeResume, formatResumeResult } from './src/skills/resume-agent.js';
 
-const result = await executeResume('AGENT_ID', 'resume', { dataDir: 'data/agents' });
+const result = await executeResume('AGENT_ID', 'resume', { dataDir: '.aweek/agents' });
 console.log(formatResumeResult(result));
 "
 ```
@@ -76,7 +76,7 @@ console.log(formatResumeResult(result));
 node --input-type=module -e "
 import { executeResume, formatResumeResult } from './src/skills/resume-agent.js';
 
-const result = await executeResume('AGENT_ID', 'top-up', { dataDir: 'data/agents' });
+const result = await executeResume('AGENT_ID', 'top-up', { dataDir: '.aweek/agents' });
 console.log(formatResumeResult(result));
 "
 ```
@@ -86,7 +86,7 @@ console.log(formatResumeResult(result));
 node --input-type=module -e "
 import { executeResume, formatResumeResult } from './src/skills/resume-agent.js';
 
-const result = await executeResume('AGENT_ID', 'top-up', { dataDir: 'data/agents', newLimit: NEW_LIMIT });
+const result = await executeResume('AGENT_ID', 'top-up', { dataDir: '.aweek/agents', newLimit: NEW_LIMIT });
 console.log(formatResumeResult(result));
 "
 ```

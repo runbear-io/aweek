@@ -15,7 +15,7 @@ import { writeFile, readFile, rm, mkdir, access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Default lock directory */
-const DEFAULT_LOCK_DIR = 'data/.locks';
+const DEFAULT_LOCK_DIR = '.aweek/.locks';
 
 /** Default max lock age in ms (2 hours — generous for long-running sessions) */
 const DEFAULT_MAX_LOCK_AGE_MS = 2 * 60 * 60 * 1000;
@@ -24,7 +24,7 @@ const DEFAULT_MAX_LOCK_AGE_MS = 2 * 60 * 60 * 1000;
  * Create a heartbeat scheduler instance.
  *
  * @param {object} opts
- * @param {string} [opts.lockDir='data/.locks'] - Directory for lock files
+ * @param {string} [opts.lockDir='.aweek/.locks'] - Directory for lock files
  * @param {number} [opts.maxLockAgeMs=7200000] - Max age (ms) before a lock is stale
  * @returns {object} Scheduler API
  */

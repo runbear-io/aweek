@@ -21,7 +21,7 @@ node --input-type=module -e "
 import { gatherAllAgentStatuses, formatStatusReport } from './src/skills/status.js';
 
 const result = await gatherAllAgentStatuses({
-  dataDir: 'data/agents',
+  dataDir: '.aweek/agents',
 });
 
 console.log(formatStatusReport(result));
@@ -62,12 +62,12 @@ All data is read from the file-based stores — files are the source of truth:
 
 | Source | Path Pattern |
 |--------|-------------|
-| Agent config | `data/agents/<agent-id>.json` |
-| Weekly plans | `data/agents/<agent-id>/weekly-plans/<week>.json` |
-| Activity logs | `data/agents/<agent-id>/logs/<monday>.json` |
-| Token usage | `data/agents/<agent-id>/usage/<monday>.json` |
-| Inbox queue | `data/agents/<agent-id>/inbox.json` |
-| Lock files | `data/.locks/<agent-id>.lock` |
+| Agent config | `.aweek/agents/<agent-id>.json` |
+| Weekly plans | `.aweek/agents/<agent-id>/weekly-plans/<week>.json` |
+| Activity logs | `.aweek/agents/<agent-id>/logs/<monday>.json` |
+| Token usage | `.aweek/agents/<agent-id>/usage/<monday>.json` |
+| Inbox queue | `.aweek/agents/<agent-id>/inbox.json` |
+| Lock files | `.aweek/.locks/<agent-id>.lock` |
 
 ## Example Output
 

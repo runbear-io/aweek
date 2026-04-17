@@ -30,7 +30,7 @@ describe('lockPathFor()', () => {
   it('should use default lock dir when not specified', () => {
     const p = lockPathFor('agent-test-11111111');
     assert.ok(p.endsWith('agent-test-11111111.lock'));
-    assert.ok(p.includes('data/.locks'));
+    assert.ok(p.includes('.aweek/.locks'));
   });
 
   it('should throw if agentId is missing', () => {
@@ -445,7 +445,7 @@ describe('createScheduler()', () => {
 
   it('should create scheduler with default options', () => {
     const s = createScheduler();
-    assert.equal(s.lockDir, 'data/.locks');
+    assert.equal(s.lockDir, '.aweek/.locks');
     assert.equal(s.maxLockAgeMs, 2 * 60 * 60 * 1000);
   });
 

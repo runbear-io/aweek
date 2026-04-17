@@ -16,7 +16,7 @@ import {
 import { validateAgentConfig } from '../schemas/validator.js';
 
 /** Default data directory (relative to project root) */
-const DEFAULT_DATA_DIR = join(process.cwd(), 'data', 'agents');
+const DEFAULT_DATA_DIR = join(process.cwd(), '.aweek', 'agents');
 
 /**
  * Get the current month in YYYY-MM format.

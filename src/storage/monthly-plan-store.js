@@ -1,6 +1,6 @@
 /**
  * Storage layer for agent monthly plans.
- * Persists monthly plans as JSON files under data/agents/<agentId>/monthly-plans/.
+ * Persists monthly plans as JSON files under .aweek/agents/<agentId>/monthly-plans/.
  * Each monthly plan is keyed by its month (YYYY-MM) for easy lookup.
  * Files are the source of truth — human-readable and skill-readable.
  *
@@ -14,7 +14,7 @@ const SCHEMA_ID = 'aweek://schemas/monthly-plan';
 
 export class MonthlyPlanStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

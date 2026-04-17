@@ -8,10 +8,10 @@
  * output into a single structured markdown document.
  *
  * The final document is persisted as:
- *   data/agents/<agentId>/reviews/<week>.md
+ *   .aweek/agents/<agentId>/reviews/<week>.md
  *
  * A companion JSON metadata file is also saved:
- *   data/agents/<agentId>/reviews/<week>.json
+ *   .aweek/agents/<agentId>/reviews/<week>.json
  *
  * Data sources (all injected):
  *   - WeeklyPlanStore, ActivityLogStore, UsageStore, InboxStore, AgentStore, ArtifactStore
@@ -250,7 +250,7 @@ export function buildReviewMetadata({
 
 /**
  * Get the reviews directory for an agent.
- * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+ * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
  * @param {string} agentId
  * @returns {string}
  */
@@ -276,7 +276,7 @@ export function reviewPaths(baseDir, agentId, week) {
 /**
  * Persist a weekly review document and its metadata to disk.
  *
- * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+ * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
  * @param {string} agentId
  * @param {string} week - ISO week string
  * @param {string} markdownContent - Full markdown document

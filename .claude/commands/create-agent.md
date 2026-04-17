@@ -110,4 +110,4 @@ If save succeeds, display the formatted summary to the user.
 
 ## Data Directory
 
-Agents are stored in `data/agents/<agent-id>.json` relative to the project root.
+Agents are stored in `.aweek/agents/<agent-id>.json` relative to the project root.

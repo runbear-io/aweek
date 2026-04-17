@@ -1,6 +1,6 @@
 /**
  * Storage layer for token usage tracking.
- * Persists per-session token usage records as structured JSON under data/agents/<agentId>/usage/.
+ * Persists per-session token usage records as structured JSON under .aweek/agents/<agentId>/usage/.
  * Each week gets its own file (keyed by Monday date) for clean budget-period rotation.
  * Files are the source of truth — human-readable and skill-readable.
  *
@@ -83,7 +83,7 @@ export function createUsageRecord({
 
 export class UsageStore {
   /**
-   * @param {string} baseDir - Root data directory (e.g., ./data/agents)
+   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
    */
   constructor(baseDir) {
     this.baseDir = baseDir;

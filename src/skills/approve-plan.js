@@ -21,7 +21,7 @@ import { validateWeeklyPlan } from '../schemas/validator.js';
 import { install as installCrontab } from '../heartbeat/crontab-manager.js';
 
 /** Default data directory (relative to project root) */
-const DEFAULT_DATA_DIR = join(process.cwd(), 'data', 'agents');
+const DEFAULT_DATA_DIR = join(process.cwd(), '.aweek', 'agents');
 
 /** Valid approval decisions */
 export const APPROVAL_DECISIONS = ['approve', 'reject', 'edit'];

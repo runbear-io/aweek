@@ -69,7 +69,7 @@ describe('lockPathFor()', () => {
   it('should use default lock dir when not specified', () => {
     const p = lockPathFor('agent-test-11111111');
     assert.ok(p.endsWith('agent-test-11111111.lock'));
-    assert.ok(p.includes('data/.locks'));
+    assert.ok(p.includes('.aweek/.locks'));
   });
 
   it('should throw if agentId is missing', () => {
@@ -464,7 +464,7 @@ describe('createLockManager()', () => {
 
   it('should create manager with default options', () => {
     const mgr = createLockManager();
-    assert.equal(mgr.lockDir, 'data/.locks');
+    assert.equal(mgr.lockDir, '.aweek/.locks');
     assert.equal(mgr.maxLockAgeMs, 2 * 60 * 60 * 1000);
   });
 

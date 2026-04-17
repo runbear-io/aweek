@@ -14,7 +14,7 @@
  *
  * Usage:
  * ```js
- * const hbLock = createHeartbeatLock({ lockDir: 'data/.heartbeat-locks' });
+ * const hbLock = createHeartbeatLock({ lockDir: '.aweek/.heartbeat-locks' });
  * const result = await hbLock.run('agent-writer', async (agentId) => {
  *   // ... do heartbeat work
  *   return { outcome: 'task_selected' };
@@ -38,7 +38,7 @@ import {
 } from '../lock/lock-manager.js';
 
 /** Default lock directory for heartbeat locks (separate from session locks) */
-const DEFAULT_HEARTBEAT_LOCK_DIR = 'data/.heartbeat-locks';
+const DEFAULT_HEARTBEAT_LOCK_DIR = '.aweek/.heartbeat-locks';
 
 /** Default max heartbeat lock age: 90 minutes (heartbeat should complete well within) */
 const DEFAULT_MAX_HEARTBEAT_LOCK_AGE_MS = 90 * 60 * 1000;
@@ -206,7 +206,7 @@ export async function breakHeartbeatLock(agentId, opts = {}) {
  * Create a HeartbeatLock instance bound to specific configuration.
  *
  * @param {object} [opts]
- * @param {string} [opts.lockDir='data/.heartbeat-locks']
+ * @param {string} [opts.lockDir='.aweek/.heartbeat-locks']
  * @param {number} [opts.maxLockAgeMs=5400000]
  * @returns {object} HeartbeatLock API
  */

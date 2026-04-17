@@ -7,7 +7,7 @@
  *
  * Design principles:
  * - File-based persistence (JSON) — source of truth on disk
- * - One queue file per agent: data/.queues/{agentId}.queue.json
+ * - One queue file per agent: .aweek/.queues/{agentId}.queue.json
  * - FIFO ordering with priority support (higher priority dequeued first)
  * - Idempotent: duplicate task IDs are rejected (no double-enqueue)
  * - All operations are atomic at the file level
@@ -28,7 +28,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 /** Default queue directory */
-const DEFAULT_QUEUE_DIR = 'data/.queues';
+const DEFAULT_QUEUE_DIR = '.aweek/.queues';
 
 /** Valid priority range */
 const MIN_PRIORITY = 1;

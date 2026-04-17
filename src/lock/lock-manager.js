@@ -21,7 +21,7 @@ import { writeFile, readFile, rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Default lock directory */
-const DEFAULT_LOCK_DIR = 'data/.locks';
+const DEFAULT_LOCK_DIR = '.aweek/.locks';
 
 /** Default max lock age in ms (2 hours — generous for long-running CLI sessions) */
 const DEFAULT_MAX_LOCK_AGE_MS = 2 * 60 * 60 * 1000;
@@ -258,7 +258,7 @@ export async function breakLock(agentId, opts = {}) {
  * Create a LockManager instance bound to a specific configuration.
  *
  * @param {object} [opts]
- * @param {string} [opts.lockDir='data/.locks']
+ * @param {string} [opts.lockDir='.aweek/.locks']
  * @param {number} [opts.maxLockAgeMs=7200000]
  * @returns {object} LockManager API
  */

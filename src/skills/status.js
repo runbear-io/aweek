@@ -158,7 +158,7 @@ export async function buildAgentStatus({ agentConfig, week, weekMonday, stores, 
  * Gather status for all agents.
  *
  * @param {object} opts
- * @param {string} opts.dataDir - Base data directory (e.g., ./data/agents)
+ * @param {string} opts.dataDir - Base data directory (e.g., ./.aweek/agents)
  * @param {Date} [opts.date] - Reference date (defaults to now)
  * @param {object} [opts.lockOpts] - Lock manager options { lockDir, maxLockAgeMs }
  * @returns {Promise<{ agents: object[], timestamp: string, week: string, weekMonday: string }>}
