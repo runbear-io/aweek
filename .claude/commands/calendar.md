@@ -1,4 +1,10 @@
-# aweek:weekly-calendar
+---
+name: aweek:calendar
+description: Display an agent's weekly plan as an interactive calendar grid with day columns and hour rows
+trigger: aweek calendar, weekly calendar, plan calendar, show calendar, agent calendar
+---
+
+# aweek:calendar
 
 Display an agent's weekly plan as an interactive calendar grid with day columns and hour rows. Tasks are numbered for selection.
 
@@ -23,7 +29,7 @@ if (agents.length === 0) {
 "
 ```
 
-- If no agents exist, inform the user: "No agents found. Use /aweek:create-agent to create one first." and stop.
+- If no agents exist, inform the user: "No agents found. Use /aweek:hire to create one first." and stop.
 - If only one agent exists, auto-select it.
 - If multiple agents exist, ask the user to pick one using AskUserQuestion.
 
@@ -140,6 +146,12 @@ Keep the interaction loop going (Step 3) until the user selects "Done".
 - Status icons show progress: ○ pending, ► in-progress, ✓ completed, ✗ failed
 - Multi-hour tasks show a continuation marker in subsequent rows
 - The calendar is displayed as direct text (not bash output) so it's always visible
+
+## Related Skills
+
+- `/aweek:plan` — Edit weekly plans (add/remove tasks, adjust goals, approve/reject)
+- `/aweek:summary` — Dashboard view across all agents
+- `/aweek:hire` — Create a new agent with identity, goals, and initial plan
 
 ## Data Directory
 

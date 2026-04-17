@@ -1,16 +1,18 @@
 ---
-name: aweek:create-agent
-description: Create a new aweek agent with identity, goals, and initial plan via interactive prompts
-trigger: create agent, new agent, add agent, aweek create agent
+name: aweek:hire
+description: Hire (create) a new aweek agent with identity, goals, and initial plan via interactive prompts
+trigger: aweek hire, hire agent, new agent, add agent, create agent, aweek create agent
 ---
 
-# aweek:create-agent
+# aweek:hire
 
-Create a new aweek agent interactively. This skill collects agent identity, long-term goals, and an initial monthly/weekly plan, validates all input against schemas, and persists the agent using the storage layer.
+Hire a new aweek agent interactively. This skill is the consolidated replacement for the old `/aweek:create-agent` skill — it collects agent identity, long-term goals, and an initial monthly/weekly plan, validates all input against schemas, and persists the agent using the storage layer.
+
+The skill is a thin UX wrapper on top of `src/skills/hire.js`, which re-exports the shared creation pipeline in `src/skills/create-agent.js`. All persistence and validation logic is reused — do not write agent JSON files directly.
 
 ## Instructions
 
-You MUST follow this exact workflow when this skill is invoked. Use the project's Node.js modules in `src/skills/create-agent.js` — never write agent JSON files directly.
+You MUST follow this exact workflow when this skill is invoked. Use the Node.js modules in `src/skills/hire.js` for every validation and save call.
 
 ### Step 1: Collect Agent Identity
 
@@ -55,17 +57,21 @@ Ask the user for tasks for the current week. Each task must reference an objecti
    - The task description
    - Which objective number it relates to
 3. Collect 1-10 tasks (ask until "done" or 10 reached)
-4. Note: The weekly plan starts as `approved: false`
+4. Note: The weekly plan starts as `approved: false` and must be approved via `/aweek:plan` before the heartbeat activates.
 
-### Step 5: Validate and Save
+### Step 5: Confirm Before Persisting
 
-After collecting all information, run a Node.js script using the `assembleAndSaveAgent` function from `src/skills/create-agent.js`:
+Before calling the save pipeline, show the user a short summary of what will be created (name, role, goal count, objective count, task count, weekly token budget) and ask for explicit confirmation via AskUserQuestion. If the user declines, return to the relevant step to correct input — do not silently discard the collected data.
+
+### Step 6: Validate and Save
+
+After confirmation, run a Node.js script using the `hireAgent` function from `src/skills/hire.js`:
 
 ```bash
 node --input-type=module -e "
-import { assembleAndSaveAgent, formatAgentSummary } from './src/skills/create-agent.js';
+import { hireAgent, formatHireSummary } from './src/skills/hire.js';
 
-const result = await assembleAndSaveAgent({
+const result = await hireAgent({
   name: '<NAME>',
   role: '<ROLE>',
   systemPrompt: '<SYSTEM_PROMPT>',
@@ -80,7 +86,7 @@ if (!result.success) {
   process.exit(1);
 }
 
-console.log(formatAgentSummary(result.config));
+console.log(formatHireSummary(result.config));
 "
 ```
 
@@ -88,7 +94,7 @@ Replace the placeholders with the actual collected values, properly JSON-escaped
 
 If validation fails, report the specific errors and re-collect only the invalid fields, then retry.
 
-If save succeeds, display the formatted summary to the user.
+If save succeeds, display the formatted summary to the user. The summary will include a pointer to `/aweek:plan` for approving the initial weekly plan.
 
 ## Validation Rules
 
@@ -98,15 +104,23 @@ If save succeeds, display the formatted summary to the user.
 - Weekly token limit: positive integer, default 500000
 - Goals: 1-5 goals, each description >= 10 chars
 - Monthly objectives: 1-5, each must reference a valid goal
-- Weekly tasks: 1-10, each must reference a valid objective
+- Weekly tasks: 1-100 (10 collected interactively), each must reference a valid objective
 - All artifacts validated against JSON schemas before save
 
 ## Error Handling
 
-- If the user provides empty or invalid input, explain what's wrong and re-ask
+- If the user provides empty or invalid input, explain what's wrong and re-ask that field only
 - If schema validation fails after assembly, show the specific errors and allow correction
 - The storage layer auto-creates the data directory if needed
 - The agent ID includes a random suffix so collisions are extremely unlikely
+
+## Next Steps
+
+After a successful hire, tell the user:
+
+- Review and approve the initial weekly plan with `/aweek:plan`
+- View the full agent roster with `/aweek:summary`
+- The heartbeat system activates after the first weekly plan approval
 
 ## Data Directory
 

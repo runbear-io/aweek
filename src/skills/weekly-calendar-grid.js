@@ -7,9 +7,9 @@
  */
 
 import { join } from 'node:path';
-import { readdir, readFile } from 'node:fs/promises';
 import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
+import { getAgentChoices } from '../storage/agent-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -370,29 +370,22 @@ export async function loadAndRenderGrid(params) {
 /**
  * List all agents with their latest plan week.
  *
+ * Thin wrapper around the shared {@link getAgentChoices} helper — kept so the
+ * existing `/aweek:weekly-calendar` skill markdown import stays stable while
+ * the consolidated `/aweek:calendar` skill (which imports `getAgentChoices`
+ * directly) rolls in. The returned shape is intentionally narrower than the
+ * helper's so downstream calendar code only sees fields it cares about.
+ *
  * @param {string} [dataDir]
- * @returns {Promise<Array<{id: string, name: string, latestWeek: string|null}>>}
+ * @returns {Promise<Array<{id: string, name: string, latestWeek: string|null, taskCount: number, approved: boolean}>>}
  */
 export async function listAgentsForCalendar(dataDir) {
-  const dir = dataDir || join(process.cwd(), '.aweek', 'agents');
-  try {
-    const files = await readdir(dir);
-    const agents = [];
-    for (const f of files) {
-      if (!f.endsWith('.json')) continue;
-      const data = JSON.parse(await readFile(join(dir, f), 'utf-8'));
-      const plans = data.weeklyPlans || [];
-      const latest = plans[plans.length - 1];
-      agents.push({
-        id: data.id,
-        name: data.identity?.name || data.id,
-        latestWeek: latest?.week || null,
-        taskCount: latest?.tasks?.length || 0,
-        approved: latest?.approved || false,
-      });
-    }
-    return agents;
-  } catch {
-    return [];
-  }
+  const choices = await getAgentChoices({ dataDir });
+  return choices.map(({ id, name, latestWeek, taskCount, approved }) => ({
+    id,
+    name,
+    latestWeek,
+    taskCount,
+    approved,
+  }));
 }

@@ -336,7 +336,7 @@ describe('create-agent skill', () => {
       assert.ok(summary.includes('1 objective'));
       assert.ok(summary.includes('1 task'));
       assert.ok(summary.includes('pending approval'));
-      assert.ok(summary.includes('/aweek:approve-plan'));
+      assert.ok(summary.includes('/aweek:plan'));
 
       await rm(tmpDir, { recursive: true, force: true });
     });
