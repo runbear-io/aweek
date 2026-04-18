@@ -177,7 +177,7 @@ export {
   applyGoalAdjustment,
   applyMonthlyAdjustment,
   applyWeeklyAdjustment,
-} from './skills/adjust-goal.js';
+} from './services/plan-adjustments.js';
 export {
   generateWeeklyPlan,
   generateAndSaveWeeklyPlan,
@@ -198,7 +198,7 @@ export {
   loadPlanForReview,
   buildHeartbeatCommand,
   activateHeartbeat,
-} from './skills/approve-plan.js';
+} from './services/plan-approval.js';
 export {
   markerFor,
   buildCronEntry,

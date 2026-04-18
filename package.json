@@ -11,8 +11,7 @@
     "test": "node --test src/**/*.test.js",
     "test:verbose": "node --test --test-reporter=spec src/**/*.test.js",
     "lint": "node --check src/**/*.js",
-    "build": "node --check src/index.js",
-    "setup:skills": "bash scripts/setup-skills.sh"
+    "build": "node --check src/index.js"
   },
   "keywords": ["claude-code", "ai-agents", "scheduling"],
   "author": "",

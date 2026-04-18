@@ -21,12 +21,13 @@ pnpm test               # Run tests (node --test src/**/*.test.js)
 pnpm test:verbose       # Run tests with the spec reporter
 pnpm lint               # Syntax-check every src file
 pnpm build              # Syntax-check src/index.js
-pnpm setup:skills       # Re-register skill markdown into .claude/commands/
 ```
+
+Slash-command markdown is registered into `.claude/commands/` by `/aweek:init` (`registerSkills` in `src/skills/init.js`). There is no separate setup script — re-running `/aweek:init` is idempotent and the canonical way to refresh the command list.
 
 ## Skills
 
-Skill markdown lives in `skills/` and is mirrored into `.claude/commands/` by `scripts/setup-skills.sh` (or `/aweek:init`). All persistence and validation lives in `src/skills/*.js` — never write `.aweek/` JSON or `.claude/agents/<slug>.md` files directly.
+Skill markdown lives in `skills/` and is mirrored into `.claude/commands/` by `/aweek:init`. All persistence and validation lives in `src/skills/*.js` — never write `.aweek/` JSON or `.claude/agents/<slug>.md` files directly.
 
 | Skill | File | Purpose |
 |-------|------|---------|
@@ -36,7 +37,6 @@ Skill markdown lives in `skills/` and is mirrored into `.claude/commands/` by `s
 | `/aweek:manage` | `skills/aweek-manage.md` | Lifecycle ops: resume, top-up, pause, edit identity, delete (replaces `/aweek:resume-agent`) |
 | `/aweek:summary` | `skills/aweek-summary.md` | Compact dashboard table across all agents with optional drill-down |
 | `/aweek:calendar` | `skills/aweek-calendar.md` | Interactive weekly-plan calendar grid for one agent (numbered task selection, view options, inline status edits) |
-| `/aweek:status` | `skills/aweek-status.md` | Detailed multi-agent status report (tasks, budget, inbox, activity, lock state) |
 | `/aweek:delegate-task` | `skills/aweek-delegate-task.md` | Async inter-agent task delegation through the recipient's inbox queue |
 
 ### Subagent ↔ aweek contract
@@ -92,8 +92,6 @@ Persistence is split across stores in `src/storage/` (agent, weekly-plan, monthl
 ```
 bin/
   aweek.js                      # CLI entry (heartbeat trigger)
-scripts/
-  setup-skills.sh               # Mirror skills/ → .claude/commands/
 skills/                         # Slash-command markdown (source of truth)
   aweek-init.md
   aweek-hire.md
@@ -101,9 +99,8 @@ skills/                         # Slash-command markdown (source of truth)
   aweek-manage.md
   aweek-summary.md
   aweek-calendar.md
-  aweek-status.md
   aweek-delegate-task.md
-.claude/commands/               # Mirrored skill markdown (consumed by Claude Code)
+.claude/commands/               # Mirrored skill markdown (installed by /aweek:init)
 src/
   index.js                      # Public API surface (re-exports for skill markdown)
   models/agent.js               # Agent / goal / plan builders + helpers
@@ -114,7 +111,7 @@ src/
     init.js, init-hire-menu.js
     hire.js, hire-route.js, hire-create-new.js, hire-create-new-menu.js,
     hire-all.js, hire-select-some.js
-    plan.js, adjust-goal.js, approve-plan.js
+    plan.js
     manage.js, resume-agent.js
     summary.js, status.js, weekly-calendar-grid.js
     delegate-task.js
@@ -128,6 +125,8 @@ src/
   agents/<slug>/                # Per-agent subdirs (plans, usage, logs, inbox)
   .locks/                       # Heartbeat + per-agent lock files
 ```
+
+`src/skills/status.js` has no dedicated slash command — it backs the per-agent drill-down inside `/aweek:summary`.
 
 ## Conventions
 
