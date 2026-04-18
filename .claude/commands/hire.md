@@ -1,18 +1,20 @@
 ---
 name: aweek:hire
-description: Hire (create) a new aweek agent with identity, goals, and initial plan via interactive prompts
+description: Hire (create) a new aweek agent — captures identity (name, description, system prompt, weekly budget) and writes the subagent .md plus a minimal aweek scheduling shell. Goals and plans are populated separately via /aweek:plan.
 trigger: aweek hire, hire agent, new agent, add agent, create agent, aweek create agent
 ---
 
 # aweek:hire
 
-Hire a new aweek agent interactively. This skill is the consolidated replacement for the old `/aweek:create-agent` skill — it collects agent identity, long-term goals, and an initial monthly/weekly plan, validates all input against schemas, and persists the agent using the storage layer.
+Hire a new aweek agent interactively. The wizard is **identity-only** — it captures the four identity fields (name, description, system prompt, weekly token budget), writes `.claude/agents/<slug>.md`, and saves a minimal aweek scheduling JSON shell with empty goals / monthly plans / weekly plans. Goals, monthly objectives, and weekly tasks are added separately via `/aweek:plan` after hire.
 
-The skill is a thin UX wrapper on top of `src/skills/hire.js`, which re-exports the shared creation pipeline in `src/skills/create-agent.js`. All persistence and validation logic is reused — do not write agent JSON files directly.
+The skill is a thin UX wrapper on top of `runCreateNewHire` from `src/skills/hire-create-new-menu.js`, which orchestrates `createNewSubagent` (writes the `.md` or adopts an existing one) plus `hireAllSubagents` (writes the aweek JSON shell). All persistence and validation logic lives in those modules — do not write agent JSON files or `.md` files directly.
 
 ## Instructions
 
-You MUST follow this exact workflow when this skill is invoked. Use the Node.js modules in `src/skills/hire.js` for every validation and save call.
+You MUST follow this exact workflow when this skill is invoked.
+
+**Interactive contract (mandatory).** Every prompt for user input MUST go through `AskUserQuestion` — never ask in plain text and wait for the next message. Each `AskUserQuestion` call MUST present a **marketer-agent placeholder** as **Option 1 (Recommended)** so the user can accept the suggested value with one click. The built-in `Other` choice handles custom input — combine the placeholder selection and the custom-input fallback in the same question (never split selection and free-text input across two sequential prompts). The marketer placeholders below are calibrated so the user can compose a complete agent identity in ~5 clicks if they accept every default.
 
 ### Step 0: Route Between Pick-Existing and Create-New
 
@@ -33,149 +35,159 @@ The result has the shape `{ route: 'create-new' | 'choose', unhired: string[], f
 - **`route === 'create-new'`** (also `forcedCreateNew: true`): Tell the user no unhired subagents were found under `.claude/agents/` and jump straight to Step 1 (create-new). Do NOT ask "Pick existing or Create new?" in this case.
 - **`route === 'choose'`**: Use `AskUserQuestion` to offer exactly two options:
   1. **Pick existing** — adopt one of the slugs listed in `unhired`.
-  2. **Create new** — write a fresh `.claude/agents/<slug>.md` via the Step 1–6 flow below.
+  2. **Create new** — write a fresh `.claude/agents/<slug>.md` via the Step 1–3 flow below.
 
-  If the user picks **Create new**, proceed to Step 1. If the user picks **Pick existing**, use the adopt-existing flow (wrap one of the listed slugs with aweek scheduling JSON) instead of Step 1.
+  If the user picks **Create new**, proceed to Step 1. If the user picks **Pick existing**, use the adopt-existing flow (wrap one of the listed slugs with aweek scheduling JSON via `hireAllSubagents`) instead of Step 1.
 
 Plugin-namespaced subagents (slugs prefixed `oh-my-claudecode-` or `geo-`) are deliberately excluded from the `unhired` list per the v1 refactor constraint and must never be offered as adoption targets.
 
 ### Step 1: Collect Agent Identity (Create-New Path)
 
-Each aweek agent is a 1-to-1 wrapper around a Claude Code subagent defined in `.claude/agents/<slug>.md`. The create-new path writes a brand-new subagent file with **minimal** frontmatter (`name` + `description` only) and the user-supplied system prompt as the body. Collect **exactly three** identity fields using AskUserQuestion — do not prompt for model, tools, skills, or MCP servers. Users who want to override any of those edit the generated `.md` file by hand.
+Each aweek agent is a 1-to-1 wrapper around a Claude Code subagent defined in `.claude/agents/<slug>.md`. The create-new path writes a brand-new subagent file with **minimal** frontmatter (`name` + `description` only) and the user-supplied system prompt as the body. Collect **exactly four** identity fields, each via its own `AskUserQuestion` call — do not prompt for model, tools, skills, or MCP servers. Users who want to override any of those edit the generated `.md` file by hand.
 
-Do NOT proceed until all three fields are provided and non-empty.
+Per the interactive contract above, every question MUST present the **marketer placeholder** as **Option 1 (Recommended)** and a second contrasting option, with `Other` reserved for free-form custom input. Do NOT proceed until all four fields are provided and non-empty.
 
-1. **Name** (required, 1-100 chars): Ask for the agent's name. It will be slugified into a filesystem-safe slug and used as the filename of `.claude/agents/<slug>.md`, the aweek agent id, and the `subagentRef` — identity data lives in the `.md` file, not the aweek JSON.
-   - Example: "Content Writer" → slug `content-writer`
-   - Must contain at least one alphanumeric character.
+1. **Name** — `AskUserQuestion` (header: `Agent name`):
+   - Option 1 (Recommended): `Marketer` — runs marketing campaigns, drafts content, tracks growth
+   - Option 2: `Growth Marketer` — emphasizes experiments and analytics
+   - `Other` → user types a custom name (1–100 chars, must contain ≥1 alphanumeric)
+   - The chosen value is slugified into the filename of `.claude/agents/<slug>.md`, the aweek agent id, and the `subagentRef`. Example: `Marketer` → slug `marketer`.
 
-2. **Description** (required, single line): Ask for a one-sentence description. Written verbatim to the `description:` frontmatter field on the new `.md`.
-   - Example: "Writes weekly research briefs and summaries."
+2. **Description** — `AskUserQuestion` (header: `Description`):
+   - Option 1 (Recommended): `Plans and executes weekly marketing campaigns, content, and growth experiments.`
+   - Option 2: `Drives newsletter growth, SEO traffic, and content distribution across owned channels.`
+   - `Other` → user types a custom one-sentence description.
+   - Written verbatim to the `description:` frontmatter field on the new `.md`.
 
-3. **System Prompt** (required): Ask for the prompt body that Claude Code will use when this subagent runs. Written verbatim as the body of the new `.md`.
-   - Example: "You are a meticulous research assistant who produces well-cited summaries."
+3. **System Prompt** — `AskUserQuestion` (header: `System prompt`):
+   - Option 1 (Recommended) — full marketer placeholder body:
+     ```
+     You are a strategic marketing assistant focused on growth.
+     For every task, default to data-driven recommendations and concise,
+     actionable deliverables. Plan campaigns, write copy, analyze
+     performance against the agent's monthly objectives, and surface
+     opportunities to improve newsletter, SEO, and content metrics.
+     Cite sources for any external claims and prefer measurable outcomes
+     over generic advice.
+     ```
+   - Option 2 — terser marketer placeholder: `You are a focused marketing assistant. Default to short, data-driven recommendations and concrete next actions.`
+   - `Other` → user types a custom system prompt.
+   - Written verbatim as the body of the new `.md`.
 
-4. **Weekly Token Budget** (optional, default 500000): Ask for the weekly token limit for this agent's aweek scheduling budget. Not written to the `.md`; stored on the aweek JSON.
-   - Must be a positive integer. Default: 500,000 tokens.
+4. **Weekly Token Budget** — `AskUserQuestion` (header: `Token budget`):
+   - Option 1 (Recommended): `500000` — fits a typical marketer cadence
+   - Option 2: `1000000` — heavier weekly research / drafting workloads
+   - `Other` → user types a custom positive integer.
+   - Not written to the `.md`; stored on the aweek JSON.
 
-Before proceeding, call `validateCreateNewInput` from `src/skills/hire.js` and, if any errors are reported, re-prompt only for the invalid fields. When valid, the returned `slug` is what gets used as the aweek agent id. If `.claude/agents/<slug>.md` already exists, the create-new helper **adopts** the existing file instead of overwriting it — the user's typed description and system prompt are discarded in favour of what is already on disk (the `.md` is the single source of truth for identity). Inform the user that adoption happened and surface the on-disk content so they know what they are wiring into aweek scheduling.
+Before proceeding, call `validateCreateNewInput` from `src/skills/hire.js` and, if any errors are reported, re-render only the invalid `AskUserQuestion`(s). When valid, the returned `slug` is what gets used as the aweek agent id. If `.claude/agents/<slug>.md` already exists, `runCreateNewHire` will **adopt** the existing file instead of overwriting it — the user's typed description and system prompt are discarded in favour of what is already on disk (the `.md` is the single source of truth for identity). Inform the user that adoption happened and surface the on-disk content so they know what they are wiring into aweek scheduling.
 
-### Step 2: Collect Long-Term Goals
+### Step 2: Confirm Before Persisting
 
-Ask the user for 1-5 long-term goals for this agent.
+Render a one-block summary of the identity fields collected — name (and the resulting slug), description, system prompt (truncated to the first ~120 chars with an ellipsis if longer), and weekly token budget — then ask for explicit confirmation via `AskUserQuestion` (header: `Confirm hire`):
 
-- Ask: "What are the long-term goals for this agent? Enter one per message, type 'done' when finished (minimum 1, maximum 5)."
-- Each goal must be at least 10 characters
-- Keep asking until user says "done" or 5 goals reached
+- Option 1 (Recommended): `Looks good — hire the marketer agent`
+- Option 2: `Edit something first`
+- `Other` → user types a free-form note (treated as `Edit something first` plus the note as a hint for which field to revisit)
 
-### Step 3: Collect Initial Monthly Plan
+If the user picks `Edit something first` (or supplies a custom note), follow up with a second `AskUserQuestion` (header: `What to edit?`) listing the editable fields (`Name`, `Description`, `System prompt`, `Token budget`) and jump back to that field in Step 1. Never silently discard the collected data.
 
-Ask the user for objectives for the current month. Each objective must reference a goal from Step 2.
+### Step 3: Validate and Save
 
-1. Display the numbered list of goals collected
-2. For each objective ask:
-   - The objective description
-   - Which goal number it relates to
-3. Collect 1-5 objectives (ask until "done" or 5 reached)
+After confirmation, call `runCreateNewHire` from `src/skills/hire-create-new-menu.js`. It runs the three-step pipeline atomically: validate input → write or adopt `.claude/agents/<slug>.md` → write the minimal aweek JSON wrapper via `hireAllSubagents`. The wrapper has empty `goals`, `monthlyPlans`, and `weeklyPlans` by design — populate them separately via `/aweek:plan` after hire.
 
-### Step 4: Collect Initial Weekly Plan
-
-Ask the user for tasks for the current week. Each task must reference an objective from Step 3.
-
-1. Display the numbered list of objectives collected
-2. For each task ask:
-   - The task description
-   - Which objective number it relates to
-3. Collect 1-10 tasks (ask until "done" or 10 reached)
-4. Note: The weekly plan starts as `approved: false` and must be approved via `/aweek:plan` before the heartbeat activates.
-
-### Step 5: Confirm Before Persisting
-
-Before calling the save pipeline, show the user a short summary of what will be created (name, role, goal count, objective count, task count, weekly token budget) and ask for explicit confirmation via AskUserQuestion. If the user declines, return to the relevant step to correct input — do not silently discard the collected data.
-
-### Step 6: Validate and Save
-
-After confirmation, first ensure the subagent file is present on disk via `createNewSubagent` from `src/skills/hire.js`. The helper either writes a brand-new `.md` (when the slug is free) or **adopts** the existing one (when `.claude/agents/<slug>.md` already exists), surfacing which path it took on the `adopted` flag of the result. Only when that succeeds do you assemble and save the aweek scheduling JSON, so you never end up with a dangling aweek agent whose subagent `.md` failed to write.
+The example below uses the **marketer placeholder values** so the wizard can be dry-run end-to-end with no manual edits. If the user accepted every Recommended option in Step 1, the marketer values shown here ARE the collected values.
 
 ```bash
 node --input-type=module -e "
-import { createNewSubagent, hireAgent, formatHireSummary } from './src/skills/hire.js';
+import { runCreateNewHire, formatCreateNewResult } from './src/skills/hire-create-new-menu.js';
 
-// Step 6a — Ensure .claude/agents/<slug>.md exists. Either writes a new
-// minimal-frontmatter .md, or adopts an existing file as-is (no overwrite).
-const subagent = await createNewSubagent({
-  name: '<NAME>',
-  description: '<DESCRIPTION>',
-  systemPrompt: '<SYSTEM_PROMPT>',
+const result = await runCreateNewHire({
+  name: 'Marketer',
+  description: 'Plans and executes weekly marketing campaigns, content, and growth experiments.',
+  systemPrompt: 'You are a strategic marketing assistant focused on growth. For every task, default to data-driven recommendations and concise, actionable deliverables. Plan campaigns, write copy, analyze performance against the agent\\'s monthly objectives, and surface opportunities to improve newsletter, SEO, and content metrics. Cite sources for any external claims and prefer measurable outcomes over generic advice.',
+  weeklyTokenLimit: 500000,
+  projectDir: process.cwd(),
 });
 
-if (!subagent.success) {
-  console.error('SUBAGENT_ERRORS:', JSON.stringify(subagent.errors));
-  process.exit(1);
-}
-
-if (subagent.adopted) {
-  console.log('Adopted existing subagent file: ' + subagent.path);
-} else {
-  console.log('Wrote subagent file: ' + subagent.path);
-}
-
-// Step 6b — Persist the aweek scheduling JSON. The returned slug is reused
-// as both the aweek agent id and subagentRef so the two artifacts stay in
-// 1-to-1 lockstep on disk.
-const result = await hireAgent({
-  name: '<NAME>',
-  role: '<DESCRIPTION>',
-  systemPrompt: '<SYSTEM_PROMPT>',
-  weeklyTokenLimit: <LIMIT>,
-  goalDescriptions: [<GOALS>],
-  objectives: [<OBJECTIVES>],
-  tasks: [<TASKS>],
-});
-
-if (!result.success) {
-  console.error('ERRORS:', JSON.stringify(result.errors));
-  process.exit(1);
-}
-
-console.log(formatHireSummary(result.config));
+console.log(formatCreateNewResult(result));
+if (!result.success) process.exit(1);
 "
 ```
 
-Replace the placeholders with the actual collected values, properly JSON-escaped.
+Replace the four field values above with whatever the user actually picked (use the `Other` text if they did not accept Option 1) and JSON-escape any embedded quotes / newlines.
 
-If `createNewSubagent` returns `adopted: true`, tell the user the existing `.md` was kept verbatim and that their typed description / system prompt were discarded (the `.md` is the single source of truth for identity). Display the on-disk `content` so they can confirm what they are wiring into aweek scheduling before proceeding to `hireAgent`.
+The returned `result` shape is:
 
-If validation fails, report the specific errors and re-collect only the invalid fields, then retry.
+```json
+{
+  "success": true,
+  "validation": { "valid": true, "errors": [], "slug": "marketer" },
+  "subagent": { "success": true, "adopted": false, "slug": "marketer", "path": "...", "content": "..." },
+  "hire":     { "success": true, "created": ["marketer"], "skipped": [], "failed": [] }
+}
+```
 
-If save succeeds, display the formatted summary to the user. The summary will include a pointer to `/aweek:plan` for approving the initial weekly plan.
+Three failure modes, each with its own remediation:
+
+- **Validation failure** (`result.validation.valid === false`): the four fields were invalid (empty, name slugifies to nothing, etc.). Nothing was written. Surface `formatCreateNewResult(result)` (starts with "Input rejected — …") and re-render the offending Step 1 `AskUserQuestion`.
+- **Subagent write failure** (`result.subagent.success === false`): the `.md` write failed and — critically — the aweek JSON wrapper was **never attempted**. Surface the "Subagent file error" block and resolve the underlying filesystem issue before retrying.
+- **Wrapper failure** (`result.hire.success === false`): the `.md` landed but the aweek JSON shell failed (schema error, filesystem issue). Surface the nested `formatHireAllSummary` block so the user sees which slug failed and why.
+
+If `result.subagent.adopted === true`, tell the user the existing `.md` was kept verbatim and that their typed description / system prompt were discarded (the `.md` is the single source of truth for identity). Display `result.subagent.content` so they can confirm what they are wiring into aweek scheduling.
+
+On success, render `formatCreateNewResult(result)` to the user — it combines the "Wrote / Adopted subagent file" headline with the `formatHireAllSummary` block.
 
 ## Validation Rules
 
-- Agent name: 1-100 chars, non-empty
-- Agent role: 1-200 chars, non-empty
+- Agent name: 1–100 chars, must contain at least one alphanumeric character (so it slugifies to a non-empty string)
+- Description: non-empty, single-line string
 - System prompt: non-empty string
-- Weekly token limit: positive integer, default 500000
-- Goals: 1-5 goals, each description >= 10 chars
-- Monthly objectives: 1-5, each must reference a valid goal
-- Weekly tasks: 1-100 (10 collected interactively), each must reference a valid objective
+- Weekly token limit: positive integer, default 500,000
 - All artifacts validated against JSON schemas before save
+
+The wizard does NOT collect goals, monthly objectives, or weekly tasks — those live on the aweek JSON wrapper as initially-empty arrays and are managed via `/aweek:plan`.
 
 ## Error Handling
 
-- If the user provides empty or invalid input, explain what's wrong and re-ask that field only
-- If schema validation fails after assembly, show the specific errors and allow correction
-- The storage layer auto-creates the data directory if needed
-- The agent ID includes a random suffix so collisions are extremely unlikely
+- If the user provides empty or invalid input on a field, explain what's wrong and re-render only that `AskUserQuestion`.
+- If schema validation fails inside `runCreateNewHire` after assembly, show `formatCreateNewResult(result)` and allow correction.
+- The storage layer auto-creates the data directory if needed.
+- Slug collisions on `.claude/agents/<slug>.md` are non-fatal — `runCreateNewHire` adopts the existing file rather than failing.
 
 ## Next Steps
 
 After a successful hire, tell the user:
 
-- Review and approve the initial weekly plan with `/aweek:plan`
-- View the full agent roster with `/aweek:summary`
-- The heartbeat system activates after the first weekly plan approval
+- Run `/aweek:plan` to add long-term goals, monthly objectives, and a weekly task list (the heartbeat does not activate until the first weekly plan is approved).
+- View the full agent roster with `/aweek:summary`.
+- The marketer placeholder roadmap below is a ready-to-use starting point — surface it so the user can paste it straight into `/aweek:plan` if they accepted the marketer identity.
+
+**Marketer placeholder roadmap (ready for `/aweek:plan`):**
+
+Goals (1–5):
+1. `Grow the newsletter from 1,000 to 5,000 subscribers in 6 months`
+2. `Increase organic search traffic to product landing pages by 50%`
+3. `Launch a weekly content series and publish on schedule for 13 weeks`
+4. `Drive 200 qualified demo requests via marketing channels`
+5. `Establish a measurable brand-awareness baseline with monthly reporting`
+
+Monthly objectives (linked to goal #):
+1. `Ship 4 newsletter issues this month, each with a measurable subscriber CTA` → goal 1
+2. `Publish 4 long-form SEO posts targeting bottom-funnel keywords` → goal 2
+3. `Run an A/B test on the pricing page hero copy and ship the winner` → goal 2
+4. `Stand up a weekly metrics digest and share with stakeholders by Monday EOD` → goal 5
+5. `Outline next month's content calendar end-to-end with owners and dates` → goal 3
+
+Weekly tasks (linked to objective #):
+1. `Draft and schedule this week's newsletter (subject + 3 sections + CTA)` → objective 1
+2. `Write a 1,500-word SEO post on the top-traffic blog topic for the segment` → objective 2
+3. `Set up an A/B test variant for the pricing page hero copy` → objective 3
+4. `Pull last week's traffic + signup metrics into a Monday digest brief` → objective 4
+5. `Refresh on-page meta titles + descriptions for the top 5 organic landing pages` → objective 2
+6. `Source 3 testimonial quotes for the homepage social-proof block` → objective 1
 
 ## Data Directory
 
-Agents are stored in `.aweek/agents/<agent-id>.json` relative to the project root.
+Subagent identity files: `.claude/agents/<slug>.md`
+Aweek scheduling JSON: `.aweek/agents/<slug>.json` (relative to the project root; the slug equals the agent id and the `subagentRef`)
