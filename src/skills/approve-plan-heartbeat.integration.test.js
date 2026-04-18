@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import {
   processApproval,
   buildHeartbeatCommand,
-} from './approve-plan.js';
+} from './plan.js';
 import {
   createAgentConfig,
   createGoal,
