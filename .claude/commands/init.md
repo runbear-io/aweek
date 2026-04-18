@@ -191,65 +191,381 @@ Next steps:
   3. Run /aweek:summary to see the dashboard
 ```
 
-### Step 6: Offer `/aweek:hire` as the final interactive step
+### Step 6: Offer the four-option hire menu as the final interactive step (or auto-delegate)
 
 Infrastructure setup is just the foundation; the user's real goal is to have at
-least one working agent. After the summary prints, always offer the hire flow —
-whether this is a fresh project (first agent) or a re-run (add another agent).
+least one working agent. After the summary prints, always run the post-init
+hire decision. The flow adapts to the project's current state:
 
-Run the finalize helper to get the handoff decision:
+- When **at least one unhired subagent** exists under `.claude/agents/<slug>.md`
+  (i.e. the subagent `.md` is on disk but there is no matching
+  `.aweek/agents/<slug>.json`), show the full **four-option** menu.
+- When **no unhired subagents** exist, **skip the menu entirely and
+  automatically delegate to `/aweek:hire`** (create-new branch). Asking the
+  user to pick between "Create new" and "Skip" on an empty roster is noise —
+  there is nothing to adopt and the only useful next action is to launch the
+  create-new wizard. (Sub-AC 3 of AC 6.)
+
+Resolve the decision via `resolveInitHireMenu` from `src/skills/init-hire-menu.js`.
+This helper composes `buildInitHireMenu` (which calls `listUnhiredSubagents`
+under the hood and filters plugin-namespaced slugs) with the fall-through rule
+so the markdown gets one of two stable shapes back.
 
 ```bash
 node --input-type=module -e "
-import { finalizeInit } from './src/skills/init.js';
+import { resolveInitHireMenu, formatInitHireMenuPrompt } from './src/skills/init-hire-menu.js';
 
-const result = await finalizeInit({ projectDir: process.cwd() });
-console.log(JSON.stringify(result, null, 2));
+const decision = await resolveInitHireMenu({ projectDir: process.cwd() });
+console.log(JSON.stringify({
+  fallThrough: decision.fallThrough,
+  reason: decision.reason,
+  route: decision.route,
+  menu: {
+    hasUnhired: decision.menu.hasUnhired,
+    unhired: decision.menu.unhired,
+    options: decision.menu.options.map((o) => ({ value: o.value, label: o.label, description: o.description })),
+    promptText: decision.menu.promptText,
+  },
+}, null, 2));
+if (!decision.fallThrough) {
+  console.log('---');
+  console.log(formatInitHireMenuPrompt(decision.menu));
+}
 "
 ```
 
-The returned object has this shape:
+The returned object has one of two shapes:
+
+**Choose path** (one or more unhired subagents):
 
 ```json
 {
-  "launchHire": true,
-  "nextSkill": "/aweek:hire",
-  "mode": "first-agent",
-  "isReRun": false,
-  "promptText": "Infrastructure setup is complete. Would you like to hire your first agent now via /aweek:hire?",
-  "reason": "No agents found — init should hand off to /aweek:hire as the final interactive step.",
-  "projectDir": "/path/to/project",
-  "instruction": {
-    "skill": "/aweek:hire",
-    "projectDir": "/path/to/project",
-    "promptText": "...",
-    "reason": "..."
+  "fallThrough": false,
+  "menu": {
+    "hasUnhired": true,
+    "unhired": ["analyst", "writer"],
+    "options": [
+      { "value": "hire-all", "label": "Hire all", "description": "...", "requiresUnhired": true },
+      { "value": "select-some", "label": "Select some", "description": "...", "requiresUnhired": true },
+      { "value": "create-new", "label": "Create new", "description": "...", "requiresUnhired": false },
+      { "value": "skip", "label": "Skip", "description": "...", "requiresUnhired": false }
+    ],
+    "promptText": "Infrastructure setup is complete. How would you like to hire subagents into aweek?"
+  },
+  "route": null,
+  "reason": null
+}
+```
+
+**Fall-through path** (no unhired subagents — auto-delegation to `/aweek:hire`):
+
+```json
+{
+  "fallThrough": true,
+  "menu": { "hasUnhired": false, "unhired": [], "options": [...], "promptText": "..." },
+  "route": {
+    "action": "create-new",
+    "nextSkill": "/aweek:hire",
+    "route": "create-new",
+    "slugs": [],
+    "bulk": false,
+    "reason": "No unhired subagents were found under .claude/agents/. Auto-delegating to /aweek:hire (create-new) — there is nothing to adopt and the only useful next action is to create a new agent.",
+    "fallThrough": true
+  },
+  "reason": "No unhired subagents were found under .claude/agents/. Auto-delegating to /aweek:hire (create-new) — there is nothing to adopt and the only useful next action is to create a new agent."
+}
+```
+
+#### 6.0 Honor the fall-through before showing the menu
+
+If `decision.fallThrough` is `true`:
+
+1. Echo the `decision.reason` to the user (one short line — they should see
+   *why* the menu was skipped, not be left guessing).
+2. **Do NOT call `AskUserQuestion`.** Skip Step 6.1 entirely.
+3. Invoke `/aweek:hire` immediately. Honor the `decision.route` descriptor —
+   `route: 'create-new'` means launch the three-field create-new wizard with
+   no pre-filled fields.
+
+This auto-delegation is non-destructive (the hire wizard creates new state,
+never overwrites). No additional `confirmed: true` gate is required.
+
+If `decision.fallThrough` is `false`, proceed to Step 6.1 to present the menu
+as documented below. The remainder of Step 6 only applies on the choose path.
+
+#### 6.1 Present the menu
+
+Display `menu.promptText` and, when `menu.hasUnhired` is true, the list of
+unhired subagent slugs. Then invoke `AskUserQuestion` with the options from
+`menu.options` — pass them verbatim so the labels, descriptions, and `value`
+identifiers stay in sync with the backing module.
+
+| Choice          | Available when        | Meaning |
+|-----------------|-----------------------|---------|
+| **Hire all**    | `hasUnhired === true` | Wrap every slug in `menu.unhired` into an aweek scheduling JSON in one pass. |
+| **Select some** | `hasUnhired === true` | Prompt the user a second time with a multi-select over `menu.unhired` and hire only the picked slugs. See Step 6.2b for the helper pipeline (`buildSelectSomeChoices` → `AskUserQuestion` multi-select → `runSelectSomeHire`). |
+| **Create new**  | Always                | Skip adoption and launch the `/aweek:hire` wizard's create-new path (three-field identity capture). |
+| **Skip**        | Always                | Finish init without hiring. The user can always run `/aweek:hire` later. |
+
+#### 6.2 Route the user's choice
+
+Call `routeInitHireMenuChoice` to convert the user's selection into a stable
+handler descriptor:
+
+```bash
+node --input-type=module -e "
+import { buildInitHireMenu, routeInitHireMenuChoice } from './src/skills/init-hire-menu.js';
+
+const menu = await buildInitHireMenu({ projectDir: process.cwd() });
+const route = routeInitHireMenuChoice({
+  choice: '<USER_CHOICE>',           // one of: hire-all, select-some, create-new, skip
+  menu,
+  selected: [<SELECTED_SLUGS>],     // required ONLY when choice === 'select-some'
+});
+console.log(JSON.stringify(route, null, 2));
+"
+```
+
+The returned `route` descriptor tells the markdown exactly what to do next:
+
+| `route.action`   | `route.nextSkill` | `route.route`    | `route.slugs`     | `route.bulk` |
+|------------------|-------------------|------------------|-------------------|--------------|
+| `hire-all`       | `/aweek:hire`     | `pick-existing`  | *every unhired*   | `true`       |
+| `select-some`    | `/aweek:hire`     | `pick-existing`  | *user's picks*    | `true`       |
+| `create-new`     | `/aweek:hire`     | `create-new`     | `[]`              | `false`      |
+| `skip`           | `null`            | `null`           | `[]`              | `false`      |
+
+Dispatch based on the descriptor:
+
+- **`hire-all`** (`bulk: true`): hand `route.slugs` to the non-interactive
+  `hireAllSubagents` handler (`src/skills/hire-all.js`). The handler iterates
+  internally, wrapping every slug with a minimal aweek scheduling JSON shell
+  (empty goals / plans, default budget — identity already lives in
+  `.claude/agents/<slug>.md`). Per-slug outcomes land under `created` /
+  `skipped` / `failed` so you can echo the summary verbatim:
+
+  ```bash
+  node --input-type=module -e "
+  import { hireAllSubagents, formatHireAllSummary } from './src/skills/hire-all.js';
+
+  const result = await hireAllSubagents({
+    slugs: [<SLUGS>],                 // route.slugs from routeInitHireMenuChoice
+    projectDir: process.cwd(),
+  });
+  console.log(formatHireAllSummary(result));
+  if (!result.success) process.exit(1);
+  "
+  ```
+
+  The handler is idempotent (re-running on an already-hired slug is a skip,
+  not an error) and defensive (plugin-namespaced slugs, missing `.md`
+  files, and invalid slug shapes surface as structured `skipped` / `failed`
+  entries instead of throwing). Users who want per-agent goals / objectives /
+  tasks should run `/aweek:plan` against each newly-hired slug afterwards —
+  bulk hires intentionally leave plans empty so the user can tailor each
+  roadmap rather than inheriting a generic template.
+- **`select-some`** (`bulk: true`): see **Step 6.2b** below — it requires a
+  second `AskUserQuestion` (a multi-select) before the wrapper pass.
+- **`create-new`** (`bulk: false`): delegate to `/aweek:hire`'s create-new
+  wizard so the user collects the three-field identity (name, description,
+  system prompt) and both the `.claude/agents/<slug>.md` AND the aweek JSON
+  wrapper land together. Do not pre-fill any of the three fields; the wizard
+  collects them interactively.
+
+  The canonical dispatch is the `buildCreateNewLaunchInstruction` descriptor
+  from `src/skills/hire-create-new-menu.js` — it returns a stable
+  `{ skill, route, projectDir, promptText, reason }` shape the markdown can
+  render before invoking the interactive skill:
+
+  ```bash
+  node --input-type=module -e "
+  import { buildCreateNewLaunchInstruction } from './src/skills/hire-create-new-menu.js';
+
+  const instr = buildCreateNewLaunchInstruction({ projectDir: process.cwd() });
+  console.log(JSON.stringify(instr, null, 2));
+  "
+  ```
+
+  After rendering the prompt, invoke `/aweek:hire` and let the interactive
+  wizard walk the user through Steps 1-6 of that skill.
+
+  Alternatively, when the three identity fields have already been collected
+  (e.g. from a non-interactive test harness), call `runCreateNewHire` to run
+  the same two-step flow the wizard's Step 6a + 6b would run — it writes or
+  adopts `.claude/agents/<slug>.md` via `createNewSubagent`, then delegates
+  to `hireAllSubagents` so the aweek JSON shell shape matches every other
+  menu branch:
+
+  ```bash
+  node --input-type=module -e "
+  import { runCreateNewHire, formatCreateNewResult } from './src/skills/hire-create-new-menu.js';
+
+  const result = await runCreateNewHire({
+    name: '<NAME>',
+    description: '<DESCRIPTION>',
+    systemPrompt: '<SYSTEM_PROMPT>',
+    weeklyTokenLimit: <LIMIT>, // optional — defaults to DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT
+    projectDir: process.cwd(),
+  });
+  console.log(formatCreateNewResult(result));
+  if (!result.success) process.exit(1);
+  "
+  ```
+
+  The returned `result` shape is:
+
+  ```json
+  {
+    "success": true,
+    "validation": { "valid": true, "errors": [], "slug": "content-writer" },
+    "subagent": { "success": true, "adopted": false, "slug": "content-writer", "path": "...", "content": "..." },
+    "hire":     { "success": true, "created": ["content-writer"], "skipped": [], "failed": [] }
+  }
+  ```
+
+  Three failure modes, each with its own remediation:
+
+  - **Validation failure** (`result.validation.valid === false`): the three
+    fields were invalid (empty, name slugifies to nothing, etc.). Nothing
+    was written. Surface `formatCreateNewResult(result)` (starts with
+    "Input rejected — …") and re-prompt the user.
+  - **Subagent write failure** (`result.subagent.success === false`): the
+    `.md` write failed and — critically — the aweek JSON wrapper was
+    **never attempted**. Surface the "Subagent file error" block and
+    resolve the underlying filesystem issue before retrying.
+  - **Wrapper failure** (`result.hire.success === false`): the `.md` landed
+    but the aweek JSON shell failed (schema error, filesystem issue).
+    Surface the nested `formatHireAllSummary` block so the user sees which
+    slug failed and why.
+
+  Adoption is a first-class outcome, not a failure: when `.claude/agents/<slug>.md`
+  already exists, the helper returns `subagent.adopted: true` and keeps the
+  on-disk `.md` verbatim. The typed description + system prompt are
+  discarded per the "single source of truth" constraint. Tell the user
+  adoption happened and display `subagent.content` so they can confirm what
+  they are wiring into aweek scheduling.
+- **`skip`**: finish here. Remind the user they can run `/aweek:hire` at any
+  time to add an agent later.
+
+#### 6.2b Select-some branch (multi-select + wrap)
+
+When `route.action === 'select-some'` the markdown must run a **second**
+interactive prompt — a multi-select over `menu.unhired` — before touching the
+filesystem. The helpers in `src/skills/hire-select-some.js` own this flow so
+the markdown does not have to hand-roll the choice payload or the
+validation-and-dispatch glue.
+
+**Step 6.2b-1 — Build the multi-select payload.** Use `buildSelectSomeChoices`
+to turn `menu.unhired` into a ready-to-show `AskUserQuestion` payload. Each
+choice is enriched with the live `name` + `description` from
+`.claude/agents/<slug>.md` so users see what they are picking:
+
+```bash
+node --input-type=module -e "
+import { buildInitHireMenu } from './src/skills/init-hire-menu.js';
+import { buildSelectSomeChoices } from './src/skills/hire-select-some.js';
+
+const menu = await buildInitHireMenu({ projectDir: process.cwd() });
+const payload = await buildSelectSomeChoices(menu, { projectDir: process.cwd() });
+console.log(JSON.stringify(payload, null, 2));
+"
+```
+
+The returned payload has this shape:
+
+```json
+{
+  "promptText": "Select the subagents to wrap into aweek scheduling JSONs (pick one or more):",
+  "multiSelect": true,
+  "slugs": ["analyst", "writer"],
+  "choices": [
+    { "value": "analyst", "label": "Analyst", "description": "Analyse things.", "missing": false, "path": ".../analyst.md" },
+    { "value": "writer",  "label": "Writer",  "description": "Write things.",   "missing": false, "path": ".../writer.md"  }
+  ]
+}
+```
+
+**Step 6.2b-2 — Render the multi-select.** Display `payload.promptText` and
+invoke `AskUserQuestion` with `payload.choices`, enabling checkbox / multi-pick
+semantics (`multiSelect: true`). Users MUST be able to pick more than one slug
+— a single-select would defeat the purpose of this branch. Collect the user's
+picks as a `string[]` — call it `selectedSlugs`.
+
+**Step 6.2b-3 — Validate + wrap.** Pass `selectedSlugs` to `runSelectSomeHire`
+which re-validates the selection against the menu's unhired list (defense in
+depth against stale menus or slugs hired concurrently) and then delegates to
+`hireAllSubagents` to wrap every picked slug:
+
+```bash
+node --input-type=module -e "
+import { buildInitHireMenu } from './src/skills/init-hire-menu.js';
+import { runSelectSomeHire, formatSelectSomeResult } from './src/skills/hire-select-some.js';
+
+const menu = await buildInitHireMenu({ projectDir: process.cwd() });
+const result = await runSelectSomeHire({
+  menu,
+  selected: [<SELECTED_SLUGS>], // string[] from AskUserQuestion multi-select
+  projectDir: process.cwd(),
+});
+console.log(formatSelectSomeResult(result));
+if (!result.success) process.exit(1);
+"
+```
+
+The returned shape is:
+
+```json
+{
+  "success": true,
+  "validation": { "valid": true, "errors": [] },
+  "hire": {
+    "success": true,
+    "created": ["writer", "analyst"],
+    "skipped": [],
+    "failed": []
   }
 }
 ```
 
-`finalizeInit()` always returns `launchHire: true`. Two modes:
+Two failure modes, each with its own remediation:
 
-| `result.mode`    | When it's returned              | Suggested prompt |
-|------------------|----------------------------------|------------------|
-| `first-agent`    | No agents exist yet              | "Would you like to hire your first agent now?" |
-| `add-another`    | One or more agents already exist | "Would you like to hire another agent now?"    |
+- **Validation failure** (`result.validation.valid === false`): the user's
+  selection itself was malformed (empty, contained a slug not in
+  `menu.unhired`, duplicate slug, non-string entry). `result.hire` is `null`
+  — **no wrapper was written**. Surface
+  `formatSelectSomeResult(result)` (starts with "Selection rejected — …") and
+  re-render the multi-select so the user can pick a valid subset.
+- **Per-slug failure** (`result.hire.success === false`): the selection was
+  structurally valid but one or more slugs failed to wrap at the hire-all
+  layer (the `.md` vanished between discovery and dispatch, a filesystem
+  error, etc.). The nested `result.hire.failed` list has per-slug error
+  details. Echo `formatSelectSomeResult(result)` so the user sees exactly
+  which slugs wrapped and which did not.
 
-Present `result.promptText` to the user via `AskUserQuestion` with yes/no
-choices:
+The handler is intentionally idempotent — re-selecting an already-hired slug
+produces a `skipped` entry (not a failure) and re-selecting never overwrites
+a pre-existing aweek JSON. No `confirmed: true` gate is required because the
+only filesystem writes are new `.aweek/agents/<slug>.json` files; no
+`.md` or crontab entries are touched.
 
-> **{{ result.promptText }}**
->
-> - `yes` — launch `/aweek:hire` immediately
-> - `no` — finish here (you can run `/aweek:hire` anytime later)
+Never skip Step 6 — the init flow exists to give the user a clear next action,
+whether this is their first agent or a re-run after adding more subagents.
 
-Only if they answer `yes`, invoke the `/aweek:hire` skill to run its full
-interactive wizard. The hire skill is non-destructive — it only creates a new
-agent config — so no additional `confirmed: true` gate is required, but the
-user consent above is still mandatory UX.
+#### 6.3 Error handling
 
-Never skip Step 6: the init flow exists to give the user a clear next action,
-whether this is their first agent or another one.
+- If `routeInitHireMenuChoice` throws `EINIT_HIRE_MENU_BAD_CHOICE`, re-present
+  the menu (the user's selection did not match any available option, usually
+  because they tried to pick `hire-all` / `select-some` on an empty menu).
+- If `routeInitHireMenuChoice` throws `EINIT_HIRE_MENU_BAD_SELECTION` during
+  `select-some`, surface the error and re-prompt for a valid subset of
+  `menu.unhired`.
+- If the user aborts the menu entirely, treat it as `skip` — never fall
+  through silently to `create-new` without explicit consent.
+
+The menu is **non-destructive**: it only reads the filesystem. Launching
+`/aweek:hire` afterwards creates new state but is itself non-destructive (no
+`.md` overwrites — adopt-on-collision is enforced inside `createNewSubagent`).
+No additional `confirmed: true` gate is required for Step 6.
 
 ## Error handling
 
