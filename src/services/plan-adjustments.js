@@ -35,16 +35,23 @@ import {
   createGoal,
   createObjective,
   createTask,
+  createMonthlyPlan,
+  createWeeklyPlan,
   addGoal,
   updateGoalStatus,
   removeGoal,
+  addMonthlyPlan,
   addObjectiveToMonthlyPlan,
   updateObjectiveStatus,
   getMonthlyPlan,
 } from '../models/agent.js';
 import { validateAgentConfig } from '../schemas/validator.js';
 import { GOAL_HORIZONS } from '../schemas/goals.schema.js';
-import { OBJECTIVE_STATUSES } from '../schemas/monthly-plan.schema.js';
+import {
+  MONTHLY_PLAN_STATUSES,
+  OBJECTIVE_STATUSES,
+} from '../schemas/monthly-plan.schema.js';
+import { TASK_PRIORITIES } from '../schemas/weekly-plan.schema.js';
 import { createAgentStore } from '../storage/agent-helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -130,7 +137,7 @@ export function validateGoalAdjustment(op, agentConfig) {
  */
 export function validateMonthlyAdjustment(op, agentConfig) {
   const errors = [];
-  const validActions = ['add', 'update'];
+  const validActions = ['create', 'add', 'update'];
 
   if (!op || typeof op !== 'object') {
     return { valid: false, errors: ['Monthly adjustment must be an object'] };
@@ -143,13 +150,52 @@ export function validateMonthlyAdjustment(op, agentConfig) {
 
   if (!op.month || typeof op.month !== 'string' || !/^\d{4}-\d{2}$/.test(op.month)) {
     errors.push('month is required in YYYY-MM format');
-  } else {
-    const plan = getMonthlyPlan(agentConfig, op.month);
-    if (!plan) {
-      errors.push(`No monthly plan found for ${op.month}`);
-      return { valid: false, errors };
-    }
+    return { valid: false, errors };
+  }
 
+  // `create` is the bootstrap path: the monthly plan must NOT already exist,
+  // and the caller must seed at least one objective (the schema enforces
+  // `objectives.minItems: 1`, so an empty seed would just fail later in the
+  // final schema check — surface it up front for a cleaner error).
+  if (op.action === 'create') {
+    if (getMonthlyPlan(agentConfig, op.month)) {
+      errors.push(`Monthly plan already exists for ${op.month} — use action: "add" to append objectives`);
+    }
+    if (!Array.isArray(op.objectives) || op.objectives.length === 0) {
+      errors.push('objectives is required for create (array with at least one { description, goalId } entry)');
+    } else {
+      for (const [i, seed] of op.objectives.entries()) {
+        if (!seed || typeof seed !== 'object') {
+          errors.push(`objectives[${i}] must be an object`);
+          continue;
+        }
+        if (!seed.description || typeof seed.description !== 'string' || seed.description.trim().length === 0) {
+          errors.push(`objectives[${i}].description must be a non-empty string`);
+        }
+        if (!seed.goalId || typeof seed.goalId !== 'string') {
+          errors.push(`objectives[${i}].goalId is required`);
+        } else if (!agentConfig.goals?.find((g) => g.id === seed.goalId)) {
+          errors.push(`objectives[${i}]: goal not found: ${seed.goalId}`);
+        }
+      }
+    }
+    if (op.status !== undefined && !MONTHLY_PLAN_STATUSES.includes(op.status)) {
+      errors.push(`status must be one of: ${MONTHLY_PLAN_STATUSES.join(', ')}`);
+    }
+    if (op.summary !== undefined && (typeof op.summary !== 'string' || op.summary.length === 0)) {
+      errors.push('summary must be a non-empty string when provided');
+    }
+    return { valid: errors.length === 0, errors };
+  }
+
+  // `add` and `update` both require an existing monthly plan to mutate.
+  const plan = getMonthlyPlan(agentConfig, op.month);
+  if (!plan) {
+    errors.push(`No monthly plan found for ${op.month} — use action: "create" to bootstrap one`);
+    return { valid: false, errors };
+  }
+
+  {
     if (op.action === 'update') {
       if (!op.objectiveId || typeof op.objectiveId !== 'string') {
         errors.push('objectiveId is required for updating an objective');
@@ -199,7 +245,7 @@ export function validateMonthlyAdjustment(op, agentConfig) {
  */
 export function validateWeeklyAdjustment(op, agentConfig) {
   const errors = [];
-  const validActions = ['add', 'update'];
+  const validActions = ['create', 'add', 'update'];
 
   if (!op || typeof op !== 'object') {
     return { valid: false, errors: ['Weekly adjustment must be an object'] };
@@ -212,13 +258,68 @@ export function validateWeeklyAdjustment(op, agentConfig) {
 
   if (!op.week || typeof op.week !== 'string' || !/^\d{4}-W\d{2}$/.test(op.week)) {
     errors.push('week is required in YYYY-Www format');
-  } else {
-    const plan = agentConfig.weeklyPlans?.find((p) => p.week === op.week);
-    if (!plan) {
-      errors.push(`No weekly plan found for ${op.week}`);
-      return { valid: false, errors };
-    }
+    return { valid: false, errors };
+  }
 
+  // `create` is the bootstrap path: the weekly plan must NOT already exist,
+  // its parent month must already have a monthly plan on this agent (so the
+  // week threads back to a real plan), and any seed tasks must reference an
+  // objective from some monthly plan on this agent.
+  if (op.action === 'create') {
+    if (agentConfig.weeklyPlans?.find((p) => p.week === op.week)) {
+      errors.push(`Weekly plan already exists for ${op.week} — use action: "add" to append tasks`);
+    }
+    if (!op.month || typeof op.month !== 'string' || !/^\d{4}-\d{2}$/.test(op.month)) {
+      errors.push('month is required for create in YYYY-MM format (parent month of the weekly plan)');
+    } else if (!getMonthlyPlan(agentConfig, op.month)) {
+      errors.push(`No monthly plan found for ${op.month} — create the monthly plan first via monthlyAdjustments action: "create"`);
+    }
+    if (op.tasks !== undefined) {
+      if (!Array.isArray(op.tasks)) {
+        errors.push('tasks must be an array when provided');
+      } else {
+        for (const [i, seed] of op.tasks.entries()) {
+          if (!seed || typeof seed !== 'object') {
+            errors.push(`tasks[${i}] must be an object`);
+            continue;
+          }
+          if (!seed.description || typeof seed.description !== 'string' || seed.description.trim().length === 0) {
+            errors.push(`tasks[${i}].description must be a non-empty string`);
+          }
+          if (!seed.objectiveId || typeof seed.objectiveId !== 'string') {
+            errors.push(`tasks[${i}].objectiveId is required`);
+          } else {
+            let found = false;
+            for (const mp of agentConfig.monthlyPlans || []) {
+              if (mp.objectives.find((o) => o.id === seed.objectiveId)) {
+                found = true;
+                break;
+              }
+            }
+            if (!found) errors.push(`tasks[${i}]: objective not found: ${seed.objectiveId}`);
+          }
+          if (seed.priority !== undefined && !TASK_PRIORITIES.includes(seed.priority)) {
+            errors.push(`tasks[${i}].priority must be one of: ${TASK_PRIORITIES.join(', ')}`);
+          }
+          if (seed.estimatedMinutes !== undefined) {
+            if (!Number.isInteger(seed.estimatedMinutes) || seed.estimatedMinutes < 1 || seed.estimatedMinutes > 480) {
+              errors.push(`tasks[${i}].estimatedMinutes must be an integer between 1 and 480`);
+            }
+          }
+        }
+      }
+    }
+    return { valid: errors.length === 0, errors };
+  }
+
+  // `add` and `update` both require an existing weekly plan to mutate.
+  const plan = agentConfig.weeklyPlans?.find((p) => p.week === op.week);
+  if (!plan) {
+    errors.push(`No weekly plan found for ${op.week} — use action: "create" to bootstrap one`);
+    return { valid: false, errors };
+  }
+
+  {
     if (op.action === 'update') {
       if (!op.taskId || typeof op.taskId !== 'string') {
         errors.push('taskId is required for updating a task');
@@ -312,6 +413,21 @@ export function applyGoalAdjustment(config, op) {
  * @returns {{ applied: boolean, result: object | null, error?: string }}
  */
 export function applyMonthlyAdjustment(config, op) {
+  if (op.action === 'create') {
+    if (getMonthlyPlan(config, op.month)) {
+      return { applied: false, result: null, error: `Monthly plan already exists for ${op.month}` };
+    }
+    const objectives = op.objectives.map((seed) =>
+      createObjective(seed.description, seed.goalId)
+    );
+    const newPlan = createMonthlyPlan(op.month, objectives, {
+      ...(op.status !== undefined ? { status: op.status } : {}),
+      ...(op.summary !== undefined ? { summary: op.summary } : {}),
+    });
+    addMonthlyPlan(config, newPlan);
+    return { applied: true, result: newPlan };
+  }
+
   const plan = getMonthlyPlan(config, op.month);
   if (!plan) return { applied: false, result: null, error: `No monthly plan for ${op.month}` };
 
@@ -345,6 +461,27 @@ export function applyMonthlyAdjustment(config, op) {
  * @returns {{ applied: boolean, result: object | null, error?: string }}
  */
 export function applyWeeklyAdjustment(config, op) {
+  if (op.action === 'create') {
+    if (config.weeklyPlans?.find((p) => p.week === op.week)) {
+      return { applied: false, result: null, error: `Weekly plan already exists for ${op.week}` };
+    }
+    const tasks = Array.isArray(op.tasks)
+      ? op.tasks.map((seed) =>
+          createTask(seed.description, seed.objectiveId, {
+            ...(seed.priority !== undefined ? { priority: seed.priority } : {}),
+            ...(seed.estimatedMinutes !== undefined
+              ? { estimatedMinutes: seed.estimatedMinutes }
+              : {}),
+          })
+        )
+      : [];
+    const newPlan = createWeeklyPlan(op.week, op.month, tasks);
+    if (!Array.isArray(config.weeklyPlans)) config.weeklyPlans = [];
+    config.weeklyPlans.push(newPlan);
+    config.updatedAt = new Date().toISOString();
+    return { applied: true, result: newPlan };
+  }
+
   const plan = config.weeklyPlans?.find((p) => p.week === op.week);
   if (!plan) return { applied: false, result: null, error: `No weekly plan for ${op.week}` };
 
@@ -497,7 +634,14 @@ export function formatAdjustmentSummary(results) {
   if (results.monthly.length > 0) {
     lines.push(`  Monthly objectives: ${results.monthly.length} change(s)`);
     for (const r of results.monthly) {
-      if (r.result) {
+      if (!r.result) continue;
+      // `create` returns the freshly-built monthly plan (no `id` — keyed on
+      // `month` — and a populated `objectives` array). Distinguish it from the
+      // `add`/`update` shape (which returns the objective object with its
+      // own `id`/`description`).
+      if (r.result.month && Array.isArray(r.result.objectives)) {
+        lines.push(`    - Created monthly plan ${r.result.month} (${r.result.objectives.length} objective(s))`);
+      } else {
         lines.push(`    - ${r.result.id}: ${r.result.description || '(updated)'}`);
       }
     }
@@ -506,7 +650,12 @@ export function formatAdjustmentSummary(results) {
   if (results.weekly.length > 0) {
     lines.push(`  Weekly tasks: ${results.weekly.length} change(s)`);
     for (const r of results.weekly) {
-      if (r.result) {
+      if (!r.result) continue;
+      // `create` returns the freshly-built weekly plan (keyed on `week`,
+      // populated `tasks` array). `add`/`update` return the task object.
+      if (r.result.week && Array.isArray(r.result.tasks)) {
+        lines.push(`    - Created weekly plan ${r.result.week} (${r.result.tasks.length} task(s)) — pending approval`);
+      } else {
         lines.push(`    - ${r.result.id}: ${r.result.description || '(updated)'}`);
       }
     }

@@ -31,6 +31,12 @@ List all agents and show which ones have pending weekly plans awaiting
 approval. The pending-plan marker is what signals "this agent needs
 review" so the user can pick it fast.
 
+`listAllAgents` returns a flat array of agent configs. Each config has
+`id`, `subagentRef`, `goals`, `weeklyPlans`, `budget`, etc. — but **no
+`identity` field**, because identity (name + role) lives in
+`.claude/agents/<slug>.md`, not in the aweek JSON. The slug is the
+agent id, so `config.id` is the human-readable handle for selection.
+
 ```bash
 node --input-type=module -e "
 import { listAllAgents } from './src/storage/agent-helpers.js';
@@ -39,15 +45,17 @@ const agents = await listAllAgents({ dataDir: '.aweek/agents' });
 if (agents.length === 0) {
   console.log('NO_AGENTS');
 } else {
-  const rows = agents.map(({ config }) => {
+  const rows = agents.map((config) => {
     const pending = (config.weeklyPlans || []).find((p) => p.approved === false);
     return {
       id: config.id,
-      name: config.identity?.name,
-      role: config.identity?.role,
+      subagentRef: config.subagentRef,
       goals: (config.goals || []).length,
+      monthlyPlans: (config.monthlyPlans || []).length,
+      weeklyPlans: (config.weeklyPlans || []).length,
       pendingWeek: pending?.week || null,
       pendingTasks: pending?.tasks?.length || 0,
+      paused: !!config.budget?.paused,
     };
   });
   console.log(JSON.stringify(rows, null, 2));
@@ -57,9 +65,15 @@ if (agents.length === 0) {
 
 - If `NO_AGENTS`, tell the user: **"No agents found. Use /aweek:hire to
   create one first."** and stop.
-- Otherwise display a numbered list: agent name, role, goal count, and
-  `pending: <week> (<N> tasks)` when a plan is awaiting approval.
-- Ask the user to pick one using `AskUserQuestion`.
+- Otherwise display a numbered list keyed on `config.id` (the subagent
+  slug), with goal / monthly / weekly counts and the
+  `pending: <week> (<N> tasks)` marker when a plan is awaiting approval.
+  If you need the human-readable agent name, read the `name:` /
+  `description:` frontmatter from `.claude/agents/<id>.md` — but for
+  selection prompts the slug alone is usually enough.
+- If exactly one agent exists, auto-select it and skip the
+  `AskUserQuestion` (a one-option pick is just noise).
+- Otherwise ask the user to pick one using `AskUserQuestion`.
 
 ### Step 2: Choose an Operation
 
@@ -120,17 +134,33 @@ fields. Keep looping until the user says they are done.
 
 **Monthly (`monthlyAdjustments`)**
 
-- `add` → month (`YYYY-MM`, must match an existing monthly plan),
-  description (required), goalId (pick from the numbered goals list).
-- `update` → month, objectiveId, then at least one of: description, status
-  (`planned` / `in-progress` / `completed` / `dropped`).
+- `create` → bootstrap a brand-new monthly plan when none exists for the
+  month yet. Required: `month` (`YYYY-MM`, must NOT already exist),
+  `objectives` (array of `{ description, goalId }` with at least one
+  entry — the schema requires `objectives.minItems: 1`). Optional:
+  `status` (`draft` / `active` / `completed` / `archived`, default
+  `active`), `summary` (non-empty string).
+- `add` → append an objective to an existing monthly plan. Required:
+  `month` (must match an existing monthly plan), `description`, `goalId`
+  (pick from the numbered goals list).
+- `update` → `month`, `objectiveId`, then at least one of: description,
+  status (`planned` / `in-progress` / `completed` / `dropped`).
 
 **Weekly (`weeklyAdjustments`)**
 
-- `add` → week (`YYYY-Www`, must match an existing weekly plan),
-  description (required), objectiveId (pick from the numbered objectives
-  list, flattened across all monthly plans).
-- `update` → week, taskId, then at least one of: description, status
+- `create` → bootstrap a brand-new weekly plan when none exists for the
+  week yet. Required: `week` (`YYYY-Www`, must NOT already exist),
+  `month` (`YYYY-MM`, must reference an existing monthly plan on this
+  agent — create the monthly plan first if it doesn't exist). Optional:
+  `tasks` array — each entry `{ description, objectiveId, priority?,
+  estimatedMinutes? }` with the same per-task constraints as `add`. The
+  new plan starts as `approved: false` and must be reviewed via
+  Branch B before the heartbeat picks it up.
+- `add` → append a task to an existing weekly plan. Required: `week`
+  (must match an existing weekly plan), `description`, `objectiveId`
+  (pick from the numbered objectives list, flattened across all monthly
+  plans).
+- `update` → `week`, `taskId`, then at least one of: description, status
   (`pending` / `in-progress` / `completed` / `failed` / `delegated` /
   `skipped`).
 
@@ -187,8 +217,10 @@ operation object must match one of these shapes:
 - **Goal add:** `{ "action": "add", "description": "...", "horizon": "1mo|3mo|1yr" }`
 - **Goal update:** `{ "action": "update", "goalId": "goal-xxx", "description": "...", "status": "...", "horizon": "..." }`
 - **Goal remove:** `{ "action": "remove", "goalId": "goal-xxx" }`
+- **Monthly create:** `{ "action": "create", "month": "YYYY-MM", "objectives": [{ "description": "...", "goalId": "goal-xxx" }, ...], "status": "active", "summary": "..." }`
 - **Monthly add:** `{ "action": "add", "month": "YYYY-MM", "description": "...", "goalId": "goal-xxx" }`
 - **Monthly update:** `{ "action": "update", "month": "YYYY-MM", "objectiveId": "obj-xxx", "description": "...", "status": "..." }`
+- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "medium", "estimatedMinutes": 60 }, ...] }`
 - **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx" }`
 - **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "..." }`
 
@@ -217,9 +249,19 @@ console.log(result.formatted);
 "
 ```
 
+**IMPORTANT — Not collapsed display:** After running the script, you
+MUST re-emit `result.formatted` as direct text in your next assistant
+message, wrapped in a fenced code block. Do NOT rely on the user being
+able to read the Bash tool result — the Claude Code UI collapses Bash
+output by default, so a plan that only lives inside the Bash result is
+invisible to a human reviewer who is about to make an
+approve/reject/edit decision. The review display is the single most
+important artifact of Branch B; surface it directly.
+
 The formatter includes agent identity, the week / month, every task with
 priority and estimated minutes, and the full Goal → Objective → Task
-traceability chain. Print `result.formatted` verbatim.
+traceability chain. Print `result.formatted` verbatim — do not
+summarise, truncate, or reformat it.
 
 ### B2: Ask for a Decision
 
