@@ -1,9 +1,16 @@
 /**
  * Tests for the summary skill — compact dashboard renderer.
+ *
+ * The summary skill treats the subagent .md file at
+ * `.claude/agents/SLUG.md` as the single source of truth for every agent's
+ * display name and description. These tests set up a temporary project
+ * directory that holds both the aweek data dir and the subagent .md files so
+ * the live-read and missing-marker behaviours can be exercised without
+ * mocking filesystem calls.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -16,6 +23,10 @@ import {
   createTask,
   createGoal,
 } from '../models/agent.js';
+import {
+  buildSubagentMarkdown,
+  subagentFilePath,
+} from '../subagents/subagent-file.js';
 
 import {
   countGoals,
@@ -23,12 +34,14 @@ import {
   formatGoalsCell,
   formatTasksCell,
   formatBudgetCell,
+  formatAgentCell,
   buildSummaryRow,
   renderTable,
   formatSummaryReport,
   buildSummary,
   getAgentDrillDownChoices,
   buildAgentDrillDown,
+  MISSING_SUBAGENT_MARKER,
 } from './summary.js';
 
 // ---------------------------------------------------------------------------
@@ -36,23 +49,63 @@ import {
 // ---------------------------------------------------------------------------
 
 let tmpDir;
+let projectDir;
+let dataDir;
 
 async function setup() {
+  // projectDir doubles as both the aweek data root and the .claude/agents
+  // host so readSubagentIdentity resolves against the same filesystem tree
+  // the AgentStore is writing into.
   tmpDir = await mkdtemp(join(tmpdir(), 'summary-test-'));
+  projectDir = tmpDir;
+  dataDir = join(projectDir, '.aweek', 'agents');
+  await mkdir(join(projectDir, '.claude', 'agents'), { recursive: true });
 }
 
 async function teardown() {
   await rm(tmpDir, { recursive: true, force: true });
 }
 
-function makeAgent(name, overrides = {}) {
+/**
+ * Write a subagent .md file at `.claude/agents/<slug>.md` with the given
+ * display name and description — this is the single source of truth for
+ * identity after the refactor.
+ */
+async function writeSubagentMd(slug, { name, description }) {
+  const content = buildSubagentMarkdown({
+    name: name || slug,
+    description: description || `${slug} description`,
+    systemPrompt: `You are ${slug}.`,
+  });
+  await writeFile(subagentFilePath(slug, projectDir), content, 'utf8');
+}
+
+/**
+ * Create a valid aweek agent config + matching subagent .md file. The slug
+ * is derived from the human-readable `name` so tests can still speak in
+ * friendly terms like "Alice" while the wrapper refactor enforces slug ids.
+ *
+ * @param {string} name
+ * @param {object} [opts]
+ * @param {boolean} [opts.writeSubagentFile=true] - When false, skips writing
+ *   the .md file so tests can exercise the missing-marker path.
+ * @param {string} [opts.description] - Override for the .md `description`.
+ * @param {string} [opts.slug] - Override for the slug (defaults to lowercased name).
+ * @returns {Promise<object>} Persisted agent config.
+ */
+async function makeAgent(name, { writeSubagentFile: shouldWriteMd = true, description, slug } = {}) {
+  const effectiveSlug = slug || name.toLowerCase();
+  if (shouldWriteMd) {
+    await writeSubagentMd(effectiveSlug, {
+      name,
+      description: description || `${name} role`,
+    });
+  }
   const config = createAgentConfig({
-    name,
-    role: `${name} role`,
-    systemPrompt: `You are ${name}.`,
+    subagentRef: effectiveSlug,
     weeklyTokenLimit: 100000,
   });
-  return { ...config, ...overrides };
+  return config;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,10 +205,10 @@ describe('formatBudgetCell', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildSummaryRow', () => {
-  it('shapes a dashboard row from status + config', () => {
+  it('shapes a dashboard row from status + config + live subagent info', () => {
     const status = {
-      id: 'agent-a-123',
-      name: 'Alice',
+      id: 'alice',
+      name: 'stale-ignored',
       role: 'dev',
       state: 'active',
       plan: { tasks: { total: 5, byStatus: { completed: 2, pending: 3 } } },
@@ -163,17 +216,62 @@ describe('buildSummaryRow', () => {
       usage: { totalTokens: 25000 },
     };
     const config = {
-      id: 'agent-a-123',
+      id: 'alice',
       goals: [{ status: 'active' }, { status: 'active' }, { status: 'completed' }],
     };
+    const subagent = { missing: false, name: 'Alice', description: 'dev' };
 
-    const row = buildSummaryRow(status, config);
+    const row = buildSummaryRow(status, config, subagent);
 
+    // The agent cell uses the live .md name — NOT whatever the legacy
+    // status object happens to carry.
     assert.equal(row.agent, 'Alice');
     assert.equal(row.goals, '2/3');
     assert.equal(row.tasks, '2/5');
     assert.ok(row.budget.includes('25%'));
     assert.equal(row.status, 'ACTIVE');
+  });
+
+  it('renders the missing marker when the subagent .md is gone', () => {
+    const status = {
+      id: 'alice',
+      name: 'stale-ignored',
+      role: '',
+      state: 'idle',
+      plan: { tasks: { total: 0, byStatus: {} } },
+      budget: { weeklyTokenLimit: 0 },
+      usage: { totalTokens: 0 },
+    };
+    const row = buildSummaryRow(status, { id: 'alice', goals: [] }, { missing: true });
+    assert.ok(row.agent.includes('alice'));
+    assert.ok(row.agent.includes(MISSING_SUBAGENT_MARKER));
+  });
+});
+
+describe('formatAgentCell', () => {
+  it('renders the live subagent name when present', () => {
+    assert.equal(
+      formatAgentCell('alice', { missing: false, name: 'Alice' }),
+      'Alice'
+    );
+  });
+
+  it('falls back to the slug when the name is empty but the file exists', () => {
+    assert.equal(
+      formatAgentCell('alice', { missing: false, name: '' }),
+      'alice'
+    );
+  });
+
+  it('shows the missing marker when the .md is absent', () => {
+    const cell = formatAgentCell('alice', { missing: true, name: '' });
+    assert.ok(cell.includes('alice'));
+    assert.ok(cell.includes(MISSING_SUBAGENT_MARKER));
+  });
+
+  it('shows the missing marker when no subagent info is provided', () => {
+    const cell = formatAgentCell('alice', null);
+    assert.ok(cell.includes(MISSING_SUBAGENT_MARKER));
   });
 });
 
@@ -254,7 +352,8 @@ describe('buildSummary end-to-end', () => {
 
   it('returns empty report when the agents directory is empty', async () => {
     const result = await buildSummary({
-      dataDir: tmpDir,
+      dataDir,
+      projectDir,
       date: new Date('2026-04-17'),
     });
 
@@ -266,12 +365,13 @@ describe('buildSummary end-to-end', () => {
   });
 
   it('aggregates goals, tasks, budget and status for each agent', async () => {
-    const agentStore = new AgentStore(tmpDir);
-    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
-    const usageStore = new UsageStore(tmpDir);
+    const agentStore = new AgentStore(dataDir);
+    const weeklyPlanStore = new WeeklyPlanStore(dataDir);
+    const usageStore = new UsageStore(dataDir);
 
-    // Alice — active, has plan + goals + usage
-    const alice = makeAgent('Alice');
+    // Alice — active, has plan + goals + usage. Her display name lives in
+    // .claude/agents/alice.md and is pulled live by buildSummary.
+    const alice = await makeAgent('Alice');
     alice.goals = [createGoal('Ship MVP', '3mo'), createGoal('Hire eng', '1yr')];
     alice.goals[1].status = 'completed';
     await agentStore.save(alice);
@@ -298,12 +398,13 @@ describe('buildSummary end-to-end', () => {
     );
 
     // Bob — idle, no plan, one goal
-    const bob = makeAgent('Bob');
+    const bob = await makeAgent('Bob');
     bob.goals = [createGoal('Write docs', '1mo')];
     await agentStore.save(bob);
 
     const result = await buildSummary({
-      dataDir: tmpDir,
+      dataDir,
+      projectDir,
       date: new Date('2026-04-17'),
     });
 
@@ -330,6 +431,51 @@ describe('buildSummary end-to-end', () => {
     assert.ok(result.report.includes('Bob'));
   });
 
+  it('reads name and description live from the subagent .md', async () => {
+    const agentStore = new AgentStore(dataDir);
+    const alice = await makeAgent('Alice', { description: 'original role' });
+    await agentStore.save(alice);
+
+    // Update ONLY the .md — the aweek JSON is never touched. The summary
+    // dashboard must reflect the new name the very next time it's rendered.
+    await writeSubagentMd('alice', {
+      name: 'Alice Renamed',
+      description: 'lead dev',
+    });
+
+    const result = await buildSummary({
+      dataDir,
+      projectDir,
+      date: new Date('2026-04-17'),
+    });
+
+    const row = result.rows[0];
+    assert.equal(row.agent, 'Alice Renamed');
+    assert.ok(!row.agent.includes(MISSING_SUBAGENT_MARKER));
+  });
+
+  it('shows the missing marker when the subagent .md has been deleted', async () => {
+    const agentStore = new AgentStore(dataDir);
+    const alice = await makeAgent('Alice');
+    await agentStore.save(alice);
+
+    // Delete the .md behind aweek's back — simulates a user removing the
+    // subagent file without first running /aweek:manage delete.
+    await unlink(subagentFilePath('alice', projectDir));
+
+    const result = await buildSummary({
+      dataDir,
+      projectDir,
+      date: new Date('2026-04-17'),
+    });
+
+    assert.equal(result.agentCount, 1);
+    const row = result.rows[0];
+    assert.ok(row.agent.includes('alice'));
+    assert.ok(row.agent.includes(MISSING_SUBAGENT_MARKER));
+    assert.ok(result.report.includes(MISSING_SUBAGENT_MARKER));
+  });
+
   it('throws when dataDir is missing', async () => {
     await assert.rejects(() => buildSummary({}), /dataDir is required/);
   });
@@ -344,7 +490,7 @@ describe('getAgentDrillDownChoices', () => {
   afterEach(teardown);
 
   it('returns only the sentinel "No thanks" entry when no agents exist', async () => {
-    const choices = await getAgentDrillDownChoices({ dataDir: tmpDir });
+    const choices = await getAgentDrillDownChoices({ dataDir, projectDir });
 
     assert.equal(choices.length, 1);
     const [cancel] = choices;
@@ -353,16 +499,16 @@ describe('getAgentDrillDownChoices', () => {
   });
 
   it('lists every agent plus a trailing "No thanks" entry', async () => {
-    const agentStore = new AgentStore(tmpDir);
+    const agentStore = new AgentStore(dataDir);
 
-    const alice = makeAgent('Alice');
-    const bob = makeAgent('Bob');
+    const alice = await makeAgent('Alice');
+    const bob = await makeAgent('Bob');
     bob.budget.paused = true;
 
     await agentStore.save(alice);
     await agentStore.save(bob);
 
-    const choices = await getAgentDrillDownChoices({ dataDir: tmpDir });
+    const choices = await getAgentDrillDownChoices({ dataDir, projectDir });
 
     // Two real agents + one sentinel
     assert.equal(choices.length, 3);
@@ -386,15 +532,34 @@ describe('getAgentDrillDownChoices', () => {
     assert.equal(choices[choices.length - 1].id, null);
   });
 
-  it('labels include the role when present', async () => {
-    const agentStore = new AgentStore(tmpDir);
-    const alice = makeAgent('Alice');
+  it('labels include the live subagent description from the .md', async () => {
+    const agentStore = new AgentStore(dataDir);
+    const alice = await makeAgent('Alice', { description: 'Alice role' });
     await agentStore.save(alice);
 
-    const choices = await getAgentDrillDownChoices({ dataDir: tmpDir });
+    const choices = await getAgentDrillDownChoices({ dataDir, projectDir });
     const aliceChoice = choices.find((c) => c.name === 'Alice');
+    assert.ok(aliceChoice, 'expected Alice in choices');
     assert.ok(aliceChoice.label.includes('Alice'));
     assert.ok(aliceChoice.label.includes('Alice role'));
+  });
+
+  it('renders the missing marker when an agent has no subagent .md', async () => {
+    const agentStore = new AgentStore(dataDir);
+    const alice = await makeAgent('Alice');
+    await agentStore.save(alice);
+    await unlink(subagentFilePath('alice', projectDir));
+
+    const choices = await getAgentDrillDownChoices({ dataDir, projectDir });
+    const real = choices.filter((c) => c.id !== null);
+    assert.equal(real.length, 1);
+
+    const [orphan] = real;
+    assert.equal(orphan.id, 'alice');
+    assert.equal(orphan.missing, true);
+    assert.ok(orphan.name.includes('alice'));
+    assert.ok(orphan.name.includes(MISSING_SUBAGENT_MARKER));
+    assert.ok(orphan.label.includes(MISSING_SUBAGENT_MARKER));
   });
 });
 
@@ -408,24 +573,24 @@ describe('buildAgentDrillDown', () => {
       /dataDir is required/
     );
     await assert.rejects(
-      () => buildAgentDrillDown({ dataDir: tmpDir }),
+      () => buildAgentDrillDown({ dataDir }),
       /agentId is required/
     );
   });
 
   it('throws a predictable error for unknown agent ids', async () => {
     await assert.rejects(
-      () => buildAgentDrillDown({ dataDir: tmpDir, agentId: 'missing-id' }),
+      () => buildAgentDrillDown({ dataDir, projectDir, agentId: 'missing-id' }),
       /Agent not found: missing-id/
     );
   });
 
   it('returns the long-form status block for the selected agent', async () => {
-    const agentStore = new AgentStore(tmpDir);
-    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
-    const usageStore = new UsageStore(tmpDir);
+    const agentStore = new AgentStore(dataDir);
+    const weeklyPlanStore = new WeeklyPlanStore(dataDir);
+    const usageStore = new UsageStore(dataDir);
 
-    const alice = makeAgent('Alice');
+    const alice = await makeAgent('Alice', { description: 'Alice role' });
     alice.goals = [createGoal('Ship MVP', '3mo')];
     await agentStore.save(alice);
 
@@ -450,7 +615,8 @@ describe('buildAgentDrillDown', () => {
     );
 
     const result = await buildAgentDrillDown({
-      dataDir: tmpDir,
+      dataDir,
+      projectDir,
       agentId: alice.id,
       date: new Date('2026-04-17'),
     });
@@ -459,6 +625,12 @@ describe('buildAgentDrillDown', () => {
     assert.equal(result.name, 'Alice');
     assert.equal(result.week, '2026-W16');
     assert.equal(result.weekMonday, '2026-04-13');
+
+    // Live subagent payload must be returned alongside the status so
+    // downstream renderers don't have to re-read the .md themselves.
+    assert.equal(result.subagent.missing, false);
+    assert.equal(result.subagent.name, 'Alice');
+    assert.equal(result.subagent.description, 'Alice role');
 
     // The report reuses formatAgentStatus so the long-form status cues
     // must be present — agent name, role, plan week, budget line.
@@ -477,13 +649,34 @@ describe('buildAgentDrillDown', () => {
     assert.equal(result.status.state, 'active');
   });
 
+  it('renders the missing marker when the subagent .md has been deleted', async () => {
+    const agentStore = new AgentStore(dataDir);
+    const alice = await makeAgent('Alice');
+    await agentStore.save(alice);
+    await unlink(subagentFilePath('alice', projectDir));
+
+    const result = await buildAgentDrillDown({
+      dataDir,
+      projectDir,
+      agentId: alice.id,
+      date: new Date('2026-04-17'),
+    });
+
+    assert.equal(result.subagent.missing, true);
+    // Name falls back to the slug when the .md is gone — we must never
+    // pretend to know a display name that's no longer on disk.
+    assert.equal(result.name, alice.id);
+    assert.ok(result.report.includes(MISSING_SUBAGENT_MARKER));
+  });
+
   it('uses the provided date for week resolution', async () => {
-    const agentStore = new AgentStore(tmpDir);
-    const alice = makeAgent('Alice');
+    const agentStore = new AgentStore(dataDir);
+    const alice = await makeAgent('Alice');
     await agentStore.save(alice);
 
     const result = await buildAgentDrillDown({
-      dataDir: tmpDir,
+      dataDir,
+      projectDir,
       agentId: alice.id,
       date: new Date('2026-01-05'), // 2026-W02
     });

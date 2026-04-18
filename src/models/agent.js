@@ -3,26 +3,37 @@
  * These produce objects that conform to the JSON schemas.
  */
 import { randomBytes } from 'node:crypto';
+import { SUBAGENT_SLUG_PATTERN } from '../schemas/agent.schema.js';
 
-/** Generate a short random ID suffix */
+/** Generate a short random ID suffix (used by goals/objectives/tasks/messages — NOT agents). */
 const shortId = () => randomBytes(4).toString('hex');
+
+/** Compiled slug regex used at construction time to fail loudly on invalid input. */
+const SLUG_REGEX = new RegExp(SUBAGENT_SLUG_PATTERN);
 
 /**
  * Create a new agent config with sensible defaults.
+ *
+ * The aweek agent id is the Claude Code subagent slug — i.e. the basename of
+ * `.claude/agents/SLUG.md`. No UUID/random suffix is appended: aweek and the
+ * subagent share a 1-to-1 filesystem mapping, so the slug is the id.
+ *
  * @param {object} opts
- * @param {string} opts.name
- * @param {string} opts.role
- * @param {string} opts.systemPrompt
+ * @param {string} opts.subagentRef - Subagent slug (e.g. "marketer"). Must match SUBAGENT_SLUG_PATTERN.
  * @param {number} [opts.weeklyTokenLimit=500000]
  * @returns {object} A valid agent config object
  */
-export function createAgentConfig({ name, role, systemPrompt, weeklyTokenLimit = 500_000 }) {
+export function createAgentConfig({ subagentRef, weeklyTokenLimit = 500_000 } = {}) {
+  if (typeof subagentRef !== 'string' || !SLUG_REGEX.test(subagentRef)) {
+    throw new Error(
+      `createAgentConfig: subagentRef must be a valid slug matching ${SUBAGENT_SLUG_PATTERN}, got: ${JSON.stringify(subagentRef)}`,
+    );
+  }
   const now = new Date().toISOString();
-  const id = `agent-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}-${shortId()}`;
 
   return {
-    id,
-    identity: { name, role, systemPrompt },
+    id: subagentRef,
+    subagentRef,
     goals: [],
     monthlyPlans: [],
     weeklyPlans: [],

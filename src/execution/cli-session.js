@@ -2,17 +2,28 @@
  * CLI Session Launcher — spawns Claude Code CLI processes for agent task execution.
  *
  * Responsibilities:
- * - Build CLI arguments from agent identity (system prompt, name, role) and task context
- * - Spawn `claude` CLI as a child process with proper argument injection
- * - Capture stdout/stderr output for downstream token-usage parsing
- * - Return structured session results (output, exit code, duration)
- * - Support configurable CLI path, working directory, and timeout
+ * - Build CLI argv that references a Claude Code subagent by slug
+ *   (`--agent SUBAGENT_REF`), never by inline identity.
+ * - Append runtime scheduling context (task id, objective, week, extra
+ *   context) to the subagent's system prompt via `--append-system-prompt`,
+ *   so the subagent's `.claude/agents/<slug>.md` file remains the sole
+ *   source of truth for identity, system prompt, model, tools, skills, and
+ *   MCP servers.
+ * - Spawn `claude` CLI as a child process with proper argument injection.
+ * - Capture stdout/stderr for downstream token-usage parsing.
+ * - Return structured session results (output, exit code, duration).
+ * - Support configurable CLI path, working directory, and timeout.
  *
  * Design:
- * - spawn function is injectable for testability (no real CLI needed in tests)
- * - All arguments are validated before spawning
- * - Idempotent: launching the same task twice produces independent sessions
- * - File source of truth: session results are returned for the caller to persist
+ * - spawn function is injectable for testability (no real CLI needed in tests).
+ * - All arguments are validated before spawning.
+ * - Idempotent: launching the same task twice produces independent sessions.
+ * - File source of truth: session results are returned for the caller to persist.
+ *
+ * IMPORTANT: This module does NOT construct a system prompt from agent
+ * JSON. The aweek JSON is scheduling-only — goals, plans, budget, inbox,
+ * logs. The `.claude/agents/<slug>.md` file owns identity. Callers pass
+ * only the subagent slug plus a task context.
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -22,13 +33,6 @@ const DEFAULT_CLI = 'claude';
 
 /** Default session timeout: 30 minutes (in ms) */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
-
-/**
- * @typedef {object} AgentIdentity
- * @property {string} name - Agent display name
- * @property {string} role - Agent role description
- * @property {string} systemPrompt - System prompt injected into the CLI session
- */
 
 /**
  * @typedef {object} TaskContext
@@ -42,6 +46,7 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * @typedef {object} SessionResult
  * @property {string} agentId - The agent that ran
+ * @property {string} subagentRef - The subagent slug used for `--agent`
  * @property {string} taskId - The task that was executed
  * @property {string} stdout - Captured standard output
  * @property {string} stderr - Captured standard error
@@ -54,31 +59,69 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
  */
 
 /**
- * Build the system prompt string that includes agent identity context.
+ * Validate that a subagent reference is a non-empty string.
  *
- * The system prompt combines the agent's configured system prompt with
- * identity metadata so the CLI session "knows who it is".
+ * We intentionally DO NOT re-validate the slug pattern here — the aweek
+ * JSON schema and subagent-file primitives own slug validation at
+ * write-time, so by the time we reach the launcher the slug is already
+ * trusted. This keeps the CLI launcher decoupled from the schema layer
+ * while still failing loudly on obviously bad input.
  *
- * @param {AgentIdentity} identity - Agent identity object
- * @returns {string} Composed system prompt
+ * @param {string} subagentRef
  */
-export function buildSystemPrompt(identity) {
-  if (!identity) throw new Error('identity is required');
-  if (!identity.name) throw new Error('identity.name is required');
-  if (!identity.role) throw new Error('identity.role is required');
-  if (!identity.systemPrompt) throw new Error('identity.systemPrompt is required');
-
-  return [
-    `You are ${identity.name}, a ${identity.role}.`,
-    '',
-    identity.systemPrompt,
-  ].join('\n');
+function assertSubagentRef(subagentRef) {
+  if (typeof subagentRef !== 'string' || subagentRef.length === 0) {
+    throw new Error('subagentRef is required and must be a non-empty string');
+  }
 }
 
 /**
- * Build the user prompt string from task context.
+ * Build the runtime-context block that is APPENDED to the subagent's own
+ * system prompt via `--append-system-prompt`.
  *
- * Constructs a clear, structured prompt that tells the agent what to do.
+ * The subagent's `.md` system prompt defines *who* the agent is (identity,
+ * style, domain). The runtime context adds scheduling coordinates so the
+ * subagent knows which aweek task this invocation maps to — task id,
+ * parent objective, week, and any caller-supplied additional context.
+ *
+ * Keeping runtime context here (and out of the subagent .md) means the
+ * subagent file stays stable across every heartbeat tick; only the
+ * append-system-prompt changes per task.
+ *
+ * @param {TaskContext} task - Task context object
+ * @returns {string} Composed runtime-context string
+ */
+export function buildRuntimeContext(task) {
+  if (!task) throw new Error('task is required');
+  if (!task.taskId) throw new Error('task.taskId is required');
+
+  const lines = [
+    '## aweek Runtime Context',
+    '',
+    'You are running as a scheduled aweek heartbeat task. The identity,',
+    'tools, skills, and model you see above are defined in your subagent',
+    '`.claude/agents/<slug>.md` file — this section adds the per-tick',
+    'scheduling coordinates for the current invocation.',
+    '',
+    `Task ID: ${task.taskId}`,
+  ];
+
+  if (task.objectiveId) lines.push(`Objective ID: ${task.objectiveId}`);
+  if (task.week) lines.push(`Week: ${task.week}`);
+
+  if (task.additionalContext) {
+    lines.push('', '### Additional Context', '', task.additionalContext);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Build the positional user-prompt (the "TASK") that goes at the end of
+ * the claude CLI argv. This is the actionable request: task description
+ * plus execution instructions. Scheduling metadata lives in the runtime
+ * context; this string is intentionally narrow so the subagent focuses on
+ * the work.
  *
  * @param {TaskContext} task - Task context object
  * @returns {string} Composed user prompt
@@ -88,58 +131,51 @@ export function buildTaskPrompt(task) {
   if (!task.taskId) throw new Error('task.taskId is required');
   if (!task.description) throw new Error('task.description is required');
 
-  const lines = [
+  return [
     `## Task: ${task.description}`,
     '',
     `Task ID: ${task.taskId}`,
-  ];
-
-  if (task.objectiveId) {
-    lines.push(`Objective ID: ${task.objectiveId}`);
-  }
-  if (task.week) {
-    lines.push(`Week: ${task.week}`);
-  }
-  if (task.additionalContext) {
-    lines.push('', '## Additional Context', '', task.additionalContext);
-  }
-
-  lines.push(
     '',
     '## Instructions',
     '',
     'Execute this task thoroughly. When complete, summarize what was accomplished.',
-    'If you encounter blockers, explain them clearly.'
-  );
-
-  return lines.join('\n');
+    'If you encounter blockers, explain them clearly.',
+  ].join('\n');
 }
 
 /**
  * Build CLI arguments array for the `claude` command.
  *
  * Constructs the argument list:
- *   claude --print --system-prompt "<system>" "<user prompt>"
+ *   claude --print --output-format json --agent REF --append-system-prompt RUNTIME_CONTEXT TASK
  *
- * Uses --print for non-interactive (single-shot) execution and
- * --output-format json to get structured output for token parsing.
+ * - `--print` / `--output-format json` run the CLI non-interactively and
+ *   emit structured output (used for token-usage parsing downstream).
+ * - `--agent REF` selects the Claude Code subagent defined by
+ *   `.claude/agents/<REF>.md`. That file provides identity, system prompt,
+ *   model, tool allowlist, skills, and MCP servers.
+ * - `--append-system-prompt` layers per-task scheduling metadata onto the
+ *   subagent's own system prompt without mutating the .md file.
+ * - The final positional argument is the user-prompt TASK.
  *
- * @param {AgentIdentity} identity - Agent identity
+ * @param {string} subagentRef - Subagent slug (e.g. "marketer")
  * @param {TaskContext} task - Task context
  * @param {object} [opts]
  * @param {boolean} [opts.verbose=false] - Include --verbose flag
- * @param {string} [opts.model] - Override model (e.g., 'opus', 'sonnet')
+ * @param {string} [opts.model] - Override model (e.g. 'opus', 'sonnet')
  * @param {boolean} [opts.dangerouslySkipPermissions=false] - Skip permission prompts
  * @returns {string[]} Array of CLI arguments
  */
-export function buildCliArgs(identity, task, opts = {}) {
-  const systemPrompt = buildSystemPrompt(identity);
+export function buildCliArgs(subagentRef, task, opts = {}) {
+  assertSubagentRef(subagentRef);
+  const runtimeContext = buildRuntimeContext(task);
   const userPrompt = buildTaskPrompt(task);
 
   const args = [
     '--print',
     '--output-format', 'json',
-    '--system-prompt', systemPrompt,
+    '--agent', subagentRef,
+    '--append-system-prompt', runtimeContext,
   ];
 
   if (opts.model) {
@@ -165,7 +201,7 @@ export function buildCliArgs(identity, task, opts = {}) {
  *
  * This is the main entry point. It:
  * 1. Validates inputs
- * 2. Builds CLI arguments from identity + task
+ * 2. Builds CLI arguments from the subagent slug + task
  * 3. Spawns the CLI process
  * 4. Captures stdout/stderr
  * 5. Enforces a timeout (kills process if exceeded)
@@ -173,8 +209,8 @@ export function buildCliArgs(identity, task, opts = {}) {
  *
  * The `spawnFn` parameter allows injecting a mock for testing.
  *
- * @param {string} agentId - Agent identifier
- * @param {AgentIdentity} identity - Agent identity
+ * @param {string} agentId - Agent identifier (equals subagent slug)
+ * @param {string} subagentRef - Subagent slug for `--agent`
  * @param {TaskContext} task - Task context
  * @param {object} [opts]
  * @param {string} [opts.cli='claude'] - CLI binary path/name
@@ -187,16 +223,16 @@ export function buildCliArgs(identity, task, opts = {}) {
  * @param {object} [opts.env] - Additional environment variables
  * @returns {Promise<SessionResult>}
  */
-export async function launchSession(agentId, identity, task, opts = {}) {
+export async function launchSession(agentId, subagentRef, task, opts = {}) {
   if (!agentId) throw new Error('agentId is required');
-  if (!identity) throw new Error('identity is required');
+  assertSubagentRef(subagentRef);
   if (!task) throw new Error('task is required');
 
   const cli = opts.cli || DEFAULT_CLI;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnFn = opts.spawnFn || nodeSpawn;
 
-  const cliArgs = buildCliArgs(identity, task, {
+  const cliArgs = buildCliArgs(subagentRef, task, {
     verbose: opts.verbose,
     model: opts.model,
     dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
@@ -265,6 +301,7 @@ export async function launchSession(agentId, identity, task, opts = {}) {
 
       resolve({
         agentId,
+        subagentRef,
         taskId: task.taskId,
         stdout,
         stderr,
@@ -282,31 +319,30 @@ export async function launchSession(agentId, identity, task, opts = {}) {
 /**
  * Build a session launch config from agent config and selected task.
  *
- * Convenience function that extracts identity and task context from
- * the data structures used by the heartbeat system.
+ * Convenience function that extracts the subagent slug and task context
+ * from the data structures used by the heartbeat system. The returned
+ * shape is intentionally minimal — agentId, subagentRef, and a task
+ * context object. Identity, system prompt, model, and tools are NOT
+ * sourced from agent JSON; they live in `.claude/agents/<slug>.md`.
  *
  * @param {object} agentConfig - Full agent config (from AgentStore)
  * @param {object} selectedTask - Task object (from task-selector)
  * @param {object} [opts]
  * @param {string} [opts.week] - Plan week for traceability
  * @param {string} [opts.additionalContext] - Extra context
- * @returns {{ agentId: string, identity: AgentIdentity, task: TaskContext }}
+ * @returns {{ agentId: string, subagentRef: string, task: TaskContext }}
  */
 export function buildSessionConfig(agentConfig, selectedTask, opts = {}) {
   if (!agentConfig) throw new Error('agentConfig is required');
   if (!agentConfig.id) throw new Error('agentConfig.id is required');
-  if (!agentConfig.identity) throw new Error('agentConfig.identity is required');
+  if (!agentConfig.subagentRef) throw new Error('agentConfig.subagentRef is required');
   if (!selectedTask) throw new Error('selectedTask is required');
   if (!selectedTask.id) throw new Error('selectedTask.id is required');
   if (!selectedTask.description) throw new Error('selectedTask.description is required');
 
   return {
     agentId: agentConfig.id,
-    identity: {
-      name: agentConfig.identity.name,
-      role: agentConfig.identity.role,
-      systemPrompt: agentConfig.identity.systemPrompt,
-    },
+    subagentRef: agentConfig.subagentRef,
     task: {
       taskId: selectedTask.id,
       description: selectedTask.description,

@@ -71,15 +71,24 @@ export function computeTaskCounts(plan) {
  * Build the status summary for a single agent.
  * Gracefully handles missing data — returns partial info when stores are empty.
  *
+ * Name and role are overridden by `displayName` / `displayRole` when passed;
+ * these come from the subagent .md frontmatter (the single source of truth
+ * for identity after the subagent-wrapper refactor). When neither override
+ * nor legacy `identity` block is available, `name` falls back to the agent
+ * id (which equals the subagent slug) and `role` to an empty string so the
+ * caller can still render a sensible missing-marker row.
+ *
  * @param {object} opts
  * @param {object} opts.agentConfig - Full agent config from AgentStore
  * @param {string} opts.week - Current ISO week string (YYYY-Www)
  * @param {string} opts.weekMonday - Current Monday date string (YYYY-MM-DD)
  * @param {object} opts.stores - { weeklyPlanStore, activityLogStore, usageStore, inboxStore }
  * @param {object} [opts.lockOpts] - { lockDir, maxLockAgeMs } for lock queries
+ * @param {string} [opts.displayName] - Name from live subagent .md (overrides identity).
+ * @param {string} [opts.displayRole] - Role/description from live subagent .md (overrides identity).
  * @returns {Promise<object>} Agent status summary
  */
-export async function buildAgentStatus({ agentConfig, week, weekMonday, stores, lockOpts }) {
+export async function buildAgentStatus({ agentConfig, week, weekMonday, stores, lockOpts, displayName, displayRole }) {
   const agentId = agentConfig.id;
 
   // Gather data in parallel — each read is independent
@@ -110,10 +119,21 @@ export async function buildAgentStatus({ agentConfig, week, weekMonday, stores, 
     state = pending > 0 ? 'active' : 'idle';
   }
 
+  // Identity lives in `.claude/agents/SLUG.md`, not in the aweek JSON. The
+  // caller passes live name/role from there via displayName/displayRole.
+  // We still tolerate legacy configs that happen to have an `identity` block
+  // so tests (and any in-flight refactor steps) don't crash mid-migration.
+  const resolvedName = displayName
+    || agentConfig.identity?.name
+    || agentId;
+  const resolvedRole = displayRole != null
+    ? displayRole
+    : (agentConfig.identity?.role || '');
+
   return {
     id: agentId,
-    name: agentConfig.identity.name,
-    role: agentConfig.identity.role,
+    name: resolvedName,
+    role: resolvedRole,
     state,
     plan: {
       week,

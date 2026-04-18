@@ -20,9 +20,7 @@ import {
 async function createTestAgent(dataDir, nameStr, { role, budget: budgetOverrides, weeklyTokenLimit } = {}) {
   const agentStore = new AgentStore(dataDir);
   const config = createAgentConfig({
-    name: nameStr,
-    role: role || 'tester',
-    systemPrompt: 'test prompt',
+    subagentRef: nameStr,
     weeklyTokenLimit: weeklyTokenLimit || budgetOverrides?.weeklyTokenLimit || 100000,
   });
 
@@ -96,7 +94,7 @@ describe('resume-agent skill', () => {
 
       const result = await listPausedAgents({ dataDir });
       assert.equal(result.paused[0].name, 'pausedone');
-      assert.equal(result.paused[0].role, 'worker');
+      assert.equal(result.paused[0].role, '');
       assert.equal(result.paused[0].budget.currentUsage, 150000);
       assert.equal(result.paused[0].budget.weeklyTokenLimit, 100000);
     });

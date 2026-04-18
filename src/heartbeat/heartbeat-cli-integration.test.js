@@ -1,11 +1,23 @@
 /**
- * Integration tests — heartbeat triggering + CLI session launch with agent context.
+ * Integration tests — heartbeat task runner + CLI session launch with SUBAGENT_REF.
  *
- * These tests verify the full pipeline:
+ * Post-refactor, every aweek agent is a 1-to-1 wrapper around a Claude Code
+ * subagent. The heartbeat task runner picks a task, and the CLI layer spawns:
+ *
+ *   claude --print --output-format json --agent SUBAGENT_REF \
+ *          --append-system-prompt RUNTIME_CONTEXT TASK
+ *
+ * Identity (name, role, system prompt, model, tools, skills, MCP servers)
+ * lives EXCLUSIVELY in `.claude/agents/<slug>.md` and is resolved by Claude
+ * Code via `--agent`. The aweek JSON carries only the `subagentRef` slug —
+ * never an identity block.
+ *
+ * These tests verify:
  *   1. Heartbeat fires (scheduler acquires lock)
  *   2. Task selector picks next pending task from approved weekly plan
- *   3. Agent identity + task context are assembled into CLI session config
- *   4. CLI session is launched (via mock spawn) with correct arguments
+ *   3. Session config is built from the agent's `subagentRef` (no identity)
+ *   4. CLI session is launched (via mock spawn) with `--print --agent <slug>`
+ *      and NEVER with the legacy `--system-prompt` flag
  *   5. Session result (stdout, exit code, token usage) is captured
  *   6. Lock is released after completion
  *
@@ -26,7 +38,7 @@ import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import {
   buildSessionConfig,
   buildCliArgs,
-  buildSystemPrompt,
+  buildRuntimeContext,
   buildTaskPrompt,
   launchSession,
   parseTokenUsage,
@@ -37,6 +49,11 @@ import {
 // ---------------------------------------------------------------------------
 
 const uid = () => randomBytes(4).toString('hex');
+
+/** Build a slug that matches the SUBAGENT_SLUG_PATTERN used by the schema. */
+function makeSubagentRef(prefix = 'agent') {
+  return `${prefix}-${uid()}`;
+}
 
 function makeTask(overrides = {}) {
   return {
@@ -61,14 +78,20 @@ function makePlan(overrides = {}) {
   };
 }
 
+/**
+ * Build a minimal agent config in the post-refactor shape.
+ *
+ * Identity is NOT present — it lives in `.claude/agents/<subagentRef>.md`.
+ * The aweek JSON carries only the slug (subagentRef) plus scheduling fields.
+ *
+ * By convention we set `id === subagentRef` to honour the
+ * filesystem_1to1_mapping evaluation principle.
+ */
 function makeAgentConfig(overrides = {}) {
+  const id = overrides.id || makeSubagentRef();
   return {
-    id: overrides.id || `agent-${uid()}`,
-    identity: overrides.identity || {
-      name: 'ResearchBot',
-      role: 'Research Assistant',
-      systemPrompt: 'You are a research assistant focused on data analysis.',
-    },
+    id,
+    subagentRef: overrides.subagentRef || id,
     goals: [],
     monthlyPlans: [],
     weeklyPlans: [],
@@ -123,11 +146,48 @@ function createMockSpawn({ exitCode = 0, stdout = '', stderr = '', error = null 
   return mockSpawn;
 }
 
+/** Assert the CLI args use the post-refactor invocation shape. */
+function assertSubagentFirstArgs(args, { subagentRef, taskDescription } = {}) {
+  // Required subagent-first flags.
+  assert.ok(args.includes('--print'), 'missing --print');
+  assert.ok(args.includes('--output-format'), 'missing --output-format');
+  const fmtIdx = args.indexOf('--output-format');
+  assert.equal(args[fmtIdx + 1], 'json', '--output-format should be json');
+  assert.ok(args.includes('--agent'), 'missing --agent');
+  assert.ok(
+    args.includes('--append-system-prompt'),
+    'missing --append-system-prompt',
+  );
+
+  // Legacy identity flag must be gone.
+  assert.ok(
+    !args.includes('--system-prompt'),
+    'legacy --system-prompt must not appear',
+  );
+
+  if (subagentRef) {
+    const agentIdx = args.indexOf('--agent');
+    assert.equal(
+      args[agentIdx + 1],
+      subagentRef,
+      `--agent value should be ${subagentRef}`,
+    );
+  }
+
+  if (taskDescription) {
+    const lastArg = args[args.length - 1];
+    assert.ok(
+      lastArg.includes(taskDescription),
+      `last arg (user prompt) should include task description: ${taskDescription}`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Heartbeat trigger → task selection → session config building
 // ---------------------------------------------------------------------------
 
-describe('heartbeat trigger → CLI session config', () => {
+describe('heartbeat trigger → CLI session config (subagent-first)', () => {
   let dataDir;
   let lockDir;
   let store;
@@ -145,8 +205,8 @@ describe('heartbeat trigger → CLI session config', () => {
     await rm(lockDir, { recursive: true, force: true });
   });
 
-  it('selected task from heartbeat tick maps correctly to session config', async () => {
-    const agentId = `agent-${uid()}`;
+  it('selected task from heartbeat tick maps to session config with subagentRef', async () => {
+    const agentId = makeSubagentRef();
     const task = makeTask({
       priority: 'high',
       description: 'Analyze quarterly earnings',
@@ -170,11 +230,11 @@ describe('heartbeat trigger → CLI session config', () => {
       week: tickResult.week,
     });
 
-    // Verify agent identity flows through
+    // Verify agent slug (not identity) flows through
     assert.equal(sessionConfig.agentId, agentId);
-    assert.equal(sessionConfig.identity.name, 'ResearchBot');
-    assert.equal(sessionConfig.identity.role, 'Research Assistant');
-    assert.ok(sessionConfig.identity.systemPrompt.includes('research assistant'));
+    assert.equal(sessionConfig.subagentRef, agentId);
+    // Identity must NOT be present — it lives in the subagent .md file.
+    assert.equal(sessionConfig.identity, undefined);
 
     // Verify task context flows through
     assert.equal(sessionConfig.task.taskId, task.id);
@@ -183,8 +243,8 @@ describe('heartbeat trigger → CLI session config', () => {
     assert.equal(sessionConfig.task.week, '2026-W16');
   });
 
-  it('CLI args contain agent system prompt and task description', async () => {
-    const agentId = `agent-${uid()}`;
+  it('CLI args contain --print --agent SUBAGENT_REF and task description', async () => {
+    const agentId = makeSubagentRef('qa');
     const task = makeTask({ description: 'Write unit tests for parser module' });
 
     await store.save(agentId, makePlan({
@@ -196,44 +256,34 @@ describe('heartbeat trigger → CLI session config', () => {
     const tickResult = await tickAgent(agentId, { weeklyPlanStore: store });
     assert.equal(tickResult.outcome, 'task_selected');
 
-    const agentConfig = makeAgentConfig({
-      id: agentId,
-      identity: {
-        name: 'TestEngineer',
-        role: 'QA Engineer',
-        systemPrompt: 'You write thorough tests with edge cases.',
-      },
-    });
-
+    const agentConfig = makeAgentConfig({ id: agentId });
     const sessionConfig = buildSessionConfig(agentConfig, tickResult.task, {
       week: tickResult.week,
     });
 
-    const cliArgs = buildCliArgs(sessionConfig.identity, sessionConfig.task);
+    const cliArgs = buildCliArgs(sessionConfig.subagentRef, sessionConfig.task);
 
-    // Should include --print for non-interactive mode
-    assert.ok(cliArgs.includes('--print'));
-    // Should include --output-format json for token parsing
-    assert.ok(cliArgs.includes('--output-format'));
-    assert.ok(cliArgs.includes('json'));
-    // Should include --system-prompt
-    assert.ok(cliArgs.includes('--system-prompt'));
+    assertSubagentFirstArgs(cliArgs, {
+      subagentRef: agentId,
+      taskDescription: 'Write unit tests for parser module',
+    });
 
-    // System prompt should contain agent identity
-    const sysIdx = cliArgs.indexOf('--system-prompt');
-    const systemPrompt = cliArgs[sysIdx + 1];
-    assert.ok(systemPrompt.includes('TestEngineer'));
-    assert.ok(systemPrompt.includes('QA Engineer'));
-    assert.ok(systemPrompt.includes('thorough tests'));
+    // --append-system-prompt carries aweek runtime context only (no identity).
+    const appendIdx = cliArgs.indexOf('--append-system-prompt');
+    const runtime = cliArgs[appendIdx + 1];
+    assert.ok(runtime.includes('## aweek Runtime Context'));
+    assert.ok(runtime.includes(`Task ID: ${task.id}`));
+    // Runtime context must NOT impersonate the agent (identity stays in .md).
+    assert.ok(!/You are [A-Z]/.test(runtime));
 
-    // Last arg should be the user prompt with task description
+    // Last positional arg is the user prompt.
     const userPrompt = cliArgs[cliArgs.length - 1];
     assert.ok(userPrompt.includes('Write unit tests for parser module'));
     assert.ok(userPrompt.includes(task.id));
   });
 
-  it('additional context is forwarded to CLI prompt', async () => {
-    const agentId = `agent-${uid()}`;
+  it('additional context is forwarded to the runtime-context append block', async () => {
+    const agentId = makeSubagentRef();
     const task = makeTask({ description: 'Deploy service' });
 
     await store.save(agentId, makePlan({
@@ -250,10 +300,26 @@ describe('heartbeat trigger → CLI session config', () => {
       additionalContext: 'Use staging environment. Notify #ops-channel on completion.',
     });
 
+    // In the new shape, additionalContext flows through the runtime context,
+    // not the task prompt. buildRuntimeContext is the single source of truth
+    // for the `--append-system-prompt` value.
+    const runtime = buildRuntimeContext(sessionConfig.task);
+    assert.ok(runtime.includes('Use staging environment'));
+    assert.ok(runtime.includes('#ops-channel'));
+    assert.ok(runtime.includes('### Additional Context'));
+
+    // buildTaskPrompt remains narrow — task description + instructions.
     const userPrompt = buildTaskPrompt(sessionConfig.task);
-    assert.ok(userPrompt.includes('Use staging environment'));
-    assert.ok(userPrompt.includes('#ops-channel'));
-    assert.ok(userPrompt.includes('## Additional Context'));
+    assert.ok(userPrompt.includes('Deploy service'));
+    assert.ok(userPrompt.includes('## Instructions'));
+  });
+
+  it('buildSessionConfig throws when agent config is missing subagentRef', async () => {
+    const configWithoutRef = { id: 'x', goals: [] };
+    assert.throws(
+      () => buildSessionConfig(configWithoutRef, makeTask()),
+      /subagentRef is required/,
+    );
   });
 });
 
@@ -261,7 +327,7 @@ describe('heartbeat trigger → CLI session config', () => {
 // Full pipeline: heartbeat → task selection → CLI launch (mock spawn)
 // ---------------------------------------------------------------------------
 
-describe('full pipeline: heartbeat → CLI session launch', () => {
+describe('full pipeline: heartbeat → CLI session launch (subagent-first)', () => {
   let dataDir;
   let lockDir;
   let store;
@@ -280,7 +346,7 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
   });
 
   it('heartbeat tick + CLI launch produces structured session result', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef('reporter');
     const task = makeTask({ description: 'Generate weekly report' });
 
     await store.save(agentId, makePlan({
@@ -310,13 +376,14 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
 
     const sessionResult = await launchSession(
       sessionConfig.agentId,
-      sessionConfig.identity,
+      sessionConfig.subagentRef,
       sessionConfig.task,
       { spawnFn: mockSpawn }
     );
 
     // Verify session result structure
     assert.equal(sessionResult.agentId, agentId);
+    assert.equal(sessionResult.subagentRef, agentId);
     assert.equal(sessionResult.taskId, task.id);
     assert.equal(sessionResult.exitCode, 0);
     assert.equal(sessionResult.timedOut, false);
@@ -325,20 +392,24 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
     assert.ok(sessionResult.durationMs >= 0);
     assert.ok(Array.isArray(sessionResult.cliArgs));
 
+    // Verify the CLI was invoked in the subagent-first shape.
+    assert.equal(mockSpawn.calls.length, 1);
+    assert.equal(mockSpawn.calls[0].cmd, 'claude');
+    assertSubagentFirstArgs(mockSpawn.calls[0].args, {
+      subagentRef: agentId,
+      taskDescription: 'Generate weekly report',
+    });
+
     // Verify token usage can be parsed from output
     const usage = parseTokenUsage(sessionResult.stdout);
     assert.equal(usage.inputTokens, 1200);
     assert.equal(usage.outputTokens, 800);
     assert.equal(usage.totalTokens, 2000);
     assert.equal(usage.costUsd, 0.04);
-
-    // Verify the CLI was called with correct binary
-    assert.equal(mockSpawn.calls.length, 1);
-    assert.equal(mockSpawn.calls[0].cmd, 'claude');
   });
 
-  it('agent identity is embedded in CLI system prompt during session', async () => {
-    const agentId = `agent-${uid()}`;
+  it('subagent slug (not identity) is embedded in CLI args during session', async () => {
+    const agentId = makeSubagentRef('code-reviewer');
     const task = makeTask({ description: 'Code review PR #42' });
 
     await store.save(agentId, makePlan({
@@ -348,14 +419,7 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
     }));
 
     const tickResult = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: store });
-    const agentConfig = makeAgentConfig({
-      id: agentId,
-      identity: {
-        name: 'CodeReviewer',
-        role: 'Senior Code Reviewer',
-        systemPrompt: 'You review code for security vulnerabilities and best practices.',
-      },
-    });
+    const agentConfig = makeAgentConfig({ id: agentId });
 
     const sessionConfig = buildSessionConfig(agentConfig, tickResult.result.task, {
       week: tickResult.result.week,
@@ -365,22 +429,41 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
 
     await launchSession(
       sessionConfig.agentId,
-      sessionConfig.identity,
+      sessionConfig.subagentRef,
       sessionConfig.task,
       { spawnFn: mockSpawn }
     );
 
-    // Check the system prompt passed to CLI
+    // Check the CLI args — identity is resolved by Claude Code from the
+    // subagent .md file, NOT passed via argv.
     const call = mockSpawn.calls[0];
-    const sysIdx = call.args.indexOf('--system-prompt');
-    const systemPrompt = call.args[sysIdx + 1];
+    const agentIdx = call.args.indexOf('--agent');
+    assert.equal(call.args[agentIdx + 1], agentId);
 
-    assert.ok(systemPrompt.includes('You are CodeReviewer, a Senior Code Reviewer.'));
-    assert.ok(systemPrompt.includes('security vulnerabilities'));
+    // The --append-system-prompt block carries only runtime scheduling
+    // context — never agent identity strings. We reject impersonation
+    // phrases like "You are NAME, a ROLE." while permitting the frame
+    // sentence "You are running as a scheduled aweek heartbeat task."
+    const appendIdx = call.args.indexOf('--append-system-prompt');
+    const runtime = call.args[appendIdx + 1];
+    assert.ok(runtime.includes('## aweek Runtime Context'));
+    assert.ok(runtime.includes(`Task ID: ${task.id}`));
+    assert.ok(
+      !/You are [A-Z][A-Za-z]+,\s+a\s+/m.test(runtime),
+      'runtime context must not impersonate the agent (identity belongs in the .md)',
+    );
+    assert.ok(
+      !/^Role:/mi.test(runtime),
+      'runtime context must not carry an identity "Role:" label',
+    );
+    assert.ok(
+      !/System Prompt:/i.test(runtime),
+      'runtime context must not embed a "System Prompt:" block',
+    );
   });
 
   it('task context includes objective ID and week for traceability', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     const objectiveId = `obj-${uid()}`;
     const task = makeTask({
       description: 'Implement caching layer',
@@ -403,20 +486,26 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
     const mockSpawn = createMockSpawn({ stdout: '{"result":"done"}' });
     await launchSession(
       sessionConfig.agentId,
-      sessionConfig.identity,
+      sessionConfig.subagentRef,
       sessionConfig.task,
       { spawnFn: mockSpawn }
     );
 
-    // Verify traceability info in the user prompt
+    // Verify traceability: runtime context carries objective + week, user
+    // prompt carries task id + description.
+    const appendIdx = mockSpawn.calls[0].args.indexOf('--append-system-prompt');
+    const runtime = mockSpawn.calls[0].args[appendIdx + 1];
+    assert.ok(runtime.includes(`Task ID: ${task.id}`));
+    assert.ok(runtime.includes(`Objective ID: ${objectiveId}`));
+    assert.ok(runtime.includes('Week: 2026-W17'));
+
     const userPrompt = mockSpawn.calls[0].args[mockSpawn.calls[0].args.length - 1];
-    assert.ok(userPrompt.includes(`Task ID: ${task.id}`));
-    assert.ok(userPrompt.includes(`Objective ID: ${objectiveId}`));
-    assert.ok(userPrompt.includes('Week: 2026-W17'));
+    assert.ok(userPrompt.includes(task.id));
+    assert.ok(userPrompt.includes('Implement caching layer'));
   });
 
   it('CLI session handles non-zero exit code without breaking heartbeat', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     const task = makeTask({ description: 'Risky migration' });
 
     await store.save(agentId, makePlan({
@@ -438,7 +527,7 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
 
     const sessionResult = await launchSession(
       sessionConfig.agentId,
-      sessionConfig.identity,
+      sessionConfig.subagentRef,
       sessionConfig.task,
       { spawnFn: mockSpawn }
     );
@@ -454,7 +543,7 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
   });
 
   it('token usage is null when CLI output has no usage data', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     const task = makeTask({ description: 'Simple task' });
 
     await store.save(agentId, makePlan({
@@ -475,7 +564,7 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
 
     const sessionResult = await launchSession(
       sessionConfig.agentId,
-      sessionConfig.identity,
+      sessionConfig.subagentRef,
       sessionConfig.task,
       { spawnFn: mockSpawn }
     );
@@ -489,7 +578,7 @@ describe('full pipeline: heartbeat → CLI session launch', () => {
 // Idempotent execution: repeated heartbeats don't duplicate work
 // ---------------------------------------------------------------------------
 
-describe('idempotent heartbeat → CLI execution', () => {
+describe('idempotent heartbeat → CLI execution (subagent-first)', () => {
   let dataDir;
   let lockDir;
   let store;
@@ -508,7 +597,7 @@ describe('idempotent heartbeat → CLI execution', () => {
   });
 
   it('sequential heartbeats advance through tasks — never re-select in-progress', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     const task1 = makeTask({ priority: 'critical', description: 'Task A' });
     const task2 = makeTask({ priority: 'high', description: 'Task B' });
     const task3 = makeTask({ priority: 'medium', description: 'Task C' });
@@ -538,10 +627,13 @@ describe('idempotent heartbeat → CLI execution', () => {
 
         const session = await launchSession(
           config.agentId,
-          config.identity,
+          config.subagentRef,
           config.task,
           { spawnFn: mockSpawn }
         );
+
+        // Every launched session routes through --agent SUBAGENT_REF.
+        assertSubagentFirstArgs(mockSpawn.calls[0].args, { subagentRef: agentId });
 
         sessionsLaunched.push(session.taskId);
       }
@@ -556,7 +648,7 @@ describe('idempotent heartbeat → CLI execution', () => {
   });
 
   it('task marked in-progress by first heartbeat is not re-selected by second', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     const task = makeTask({ priority: 'high', description: 'One-shot task' });
 
     await store.save(agentId, makePlan({
@@ -580,7 +672,7 @@ describe('idempotent heartbeat → CLI execution', () => {
   });
 
   it('concurrent heartbeats for same agent — second is skipped via lock', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     const task = makeTask({ description: 'Concurrent test task' });
 
     await store.save(agentId, makePlan({
@@ -605,7 +697,7 @@ describe('idempotent heartbeat → CLI execution', () => {
 // Multi-agent parallel heartbeat → independent CLI sessions
 // ---------------------------------------------------------------------------
 
-describe('multi-agent parallel heartbeat → CLI sessions', () => {
+describe('multi-agent parallel heartbeat → CLI sessions (subagent-first)', () => {
   let dataDir;
   let lockDir;
   let store;
@@ -623,27 +715,21 @@ describe('multi-agent parallel heartbeat → CLI sessions', () => {
     await rm(lockDir, { recursive: true, force: true });
   });
 
-  it('parallel agents each get their own task selected and session config built', async () => {
+  it('parallel agents each invoke claude CLI with their own --agent SUBAGENT_REF', async () => {
     const agents = [
       {
-        id: `agent-${uid()}`,
-        config: makeAgentConfig({
-          identity: { name: 'Writer', role: 'Content Writer', systemPrompt: 'Write engaging content.' },
-        }),
+        id: makeSubagentRef('writer'),
         task: makeTask({ description: 'Write blog post' }),
       },
       {
-        id: `agent-${uid()}`,
-        config: makeAgentConfig({
-          identity: { name: 'Coder', role: 'Software Engineer', systemPrompt: 'Write clean code.' },
-        }),
+        id: makeSubagentRef('coder'),
         task: makeTask({ description: 'Refactor auth module' }),
       },
     ];
 
     // Set up plans for each agent
     for (const agent of agents) {
-      agent.config.id = agent.id;
+      agent.config = makeAgentConfig({ id: agent.id });
       await store.save(agent.id, makePlan({
         approved: true,
         approvedAt: new Date().toISOString(),
@@ -660,7 +746,8 @@ describe('multi-agent parallel heartbeat → CLI sessions', () => {
     assert.ok(tickResults.every((r) => r.status === 'completed'));
     assert.ok(tickResults.every((r) => r.result.outcome === 'task_selected'));
 
-    // Build session configs and verify each agent gets its own context
+    // Build session configs and launch sessions via mock spawn. Each agent
+    // must route to its own subagent slug — never share state.
     for (let i = 0; i < agents.length; i++) {
       const agent = agents[i];
       const tick = tickResults[i];
@@ -669,12 +756,23 @@ describe('multi-agent parallel heartbeat → CLI sessions', () => {
       });
 
       assert.equal(config.agentId, agent.id);
-      assert.equal(config.identity.name, agent.config.identity.name);
+      assert.equal(config.subagentRef, agent.id);
+      assert.equal(config.identity, undefined);
       assert.equal(config.task.description, agent.task.description);
 
-      // Verify system prompt distinguishes agents
-      const systemPrompt = buildSystemPrompt(config.identity);
-      assert.ok(systemPrompt.includes(agent.config.identity.name));
+      // Launch the CLI session (mock) and verify per-agent routing.
+      const mockSpawn = createMockSpawn({ stdout: '{"result":"ok"}' });
+      await launchSession(
+        config.agentId,
+        config.subagentRef,
+        config.task,
+        { spawnFn: mockSpawn },
+      );
+
+      assertSubagentFirstArgs(mockSpawn.calls[0].args, {
+        subagentRef: agent.id,
+        taskDescription: agent.task.description,
+      });
     }
 
     // Verify all locks are released
@@ -685,8 +783,8 @@ describe('multi-agent parallel heartbeat → CLI sessions', () => {
   });
 
   it('one agent failure does not prevent other agents from launching sessions', async () => {
-    const goodAgentId = `agent-${uid()}`;
-    const badAgentId = `agent-${uid()}`;
+    const goodAgentId = makeSubagentRef('good');
+    const badAgentId = makeSubagentRef('bad');
 
     // Good agent has a plan
     await store.save(goodAgentId, makePlan({
@@ -707,9 +805,9 @@ describe('multi-agent parallel heartbeat → CLI sessions', () => {
     assert.equal(goodResult.status, 'completed');
     assert.equal(goodResult.result.outcome, 'task_selected');
 
-    // Bad agent gets no_approved_plan but doesn't throw
+    // Bad agent (no weekly plan files on disk) gets no_weekly_plans but doesn't throw
     assert.equal(badResult.status, 'completed');
-    assert.equal(badResult.result.outcome, 'no_approved_plan');
+    assert.equal(badResult.result.outcome, 'no_weekly_plans');
 
     // Good agent can still have its CLI session launched
     const agentConfig = makeAgentConfig({ id: goodAgentId });
@@ -720,13 +818,14 @@ describe('multi-agent parallel heartbeat → CLI sessions', () => {
     const mockSpawn = createMockSpawn({ stdout: '{"result":"ok"}' });
     const session = await launchSession(
       sessionConfig.agentId,
-      sessionConfig.identity,
+      sessionConfig.subagentRef,
       sessionConfig.task,
       { spawnFn: mockSpawn }
     );
 
     assert.equal(session.exitCode, 0);
     assert.equal(session.agentId, goodAgentId);
+    assertSubagentFirstArgs(mockSpawn.calls[0].args, { subagentRef: goodAgentId });
   });
 });
 
@@ -734,36 +833,31 @@ describe('multi-agent parallel heartbeat → CLI sessions', () => {
 // CLI session with model override and permission flags
 // ---------------------------------------------------------------------------
 
-describe('CLI session launch options from heartbeat context', () => {
+describe('CLI session launch options from heartbeat context (subagent-first)', () => {
   it('model override flows through to CLI args', () => {
-    const identity = {
-      name: 'Architect',
-      role: 'System Architect',
-      systemPrompt: 'You design scalable systems.',
-    };
+    const subagentRef = 'architect';
     const task = {
       taskId: 'task-arch-001',
       description: 'Design database schema',
     };
 
-    const args = buildCliArgs(identity, task, { model: 'opus' });
+    const args = buildCliArgs(subagentRef, task, { model: 'opus' });
+    assertSubagentFirstArgs(args, { subagentRef, taskDescription: 'Design database schema' });
+
     const modelIdx = args.indexOf('--model');
     assert.ok(modelIdx >= 0);
     assert.equal(args[modelIdx + 1], 'opus');
   });
 
   it('dangerouslySkipPermissions flows through for automated agents', () => {
-    const identity = {
-      name: 'AutoBot',
-      role: 'Automated Task Runner',
-      systemPrompt: 'You execute automated tasks.',
-    };
+    const subagentRef = 'auto-bot';
     const task = {
       taskId: 'task-auto-001',
       description: 'Run scheduled cleanup',
     };
 
-    const args = buildCliArgs(identity, task, { dangerouslySkipPermissions: true });
+    const args = buildCliArgs(subagentRef, task, { dangerouslySkipPermissions: true });
+    assertSubagentFirstArgs(args, { subagentRef });
     assert.ok(args.includes('--dangerously-skip-permissions'));
   });
 
@@ -772,16 +866,13 @@ describe('CLI session launch options from heartbeat context', () => {
 
     await launchSession(
       'agent-cwd-test',
-      {
-        name: 'DirBot',
-        role: 'Directory Worker',
-        systemPrompt: 'You work in specific directories.',
-      },
+      'dir-bot',
       { taskId: 'task-cwd-001', description: 'Process files' },
       { spawnFn: mockSpawn, cwd: '/workspace/my-project' }
     );
 
     assert.equal(mockSpawn.calls[0].opts.cwd, '/workspace/my-project');
+    assertSubagentFirstArgs(mockSpawn.calls[0].args, { subagentRef: 'dir-bot' });
   });
 });
 
@@ -789,7 +880,7 @@ describe('CLI session launch options from heartbeat context', () => {
 // Token usage extraction from CLI session output
 // ---------------------------------------------------------------------------
 
-describe('token usage parsing from heartbeat-triggered sessions', () => {
+describe('token usage parsing from heartbeat-triggered sessions (subagent-first)', () => {
   it('parses token usage from standard claude CLI JSON output', async () => {
     const cliOutput = JSON.stringify({
       result: 'Task completed successfully.',
@@ -801,10 +892,12 @@ describe('token usage parsing from heartbeat-triggered sessions', () => {
 
     const session = await launchSession(
       'agent-tokens-1',
-      { name: 'Bot', role: 'Worker', systemPrompt: 'Work.' },
+      'worker-bot',
       { taskId: 'task-tok-1', description: 'Do work' },
       { spawnFn: mockSpawn }
     );
+
+    assertSubagentFirstArgs(session.cliArgs, { subagentRef: 'worker-bot' });
 
     const usage = parseTokenUsage(session.stdout);
     assert.equal(usage.inputTokens, 5000);
@@ -824,7 +917,7 @@ describe('token usage parsing from heartbeat-triggered sessions', () => {
 
     const session = await launchSession(
       'agent-stream-1',
-      { name: 'Bot', role: 'Worker', systemPrompt: 'Work.' },
+      'stream-bot',
       { taskId: 'task-stream-1', description: 'Stream task' },
       { spawnFn: mockSpawn }
     );
@@ -841,7 +934,7 @@ describe('token usage parsing from heartbeat-triggered sessions', () => {
 
     const session = await launchSession(
       'agent-err-1',
-      { name: 'Bot', role: 'Worker', systemPrompt: 'Work.' },
+      'fail-bot',
       { taskId: 'task-err-1', description: 'Fail task' },
       { spawnFn: mockSpawn }
     );
@@ -857,7 +950,7 @@ describe('token usage parsing from heartbeat-triggered sessions', () => {
     const scheduler2 = createScheduler({ lockDir: lockDir2 });
 
     try {
-      const agentId = `agent-${uid()}`;
+      const agentId = makeSubagentRef('accumulator');
       const tasks = [
         makeTask({ priority: 'critical', description: 'Task 1' }),
         makeTask({ priority: 'high', description: 'Task 2' }),
@@ -880,7 +973,8 @@ describe('token usage parsing from heartbeat-triggered sessions', () => {
       const spawn1 = createMockSpawn({
         stdout: JSON.stringify({ usage: { input_tokens: 2000, output_tokens: 1000 } }),
       });
-      const session1 = await launchSession(config1.agentId, config1.identity, config1.task, { spawnFn: spawn1 });
+      const session1 = await launchSession(config1.agentId, config1.subagentRef, config1.task, { spawnFn: spawn1 });
+      assertSubagentFirstArgs(spawn1.calls[0].args, { subagentRef: agentId });
       const usage1 = parseTokenUsage(session1.stdout);
       totalTokens += usage1.totalTokens;
 
@@ -892,7 +986,8 @@ describe('token usage parsing from heartbeat-triggered sessions', () => {
       const spawn2 = createMockSpawn({
         stdout: JSON.stringify({ usage: { input_tokens: 1500, output_tokens: 800 } }),
       });
-      const session2 = await launchSession(config2.agentId, config2.identity, config2.task, { spawnFn: spawn2 });
+      const session2 = await launchSession(config2.agentId, config2.subagentRef, config2.task, { spawnFn: spawn2 });
+      assertSubagentFirstArgs(spawn2.calls[0].args, { subagentRef: agentId });
       const usage2 = parseTokenUsage(session2.stdout);
       totalTokens += usage2.totalTokens;
 
@@ -911,7 +1006,7 @@ describe('token usage parsing from heartbeat-triggered sessions', () => {
 // Edge cases: no plan, unapproved plan, empty tasks
 // ---------------------------------------------------------------------------
 
-describe('heartbeat → CLI edge cases', () => {
+describe('heartbeat → CLI edge cases (subagent-first)', () => {
   let dataDir;
   let lockDir;
   let store;
@@ -929,19 +1024,22 @@ describe('heartbeat → CLI edge cases', () => {
     await rm(lockDir, { recursive: true, force: true });
   });
 
-  it('heartbeat tick with no approved plan produces no CLI session', async () => {
-    const agentId = `agent-${uid()}`;
+  it('heartbeat tick on a shell agent (no weekly plans) produces no CLI session', async () => {
+    // A shell agent — the result of hireAllSubagents before any plan is
+    // authored — surfaces as no_weekly_plans and does not launch a CLI
+    // session. This is the most common "empty" case in practice.
+    const agentId = makeSubagentRef();
     await store.init(agentId);
 
     const tick = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: store });
     assert.equal(tick.status, 'completed');
-    assert.equal(tick.result.outcome, 'no_approved_plan');
+    assert.equal(tick.result.outcome, 'no_weekly_plans');
     // No task selected — no session to launch
     assert.equal(tick.result.task, undefined);
   });
 
   it('heartbeat tick with unapproved plan produces no CLI session', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     await store.save(agentId, makePlan({
       approved: false,
       tasks: [makeTask()],
@@ -953,7 +1051,7 @@ describe('heartbeat → CLI edge cases', () => {
   });
 
   it('heartbeat tick with empty task list produces no CLI session', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     await store.save(agentId, makePlan({
       approved: true,
       approvedAt: new Date().toISOString(),
@@ -966,7 +1064,7 @@ describe('heartbeat → CLI edge cases', () => {
   });
 
   it('heartbeat tick after all tasks completed returns all_tasks_finished', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     await store.save(agentId, makePlan({
       approved: true,
       approvedAt: new Date().toISOString(),
@@ -984,7 +1082,7 @@ describe('heartbeat → CLI edge cases', () => {
   });
 
   it('lock is always released even when no task is selected', async () => {
-    const agentId = `agent-${uid()}`;
+    const agentId = makeSubagentRef();
     await store.init(agentId);
 
     await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: store });
@@ -1012,7 +1110,7 @@ describe('heartbeat → CLI edge cases', () => {
 
     const session = await launchSession(
       'agent-timeout',
-      { name: 'SlowBot', role: 'Slow Worker', systemPrompt: 'You are slow.' },
+      'slow-bot',
       { taskId: 'task-slow-1', description: 'Long running task' },
       { spawnFn: timeoutSpawn, timeoutMs: 10 }
     );
@@ -1020,9 +1118,115 @@ describe('heartbeat → CLI edge cases', () => {
     assert.equal(session.timedOut, true);
     assert.equal(session.exitCode, null);
     assert.equal(session.agentId, 'agent-timeout');
+    assert.equal(session.subagentRef, 'slow-bot');
 
     // Token usage should be null for timed out sessions
     const usage = parseTokenUsage(session.stdout);
     assert.equal(usage, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guardrails: the heartbeat pipeline must NEVER use the legacy
+// identity-based CLI invocation. Adding a test at this layer protects against
+// regressions where someone wires back `--system-prompt` or an identity arg.
+// ---------------------------------------------------------------------------
+
+describe('heartbeat → CLI subagent-first guardrails', () => {
+  let dataDir;
+  let lockDir;
+  let store;
+  let scheduler;
+
+  beforeEach(async () => {
+    dataDir = await makeTempDir('hb-guard-data-');
+    lockDir = await makeTempDir('hb-guard-lock-');
+    store = new WeeklyPlanStore(dataDir);
+    scheduler = createScheduler({ lockDir });
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+    await rm(lockDir, { recursive: true, force: true });
+  });
+
+  it('end-to-end: tick → buildSessionConfig → launchSession uses --print --agent <slug> and no --system-prompt', async () => {
+    const agentId = makeSubagentRef('guardrail');
+    const task = makeTask({ description: 'Verify invocation shape' });
+
+    await store.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [task],
+    }));
+
+    const tick = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: store });
+    assert.equal(tick.result.outcome, 'task_selected');
+
+    const config = buildSessionConfig(makeAgentConfig({ id: agentId }), tick.result.task, {
+      week: tick.result.week,
+    });
+
+    const mockSpawn = createMockSpawn({ stdout: '{"result":"ok"}' });
+    const session = await launchSession(
+      config.agentId,
+      config.subagentRef,
+      config.task,
+      { spawnFn: mockSpawn },
+    );
+
+    const args = mockSpawn.calls[0].args;
+
+    // Required post-refactor flags.
+    assert.ok(args.includes('--print'));
+    const agentIdx = args.indexOf('--agent');
+    assert.ok(agentIdx >= 0);
+    assert.equal(args[agentIdx + 1], agentId);
+
+    // Forbidden legacy flags.
+    assert.ok(!args.includes('--system-prompt'), 'legacy --system-prompt leaked');
+
+    // Subagent slug is surfaced on the session result for downstream logging.
+    assert.equal(session.subagentRef, agentId);
+    assert.equal(session.agentId, agentId);
+  });
+
+  it('buildSessionConfig throws when the agent JSON is missing subagentRef (post-refactor invariant)', () => {
+    // Post-refactor, the slug is the sole link between aweek JSON and the
+    // Claude Code subagent .md. A missing slug MUST surface as a hard error
+    // at session-build time rather than degrade into a silent identity-less
+    // CLI invocation.
+    const legacyShape = {
+      id: 'x',
+      // No subagentRef — what a pre-refactor config would look like.
+      identity: { name: 'Legacy', role: 'Old', systemPrompt: 'old' },
+      goals: [],
+    };
+    assert.throws(
+      () => buildSessionConfig(legacyShape, makeTask()),
+      /subagentRef is required/,
+    );
+  });
+
+  it('buildCliArgs refuses empty subagentRef (would otherwise invoke claude with no --agent target)', () => {
+    assert.throws(
+      () => buildCliArgs('', { taskId: 't', description: 'd' }),
+      /subagentRef is required/,
+    );
+    assert.throws(
+      () => buildCliArgs(null, { taskId: 't', description: 'd' }),
+      /subagentRef is required/,
+    );
+  });
+
+  it('launchSession refuses empty subagentRef', async () => {
+    await assert.rejects(
+      () => launchSession('agent-x', '', { taskId: 't', description: 'd' }, {}),
+      /subagentRef is required/,
+    );
+    await assert.rejects(
+      () => launchSession('agent-x', null, { taskId: 't', description: 'd' }, {}),
+      /subagentRef is required/,
+    );
   });
 });

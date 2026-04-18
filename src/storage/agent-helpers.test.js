@@ -91,33 +91,21 @@ describe('listAllAgents', () => {
 
   it('loads all saved agent configs', async () => {
     const store = new AgentStore(tmpDir);
-    await store.save(createAgentConfig({
-      name: 'Ada',
-      role: 'engineer',
-      systemPrompt: 'Help with code.',
-    }));
-    await store.save(createAgentConfig({
-      name: 'Bob',
-      role: 'writer',
-      systemPrompt: 'Help with docs.',
-    }));
+    await store.save(createAgentConfig({ subagentRef: 'ada' }));
+    await store.save(createAgentConfig({ subagentRef: 'bob' }));
 
     const configs = await listAllAgents({ dataDir: tmpDir });
     assert.equal(configs.length, 2);
-    const names = configs.map((c) => c.identity.name).sort();
-    assert.deepEqual(names, ['Ada', 'Bob']);
+    const ids = configs.map((c) => c.id).sort();
+    assert.deepEqual(ids, ['ada', 'bob']);
   });
 
   it('accepts a pre-constructed agentStore for injection', async () => {
     const store = new AgentStore(tmpDir);
-    await store.save(createAgentConfig({
-      name: 'Inj',
-      role: 'tester',
-      systemPrompt: 'x',
-    }));
+    await store.save(createAgentConfig({ subagentRef: 'inj' }));
     const configs = await listAllAgents({ agentStore: store });
     assert.equal(configs.length, 1);
-    assert.equal(configs[0].identity.name, 'Inj');
+    assert.equal(configs[0].id, 'inj');
   });
 });
 
@@ -131,15 +119,11 @@ describe('loadAgent', () => {
 
   it('loads a saved agent by id', async () => {
     const store = new AgentStore(tmpDir);
-    const saved = await store.save(createAgentConfig({
-      name: 'Ada',
-      role: 'engineer',
-      systemPrompt: 'Help with code.',
-    }));
+    const saved = await store.save(createAgentConfig({ subagentRef: 'ada' }));
 
     const loaded = await loadAgent({ agentId: saved.id, dataDir: tmpDir });
     assert.equal(loaded.id, saved.id);
-    assert.equal(loaded.identity.name, 'Ada');
+    assert.equal(loaded.subagentRef, 'ada');
   });
 
   it('rejects with a helpful error when agentId is missing', async () => {
@@ -158,11 +142,7 @@ describe('getAgentChoices', () => {
 
   it('returns lightweight choice entries with label / paused / latest week', async () => {
     const store = new AgentStore(tmpDir);
-    const agent = createAgentConfig({
-      name: 'Ada',
-      role: 'engineer',
-      systemPrompt: 'x',
-    });
+    const agent = createAgentConfig({ subagentRef: 'ada' });
     agent.weeklyPlans = [
       { week: '2026-W16', month: '2026-04', tasks: [], approved: true },
     ];
@@ -171,13 +151,12 @@ describe('getAgentChoices', () => {
 
     const [choice] = await getAgentChoices({ dataDir: tmpDir });
     assert.equal(choice.id, agent.id);
-    assert.equal(choice.name, 'Ada');
-    assert.equal(choice.role, 'engineer');
+    assert.equal(choice.name, 'ada');
     assert.equal(choice.paused, true);
     assert.equal(choice.latestWeek, '2026-W16');
     assert.equal(choice.approved, true);
     assert.equal(choice.taskCount, 0);
-    assert.match(choice.label, /Ada \(engineer\) \[paused\]/);
+    assert.match(choice.label, /ada .*\[paused\]/);
   });
 });
 

@@ -13,14 +13,17 @@
  * - Idempotent: repeated calls produce independent sessions; usage records are deduped by ID
  * - Graceful degradation: if token parsing fails, the session result is still returned (usage = null)
  * - File source of truth: usage records are persisted to disk via UsageStore
+ *
+ * Identity contract: callers pass a `subagentRef` (slug) — NOT an identity
+ * object. Identity is owned by `.claude/agents/<slug>.md` and resolved by
+ * the Claude Code CLI at invocation time via `--agent <slug>`.
  */
 
-import { launchSession, parseTokenUsage, buildSessionConfig } from './cli-session.js';
+import { launchSession, parseTokenUsage } from './cli-session.js';
 import { createUsageRecord, UsageStore } from '../storage/usage-store.js';
 
 /**
  * @typedef {import('./cli-session.js').SessionResult} SessionResult
- * @typedef {import('./cli-session.js').AgentIdentity} AgentIdentity
  * @typedef {import('./cli-session.js').TaskContext} TaskContext
  */
 
@@ -38,8 +41,8 @@ import { createUsageRecord, UsageStore } from '../storage/usage-store.js';
  * This is the primary entry point for running agent tasks with usage tracking.
  * It launches the session, parses tokens from the output, and persists a usage record.
  *
- * @param {string} agentId - Agent identifier
- * @param {AgentIdentity} identity - Agent identity (name, role, systemPrompt)
+ * @param {string} agentId - Agent identifier (equals subagent slug)
+ * @param {string} subagentRef - Subagent slug (`--agent <slug>` for the CLI)
  * @param {TaskContext} task - Task context (taskId, description, etc.)
  * @param {object} [opts]
  * @param {string} [opts.cli] - CLI binary path
@@ -54,15 +57,17 @@ import { createUsageRecord, UsageStore } from '../storage/usage-store.js';
  * @param {string} [opts.sessionId] - Optional session identifier for deduplication
  * @returns {Promise<ExecutionResult>}
  */
-export async function executeSessionWithTracking(agentId, identity, task, opts = {}) {
+export async function executeSessionWithTracking(agentId, subagentRef, task, opts = {}) {
   if (!agentId) throw new Error('agentId is required');
-  if (!identity) throw new Error('identity is required');
+  if (typeof subagentRef !== 'string' || subagentRef.length === 0) {
+    throw new Error('subagentRef is required and must be a non-empty string');
+  }
   if (!task) throw new Error('task is required');
 
   const { usageStore, sessionId, ...launchOpts } = opts;
 
-  // Step 1: Launch the CLI session
-  const sessionResult = await launchSession(agentId, identity, task, launchOpts);
+  // Step 1: Launch the CLI session (subagent-first)
+  const sessionResult = await launchSession(agentId, subagentRef, task, launchOpts);
 
   // Step 2: Parse token usage from session output
   const tokenUsage = parseTokenUsage(sessionResult.stdout);
@@ -89,7 +94,6 @@ export async function executeSessionWithTracking(agentId, identity, task, opts =
       usageTracked = true;
     } catch {
       // Graceful degradation: session succeeded even if usage tracking fails
-      // usageRecord may be partially created but not persisted
       usageTracked = false;
     }
   }
@@ -121,9 +125,8 @@ export function weekFromPlanWeek(planWeek) {
   const week = parseInt(match[2], 10);
 
   // ISO 8601: Week 1 contains January 4th
-  // Find January 4th, then back to Monday of that week, then add (week-1)*7
   const jan4 = new Date(Date.UTC(year, 0, 4));
-  const dayOfWeek = jan4.getUTCDay() || 7; // Convert Sunday=0 to 7
+  const dayOfWeek = jan4.getUTCDay() || 7;
   const mondayOfWeek1 = new Date(jan4);
   mondayOfWeek1.setUTCDate(jan4.getUTCDate() - dayOfWeek + 1);
 
@@ -138,6 +141,11 @@ export function weekFromPlanWeek(planWeek) {
  *
  * Returns an async function with signature `(agentId, taskInfo) => Promise<ExecutionResult>`
  * that the locked session runner can call as its `executeFn`.
+ *
+ * Each agent config is expected to expose its `subagentRef` (the 1-to-1
+ * slug of its backing `.claude/agents/<slug>.md` file). Identity fields
+ * (name, role, system prompt) are deliberately ignored — the Claude Code
+ * CLI resolves them from the subagent file at invocation time.
  *
  * @param {object} config
  * @param {object} config.agentConfigs - Map of agentId → agent config (from AgentStore)
@@ -155,11 +163,10 @@ export function createTrackedExecutor(config = {}) {
       throw new Error(`No agent config found for ${agentId}`);
     }
 
-    const identity = {
-      name: agentConfig.identity.name,
-      role: agentConfig.identity.role,
-      systemPrompt: agentConfig.identity.systemPrompt,
-    };
+    const subagentRef = agentConfig.subagentRef;
+    if (typeof subagentRef !== 'string' || subagentRef.length === 0) {
+      throw new Error(`Agent config for ${agentId} is missing subagentRef`);
+    }
 
     const task = {
       taskId: taskInfo.taskId,
@@ -169,7 +176,7 @@ export function createTrackedExecutor(config = {}) {
       additionalContext: taskInfo.payload?.additionalContext,
     };
 
-    return executeSessionWithTracking(agentId, identity, task, {
+    return executeSessionWithTracking(agentId, subagentRef, task, {
       ...sessionOpts,
       usageStore,
       sessionId: `${agentId}-${taskInfo.taskId}-${Date.now()}`,

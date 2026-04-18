@@ -19,11 +19,9 @@ import {
 } from './delegate-task.js';
 
 /** Minimal valid agent config for test setup — uses createAgentConfig factory */
-function makeAgent(name) {
+function makeAgent(slug) {
   return createAgentConfig({
-    name,
-    role: 'test-role',
-    systemPrompt: 'You are a test agent.',
+    subagentRef: slug,
     weeklyTokenLimit: 100000,
   });
 }
@@ -35,8 +33,8 @@ async function setup() {
   agentStore = new AgentStore(tmpDir);
   inboxStore = new InboxStore(tmpDir);
   // Seed two agents — IDs are generated dynamically
-  const agentA = makeAgent('Alice');
-  const agentB = makeAgent('Bob');
+  const agentA = makeAgent('alice');
+  const agentB = makeAgent('bob');
   await agentStore.save(agentA);
   await agentStore.save(agentB);
   AGENT_A_ID = agentA.id;
