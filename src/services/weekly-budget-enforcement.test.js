@@ -52,7 +52,7 @@ describe('weekly-budget-enforcement (integration)', () => {
 
   /** Helper: create and save a test agent */
   async function createTestAgent(name, weeklyTokenLimit = 1000) {
-    const config = createAgentConfig({ name, role: 'test', systemPrompt: 'test', weeklyTokenLimit });
+    const config = createAgentConfig({ subagentRef: name, weeklyTokenLimit });
     await agentStore.save(config);
     return config;
   }

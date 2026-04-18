@@ -71,11 +71,7 @@ function makeLogEntry(id, status = 'completed', overrides = {}) {
 function makeAgentConfig(overrides = {}) {
   return {
     id: AGENT_ID,
-    identity: {
-      name: 'Test Agent',
-      role: 'Testing agent',
-      systemPrompt: 'You are a test agent.',
-    },
+    subagentRef: AGENT_ID,
     goals: [],
     budget: {
       weeklyTokenLimit: 500000,
@@ -609,14 +605,14 @@ describe('generateWeeklyReview', () => {
     assert.ok(result.markdown.includes('Unfinished work'));
   });
 
-  it('uses agent name from config in header', async () => {
+  it('uses agent id as fallback name in header', async () => {
     const result = await generateWeeklyReview(deps(), AGENT_ID, WEEK, {
       weekMonday: WEEK_MONDAY,
       generatedAt: GENERATED_AT,
       baseDir: tmpDir,
     });
 
-    assert.ok(result.markdown.includes('# Weekly Review: Test Agent'));
+    assert.ok(result.markdown.includes(`# Weekly Review: ${AGENT_ID}`));
   });
 
   it('auto-derives weekMonday from week when not provided', async () => {

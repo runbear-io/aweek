@@ -201,9 +201,24 @@ console.log(JSON.stringify({
 "
 ```
 
-Then ask the user to **explicitly confirm** via AskUserQuestion (phrase it as "This will permanently delete agent X. This cannot be undone. Proceed?"). Only after a yes answer, run:
+Then ask the user to **explicitly confirm** via AskUserQuestion (phrase it as "This will permanently delete agent X. This cannot be undone. Proceed?"). If they decline, report that no changes were made and stop.
+
+After (and only after) a yes answer to the main confirmation, ask a second AskUserQuestion:
+
+> "Also delete `.claude/agents/NAME.md`? (the subagent identity file — defaults to keep)"
+>
+> Options:
+> 1. **Keep** `.claude/agents/NAME.md` (default, recommended)
+> 2. Delete `.claude/agents/NAME.md` too
+
+Replace `NAME` with the target agent id (which equals the subagent slug). The aweek agent JSON owns scheduling state only — the subagent `.md` file is the identity source of truth and may be shared with other tooling, so the safe default is to keep it. Only set `deleteSubagentMd: true` when the user explicitly picks "Delete" in this second question.
+
+Only delete project-level subagent files. Never touch `~/.claude/agents/`.
+
+Then run:
 
 ```bash
+# Default — keep the .md file
 node --input-type=module -e "
 import { deleteAgent, formatDeleteResult } from './src/skills/manage.js';
 
@@ -211,12 +226,28 @@ const result = await deleteAgent({
   agentId: 'AGENT_ID',
   dataDir: '.aweek/agents',
   confirmed: true,
+  // deleteSubagentMd omitted — defaults to false (keep)
 });
 console.log(formatDeleteResult(result));
 "
 ```
 
-If the user declines, report that no changes were made and stop.
+```bash
+# When the user also chose to delete the subagent .md file
+node --input-type=module -e "
+import { deleteAgent, formatDeleteResult } from './src/skills/manage.js';
+
+const result = await deleteAgent({
+  agentId: 'AGENT_ID',
+  dataDir: '.aweek/agents',
+  confirmed: true,
+  deleteSubagentMd: true,
+});
+console.log(formatDeleteResult(result));
+"
+```
+
+If the user declines the main confirmation, report that no changes were made and stop.
 
 ### Step 4: Confirm Result
 
@@ -288,7 +319,7 @@ User: /aweek:manage
 
 About to delete:
 {
-  "id": "agent-contentwriter-12345678",
+  "id": "contentwriter",
   "name": "ContentWriter",
   "role": "writes articles",
   "goals": 2,
@@ -299,11 +330,19 @@ This will permanently delete agent ContentWriter. This cannot be undone. Proceed
 
 User: yes
 
+Also delete `.claude/agents/contentwriter.md`? (defaults to keep)
+  1. Keep .claude/agents/contentwriter.md (default, recommended)
+  2. Delete .claude/agents/contentwriter.md too
+
+User: 1 (keep)
+
 === Agent Deleted ===
-Agent "ContentWriter" (agent-contentwriter-12345678) has been deleted.
+Agent "ContentWriter" (contentwriter) has been deleted.
 
 Removed: ContentWriter — role: writes articles
 Lost: 2 goal(s), 4 weekly plan(s).
+
+Subagent file kept: .claude/agents/contentwriter.md
 
 This action cannot be undone.
 ```

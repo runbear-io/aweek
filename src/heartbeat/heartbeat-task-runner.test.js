@@ -17,6 +17,8 @@ import {
 import { createScheduler } from './scheduler.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { ExecutionStore } from '../storage/execution-store.js';
+import { AgentStore } from '../storage/agent-store.js';
+import { writeFile } from 'node:fs/promises';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,6 +51,24 @@ function makePlan(overrides = {}) {
 
 async function makeTempDir(prefix = 'aweek-htr-') {
   return mkdtemp(join(tmpdir(), prefix));
+}
+
+/**
+ * Write a minimal subagent .md file inside `<projectDir>/.claude/agents/` so
+ * the heartbeat's subagent-missing guard (added in AC 5) does not auto-pause
+ * tests that only care about the paused/active branch of the existing budget
+ * guard. Returns the absolute path.
+ */
+async function writeSubagentStub(projectDir, slug) {
+  const dir = join(projectDir, '.claude', 'agents');
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, `${slug}.md`);
+  await writeFile(
+    path,
+    `---\nname: ${slug}\ndescription: test subagent\n---\n\nstub\n`,
+    'utf8',
+  );
+  return path;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,14 +119,21 @@ describe('tickAgent', () => {
     );
   });
 
-  it('returns no_approved_plan when agent has no plans', async () => {
+  it('returns no_weekly_plans when agent has no weekly plan entries (shell agent)', async () => {
+    // Shell agents — created via hireAllSubagents — have an aweek JSON
+    // wrapper + subagent .md but NO weekly plan files on disk yet. The
+    // heartbeat must detect this state explicitly and skip the tick with a
+    // distinct outcome so the resume path ("author + approve a plan") is not
+    // conflated with "approve an existing draft".
     const agentId = `agent-${uid()}`;
     await store.init(agentId);
 
     const result = await tickAgent(agentId, { weeklyPlanStore: store });
-    assert.equal(result.outcome, 'no_approved_plan');
+    assert.equal(result.outcome, 'no_weekly_plans');
     assert.equal(result.agentId, agentId);
+    assert.equal(result.hasWeeklyPlans, false);
     assert.ok(result.reason);
+    assert.ok(result.reason.includes('no weekly plan entries') || result.reason.includes('shell'));
     assert.ok(result.tickedAt);
   });
 
@@ -374,13 +401,15 @@ describe('runHeartbeatTick', () => {
     assert.equal(lockState.locked, false);
   });
 
-  it('returns no_approved_plan outcome through scheduler result', async () => {
+  it('returns no_weekly_plans outcome through scheduler result when agent is a shell', async () => {
+    // Shell agent (no weekly plan files) flows through the scheduler and the
+    // shell-agent guard returns no_weekly_plans rather than no_approved_plan.
     const agentId = `agent-${uid()}`;
     await store.init(agentId);
 
     const result = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: store });
     assert.equal(result.status, 'completed');
-    assert.equal(result.result.outcome, 'no_approved_plan');
+    assert.equal(result.result.outcome, 'no_weekly_plans');
   });
 
   it('is idempotent — repeated ticks advance through tasks sequentially', async () => {
@@ -508,7 +537,9 @@ describe('runHeartbeatTickAll', () => {
     assert.equal(withPlan.status, 'completed');
     assert.equal(withPlan.result.outcome, 'task_selected');
     assert.equal(without.status, 'completed');
-    assert.equal(without.result.outcome, 'no_approved_plan');
+    // Shell agent (no weekly plan files on disk) surfaces as no_weekly_plans
+    // rather than no_approved_plan post-AC 11 Sub-AC 2.
+    assert.equal(without.result.outcome, 'no_weekly_plans');
   });
 
   it('returns empty array for empty agent list', async () => {
@@ -541,8 +572,14 @@ describe('runHeartbeatTickAll', () => {
 
     const bad = results.find((r) => r.agentId === badAgent);
     assert.equal(bad.status, 'completed');
-    // Should be no_approved_plan or error — either is acceptable
-    assert.ok(['no_approved_plan', 'error'].includes(bad.result.outcome));
+    // Shell (no weekly plan files), no_approved_plan, or error — any of the
+    // three graceful-degradation outcomes is acceptable for a badly-initialised
+    // agent. Post-AC 11 Sub-AC 2, the shell guard short-circuits before the
+    // no_approved_plan path when `list()` returns an empty array.
+    assert.ok(
+      ['no_weekly_plans', 'no_approved_plan', 'error'].includes(bad.result.outcome),
+      `unexpected outcome: ${bad.result.outcome}`,
+    );
   });
 });
 
@@ -647,14 +684,35 @@ describe('tickAgent with executionStore (deduplication)', () => {
     assert.equal(records.length, 2);
   });
 
-  it('records skipped execution when no approved plan exists', async () => {
+  it('records skipped execution when agent has no weekly plan entries (shell)', async () => {
+    // Shell-agent guard returns no_weekly_plans and still records a skipped
+    // execution for dedup parity with the other skipped branches.
     const agentId = `agent-${uid()}`;
     await store.init(agentId);
 
     const result = await tickAgent(agentId, { weeklyPlanStore: store, executionStore: execStore });
-    assert.equal(result.outcome, 'no_approved_plan');
+    assert.equal(result.outcome, 'no_weekly_plans');
 
     // Execution should be recorded as skipped
+    const records = await execStore.load(agentId);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].status, 'skipped');
+  });
+
+  it('records skipped execution when agent has unapproved weekly plans', async () => {
+    // Distinct from the shell case above: here the agent has weekly plans on
+    // disk (just none approved). That should still record a skipped execution
+    // but surface outcome=no_approved_plan so the resume path routes to
+    // `/aweek:approve-plan` rather than `/aweek:plan`.
+    const agentId = `agent-${uid()}`;
+    await store.save(agentId, makePlan({
+      approved: false,
+      tasks: [makeTask()],
+    }));
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: store, executionStore: execStore });
+    assert.equal(result.outcome, 'no_approved_plan');
+
     const records = await execStore.load(agentId);
     assert.equal(records.length, 1);
     assert.equal(records[0].status, 'skipped');
@@ -936,9 +994,14 @@ describe('tickAgent resume guard (paused agents)', () => {
       tasks: [task],
     }));
 
+    // The subagent-missing guard (AC 5) runs when an agentStore is provided,
+    // so we materialise a stub .md file to represent the healthy case.
+    await writeSubagentStub(dataDir, agentId);
+
     const result = await tickAgent(agentId, {
       weeklyPlanStore: store,
       agentStore: mockAgentStore(false),
+      projectDir: dataDir,
     });
 
     assert.equal(result.outcome, 'task_selected');
@@ -1098,6 +1161,12 @@ describe('runHeartbeatTick resume guard', () => {
       tasks: [makeTask({ description: 'active-task' })],
     }));
 
+    // Both agents need backing subagent files so the AC 5 missing-file guard
+    // does not intercept the active agent — we are exercising the budget
+    // guard here, not the subagent guard.
+    await writeSubagentStub(dataDir, pausedAgent);
+    await writeSubagentStub(dataDir, activeAgent);
+
     // Agent store that returns different paused state per agent
     const mixedStore = {
       load: async (id) => ({
@@ -1115,6 +1184,7 @@ describe('runHeartbeatTick resume guard', () => {
       scheduler,
       weeklyPlanStore: store,
       agentStore: mixedStore,
+      projectDir: dataDir,
     });
 
     const paused = results.find((r) => r.agentId === pausedAgent);
@@ -1123,5 +1193,486 @@ describe('runHeartbeatTick resume guard', () => {
     assert.equal(paused.result.outcome, 'skipped');
     assert.ok(paused.result.reason.includes('paused'));
     assert.equal(active.result.outcome, 'task_selected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC 5: subagent-missing auto-pause
+//
+// The heartbeat must verify `.claude/agents/<slug>.md` (or the user-level
+// `~/.claude/agents/<slug>.md`) before spawning a Claude Code session. If
+// BOTH are absent, it persists `budget.paused = true` +
+// `budget.pausedReason = 'subagent_missing'`, records a skipped execution,
+// and returns without throwing so cron can keep firing without crash-looping.
+// ---------------------------------------------------------------------------
+
+describe('tickAgent subagent-missing auto-pause (AC 5)', () => {
+  let projectDir;
+  let homeDir;
+  let dataDir;
+  let planStore;
+  let agentStore;
+
+  function baseBudget() {
+    return {
+      weeklyTokenLimit: 100000,
+      currentUsage: 0,
+      periodStart: new Date().toISOString(),
+      paused: false,
+    };
+  }
+
+  function makeConfig(agentId, overrides = {}) {
+    return {
+      id: agentId,
+      subagentRef: agentId,
+      goals: [],
+      budget: baseBudget(),
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    projectDir = await makeTempDir('aweek-ac5-proj-');
+    homeDir = await makeTempDir('aweek-ac5-home-');
+    dataDir = join(projectDir, '.aweek', 'agents');
+    await mkdir(dataDir, { recursive: true });
+    planStore = new WeeklyPlanStore(dataDir);
+    agentStore = new AgentStore(dataDir);
+  });
+
+  afterEach(async () => {
+    await rm(projectDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('auto-pauses the agent and persists pausedReason=subagent_missing when both paths are missing', async () => {
+    const agentId = `agent-${uid()}`;
+    const task = makeTask({ priority: 'high', description: 'should-not-run' });
+
+    await agentStore.save(makeConfig(agentId));
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [task],
+    }));
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore,
+      projectDir,
+      home: homeDir,
+    });
+
+    // Outcome is skipped, pausedReason surfaced, reason cites the .md path.
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(result.pausedReason, 'subagent_missing');
+    assert.ok(
+      result.reason.includes('.claude/agents') ||
+        result.reason.includes(agentId),
+      `reason should mention the missing .md path: ${result.reason}`,
+    );
+    assert.equal(result.subagentRef, agentId);
+
+    // Persisted: budget.paused = true AND pausedReason = 'subagent_missing'
+    const reloaded = await agentStore.load(agentId);
+    assert.equal(reloaded.budget.paused, true);
+    assert.equal(reloaded.budget.pausedReason, 'subagent_missing');
+
+    // Plan task untouched — never marked in-progress.
+    const plan = await planStore.load(agentId, '2026-W16');
+    assert.equal(plan.tasks[0].status, 'pending');
+  });
+
+  it('does NOT throw — returns a TaskTickResult instead', async () => {
+    const agentId = `agent-${uid()}`;
+    await agentStore.save(makeConfig(agentId));
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [makeTask({ description: 't1' })],
+    }));
+
+    // Deliberately no .md file anywhere. The tick must not throw.
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore,
+      projectDir,
+      home: homeDir,
+    });
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(result.pausedReason, 'subagent_missing');
+  });
+
+  it('proceeds normally when the project-level .md file exists', async () => {
+    const agentId = `agent-${uid()}`;
+    await agentStore.save(makeConfig(agentId));
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [makeTask({ description: 'real' })],
+    }));
+
+    await writeSubagentStub(projectDir, agentId);
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore,
+      projectDir,
+      home: homeDir,
+    });
+    assert.equal(result.outcome, 'task_selected');
+    assert.equal(result.task.description, 'real');
+
+    // Not paused as a side effect.
+    const reloaded = await agentStore.load(agentId);
+    assert.equal(reloaded.budget.paused, false);
+  });
+
+  it('proceeds normally when only the user-level .md file exists (project-level missing)', async () => {
+    const agentId = `agent-${uid()}`;
+    await agentStore.save(makeConfig(agentId));
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [makeTask({ description: 'user-level' })],
+    }));
+
+    // Only user-level .md — mimics a user who has a global subagent installed
+    // but no project-level shadow.
+    const userAgentsDir = join(homeDir, '.claude', 'agents');
+    await mkdir(userAgentsDir, { recursive: true });
+    await writeFile(
+      join(userAgentsDir, `${agentId}.md`),
+      `---\nname: ${agentId}\ndescription: user-level\n---\n\nbody\n`,
+      'utf8',
+    );
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore,
+      projectDir,
+      home: homeDir,
+    });
+    assert.equal(result.outcome, 'task_selected');
+  });
+
+  it('records a skipped execution when auto-pausing for subagent_missing', async () => {
+    const agentId = `agent-${uid()}`;
+    await agentStore.save(makeConfig(agentId));
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [makeTask()],
+    }));
+
+    const execStore = new ExecutionStore(dataDir);
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore,
+      executionStore: execStore,
+      projectDir,
+      home: homeDir,
+    });
+
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(result.pausedReason, 'subagent_missing');
+
+    const records = await execStore.load(agentId);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].status, 'skipped');
+  });
+
+  it('prefers the existing pausedReason when the agent is already paused', async () => {
+    // If the budget enforcer already paused the agent with
+    // `budget_exhausted`, the subagent-missing guard must NOT overwrite that
+    // reason. The earlier paused-check fires first and surfaces the original
+    // reason so the resume skill can route to the correct recovery flow.
+    const agentId = `agent-${uid()}`;
+    await agentStore.save(
+      makeConfig(agentId, {
+        budget: { ...baseBudget(), paused: true, pausedReason: 'budget_exhausted' },
+      }),
+    );
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [makeTask()],
+    }));
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore,
+      projectDir,
+      home: homeDir,
+    });
+
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(result.pausedReason, 'budget_exhausted');
+
+    // Persisted pausedReason remains budget_exhausted; auto-pause did not run.
+    const reloaded = await agentStore.load(agentId);
+    assert.equal(reloaded.budget.pausedReason, 'budget_exhausted');
+  });
+
+  it('uses agentId as the subagent slug when subagentRef is absent from config', async () => {
+    // Defensive path: schema requires subagentRef, but if the config somehow
+    // lost it, the fallback-to-agentId keeps the guard useful. File missing
+    // at both locations → auto-pause.
+    const agentId = `agent-${uid()}`;
+
+    // Write a raw config without subagentRef (bypass validation by writing
+    // directly). AgentStore.save validates, so we hand-write it.
+    const rawConfig = { id: agentId, budget: baseBudget(), createdAt: new Date().toISOString() };
+    const mockStoreWithUpdate = {
+      _current: rawConfig,
+      load: async function () { return this._current; },
+      update: async function (_id, updater) {
+        this._current = updater(this._current);
+        return this._current;
+      },
+    };
+
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [makeTask()],
+    }));
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore: mockStoreWithUpdate,
+      projectDir,
+      home: homeDir,
+    });
+
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(result.pausedReason, 'subagent_missing');
+    assert.equal(result.subagentRef, agentId);
+    assert.equal(mockStoreWithUpdate._current.budget.paused, true);
+    assert.equal(mockStoreWithUpdate._current.budget.pausedReason, 'subagent_missing');
+  });
+
+  it('does not throw when agentStore.update fails — returns skipped outcome anyway', async () => {
+    // Graceful degradation: the persist failing does not re-throw. The next
+    // tick will re-attempt the write.
+    const agentId = `agent-${uid()}`;
+    const brokenStore = {
+      load: async () => ({
+        id: agentId,
+        subagentRef: agentId,
+        budget: baseBudget(),
+      }),
+      update: async () => {
+        throw new Error('disk full');
+      },
+    };
+
+    await planStore.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [makeTask()],
+    }));
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: planStore,
+      agentStore: brokenStore,
+      projectDir,
+      home: homeDir,
+    });
+
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(result.pausedReason, 'subagent_missing');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC 11 Sub-AC 2: shell-agent guard
+//
+// Agents freshly created via `hireAllSubagents` / `select-some` land on disk
+// as a "shell": aweek JSON wrapper + `.claude/agents/<slug>.md`, but NO
+// weekly plan files. Before Sub-AC 2 these flowed through the `selectNextTask`
+// path and surfaced as `no_approved_plan` — indistinguishable from a user
+// whose draft plan is waiting for approval. Sub-AC 2 adds an explicit
+// short-circuit so the outcome names the shell case (`no_weekly_plans`) and
+// the tick never tries to load an approved plan that doesn't exist.
+// ---------------------------------------------------------------------------
+
+describe('tickAgent shell-agent guard (AC 11 Sub-AC 2)', () => {
+  let dataDir;
+  let store;
+
+  beforeEach(async () => {
+    dataDir = await makeTempDir('aweek-shell-');
+    store = new WeeklyPlanStore(dataDir);
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('skips a shell agent (no weekly plan files) with outcome=no_weekly_plans', async () => {
+    const agentId = `agent-${uid()}`;
+    // init() creates the weekly-plans directory but no plan files — this
+    // mirrors the on-disk state produced by hireAllSubagents.
+    await store.init(agentId);
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: store });
+
+    assert.equal(result.outcome, 'no_weekly_plans');
+    assert.equal(result.agentId, agentId);
+    assert.equal(result.hasWeeklyPlans, false);
+    assert.ok(result.reason);
+    assert.ok(
+      result.reason.includes('no weekly plan entries') ||
+        result.reason.includes('shell'),
+      `reason should explain the shell case: ${result.reason}`,
+    );
+    assert.ok(result.tickedAt);
+  });
+
+  it('skips a shell agent even when weekly-plans directory does not exist', async () => {
+    // Stricter variant of the above — the directory itself is missing. The
+    // WeeklyPlanStore.list call auto-creates the directory, so the outcome
+    // should still be no_weekly_plans.
+    const agentId = `agent-${uid()}`;
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: store });
+
+    assert.equal(result.outcome, 'no_weekly_plans');
+    assert.equal(result.hasWeeklyPlans, false);
+  });
+
+  it('does NOT short-circuit when the agent has an unapproved plan', async () => {
+    // Shell guard must only fire when the weekly-plans listing is EMPTY. An
+    // agent with a single unapproved plan still has weekly plan entries and
+    // should surface as no_approved_plan so the user can approve it.
+    const agentId = `agent-${uid()}`;
+    await store.save(agentId, makePlan({
+      approved: false,
+      tasks: [makeTask()],
+    }));
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: store });
+    assert.equal(result.outcome, 'no_approved_plan');
+    assert.notEqual(result.outcome, 'no_weekly_plans');
+  });
+
+  it('does NOT short-circuit when the agent has an approved plan with tasks', async () => {
+    // Baseline: shell guard must not interfere with the normal
+    // task-selection path.
+    const agentId = `agent-${uid()}`;
+    const task = makeTask({ description: 'real-task' });
+
+    await store.save(agentId, makePlan({
+      approved: true,
+      approvedAt: new Date().toISOString(),
+      tasks: [task],
+    }));
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: store });
+    assert.equal(result.outcome, 'task_selected');
+    assert.equal(result.task.id, task.id);
+  });
+
+  it('records a skipped execution so the same shell is not re-checked in the same window', async () => {
+    const agentId = `agent-${uid()}`;
+    await store.init(agentId);
+
+    const execStore = new ExecutionStore(dataDir);
+
+    const r1 = await tickAgent(agentId, {
+      weeklyPlanStore: store,
+      executionStore: execStore,
+    });
+    assert.equal(r1.outcome, 'no_weekly_plans');
+
+    // Second tick in the same window is deduplicated.
+    const r2 = await tickAgent(agentId, {
+      weeklyPlanStore: store,
+      executionStore: execStore,
+    });
+    assert.equal(r2.outcome, 'skipped');
+    assert.ok(r2.reason.includes('Duplicate heartbeat'));
+
+    // Only one execution record was stored (the shell-guard skip).
+    const records = await execStore.load(agentId);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].status, 'skipped');
+  });
+
+  it('gracefully degrades when store.list throws — falls through to no_approved_plan', async () => {
+    // If the list probe fails for any reason (filesystem error, missing
+    // method), the shell guard must NOT block the tick. The existing
+    // no_approved_plan branch should still run.
+    const agentId = `agent-${uid()}`;
+
+    const brokenStore = {
+      list: async () => { throw new Error('disk melted'); },
+      loadLatestApproved: async () => null,
+    };
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: brokenStore });
+    // Falls through to the existing no_approved_plan branch because the
+    // shell detection could not prove the shell state.
+    assert.equal(result.outcome, 'no_approved_plan');
+  });
+
+  it('gracefully degrades when store has no list method — falls through to no_approved_plan', async () => {
+    const agentId = `agent-${uid()}`;
+
+    const legacyStore = {
+      // No list() method at all — older store shape.
+      loadLatestApproved: async () => null,
+    };
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: legacyStore });
+    assert.equal(result.outcome, 'no_approved_plan');
+  });
+
+  it('runs BEFORE task selection — does not mark anything in-progress', async () => {
+    const agentId = `agent-${uid()}`;
+    await store.init(agentId);
+
+    const result = await tickAgent(agentId, { weeklyPlanStore: store });
+    assert.equal(result.outcome, 'no_weekly_plans');
+
+    // No plan files means list stays empty — nothing to verify in the plan
+    // store, but the outcome must not carry a `task` or `taskIndex`.
+    assert.equal(result.task, undefined);
+    assert.equal(result.taskIndex, undefined);
+  });
+
+  it('co-exists with the paused guard — paused agents still take precedence', async () => {
+    // The paused guard (Step 0a) runs before the shell guard (Step 0c), so a
+    // paused shell agent surfaces as skipped/paused rather than no_weekly_plans.
+    const agentId = `agent-${uid()}`;
+    await store.init(agentId);
+
+    const pausedAgentStore = {
+      load: async () => ({
+        id: agentId,
+        subagentRef: agentId,
+        budget: {
+          paused: true,
+          pausedReason: 'budget_exhausted',
+          weeklyTokenLimit: 100000,
+          currentUsage: 0,
+          periodStart: new Date().toISOString(),
+        },
+      }),
+    };
+
+    const result = await tickAgent(agentId, {
+      weeklyPlanStore: store,
+      agentStore: pausedAgentStore,
+    });
+
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(result.pausedReason, 'budget_exhausted');
+    // NOT no_weekly_plans — the paused guard wins.
+    assert.notEqual(result.outcome, 'no_weekly_plans');
   });
 });

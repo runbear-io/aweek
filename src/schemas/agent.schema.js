@@ -17,33 +17,17 @@ export { monthlyObjectiveSchema, monthlyPlanSchema, OBJECTIVE_STATUSES, MONTHLY_
 export { weeklyTaskSchema, weeklyPlanSchema, TASK_STATUSES, TASK_PRIORITIES } from './weekly-plan.schema.js';
 export { inboxMessageSchema, inboxQueueSchema, MESSAGE_STATUSES, MESSAGE_PRIORITIES, MESSAGE_TYPES } from './inbox.schema.js';
 
-/** Schema for agent identity */
-export const identitySchema = {
-  $id: 'aweek://schemas/identity',
-  type: 'object',
-  required: ['name', 'role', 'systemPrompt'],
-  properties: {
-    name: {
-      type: 'string',
-      minLength: 1,
-      maxLength: 100,
-      description: 'Human-readable agent name',
-    },
-    role: {
-      type: 'string',
-      minLength: 1,
-      maxLength: 200,
-      description: 'Brief description of the agent role',
-    },
-    systemPrompt: {
-      type: 'string',
-      minLength: 1,
-      description: 'System prompt / personality for Claude Code sessions',
-    },
-  },
-  additionalProperties: false,
-};
+/**
+ * Subagent slug pattern — lowercase alphanumeric with hyphens, no leading/trailing
+ * hyphen, no consecutive hyphens. Matches the set of safe filesystem basenames
+ * for `.claude/agents/SLUG.md`.
+ */
+export const SUBAGENT_SLUG_PATTERN = '^[a-z0-9]+(-[a-z0-9]+)*$';
 
+// Identity is no longer part of the aweek JSON. The subagent .md file at
+// .claude/agents/SLUG.md is the single source of truth for name, role,
+// system prompt, model, tools, skills, and MCP servers.
+//
 // weeklyTaskSchema and weeklyPlanSchema are now in weekly-plan.schema.js
 
 /** Schema for budget tracking */
@@ -70,7 +54,13 @@ export const budgetSchema = {
     paused: {
       type: 'boolean',
       default: false,
-      description: 'Whether agent is paused due to budget exhaustion',
+      description: 'Whether agent is paused (budget exhausted, missing subagent file, or manually stopped)',
+    },
+    pausedReason: {
+      type: ['string', 'null'],
+      enum: ['budget_exhausted', 'subagent_missing', 'manual', null],
+      description:
+        'Why the agent was paused. Set alongside paused=true so resume flows can distinguish recoverable causes (budget top-up) from identity-loss causes (subagent_missing → restore .claude/agents/<slug>.md). Explicitly `null` on freshly hired shells where paused=false — fresh JSON wrappers (e.g. produced by hire-all) carry the field with a null value so downstream readers can distinguish "never paused" from "field missing because the schema predates the column".',
     },
     sessions: {
       type: 'array',
@@ -95,14 +85,20 @@ export const budgetSchema = {
 export const agentConfigSchema = {
   $id: 'aweek://schemas/agent-config',
   type: 'object',
-  required: ['id', 'identity', 'goals', 'budget', 'createdAt'],
+  required: ['id', 'subagentRef', 'goals', 'budget', 'createdAt'],
   properties: {
     id: {
       type: 'string',
-      pattern: '^agent-[a-z0-9-]+$',
-      description: 'Unique agent identifier',
+      pattern: SUBAGENT_SLUG_PATTERN,
+      description:
+        'Unique agent identifier. Equals the Claude Code subagent slug (filesystem basename of .claude/agents/SLUG.md).',
     },
-    identity: { $ref: 'aweek://schemas/identity' },
+    subagentRef: {
+      type: 'string',
+      pattern: SUBAGENT_SLUG_PATTERN,
+      description:
+        'Slug of the Claude Code subagent at .claude/agents/SLUG.md — the single source of truth for identity, system prompt, model, tools, skills, and MCP servers. Must equal `id`.',
+    },
     goals: { $ref: 'aweek://schemas/goals-array' },
     monthlyPlans: {
       type: 'array',

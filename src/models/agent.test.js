@@ -32,9 +32,7 @@ import { validateAgentConfig } from '../schemas/validator.js';
 /** Helper: create a fully populated agent config for testing */
 function makeTestAgent() {
   const config = createAgentConfig({
-    name: 'TestBot',
-    role: 'Test agent for unit tests',
-    systemPrompt: 'You are a test agent.',
+    subagentRef: 'testbot',
   });
   const g1 = createGoal('Short-term goal', '1mo');
   const g2 = createGoal('Medium-term goal', '3mo');
@@ -56,17 +54,75 @@ function makeTestAgent() {
 describe('agent model — factory functions', () => {
   it('createAgentConfig produces valid schema-conformant object', () => {
     const config = createAgentConfig({
-      name: 'Alice',
-      role: 'Research assistant',
-      systemPrompt: 'You help with research.',
+      subagentRef: 'alice',
     });
-    assert.ok(config.id.startsWith('agent-alice-'));
-    assert.equal(config.identity.name, 'Alice');
+    // The aweek agent id MUST equal the subagent slug — no UUID/random suffix.
+    assert.equal(config.id, 'alice');
+    assert.equal(config.subagentRef, 'alice');
+    assert.equal(config.id, config.subagentRef);
+    // Identity (name/role/systemPrompt) lives only in .claude/agents/SLUG.md now;
+    // it MUST NOT appear on the aweek config.
+    assert.equal(config.identity, undefined);
     assert.deepStrictEqual(config.goals, []);
     assert.deepStrictEqual(config.monthlyPlans, []);
     assert.deepStrictEqual(config.weeklyPlans, []);
     assert.equal(config.budget.weeklyTokenLimit, 500_000);
     assert.equal(config.budget.paused, false);
+  });
+
+  it('createAgentConfig: id is the slug verbatim — no random suffix on repeat calls', () => {
+    const a = createAgentConfig({ subagentRef: 'marketer' });
+    const b = createAgentConfig({ subagentRef: 'marketer' });
+    assert.equal(a.id, 'marketer');
+    assert.equal(b.id, 'marketer');
+    assert.equal(a.id, b.id);
+  });
+
+  it('createAgentConfig accepts a multi-segment slug like "growth-engineer"', () => {
+    const config = createAgentConfig({ subagentRef: 'growth-engineer' });
+    assert.equal(config.id, 'growth-engineer');
+    assert.equal(config.subagentRef, 'growth-engineer');
+  });
+
+  it('createAgentConfig respects custom weeklyTokenLimit', () => {
+    const config = createAgentConfig({ subagentRef: 'budgetbot', weeklyTokenLimit: 1_234 });
+    assert.equal(config.budget.weeklyTokenLimit, 1_234);
+    assert.equal(config.weeklyTokenBudget, 1_234);
+  });
+
+  it('createAgentConfig rejects an invalid slug (uppercase)', () => {
+    assert.throws(
+      () => createAgentConfig({ subagentRef: 'NotASlug' }),
+      /subagentRef must be a valid slug/,
+    );
+  });
+
+  it('createAgentConfig rejects an invalid slug (leading hyphen)', () => {
+    assert.throws(
+      () => createAgentConfig({ subagentRef: '-leading' }),
+      /subagentRef must be a valid slug/,
+    );
+  });
+
+  it('createAgentConfig rejects an invalid slug (consecutive hyphens)', () => {
+    assert.throws(
+      () => createAgentConfig({ subagentRef: 'a--b' }),
+      /subagentRef must be a valid slug/,
+    );
+  });
+
+  it('createAgentConfig rejects a missing slug', () => {
+    assert.throws(
+      () => createAgentConfig({}),
+      /subagentRef must be a valid slug/,
+    );
+  });
+
+  it('createAgentConfig rejects a non-string slug', () => {
+    assert.throws(
+      () => createAgentConfig({ subagentRef: 42 }),
+      /subagentRef must be a valid slug/,
+    );
   });
 
   it('createGoal defaults to 3mo horizon', () => {
@@ -118,9 +174,7 @@ describe('agent model — goal management', () => {
 
   beforeEach(() => {
     config = createAgentConfig({
-      name: 'GoalBot',
-      role: 'Goal tester',
-      systemPrompt: 'Test goals.',
+      subagentRef: 'goalbot',
     });
   });
 
@@ -255,9 +309,7 @@ describe('agent model — monthly plan management', () => {
 
   beforeEach(() => {
     config = createAgentConfig({
-      name: 'PlanBot',
-      role: 'Plan tester',
-      systemPrompt: 'Test plans.',
+      subagentRef: 'planbot',
     });
   });
 
@@ -469,9 +521,7 @@ describe('agent model — plan traceability', () => {
 
   it('getObjectivesForGoal returns correct traceability after mutations', () => {
     const config = createAgentConfig({
-      name: 'TraceBot',
-      role: 'Traceability tester',
-      systemPrompt: 'Test traceability.',
+      subagentRef: 'tracebot',
     });
     const goal = createGoal('Traced goal', '3mo');
     addGoal(config, goal);

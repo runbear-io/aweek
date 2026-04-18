@@ -46,7 +46,6 @@ export {
   validate,
   assertValid,
   validateAgentConfig,
-  validateIdentity,
   validateGoal,
   validateMonthlyPlan,
   validateMonthlyObjective,
@@ -88,23 +87,87 @@ export {
   inboxMessageSchema as inboxMessageSchemaDefinition,
   inboxQueueSchema,
 } from './schemas/inbox.schema.js';
+// Hire skill — the /aweek:hire flow is routed through hire-route.js and
+// handled by the new wizard pieces (hire-create-new, hire-all, hire-select-some,
+// init-hire-menu). The old create-agent pipeline has been removed: identity
+// lives in .claude/agents/<slug>.md, not in the aweek JSON.
 export {
-  assembleAndSaveAgent,
-  formatAgentSummary,
-  validateIdentityInput,
-  validateGoalsInput,
-  validateObjectivesInput,
-  validateTasksInput,
-  validateTokenLimit,
-  getCurrentMonth,
-  getCurrentWeek,
-} from './skills/create-agent.js';
-// Hire skill — consolidated replacement for the old create-agent skill.
-// Re-exports the same pipeline under hire-friendly names; see src/skills/hire.js.
-export {
-  hireAgent,
-  formatHireSummary,
+  createNewSubagent,
+  validateCreateNewInput,
 } from './skills/hire.js';
+// Hire wizard routing — decides whether /aweek:hire offers a two-option
+// prompt (Pick existing vs Create new) or forces the create-new path when
+// no unhired subagents are available. See src/skills/hire-route.js.
+export {
+  PLUGIN_SUBAGENT_PREFIXES,
+  isPluginSubagent,
+  listProjectSubagentSlugs,
+  listUnhiredSubagents,
+  determineHireRoute,
+} from './skills/hire-route.js';
+// Hire-all handler (Sub-AC 1 of AC 50301) — bulk wrapper that iterates
+// over a list of pre-existing subagent slugs and creates minimal aweek
+// JSON shells for each one. Used by the /aweek:init four-option menu's
+// `hire-all` and `select-some` branches. See src/skills/hire-all.js.
+export {
+  DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT,
+  hireAllSubagents,
+  formatHireAllSummary,
+} from './skills/hire-all.js';
+// Select-some handler (Sub-AC 2 of AC 50302) — multi-select UX layer on
+// top of hireAllSubagents. Builds the AskUserQuestion choice payload from
+// the unhired subagent list (enriched with live .md frontmatter) and
+// wraps the user's picks into aweek JSON shells. See
+// src/skills/hire-select-some.js.
+export {
+  DEFAULT_SELECT_SOME_PROMPT_TEXT,
+  defaultChoiceDescription as defaultSelectSomeChoiceDescription,
+  buildSelectSomeChoices,
+  runSelectSomeHire,
+  formatSelectSomeResult,
+} from './skills/hire-select-some.js';
+// Create-new handler (Sub-AC 3 of AC 50303) — the init menu's Create new
+// branch delegates to /aweek:hire's three-field create-new wizard. This
+// module exposes both the handoff descriptor (for markdown that launches
+// the interactive skill) and an in-process handler that runs the same
+// two-step flow (write/adopt .md then create the aweek JSON shell) from
+// pre-collected parameters. See src/skills/hire-create-new-menu.js.
+export {
+  CREATE_NEW_SKILL_NAME,
+  CREATE_NEW_ROUTE_NAME,
+  DEFAULT_CREATE_NEW_PROMPT_TEXT,
+  buildCreateNewLaunchInstruction,
+  runCreateNewHire,
+  formatCreateNewResult,
+} from './skills/hire-create-new-menu.js';
+// Subagent file primitives — single source of truth for the on-disk
+// `.claude/agents/<slug>.md` contract (path resolution, slug validation,
+// markdown rendering, collision-safe writes).
+export {
+  SUBAGENTS_DIR_RELATIVE,
+  resolveSubagentsDir,
+  subagentFilePath,
+  validateSubagentSlug,
+  slugifyName,
+  validateDescription,
+  validateSystemPrompt,
+  buildSubagentMarkdown,
+  subagentFileExists,
+  readSubagentFile,
+  writeSubagentFile,
+} from './subagents/subagent-file.js';
+// Subagent discovery — combined project + user scope scanner used by the
+// hire wizard's pick-existing branch. Merges `.claude/agents/` and
+// `~/.claude/agents/`, filters out already-hired and plugin-namespaced
+// slugs, and returns `{ slug, scope, path, hired }` entries.
+export {
+  USER_SUBAGENT_SCOPE,
+  PROJECT_SUBAGENT_SCOPE,
+  resolveUserSubagentsDir,
+  userSubagentFilePath,
+  listUserSubagentSlugs,
+  discoverSubagents,
+} from './subagents/subagent-discovery.js';
 export {
   adjustGoals,
   formatAdjustmentSummary,
@@ -214,9 +277,13 @@ export {
   usageRecordSchema,
   usageLogSchema,
 } from './schemas/usage.schema.js';
-// CLI session launcher — spawns Claude Code CLI for agent task execution
+// CLI session launcher — spawns Claude Code CLI for agent task execution.
+// Note: `buildSystemPrompt` was removed in the subagent refactor — identity
+// now lives in `.claude/agents/<slug>.md` and is injected by Claude Code via
+// the `--agents` flag, not by aweek. `buildRuntimeContext` replaces it as
+// the per-task runtime prompt builder.
 export {
-  buildSystemPrompt,
+  buildRuntimeContext,
   buildTaskPrompt,
   buildCliArgs,
   launchSession,
@@ -453,3 +520,23 @@ export {
   resolveProjectDir as resolveInitProjectDir,
   shouldLaunchHire,
 } from './skills/init.js';
+// Init hire menu (Sub-AC 2 + 3 of AC 6) — four-option interactive menu
+// (Hire all / Select some / Create new / Skip) that displays unhired
+// subagents and routes the user's choice to the appropriate /aweek:hire
+// branch, plus the Sub-AC 3 fall-through that auto-delegates to /aweek:hire
+// when no unhired subagents exist (so the user is never asked to choose
+// between create-new and skip on an empty roster). See
+// src/skills/init-hire-menu.js.
+export {
+  DEFAULT_MENU_PROMPT_TEXT as INIT_HIRE_MENU_DEFAULT_PROMPT_TEXT,
+  DEFAULT_MENU_PROMPT_TEXT_NO_UNHIRED as INIT_HIRE_MENU_DEFAULT_PROMPT_TEXT_NO_UNHIRED,
+  DEFAULT_FALL_THROUGH_REASON as INIT_HIRE_MENU_DEFAULT_FALL_THROUGH_REASON,
+  INIT_HIRE_MENU_CHOICE,
+  INIT_HIRE_MENU_OPTIONS,
+  buildInitHireMenu,
+  resolveInitHireMenu,
+  formatInitHireMenuPrompt,
+  routeInitHireMenuChoice,
+  validateInitHireMenuChoice,
+  validateSelectedSlugs as validateInitHireMenuSelectedSlugs,
+} from './skills/init-hire-menu.js';

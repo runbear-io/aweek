@@ -15,7 +15,7 @@
  */
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -34,10 +34,8 @@ import {
   formatActionResult,
   formatResumeResult,
   pause,
-  editIdentity,
   deleteAgent,
   formatPauseResult,
-  formatIdentityResult,
   formatDeleteResult,
 } from './manage.js';
 import * as resumeAgent from './resume-agent.js';
@@ -118,9 +116,7 @@ describe('manage skill (adapter over resume-agent)', () => {
 
       const store = new AgentStore(tmpDir);
       const config = createAgentConfig({
-        name: 'Alice',
-        role: 'developer',
-        systemPrompt: 'You are Alice, a developer agent.',
+        subagentRef: 'alice',
         weeklyTokenLimit: 100_000,
       });
       // Mutate only the fields we care about — leave schema-required fields
@@ -256,9 +252,7 @@ describe('manage skill (adapter over resume-agent)', () => {
       await rm(tmpDir, { recursive: true, force: true });
       const store = new AgentStore(tmpDir);
       const config = createAgentConfig({
-        name: 'Bob',
-        role: 'researcher',
-        systemPrompt: 'You are Bob, a researcher.',
+        subagentRef: 'bob',
         weeklyTokenLimit: 100_000,
       });
       // Active (not paused)
@@ -300,111 +294,6 @@ describe('manage skill (adapter over resume-agent)', () => {
     });
   });
 
-  describe('editIdentity', () => {
-    let tmpDir;
-    let agent;
-
-    before(async () => {
-      tmpDir = await mkdtemp(join(tmpdir(), 'aweek-manage-edit-'));
-    });
-
-    after(async () => {
-      await rm(tmpDir, { recursive: true, force: true });
-    });
-
-    beforeEach(async () => {
-      await rm(tmpDir, { recursive: true, force: true });
-      const store = new AgentStore(tmpDir);
-      const config = createAgentConfig({
-        name: 'Carol',
-        role: 'writer',
-        systemPrompt: 'You are Carol, a writer.',
-        weeklyTokenLimit: 100_000,
-      });
-      await store.save(config);
-      agent = config;
-    });
-
-    it('requires agentId', async () => {
-      const result = await editIdentity({ name: 'Dave', dataDir: tmpDir });
-      assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /agentId/i.test(e)));
-    });
-
-    it('refuses when no editable fields are provided', async () => {
-      const result = await editIdentity({ agentId: agent.id, dataDir: tmpDir });
-      assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /at least one/i.test(e)));
-    });
-
-    it('updates only the provided fields', async () => {
-      const result = await editIdentity({
-        agentId: agent.id,
-        name: 'Carol Renamed',
-        dataDir: tmpDir,
-      });
-      assert.equal(result.success, true);
-      assert.deepEqual(result.changed, ['name']);
-      assert.equal(result.previous.name, 'Carol');
-      assert.equal(result.current.name, 'Carol Renamed');
-      assert.equal(result.current.role, 'writer');
-      assert.equal(result.current.systemPrompt, 'You are Carol, a writer.');
-
-      const store = new AgentStore(tmpDir);
-      const reloaded = await store.load(agent.id);
-      assert.equal(reloaded.identity.name, 'Carol Renamed');
-      assert.equal(reloaded.identity.role, 'writer');
-    });
-
-    it('updates all three identity fields together', async () => {
-      const result = await editIdentity({
-        agentId: agent.id,
-        name: 'Carol2',
-        role: 'senior writer',
-        systemPrompt: 'You are Carol2, a senior writer.',
-        dataDir: tmpDir,
-      });
-      assert.equal(result.success, true);
-      assert.deepEqual(result.changed.sort(), ['name', 'role', 'systemPrompt']);
-    });
-
-    it('rejects an identity that fails schema validation', async () => {
-      // Name > 100 chars violates the schema.
-      const tooLong = 'x'.repeat(150);
-      const result = await editIdentity({
-        agentId: agent.id,
-        name: tooLong,
-        dataDir: tmpDir,
-      });
-      assert.equal(result.success, false);
-      assert.ok(result.errors.length > 0);
-
-      // Agent file was not touched.
-      const store = new AgentStore(tmpDir);
-      const reloaded = await store.load(agent.id);
-      assert.equal(reloaded.identity.name, 'Carol');
-    });
-
-    it('reports success with no changes when the new values match existing values', async () => {
-      const result = await editIdentity({
-        agentId: agent.id,
-        name: 'Carol',
-        dataDir: tmpDir,
-      });
-      assert.equal(result.success, true);
-      assert.deepEqual(result.changed, []);
-    });
-
-    it('surfaces a descriptive not-found error for unknown agent', async () => {
-      const result = await editIdentity({
-        agentId: 'agent-ghost-12345678',
-        name: 'Ghost',
-        dataDir: tmpDir,
-      });
-      assert.equal(result.success, false);
-    });
-  });
-
   describe('deleteAgent (destructive, confirmation-gated)', () => {
     let tmpDir;
     let agent;
@@ -421,9 +310,7 @@ describe('manage skill (adapter over resume-agent)', () => {
       await rm(tmpDir, { recursive: true, force: true });
       const store = new AgentStore(tmpDir);
       const config = createAgentConfig({
-        name: 'Dave',
-        role: 'analyst',
-        systemPrompt: 'You are Dave, an analyst.',
+        subagentRef: 'dave',
         weeklyTokenLimit: 100_000,
       });
       await store.save(config);
@@ -475,11 +362,187 @@ describe('manage skill (adapter over resume-agent)', () => {
       assert.equal(result.success, true);
       assert.equal(result.deleted, true);
       assert.equal(result.snapshot.id, agent.id);
-      assert.equal(result.snapshot.name, 'Dave');
-      assert.equal(result.snapshot.role, 'analyst');
 
       const store = new AgentStore(tmpDir);
       assert.equal(await store.exists(agent.id), false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // AC 10 — delete also handles the Claude Code subagent .md file.
+  //
+  // The default MUST be "keep" — aweek owns only the JSON scheduling state,
+  // while the subagent `.md` at `.claude/agents/<slug>.md` is the identity
+  // source of truth and may be shared with other tooling. Deletion of the
+  // `.md` is opt-in via `deleteSubagentMd: true` after the /aweek:manage
+  // skill gathers a separate AskUserQuestion answer.
+  // -------------------------------------------------------------------------
+  describe('deleteAgent — subagent .md handling (AC 10)', () => {
+    let tmpDir;
+    let dataDir;
+    let subagentsDir;
+    const slug = 'test-subagent';
+
+    before(async () => {
+      tmpDir = await mkdtemp(join(tmpdir(), 'aweek-manage-delete-md-'));
+    });
+
+    after(async () => {
+      await rm(tmpDir, { recursive: true, force: true });
+    });
+
+    beforeEach(async () => {
+      // Fresh project layout on every test.
+      await rm(tmpDir, { recursive: true, force: true });
+      dataDir = join(tmpDir, '.aweek', 'agents');
+      subagentsDir = join(tmpDir, '.claude', 'agents');
+      await mkdir(dataDir, { recursive: true });
+      await mkdir(subagentsDir, { recursive: true });
+
+      const store = new AgentStore(dataDir);
+      // Use the post-AC1 schema shape: id === subagentRef (slug), no identity.
+      const config = createAgentConfig({
+        subagentRef: slug,
+        weeklyTokenLimit: 100_000,
+      });
+      await store.save(config);
+
+      // And a matching subagent .md file.
+      await writeFile(
+        join(subagentsDir, `${slug}.md`),
+        '---\nname: test-subagent\ndescription: test\n---\n\nBody.\n',
+        'utf-8',
+      );
+    });
+
+    /** Assert whether a path currently exists on disk. */
+    async function pathExists(p) {
+      try {
+        await access(p);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    it('defaults to keeping the .md file (deleteSubagentMd omitted)', async () => {
+      const result = await deleteAgent({
+        agentId: slug,
+        dataDir,
+        subagentsDir,
+        confirmed: true,
+      });
+
+      assert.equal(result.success, true);
+      assert.equal(result.deleted, true);
+      // JSON gone.
+      assert.equal(await pathExists(join(dataDir, `${slug}.json`)), false);
+      // .md kept.
+      const mdPath = join(subagentsDir, `${slug}.md`);
+      assert.equal(await pathExists(mdPath), true);
+
+      // Result records the kept .md explicitly.
+      assert.ok(result.subagentMd, 'expected subagentMd metadata on result');
+      assert.equal(result.subagentMd.requested, false);
+      assert.equal(result.subagentMd.deleted, false);
+      assert.equal(result.subagentMd.path, mdPath);
+    });
+
+    it('defaults to keeping the .md file when deleteSubagentMd is explicitly false', async () => {
+      const result = await deleteAgent({
+        agentId: slug,
+        dataDir,
+        subagentsDir,
+        confirmed: true,
+        deleteSubagentMd: false,
+      });
+
+      assert.equal(result.success, true);
+      const mdPath = join(subagentsDir, `${slug}.md`);
+      assert.equal(await pathExists(mdPath), true);
+      assert.equal(result.subagentMd.requested, false);
+      assert.equal(result.subagentMd.deleted, false);
+    });
+
+    it('deletes the .md file when deleteSubagentMd is true', async () => {
+      const mdPath = join(subagentsDir, `${slug}.md`);
+      assert.equal(await pathExists(mdPath), true, 'precondition: .md exists');
+
+      const result = await deleteAgent({
+        agentId: slug,
+        dataDir,
+        subagentsDir,
+        confirmed: true,
+        deleteSubagentMd: true,
+      });
+
+      assert.equal(result.success, true);
+      assert.equal(await pathExists(join(dataDir, `${slug}.json`)), false);
+      assert.equal(await pathExists(mdPath), false);
+      assert.equal(result.subagentMd.requested, true);
+      assert.equal(result.subagentMd.existed, true);
+      assert.equal(result.subagentMd.deleted, true);
+      assert.equal(result.subagentMd.path, mdPath);
+    });
+
+    it('is graceful when deleteSubagentMd:true but the .md is already missing', async () => {
+      // Remove the .md file before the delete runs.
+      const mdPath = join(subagentsDir, `${slug}.md`);
+      await rm(mdPath, { force: true });
+      assert.equal(await pathExists(mdPath), false);
+
+      const result = await deleteAgent({
+        agentId: slug,
+        dataDir,
+        subagentsDir,
+        confirmed: true,
+        deleteSubagentMd: true,
+      });
+
+      // The overall delete still succeeds — a missing .md is not an error.
+      assert.equal(result.success, true);
+      assert.equal(result.deleted, true);
+      assert.equal(result.subagentMd.requested, true);
+      assert.equal(result.subagentMd.existed, false);
+      assert.equal(result.subagentMd.deleted, false);
+      assert.ok(!result.subagentMd.error, 'no error expected for missing .md');
+    });
+
+    it('formatDeleteResult renders "Subagent file kept" for the default path', async () => {
+      const result = await deleteAgent({
+        agentId: slug,
+        dataDir,
+        subagentsDir,
+        confirmed: true,
+      });
+      const text = formatDeleteResult(result);
+      assert.match(text, /Subagent file kept/);
+      assert.match(text, new RegExp(`${slug}\\.md`));
+    });
+
+    it('formatDeleteResult renders "Subagent file deleted" when opted-in', async () => {
+      const result = await deleteAgent({
+        agentId: slug,
+        dataDir,
+        subagentsDir,
+        confirmed: true,
+        deleteSubagentMd: true,
+      });
+      const text = formatDeleteResult(result);
+      assert.match(text, /Subagent file deleted/);
+    });
+
+    it('formatDeleteResult renders the "nothing to delete" path for missing .md', async () => {
+      await rm(join(subagentsDir, `${slug}.md`), { force: true });
+      const result = await deleteAgent({
+        agentId: slug,
+        dataDir,
+        subagentsDir,
+        confirmed: true,
+        deleteSubagentMd: true,
+      });
+      const text = formatDeleteResult(result);
+      assert.match(text, /Subagent file not found/);
     });
   });
 
@@ -505,31 +568,6 @@ describe('manage skill (adapter over resume-agent)', () => {
       });
       assert.match(text, /Failed to pause/);
       assert.match(text, /not found/);
-    });
-
-    it('formatIdentityResult renders changed fields', () => {
-      const text = formatIdentityResult({
-        agentId: 'a',
-        action: 'edit-identity',
-        success: true,
-        changed: ['name', 'role'],
-        previous: { name: 'Old', role: 'old-role', systemPrompt: 'x' },
-        current: { name: 'New', role: 'new-role', systemPrompt: 'x' },
-      });
-      assert.match(text, /Identity Updated/);
-      assert.match(text, /name: Old → New/);
-      assert.match(text, /role: old-role → new-role/);
-    });
-
-    it('formatIdentityResult renders a no-op message', () => {
-      const text = formatIdentityResult({
-        agentId: 'a',
-        action: 'edit-identity',
-        success: true,
-        changed: [],
-        message: 'No identity fields changed for agent "a".',
-      });
-      assert.match(text, /No identity fields changed/);
     });
 
     it('formatDeleteResult renders success with a snapshot', () => {

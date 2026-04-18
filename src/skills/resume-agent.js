@@ -44,8 +44,8 @@ export async function listPausedAgents({ dataDir }) {
     if (config.budget?.paused === true) {
       paused.push({
         id: config.id,
-        name: config.identity.name,
-        role: config.identity.role,
+        name: config.identity?.name || config.id,
+        role: config.identity?.role || '',
         budget: {
           weeklyTokenLimit: config.budget.weeklyTokenLimit || config.weeklyTokenBudget || 0,
           currentUsage: config.budget.currentUsage || 0,
@@ -103,8 +103,8 @@ export async function getPausedAgentDetails(agentId, { dataDir, weekMonday }) {
 
   return {
     agentId,
-    name: config.identity.name,
-    role: config.identity.role,
+    name: config.identity?.name || config.id,
+    role: config.identity?.role || '',
     paused: true,
     budget: {
       weeklyTokenLimit: budgetLimit,

@@ -31,9 +31,7 @@ import {
 
 function makeAgent(name, overrides = {}) {
   const config = createAgentConfig({
-    name,
-    role: `${name} role`,
-    systemPrompt: `You are ${name}.`,
+    subagentRef: String(name).toLowerCase(),
     weeklyTokenLimit: 100000,
   });
   return { ...config, ...overrides };
@@ -171,8 +169,8 @@ describe('buildAgentStatus', () => {
     });
 
     assert.equal(status.id, agent.id);
-    assert.equal(status.name, 'Alpha');
-    assert.equal(status.role, 'Alpha role');
+    // With identity removed, production falls back to the agent id (slug).
+    assert.equal(status.name, 'alpha');
     assert.equal(status.state, 'idle');
     assert.equal(status.plan.tasks.total, 0);
     assert.equal(status.usage.totalTokens, 0);
@@ -387,7 +385,7 @@ describe('gatherAllAgentStatuses', () => {
     assert.equal(result.weekMonday, '2026-04-13');
 
     const names = result.agents.map((a) => a.name).sort();
-    assert.deepEqual(names, ['Alice', 'Bob']);
+    assert.deepEqual(names, ['alice', 'bob']);
   });
 
   it('includes correct week/date metadata', async () => {
