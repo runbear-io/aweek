@@ -17,17 +17,11 @@ You MUST follow this exact workflow when this skill is invoked.
 List all available agents:
 
 ```bash
-node --input-type=module -e "
-import { listAgentsForCalendar } from './src/skills/weekly-calendar-grid.js';
-
-const agents = await listAgentsForCalendar();
-if (agents.length === 0) {
-  console.log('NO_AGENTS');
-} else {
-  console.log(JSON.stringify(agents, null, 2));
-}
-"
+aweek exec calendar listAgentsForCalendar
 ```
+
+The call returns a JSON array of `{ id, name, role }` records. Treat an
+empty array as the no-agents case.
 
 - If no agents exist, inform the user: "No agents found. Use /aweek:hire to create one first." and stop.
 - If only one agent exists, auto-select it.
@@ -38,34 +32,29 @@ if (agents.length === 0) {
 Run the grid renderer to get the calendar text and task index:
 
 ```bash
-node --input-type=module -e "
-import { loadAndRenderGrid } from './src/skills/weekly-calendar-grid.js';
-
-const result = await loadAndRenderGrid({
-  agentId: '<AGENT_ID>',
-  opts: {
-    startHour: 9,
-    endHour: 18,
-    cellWidth: 24,
-    showWeekend: false,
-    spread: 'spread',
-  },
-});
-
-if (!result.success) {
-  console.error('ERROR:', JSON.stringify(result.errors));
-  process.exit(1);
-}
-
-console.log(result.output);
-console.log('---TASK_INDEX---');
-console.log(JSON.stringify(result.taskIndex));
-"
+echo '{
+  "agentId": "<AGENT_ID>",
+  "opts": {
+    "startHour": 9,
+    "endHour": 18,
+    "cellWidth": 24,
+    "showWeekend": false,
+    "spread": "spread"
+  }
+}' | aweek exec calendar loadAndRenderGrid --input-json -
 ```
 
-**IMPORTANT — Not collapsed display:** After running the script, you MUST output the calendar grid as direct text in your response (inside a markdown code block). Do NOT just show the bash output — copy the grid text and display it yourself so it appears expanded, not collapsed inside a bash result.
+The response JSON contains `success`, `output` (the rendered grid text),
+`taskIndex` (the task list for interactive selection), and `errors` when
+`success === false`.
 
-Also parse the `---TASK_INDEX---` JSON to get the task list for interactive selection.
+**IMPORTANT — Not collapsed display:** After running the command, you MUST
+output the calendar grid text as direct text in your response (inside a
+markdown code block). Do NOT just show the bash output — copy `result.output`
+and display it yourself so it appears expanded, not collapsed inside a bash
+result.
+
+Also parse `result.taskIndex` to get the task list for interactive selection.
 
 ### Step 3: Interactive Navigation
 

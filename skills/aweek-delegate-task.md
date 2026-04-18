@@ -17,33 +17,13 @@ You MUST follow this exact workflow when this skill is invoked. Use the project'
 List all available agents so the user can choose sender and recipient:
 
 ```bash
-node --input-type=module -e "
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
-const dir = join(process.cwd(), 'data', 'agents');
-try {
-  const files = await readdir(dir);
-  const agents = [];
-  for (const f of files) {
-    if (!f.endsWith('.json')) continue;
-    const data = JSON.parse(await readFile(join(dir, f), 'utf-8'));
-    agents.push({
-      id: data.id,
-      name: data.identity?.name,
-      role: data.identity?.role,
-    });
-  }
-  if (agents.length < 2) {
-    console.log('NEED_MORE_AGENTS');
-  } else {
-    console.log(JSON.stringify(agents, null, 2));
-  }
-} catch (e) {
-  console.log('NEED_MORE_AGENTS');
-}
-"
+echo '{"dataDir":".aweek/agents"}' \
+  | aweek exec agent-helpers listAllAgents --input-json -
 ```
+
+The response is an array of `{ config }` records. Project each entry to
+`{ id: config.id, name: config.identity?.name, role: config.identity?.role }`
+for display. Treat fewer than 2 entries as the "need more agents" case.
 
 - If fewer than 2 agents exist, inform the user: "At least 2 agents are needed for delegation. Use /aweek:create-agent to create more." and stop.
 - Display a numbered list showing agent name, role, and ID.
@@ -97,27 +77,31 @@ Ask using AskUserQuestion: "Proceed with this delegation? (yes/no)"
 If the user confirms, execute:
 
 ```bash
-node --input-type=module -e "
-import { delegateTask, formatDelegationResult } from './src/skills/delegate-task.js';
-
-const result = await delegateTask({
-  fromAgentId: '<FROM_AGENT_ID>',
-  toAgentId: '<TO_AGENT_ID>',
-  taskDescription: '<TASK_DESCRIPTION>',
-  options: {
-    priority: '<PRIORITY>',
-    context: '<CONTEXT_OR_UNDEFINED>',
-    sourceTaskId: '<SOURCE_TASK_ID_OR_UNDEFINED>',
-  },
-});
-
-console.log(formatDelegationResult(result));
-console.log('---');
-console.log('MESSAGE_ID:' + result.id);
-"
+echo '{
+  "fromAgentId": "<FROM_AGENT_ID>",
+  "toAgentId": "<TO_AGENT_ID>",
+  "taskDescription": "<TASK_DESCRIPTION>",
+  "options": {
+    "priority": "<PRIORITY>",
+    "context": "<CONTEXT_OR_OMIT>",
+    "sourceTaskId": "<SOURCE_TASK_ID_OR_OMIT>"
+  }
+}' | aweek exec delegate-task delegateTask --input-json -
 ```
 
-Replace placeholders with actual values, properly JSON-escaped. Omit `context` and `sourceTaskId` from the options object if the user skipped them.
+The response JSON is the inbox message record — highlight `result.id` as
+the message identifier. To render the formatted summary the user sees,
+pipe that response back through the formatter:
+
+```bash
+# $MESSAGE is the JSON payload from the previous call
+echo "$MESSAGE" | aweek exec delegate-task formatDelegationResult \
+  --input-json - --format text
+```
+
+Replace placeholders with actual values, properly JSON-escaped. Omit
+`context` and `sourceTaskId` from the options object if the user skipped
+them.
 
 If the user declines, inform them: "Delegation cancelled. No changes were made."
 

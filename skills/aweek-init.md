@@ -82,12 +82,7 @@ mutation.
 Run the detection helper to figure out which steps are already complete:
 
 ```bash
-node --input-type=module -e "
-import { detectInitState } from './src/skills/init.js';
-
-const state = await detectInitState({ projectDir: process.cwd() });
-console.log(JSON.stringify(state, null, 2));
-"
+aweek exec init detectInitState
 ```
 
 The returned object has this shape:
@@ -108,15 +103,8 @@ any action. Do NOT proceed past Step 1 if the user cancels.
 If `state.dataDir.exists === false`, create it:
 
 ```bash
-node --input-type=module -e "
-import { ensureDataDir } from './src/skills/init.js';
-
-const result = await ensureDataDir({
-  projectDir: process.cwd(),
-  dataDir: '.aweek/agents',
-});
-console.log(JSON.stringify(result, null, 2));
-"
+echo '{"dataDir":".aweek/agents"}' \
+  | aweek exec init ensureDataDir --input-json -
 ```
 
 If the directory already exists, report `skipped` and move on — do NOT
@@ -129,12 +117,7 @@ Invoke the skill-registration helper (this wraps `scripts/setup-skills.sh`
 semantics so the workflow can call it directly without shelling out):
 
 ```bash
-node --input-type=module -e "
-import { registerSkills } from './src/skills/init.js';
-
-const result = await registerSkills({ projectDir: process.cwd() });
-console.log(JSON.stringify(result, null, 2));
-"
+aweek exec init registerSkills
 ```
 
 The result lists every slash command with its outcome (`created`, `updated`,
@@ -155,16 +138,8 @@ Ask the user via `AskUserQuestion`:
 Only if they answer `yes`, run:
 
 ```bash
-node --input-type=module -e "
-import { installHeartbeat } from './src/skills/init.js';
-
-const result = await installHeartbeat({
-  projectDir: process.cwd(),
-  schedule: '0 * * * *',
-  confirmed: true,
-});
-console.log(JSON.stringify(result, null, 2));
-"
+echo '{"schedule":"0 * * * *","confirmed":true}' \
+  | aweek exec init installHeartbeat --input-json -
 ```
 
 If the user declines, report that the heartbeat was skipped and remind them
@@ -212,26 +187,17 @@ under the hood and filters plugin-namespaced slugs) with the fall-through rule
 so the markdown gets one of two stable shapes back.
 
 ```bash
-node --input-type=module -e "
-import { resolveInitHireMenu, formatInitHireMenuPrompt } from './src/skills/init-hire-menu.js';
+DECISION=$(aweek exec init-hire-menu resolveInitHireMenu)
+echo "$DECISION"
 
-const decision = await resolveInitHireMenu({ projectDir: process.cwd() });
-console.log(JSON.stringify({
-  fallThrough: decision.fallThrough,
-  reason: decision.reason,
-  route: decision.route,
-  menu: {
-    hasUnhired: decision.menu.hasUnhired,
-    unhired: decision.menu.unhired,
-    options: decision.menu.options.map((o) => ({ value: o.value, label: o.label, description: o.description })),
-    promptText: decision.menu.promptText,
-  },
-}, null, 2));
-if (!decision.fallThrough) {
-  console.log('---');
-  console.log(formatInitHireMenuPrompt(decision.menu));
-}
-"
+# When not falling through, render the human-readable prompt too.
+FALL_THROUGH=$(jq -r '.fallThrough' <<<"$DECISION")
+if [ "$FALL_THROUGH" != "true" ]; then
+  echo '---'
+  jq '.menu' <<<"$DECISION" \
+    | aweek exec init-hire-menu formatInitHireMenuPrompt \
+        --input-json - --format text
+fi
 ```
 
 The returned object has one of two shapes:
@@ -313,18 +279,19 @@ Call `routeInitHireMenuChoice` to convert the user's selection into a stable
 handler descriptor:
 
 ```bash
-node --input-type=module -e "
-import { buildInitHireMenu, routeInitHireMenuChoice } from './src/skills/init-hire-menu.js';
+MENU=$(aweek exec init-hire-menu buildInitHireMenu)
 
-const menu = await buildInitHireMenu({ projectDir: process.cwd() });
-const route = routeInitHireMenuChoice({
-  choice: '<USER_CHOICE>',           // one of: hire-all, select-some, create-new, skip
-  menu,
-  selected: [<SELECTED_SLUGS>],     // required ONLY when choice === 'select-some'
-});
-console.log(JSON.stringify(route, null, 2));
-"
+jq -n \
+  --argjson menu "$MENU" \
+  --arg choice '<USER_CHOICE>' \
+  --argjson selected '[<SELECTED_SLUGS>]' \
+  '{choice: $choice, menu: $menu, selected: $selected}' \
+  | aweek exec init-hire-menu routeInitHireMenuChoice --input-json -
 ```
+
+`<USER_CHOICE>` is one of `hire-all`, `select-some`, `create-new`, `skip`.
+`selected` is required only when `choice === 'select-some'`; otherwise
+pass `[]`.
 
 The returned `route` descriptor tells the markdown exactly what to do next:
 
@@ -345,17 +312,19 @@ Dispatch based on the descriptor:
   `skipped` / `failed` so you can echo the summary verbatim:
 
   ```bash
-  node --input-type=module -e "
-  import { hireAllSubagents, formatHireAllSummary } from './src/skills/hire-all.js';
+  RESULT=$(echo '{"slugs":[<SLUGS>]}' \
+    | aweek exec hire-all hireAllSubagents --input-json -)
 
-  const result = await hireAllSubagents({
-    slugs: [<SLUGS>],                 // route.slugs from routeInitHireMenuChoice
-    projectDir: process.cwd(),
-  });
-  console.log(formatHireAllSummary(result));
-  if (!result.success) process.exit(1);
-  "
+  echo "$RESULT" | aweek exec hire-all formatHireAllSummary \
+    --input-json - --format text
+
+  if [ "$(jq -r '.success' <<<"$RESULT")" != "true" ]; then
+    exit 1
+  fi
   ```
+
+  Substitute `<SLUGS>` with the `route.slugs` array from
+  `routeInitHireMenuChoice`.
 
   The handler is idempotent (re-running on an already-hired slug is a skip,
   not an error) and defensive (plugin-namespaced slugs, missing `.md`
@@ -378,12 +347,7 @@ Dispatch based on the descriptor:
   render before invoking the interactive skill:
 
   ```bash
-  node --input-type=module -e "
-  import { buildCreateNewLaunchInstruction } from './src/skills/hire-create-new-menu.js';
-
-  const instr = buildCreateNewLaunchInstruction({ projectDir: process.cwd() });
-  console.log(JSON.stringify(instr, null, 2));
-  "
+  aweek exec hire-create-new-menu buildCreateNewLaunchInstruction
   ```
 
   After rendering the prompt, invoke `/aweek:hire` and let the interactive
@@ -397,20 +361,23 @@ Dispatch based on the descriptor:
   menu branch:
 
   ```bash
-  node --input-type=module -e "
-  import { runCreateNewHire, formatCreateNewResult } from './src/skills/hire-create-new-menu.js';
+  RESULT=$(echo '{
+    "name": "<NAME>",
+    "description": "<DESCRIPTION>",
+    "systemPrompt": "<SYSTEM_PROMPT>",
+    "weeklyTokenLimit": <LIMIT>
+  }' | aweek exec hire-create-new-menu runCreateNewHire --input-json -)
 
-  const result = await runCreateNewHire({
-    name: '<NAME>',
-    description: '<DESCRIPTION>',
-    systemPrompt: '<SYSTEM_PROMPT>',
-    weeklyTokenLimit: <LIMIT>, // optional — defaults to DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT
-    projectDir: process.cwd(),
-  });
-  console.log(formatCreateNewResult(result));
-  if (!result.success) process.exit(1);
-  "
+  echo "$RESULT" | aweek exec hire-create-new-menu formatCreateNewResult \
+    --input-json - --format text
+
+  if [ "$(jq -r '.success' <<<"$RESULT")" != "true" ]; then
+    exit 1
+  fi
   ```
+
+  `weeklyTokenLimit` is optional — omit the field entirely to inherit
+  `DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT`.
 
   The returned `result` shape is:
 
@@ -461,14 +428,10 @@ choice is enriched with the live `name` + `description` from
 `.claude/agents/<slug>.md` so users see what they are picking:
 
 ```bash
-node --input-type=module -e "
-import { buildInitHireMenu } from './src/skills/init-hire-menu.js';
-import { buildSelectSomeChoices } from './src/skills/hire-select-some.js';
+MENU=$(aweek exec init-hire-menu buildInitHireMenu)
 
-const menu = await buildInitHireMenu({ projectDir: process.cwd() });
-const payload = await buildSelectSomeChoices(menu, { projectDir: process.cwd() });
-console.log(JSON.stringify(payload, null, 2));
-"
+jq -n --argjson menu "$MENU" '{menu: $menu}' \
+  | aweek exec hire-select-some buildSelectSomeChoices --input-json -
 ```
 
 The returned payload has this shape:
@@ -497,19 +460,20 @@ depth against stale menus or slugs hired concurrently) and then delegates to
 `hireAllSubagents` to wrap every picked slug:
 
 ```bash
-node --input-type=module -e "
-import { buildInitHireMenu } from './src/skills/init-hire-menu.js';
-import { runSelectSomeHire, formatSelectSomeResult } from './src/skills/hire-select-some.js';
+MENU=$(aweek exec init-hire-menu buildInitHireMenu)
 
-const menu = await buildInitHireMenu({ projectDir: process.cwd() });
-const result = await runSelectSomeHire({
-  menu,
-  selected: [<SELECTED_SLUGS>], // string[] from AskUserQuestion multi-select
-  projectDir: process.cwd(),
-});
-console.log(formatSelectSomeResult(result));
-if (!result.success) process.exit(1);
-"
+RESULT=$(jq -n \
+  --argjson menu "$MENU" \
+  --argjson selected '[<SELECTED_SLUGS>]' \
+  '{menu: $menu, selected: $selected}' \
+  | aweek exec hire-select-some runSelectSomeHire --input-json -)
+
+echo "$RESULT" | aweek exec hire-select-some formatSelectSomeResult \
+  --input-json - --format text
+
+if [ "$(jq -r '.success' <<<"$RESULT")" != "true" ]; then
+  exit 1
+fi
 ```
 
 The returned shape is:

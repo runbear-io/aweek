@@ -32,30 +32,26 @@ approval. The pending-plan marker is what signals "this agent needs
 review" so the user can pick it fast.
 
 ```bash
-node --input-type=module -e "
-import { listAllAgents } from './src/storage/agent-helpers.js';
-
-const agents = await listAllAgents({ dataDir: '.aweek/agents' });
-if (agents.length === 0) {
-  console.log('NO_AGENTS');
-} else {
-  const rows = agents.map(({ config }) => {
-    const pending = (config.weeklyPlans || []).find((p) => p.approved === false);
-    return {
-      id: config.id,
-      name: config.identity?.name,
-      role: config.identity?.role,
-      goals: (config.goals || []).length,
-      pendingWeek: pending?.week || null,
-      pendingTasks: pending?.tasks?.length || 0,
-    };
-  });
-  console.log(JSON.stringify(rows, null, 2));
-}
-"
+echo '{"dataDir":".aweek/agents"}' \
+  | aweek exec agent-helpers listAllAgents --input-json -
 ```
 
-- If `NO_AGENTS`, tell the user: **"No agents found. Use /aweek:hire to
+The response is an array of `{ config }` records. For each entry, compute
+the display row:
+
+```js
+const pending = (config.weeklyPlans || []).find((p) => p.approved === false);
+const row = {
+  id: config.id,
+  name: config.identity?.name,
+  role: config.identity?.role,
+  goals: (config.goals || []).length,
+  pendingWeek: pending?.week || null,
+  pendingTasks: pending?.tasks?.length || 0,
+};
+```
+
+- If the response array is empty, tell the user: **"No agents found. Use /aweek:hire to
   create one first."** and stop.
 - Otherwise display a numbered list: agent name, role, goal count, and
   `pending: <week> (<N> tasks)` when a plan is awaiting approval.
@@ -162,24 +158,25 @@ Ask `AskUserQuestion`: **"Apply these changes? (yes / no / edit)"**.
 Execute the batch through `plan.adjustPlan`:
 
 ```bash
-node --input-type=module -e "
-import { adjustPlan, formatAdjustmentResult } from './src/skills/plan.js';
-
-const result = await adjustPlan({
-  agentId: '<AGENT_ID>',
-  goalAdjustments:   [<GOAL_OPS>],
-  monthlyAdjustments: [<MONTHLY_OPS>],
-  weeklyAdjustments:  [<WEEKLY_OPS>],
-});
-
-if (!result.success) {
-  console.error('ERRORS:', JSON.stringify(result.errors));
-  process.exit(1);
-}
-
-console.log(formatAdjustmentResult(result.results));
-"
+echo '{
+  "agentId": "<AGENT_ID>",
+  "goalAdjustments":   [<GOAL_OPS>],
+  "monthlyAdjustments": [<MONTHLY_OPS>],
+  "weeklyAdjustments":  [<WEEKLY_OPS>]
+}' | aweek exec plan adjustPlan --input-json -
 ```
+
+If `result.success === false`, surface `result.errors` and stop. On
+success, format the batch via:
+
+```bash
+# $RESULT is the JSON payload from adjustPlan
+echo "$RESULT" | aweek exec plan formatAdjustmentResult \
+  --input-json - --format text
+```
+
+`formatAdjustmentResult` accepts either the full `result` object (it
+unwraps `result.results` automatically) or a raw `results` slice.
 
 Substitute the collected operation objects, properly JSON-escaped. Each
 operation object must match one of these shapes:
@@ -205,17 +202,12 @@ Only offered when the agent has at least one plan with `approved: false`.
 Load and display the formatted pending plan via `plan.reviewPlan`:
 
 ```bash
-node --input-type=module -e "
-import { reviewPlan } from './src/skills/plan.js';
-
-const result = await reviewPlan({ agentId: '<AGENT_ID>' });
-if (!result.success) {
-  console.error('ERROR:', result.errors.join(', '));
-  process.exit(1);
-}
-console.log(result.formatted);
-"
+echo '{"agentId":"<AGENT_ID>"}' \
+  | aweek exec plan reviewPlan --input-json -
 ```
+
+The response JSON exposes `success`, `errors`, and `formatted`. Print
+`result.formatted` verbatim.
 
 The formatter includes agent identity, the week / month, every task with
 priority and estimated minutes, and the full Goal → Objective → Task
@@ -236,14 +228,16 @@ Use `AskUserQuestion`:
 ### B3a: Approve
 
 ```bash
-node --input-type=module -e "
-import { approve, formatApprovalResult } from './src/skills/plan.js';
+RESULT=$(echo '{"agentId":"<AGENT_ID>"}' \
+  | aweek exec plan approve --input-json -)
 
-const result = await approve({ agentId: '<AGENT_ID>' });
-console.log(formatApprovalResult(result, 'approve'));
-if (!result.success) process.exit(1);
-"
+# Wrap the approve response + decision tag and stream through the formatter.
+jq -n --argjson r "$RESULT" '{result: $r, action: "approve"}' \
+  | aweek exec plan formatApprovalResult --input-json - --format text
 ```
+
+`formatApprovalResult` takes a `{ result, action }` input. If `RESULT`'s
+`success` field is `false`, surface the errors and stop.
 
 Print the formatted result. If this was the **first** approval for the
 agent (the result will say so), emphasize that **the heartbeat system is
@@ -265,18 +259,14 @@ confirmation at the skill layer.
    `confirmed: true`. Without that flag the adapter refuses to run:
 
 ```bash
-node --input-type=module -e "
-import { reject, formatApprovalResult } from './src/skills/plan.js';
+RESULT=$(echo '{
+  "agentId": "<AGENT_ID>",
+  "rejectionReason": "<REASON_OR_EMPTY>",
+  "confirmed": true
+}' | aweek exec plan reject --input-json -)
 
-const result = await reject({
-  agentId: '<AGENT_ID>',
-  rejectionReason: '<REASON_OR_EMPTY>',
-  confirmed: true,
-});
-
-console.log(formatApprovalResult(result, 'reject'));
-if (!result.success) process.exit(1);
-"
+jq -n --argjson r "$RESULT" '{result: $r, action: "reject"}' \
+  | aweek exec plan formatApprovalResult --input-json - --format text
 ```
 
 After rejection, suggest: **"You can regenerate a fresh weekly plan, or
@@ -301,18 +291,14 @@ After the last edit, ask `AskUserQuestion`:
 — `yes` sets `autoApproveAfterEdit: true`, `no` leaves the plan pending.
 
 ```bash
-node --input-type=module -e "
-import { edit, formatApprovalResult } from './src/skills/plan.js';
+RESULT=$(echo '{
+  "agentId": "<AGENT_ID>",
+  "edits": <EDITS_JSON_ARRAY>,
+  "autoApproveAfterEdit": <true_or_false>
+}' | aweek exec plan edit --input-json -)
 
-const result = await edit({
-  agentId: '<AGENT_ID>',
-  edits: <EDITS_JSON_ARRAY>,
-  autoApproveAfterEdit: <true_or_false>,
-});
-
-console.log(formatApprovalResult(result, 'edit'));
-if (!result.success) process.exit(1);
-"
+jq -n --argjson r "$RESULT" '{result: $r, action: "edit"}' \
+  | aweek exec plan formatApprovalResult --input-json - --format text
 ```
 
 Each edit object must match one of these shapes:
