@@ -60,6 +60,8 @@
  *     guard, so the enforcement has to live at this adapter layer.
  */
 
+import { rm, access } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   RESUME_ACTIONS,
   listPausedAgents as listPausedAgentsImpl,
@@ -71,7 +73,21 @@ import {
   formatResumeResult as formatResumeResultImpl,
 } from './resume-agent.js';
 import { createAgentStore, loadAgent } from '../storage/agent-helpers.js';
-import { validateIdentity } from '../schemas/validator.js';
+
+/**
+ * Default project-level subagents directory.
+ *
+ * Computed on every call so tests that `process.chdir()` to a tmpdir resolve
+ * against the current cwd rather than a value frozen at module load. The
+ * user-level `~/.claude/agents/` path is deliberately NEVER used — aweek
+ * only writes to / reads from / deletes project-level subagent files per
+ * the refactor constraints.
+ *
+ * @returns {string}
+ */
+function getDefaultSubagentsDir() {
+  return join(process.cwd(), '.claude', 'agents');
+}
 
 // ---------------------------------------------------------------------------
 // Discovery — list paused agents and show budget details
@@ -269,157 +285,10 @@ export async function pause({ agentId, dataDir } = {}) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Edit identity — update `identity.{name, role, systemPrompt}` on an
-// existing agent. Validated against the `identity` schema before persisting
-// so schema rules (min/max lengths) are never bypassed.
-//
-// Non-destructive: the user can edit the same fields again at any time.
-// ---------------------------------------------------------------------------
+// editIdentity has been removed — identity data (name, role, systemPrompt)
+// now lives in `.claude/agents/<slug>.md`, not the aweek JSON. To change
+// identity, edit that file directly.
 
-/**
- * Edit an agent's identity fields (`name`, `role`, `systemPrompt`).
- *
- * Any subset of the three fields may be supplied; omitted / undefined fields
- * are preserved. The combined result is validated against the
- * `aweek://schemas/identity` schema (min/max lengths etc.) before the config
- * is saved, so invalid edits are rejected with a descriptive error rather
- * than producing a corrupted file.
- *
- * @param {object} params
- * @param {string} params.agentId - Agent to edit.
- * @param {string} [params.name] - New display name.
- * @param {string} [params.role] - New role description.
- * @param {string} [params.systemPrompt] - New system prompt.
- * @param {string} [params.dataDir]
- * @returns {Promise<{
- *   agentId: string,
- *   action: 'edit-identity',
- *   success: boolean,
- *   changed: string[],
- *   previous?: { name: string, role: string, systemPrompt: string },
- *   current?: { name: string, role: string, systemPrompt: string },
- *   errors?: string[],
- *   message?: string,
- * }>}
- */
-export async function editIdentity({
-  agentId,
-  name,
-  role,
-  systemPrompt,
-  dataDir,
-} = {}) {
-  if (!agentId) {
-    return {
-      agentId,
-      action: 'edit-identity',
-      success: false,
-      changed: [],
-      errors: ['agentId is required'],
-    };
-  }
-
-  // Require at least one edit — no silent no-ops.
-  const hasEdit =
-    (typeof name === 'string' && name.length > 0) ||
-    (typeof role === 'string' && role.length > 0) ||
-    (typeof systemPrompt === 'string' && systemPrompt.length > 0);
-  if (!hasEdit) {
-    return {
-      agentId,
-      action: 'edit-identity',
-      success: false,
-      changed: [],
-      errors: [
-        'At least one of `name`, `role`, or `systemPrompt` must be provided.',
-      ],
-    };
-  }
-
-  const store = createAgentStore(dataDir);
-
-  let current;
-  try {
-    current = await store.load(agentId);
-  } catch (err) {
-    return {
-      agentId,
-      action: 'edit-identity',
-      success: false,
-      changed: [],
-      errors: [err.message || String(err)],
-    };
-  }
-
-  const previous = { ...current.identity };
-  const nextIdentity = {
-    name: name != null && name !== '' ? name : previous.name,
-    role: role != null && role !== '' ? role : previous.role,
-    systemPrompt:
-      systemPrompt != null && systemPrompt !== ''
-        ? systemPrompt
-        : previous.systemPrompt,
-  };
-
-  // Validate via the identity schema so min/max lengths (1–100 name,
-  // 1–200 role, 1+ systemPrompt) are enforced.
-  const result = validateIdentity(nextIdentity);
-  if (!result.valid) {
-    return {
-      agentId,
-      action: 'edit-identity',
-      success: false,
-      changed: [],
-      errors: (result.errors || []).map(
-        (e) => `${e.instancePath || '/'}: ${e.message}`,
-      ),
-    };
-  }
-
-  const changed = [];
-  if (nextIdentity.name !== previous.name) changed.push('name');
-  if (nextIdentity.role !== previous.role) changed.push('role');
-  if (nextIdentity.systemPrompt !== previous.systemPrompt)
-    changed.push('systemPrompt');
-
-  if (changed.length === 0) {
-    return {
-      agentId,
-      action: 'edit-identity',
-      success: true,
-      changed: [],
-      previous,
-      current: nextIdentity,
-      message: `No identity fields changed for agent "${agentId}".`,
-    };
-  }
-
-  try {
-    await store.update(agentId, (cfg) => {
-      cfg.identity = nextIdentity;
-      return cfg;
-    });
-  } catch (err) {
-    return {
-      agentId,
-      action: 'edit-identity',
-      success: false,
-      changed: [],
-      errors: [err.message || String(err)],
-    };
-  }
-
-  return {
-    agentId,
-    action: 'edit-identity',
-    success: true,
-    changed,
-    previous,
-    current: nextIdentity,
-    message: `Updated ${changed.join(', ')} for agent "${agentId}".`,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Delete / archive — permanently remove an agent config file from disk.
@@ -438,22 +307,51 @@ export async function editIdentity({
  * interactive confirmation from the user. Without the flag the adapter
  * returns `success: false` and leaves the file untouched.
  *
+ * By default the matching Claude Code subagent file at
+ * `.claude/agents/<agentId>.md` is **kept** — aweek only owns the JSON
+ * scheduling state, while the subagent `.md` file is the identity source of
+ * truth and may be shared with other tooling. Pass `deleteSubagentMd: true`
+ * to also remove the project-level subagent file. The user-level
+ * `~/.claude/agents/` path is NEVER touched.
+ *
+ * Missing `.md` files are reported (`subagentMd.existed: false`) rather than
+ * treated as an error — deleting an aweek agent whose `.md` was already
+ * removed is a legitimate cleanup path.
+ *
  * @param {object} params
- * @param {string} params.agentId - Agent to delete.
+ * @param {string} params.agentId - Agent to delete. Equals the subagent slug.
  * @param {string} [params.dataDir]
  * @param {boolean} params.confirmed - Must be `true`.
+ * @param {boolean} [params.deleteSubagentMd=false] - Also delete
+ *   `<subagentsDir>/<agentId>.md`. Default `false` (keep the `.md`).
+ * @param {string} [params.subagentsDir] - Override the project-level
+ *   subagents directory. Defaults to `<cwd>/.claude/agents`. Only used when
+ *   `deleteSubagentMd` is `true`.
  * @returns {Promise<{
  *   agentId: string,
  *   action: 'delete',
  *   success: boolean,
  *   deleted?: boolean,
  *   snapshot?: object,
+ *   subagentMd?: {
+ *     requested: boolean,
+ *     existed: boolean,
+ *     deleted: boolean,
+ *     path: string,
+ *     error?: string,
+ *   },
  *   errors?: string[],
  *   message?: string,
  * }>}
  */
 export async function deleteAgent(params = {}) {
-  const { agentId, dataDir, confirmed } = params || {};
+  const {
+    agentId,
+    dataDir,
+    confirmed,
+    deleteSubagentMd = false,
+    subagentsDir,
+  } = params || {};
 
   if (!agentId) {
     return {
@@ -502,6 +400,39 @@ export async function deleteAgent(params = {}) {
     };
   }
 
+  // Optionally also remove the project-level subagent .md file. This is
+  // opt-in (defaults to keep) because the .md is the identity source of
+  // truth and may be owned or edited outside of aweek.
+  const resolvedSubagentsDir = subagentsDir || getDefaultSubagentsDir();
+  const subagentMdPath = join(resolvedSubagentsDir, `${agentId}.md`);
+  const subagentMd = {
+    requested: deleteSubagentMd === true,
+    existed: false,
+    deleted: false,
+    path: subagentMdPath,
+  };
+
+  if (deleteSubagentMd === true) {
+    let existed = false;
+    try {
+      await access(subagentMdPath);
+      existed = true;
+    } catch {
+      existed = false;
+    }
+    subagentMd.existed = existed;
+
+    if (existed) {
+      try {
+        await rm(subagentMdPath, { force: true });
+        subagentMd.deleted = true;
+      } catch (err) {
+        subagentMd.deleted = false;
+        subagentMd.error = err.message || String(err);
+      }
+    }
+  }
+
   return {
     agentId,
     action: 'delete',
@@ -516,6 +447,7 @@ export async function deleteAgent(params = {}) {
         ? snapshot.weeklyPlans.length
         : 0,
     },
+    subagentMd,
     message: `Agent "${snapshot.identity?.name || agentId}" (${agentId}) has been deleted.`,
   };
 }
@@ -590,41 +522,6 @@ export function formatPauseResult(result) {
   lines.push('Use `/aweek:manage` → resume to unpause the agent.');
   return lines.join('\n');
 }
-
-/**
- * Format the result of an `editIdentity()` call.
- *
- * @param {object} result
- * @returns {string}
- */
-export function formatIdentityResult(result) {
-  if (!result) return '';
-  if (!result.success) {
-    return `Failed to edit identity for "${result.agentId}": ${(result.errors || ['unknown error']).join('; ')}`;
-  }
-  const lines = ['=== Identity Updated ==='];
-  if (result.changed.length === 0) {
-    lines.push(result.message || 'No identity fields changed.');
-    return lines.join('\n');
-  }
-  lines.push(`Agent: ${result.current?.name || result.agentId} (${result.agentId})`);
-  lines.push(`Changed fields: ${result.changed.join(', ')}`);
-  lines.push('');
-  for (const field of result.changed) {
-    const before = result.previous?.[field] ?? '';
-    const after = result.current?.[field] ?? '';
-    if (field === 'systemPrompt') {
-      // System prompts can be long — show just a short preview.
-      lines.push(`${field}:`);
-      lines.push(`  before: ${truncate(before, 80)}`);
-      lines.push(`  after : ${truncate(after, 80)}`);
-    } else {
-      lines.push(`${field}: ${truncate(before, 80)} → ${truncate(after, 80)}`);
-    }
-  }
-  return lines.join('\n');
-}
-
 /**
  * Format the result of a `deleteAgent()` call.
  *
@@ -646,6 +543,24 @@ export function formatDeleteResult(result) {
     lines.push(
       `Lost: ${result.snapshot.goalCount} goal(s), ${result.snapshot.weeklyPlanCount} weekly plan(s).`,
     );
+  }
+  // Subagent .md file status — explicit so the user can see whether the
+  // identity file was kept (default) or also removed.
+  if (result.subagentMd) {
+    lines.push('');
+    if (!result.subagentMd.requested) {
+      lines.push(`Subagent file kept: ${result.subagentMd.path}`);
+    } else if (result.subagentMd.deleted) {
+      lines.push(`Subagent file deleted: ${result.subagentMd.path}`);
+    } else if (!result.subagentMd.existed) {
+      lines.push(
+        `Subagent file not found (nothing to delete): ${result.subagentMd.path}`,
+      );
+    } else {
+      lines.push(
+        `Subagent file delete failed: ${result.subagentMd.path} — ${result.subagentMd.error || 'unknown error'}`,
+      );
+    }
   }
   lines.push('');
   lines.push('This action cannot be undone.');

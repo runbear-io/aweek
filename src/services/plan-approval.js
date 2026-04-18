@@ -69,19 +69,40 @@ export function findPendingPlan(agentConfig) {
 /**
  * Format a weekly plan for human review.
  * Produces a readable text summary of the plan including:
- * - Agent identity
+ * - Agent identity (display name + optional live .md description)
  * - Week and month
  * - Tasks with priority, objective link, and status
  *
+ * Identity after the aweek ↔ Claude Code subagent 1-to-1 refactor lives in
+ * the subagent .md file, NOT in aweek JSON. This formatter is a pure sync
+ * function that deliberately does not read from disk, so the display name is
+ * sourced from the aweek JSON's `subagentRef` (which equals the slug/id).
+ * Callers that want the live human-readable name from the .md frontmatter can
+ * pass it via `opts.subagentIdentity` — e.g., summary dashboard and the
+ * `/aweek:plan` skill wire this through from `readSubagentIdentity`.
+ *
  * @param {object} agentConfig - The agent config
  * @param {object} plan - The weekly plan to format
+ * @param {object} [opts]
+ * @param {{ name?: string, description?: string, missing?: boolean }} [opts.subagentIdentity] -
+ *   Optional live identity from the .md frontmatter. When omitted, the slug
+ *   is used as the display name.
  * @returns {string} Formatted plan text
  */
-export function formatPlanForReview(agentConfig, plan) {
+export function formatPlanForReview(agentConfig, plan, opts = {}) {
+  const subagentRef = agentConfig.subagentRef || agentConfig.id;
+  const identity = opts.subagentIdentity || null;
+  const displayName =
+    identity && !identity.missing && identity.name ? identity.name : subagentRef;
+  const descriptor = identity && !identity.missing && identity.description
+    ? `${displayName} (${identity.description})`
+    : displayName;
+
   const lines = [
-    `Weekly Plan Review: ${agentConfig.identity.name}`,
+    `Weekly Plan Review: ${displayName}`,
     `${'='.repeat(50)}`,
-    `  Agent:  ${agentConfig.identity.name} (${agentConfig.identity.role})`,
+    `  Agent:  ${descriptor}`,
+    `  Slug:   ${subagentRef}`,
     `  Week:   ${plan.week}`,
     `  Month:  ${plan.month}`,
     `  Status: ${plan.approved ? 'Approved' : 'Pending Approval'}`,

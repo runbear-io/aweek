@@ -1,4 +1,14 @@
-import { describe, it, before, after, beforeEach } from 'node:test';
+/**
+ * Tests for AgentStore — scheduling-only JSON persistence.
+ *
+ * These tests lock in the post-refactor shape:
+ *   - `createAgentConfig({ subagentRef })` is the only constructor signature.
+ *   - `id` equals `subagentRef` (1-to-1 with .claude/agents/SLUG.md).
+ *   - No `identity` / `name` / `role` / `systemPrompt` fields ever land on disk
+ *     — the aweek JSON is scheduling-only (goals, plans, budget, inbox).
+ *   - `.load()` returns exactly what `.save()` wrote (idempotent round-trip).
+ */
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -11,7 +21,6 @@ import {
   createMonthlyPlan,
   createTask,
   createWeeklyPlan,
-  createInboxMessage,
 } from '../models/agent.js';
 import { validateAgentConfig } from '../schemas/validator.js';
 
@@ -30,11 +39,7 @@ describe('AgentStore', () => {
   });
 
   it('should save and load an agent config', async () => {
-    const config = createAgentConfig({
-      name: 'TestBot',
-      role: 'Test agent for unit tests',
-      systemPrompt: 'You are a test agent.',
-    });
+    const config = createAgentConfig({ subagentRef: 'testbot' });
 
     await store.save(config);
     const loaded = await store.load(config.id);
@@ -42,12 +47,35 @@ describe('AgentStore', () => {
     assert.deepStrictEqual(loaded, config);
   });
 
+  it('persists only scheduling fields — no identity ever hits disk', async () => {
+    const config = createAgentConfig({ subagentRef: 'schedbot' });
+    await store.save(config);
+    const loaded = await store.load(config.id);
+
+    // Scheduling-only contract: identity lives in .claude/agents/SLUG.md,
+    // never in the aweek JSON. Guard against regressions that might sneak
+    // a name/role/systemPrompt/identity field back into the persisted shape.
+    assert.equal(loaded.identity, undefined);
+    assert.equal(loaded.name, undefined);
+    assert.equal(loaded.role, undefined);
+    assert.equal(loaded.systemPrompt, undefined);
+
+    // id equals subagentRef (1-to-1 with .claude/agents/<slug>.md)
+    assert.equal(loaded.id, 'schedbot');
+    assert.equal(loaded.subagentRef, 'schedbot');
+    assert.equal(loaded.id, loaded.subagentRef);
+
+    // Scheduling fields exist and are correctly shaped.
+    assert.deepStrictEqual(loaded.goals, []);
+    assert.deepStrictEqual(loaded.monthlyPlans, []);
+    assert.deepStrictEqual(loaded.weeklyPlans, []);
+    assert.deepStrictEqual(loaded.inbox, []);
+    assert.ok(loaded.budget);
+    assert.equal(typeof loaded.createdAt, 'string');
+  });
+
   it('should validate agent config schema', () => {
-    const config = createAgentConfig({
-      name: 'Validator',
-      role: 'Schema test',
-      systemPrompt: 'You validate things.',
-    });
+    const config = createAgentConfig({ subagentRef: 'validator' });
 
     const result = validateAgentConfig(config);
     assert.equal(result.valid, true);
@@ -60,17 +88,23 @@ describe('AgentStore', () => {
     assert.ok(result.errors.length > 0);
   });
 
+  it('rejects configs that carry a legacy identity blob', () => {
+    // A config with the scheduling fields correctly filled but a stray
+    // `identity` object MUST be rejected by the schema
+    // (additionalProperties: false on agentConfigSchema).
+    const base = createAgentConfig({ subagentRef: 'leakybot' });
+    const withLegacyIdentity = {
+      ...base,
+      identity: { name: 'Leaky', role: 'role', systemPrompt: 'prompt' },
+    };
+
+    const result = validateAgentConfig(withLegacyIdentity);
+    assert.equal(result.valid, false);
+  });
+
   it('should list agent IDs', async () => {
-    const config1 = createAgentConfig({
-      name: 'Agent1',
-      role: 'Lister test 1',
-      systemPrompt: 'Prompt 1',
-    });
-    const config2 = createAgentConfig({
-      name: 'Agent2',
-      role: 'Lister test 2',
-      systemPrompt: 'Prompt 2',
-    });
+    const config1 = createAgentConfig({ subagentRef: 'lister-one' });
+    const config2 = createAgentConfig({ subagentRef: 'lister-two' });
 
     await store.save(config1);
     await store.save(config2);
@@ -78,14 +112,13 @@ describe('AgentStore', () => {
     const ids = await store.list();
     assert.ok(ids.includes(config1.id));
     assert.ok(ids.includes(config2.id));
+    // Ids are subagent slugs — not UUIDs or `agent-*` identifiers.
+    assert.equal(config1.id, 'lister-one');
+    assert.equal(config2.id, 'lister-two');
   });
 
   it('should check agent existence', async () => {
-    const config = createAgentConfig({
-      name: 'Exists',
-      role: 'Existence test',
-      systemPrompt: 'Do I exist?',
-    });
+    const config = createAgentConfig({ subagentRef: 'exists-bot' });
 
     assert.equal(await store.exists(config.id), false);
     await store.save(config);
@@ -93,11 +126,7 @@ describe('AgentStore', () => {
   });
 
   it('should delete an agent', async () => {
-    const config = createAgentConfig({
-      name: 'Deletable',
-      role: 'Delete test',
-      systemPrompt: 'Delete me.',
-    });
+    const config = createAgentConfig({ subagentRef: 'deletable' });
 
     await store.save(config);
     assert.equal(await store.exists(config.id), true);
@@ -107,11 +136,7 @@ describe('AgentStore', () => {
   });
 
   it('should update an agent config via updater function', async () => {
-    const config = createAgentConfig({
-      name: 'Updatable',
-      role: 'Update test',
-      systemPrompt: 'Update me.',
-    });
+    const config = createAgentConfig({ subagentRef: 'updatable' });
 
     await store.save(config);
 
@@ -129,11 +154,7 @@ describe('AgentStore', () => {
   });
 
   it('should save agent with full monthly and weekly plans', async () => {
-    const config = createAgentConfig({
-      name: 'Planner',
-      role: 'Planning test agent',
-      systemPrompt: 'You plan things.',
-    });
+    const config = createAgentConfig({ subagentRef: 'planner' });
 
     const goal = createGoal('Ship v1');
     config.goals.push(goal);
@@ -146,8 +167,10 @@ describe('AgentStore', () => {
     const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
     config.weeklyPlans.push(weeklyPlan);
 
-    const msg = createInboxMessage('agent-other-abc12345', config.id, 'Please review my PR');
-    config.inbox.push(msg);
+    // NOTE: inbox messages are validated by inbox-store.test.js. The inbox
+    // schema's from/to pattern is migrated in its own sibling AC — this
+    // storage test stays focused on the scheduling-only round-trip of
+    // goals + monthly plans + weekly plans.
 
     // Validate
     const result = validateAgentConfig(config);
@@ -159,16 +182,12 @@ describe('AgentStore', () => {
     assert.equal(loaded.goals.length, 1);
     assert.equal(loaded.monthlyPlans.length, 1);
     assert.equal(loaded.weeklyPlans.length, 1);
-    assert.equal(loaded.inbox.length, 1);
+    assert.equal(loaded.inbox.length, 0);
     assert.equal(loaded.weeklyPlans[0].approved, false);
   });
 
   it('should be idempotent — saving same config twice produces same result', async () => {
-    const config = createAgentConfig({
-      name: 'Idempotent',
-      role: 'Idempotency test',
-      systemPrompt: 'Same same.',
-    });
+    const config = createAgentConfig({ subagentRef: 'idempotent' });
 
     await store.save(config);
     await store.save(config);
@@ -179,8 +198,8 @@ describe('AgentStore', () => {
 
   it('should throw on load of nonexistent agent', async () => {
     await assert.rejects(
-      () => store.load('agent-nonexistent-00000000'),
-      { code: 'ENOENT' }
+      () => store.load('nonexistent-agent'),
+      { code: 'ENOENT' },
     );
   });
 
@@ -190,8 +209,8 @@ describe('AgentStore', () => {
     const freshStore = new AgentStore(freshDir);
     await freshStore.init();
 
-    const c1 = createAgentConfig({ name: 'A', role: 'r', systemPrompt: 'p' });
-    const c2 = createAgentConfig({ name: 'B', role: 'r', systemPrompt: 'p' });
+    const c1 = createAgentConfig({ subagentRef: 'loadall-a' });
+    const c2 = createAgentConfig({ subagentRef: 'loadall-b' });
     await freshStore.save(c1);
     await freshStore.save(c2);
 

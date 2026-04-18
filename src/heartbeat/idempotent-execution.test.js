@@ -614,14 +614,17 @@ describe('Idempotent execution — HeartbeatTaskRunner + ExecutionStore layer', 
     assert.equal(records[0].status, 'failed');
   });
 
-  it('no_approved_plan outcome prevents duplicate check in same window', async () => {
+  it('shell-agent outcome (no_weekly_plans) prevents duplicate check in same window', async () => {
+    // Post-AC 11 Sub-AC 2: an agent initialised with no weekly plan files on
+    // disk surfaces as a shell (no_weekly_plans), and the skipped execution
+    // record still deduplicates the next tick in the same window.
     const agentId = `agent-${uid()}`;
     await wpStore.init(agentId);
 
     const r1 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
     const r2 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
 
-    assert.equal(r1.outcome, 'no_approved_plan');
+    assert.equal(r1.outcome, 'no_weekly_plans');
     assert.equal(r2.outcome, 'skipped');
 
     const records = await execStore.load(agentId);
@@ -753,7 +756,9 @@ describe('Idempotent execution — combined lock + dedup integration', () => {
     const r1 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
     const r2 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
 
-    assert.equal(r1.outcome, 'no_approved_plan');
+    // Post-AC 11 Sub-AC 2: an agent with no weekly plan files on disk
+    // surfaces as a shell (no_weekly_plans) rather than no_approved_plan.
+    assert.equal(r1.outcome, 'no_weekly_plans');
     assert.equal(r2.outcome, 'skipped');
 
     // The key returned in the skipped result matches the recorded key
