@@ -38,7 +38,7 @@ describe('budget-enforcer', () => {
 
   /** Helper: create and save a test agent */
   async function createTestAgent(name = 'tester', weeklyTokenLimit = 1000) {
-    const config = createAgentConfig({ name, role: 'test', systemPrompt: 'test', weeklyTokenLimit });
+    const config = createAgentConfig({ subagentRef: name, weeklyTokenLimit });
     await agentStore.save(config);
     return config;
   }
@@ -189,7 +189,7 @@ describe('budget-enforcer', () => {
     });
 
     it('handles zero budget gracefully', async () => {
-      const config = createAgentConfig({ name: 'zero', role: 'test', systemPrompt: 'test', weeklyTokenLimit: 0 });
+      const config = createAgentConfig({ subagentRef: 'zero', weeklyTokenLimit: 0 });
       // Override budget to 0
       config.weeklyTokenBudget = 0;
       config.budget.weeklyTokenLimit = 0;

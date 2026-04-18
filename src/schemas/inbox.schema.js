@@ -33,13 +33,13 @@ export const inboxMessageSchema = {
     },
     from: {
       type: 'string',
-      pattern: '^agent-[a-z0-9-]+$',
-      description: 'Sender agent ID',
+      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$',
+      description: 'Sender agent ID (subagent slug)',
     },
     to: {
       type: 'string',
-      pattern: '^agent-[a-z0-9-]+$',
-      description: 'Recipient agent ID',
+      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$',
+      description: 'Recipient agent ID (subagent slug)',
     },
     type: {
       type: 'string',

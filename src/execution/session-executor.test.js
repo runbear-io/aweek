@@ -1,8 +1,11 @@
 /**
  * Tests for Session Executor — src/execution/session-executor.js
  *
- * Verifies that the session executor properly integrates CLI session launching
- * with automatic token usage parsing and storage.
+ * The executor is a thin integrator around cli-session's subagent-first
+ * `launchSession(agentId, subagentRef, task, opts)` API. Identity (name,
+ * role, system prompt, model, tools, skills) is owned by the subagent
+ * `.claude/agents/<slug>.md` file, so these tests pass a subagent slug
+ * string rather than an identity object.
  */
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,14 +25,7 @@ import { UsageStore } from '../storage/usage-store.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeIdentity(overrides = {}) {
-  return {
-    name: 'TestBot',
-    role: 'Test Agent',
-    systemPrompt: 'You are a test agent.',
-    ...overrides,
-  };
-}
+const SUBAGENT_REF = 'test-bot';
 
 function makeTask(overrides = {}) {
   return {
@@ -92,13 +88,11 @@ function makeCliOutput({ inputTokens = 1000, outputTokens = 500, costUsd = 0.05 
 // ===========================================================================
 describe('weekFromPlanWeek', () => {
   it('converts ISO week to Monday date string', () => {
-    // 2026-W16 starts Monday 2026-04-13
     const result = weekFromPlanWeek('2026-W16');
     assert.equal(result, '2026-04-13');
   });
 
   it('converts week 1 of a year', () => {
-    // 2026-W01 starts Monday 2025-12-29
     const result = weekFromPlanWeek('2026-W01');
     assert.equal(result, '2025-12-29');
   });
@@ -122,7 +116,6 @@ describe('weekFromPlanWeek', () => {
   });
 
   it('handles mid-year weeks', () => {
-    // 2026-W26 starts Monday 2026-06-22
     const result = weekFromPlanWeek('2026-W26');
     assert.equal(result, '2026-06-22');
   });
@@ -146,13 +139,14 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore }
     );
 
     assert.ok(result.sessionResult);
     assert.equal(result.sessionResult.agentId, 'agent-test');
+    assert.equal(result.sessionResult.subagentRef, SUBAGENT_REF);
     assert.equal(result.sessionResult.taskId, 'task-test001');
     assert.equal(result.sessionResult.exitCode, 0);
 
@@ -163,13 +157,31 @@ describe('executeSessionWithTracking', () => {
     assert.equal(result.tokenUsage.costUsd, 0.08);
   });
 
+  it('invokes claude CLI with --agent <slug> (no --system-prompt)', async () => {
+    const mockSpawn = createMockSpawn({ stdout: makeCliOutput() });
+
+    await executeSessionWithTracking(
+      'agent-test',
+      'marketer',
+      makeTask(),
+      { spawnFn: mockSpawn, usageStore }
+    );
+
+    const args = mockSpawn.lastCall().args;
+    const agentIdx = args.indexOf('--agent');
+    assert.ok(agentIdx >= 0);
+    assert.equal(args[agentIdx + 1], 'marketer');
+    assert.ok(args.includes('--append-system-prompt'));
+    assert.ok(!args.includes('--system-prompt'));
+  });
+
   it('persists usage record when usageStore is provided', async () => {
     const stdout = makeCliOutput();
     const mockSpawn = createMockSpawn({ stdout });
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore }
     );
@@ -182,7 +194,6 @@ describe('executeSessionWithTracking', () => {
     assert.equal(result.usageRecord.outputTokens, 500);
     assert.equal(result.usageRecord.totalTokens, 1500);
 
-    // Verify it's persisted in the store
     const records = await usageStore.load('agent-test');
     assert.equal(records.length, 1);
     assert.equal(records[0].id, result.usageRecord.id);
@@ -194,14 +205,13 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn }
     );
 
     assert.equal(result.usageTracked, false);
     assert.equal(result.usageRecord, null);
-    // tokenUsage is still parsed even without store
     assert.ok(result.tokenUsage);
     assert.equal(result.tokenUsage.inputTokens, 1000);
   });
@@ -212,7 +222,7 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore }
     );
@@ -227,7 +237,7 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore }
     );
@@ -241,7 +251,7 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore }
     );
@@ -257,7 +267,7 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore, model: 'opus' }
     );
@@ -271,7 +281,7 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore }
     );
@@ -286,7 +296,7 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask({ week: '2026-W16' }),
       { spawnFn: mockSpawn, usageStore }
     );
@@ -299,15 +309,15 @@ describe('executeSessionWithTracking', () => {
     const mockSpawn = createMockSpawn({ stdout });
 
     await executeSessionWithTracking(
-      'agent-test', makeIdentity(), makeTask({ taskId: 'task-1' }),
+      'agent-test', SUBAGENT_REF, makeTask({ taskId: 'task-1' }),
       { spawnFn: mockSpawn, usageStore }
     );
     await executeSessionWithTracking(
-      'agent-test', makeIdentity(), makeTask({ taskId: 'task-2' }),
+      'agent-test', SUBAGENT_REF, makeTask({ taskId: 'task-2' }),
       { spawnFn: mockSpawn, usageStore }
     );
     await executeSessionWithTracking(
-      'agent-test', makeIdentity(), makeTask({ taskId: 'task-3' }),
+      'agent-test', SUBAGENT_REF, makeTask({ taskId: 'task-3' }),
       { spawnFn: mockSpawn, usageStore }
     );
 
@@ -315,7 +325,7 @@ describe('executeSessionWithTracking', () => {
     assert.equal(records.length, 3);
 
     const totals = await usageStore.weeklyTotal('agent-test');
-    assert.equal(totals.totalTokens, 450); // 3 * 150
+    assert.equal(totals.totalTokens, 450);
     assert.equal(totals.recordCount, 3);
   });
 
@@ -323,7 +333,6 @@ describe('executeSessionWithTracking', () => {
     const stdout = makeCliOutput();
     const mockSpawn = createMockSpawn({ stdout });
 
-    // Create a broken store
     const brokenStore = {
       append: async () => { throw new Error('disk full'); },
       init: async () => {},
@@ -331,15 +340,13 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore: brokenStore }
     );
 
-    // Session result is still returned
     assert.ok(result.sessionResult);
     assert.equal(result.sessionResult.exitCode, 0);
-    // Usage was parsed but tracking failed
     assert.ok(result.tokenUsage);
     assert.equal(result.usageTracked, false);
   });
@@ -350,7 +357,7 @@ describe('executeSessionWithTracking', () => {
 
     const result = await executeSessionWithTracking(
       'agent-test',
-      makeIdentity(),
+      SUBAGENT_REF,
       makeTask(),
       { spawnFn: mockSpawn, usageStore, sessionId: 'my-custom-session' }
     );
@@ -360,21 +367,28 @@ describe('executeSessionWithTracking', () => {
 
   it('throws if agentId is missing', async () => {
     await assert.rejects(
-      () => executeSessionWithTracking(null, makeIdentity(), makeTask()),
+      () => executeSessionWithTracking(null, SUBAGENT_REF, makeTask()),
       /agentId is required/
     );
   });
 
-  it('throws if identity is missing', async () => {
+  it('throws if subagentRef is missing', async () => {
     await assert.rejects(
       () => executeSessionWithTracking('agent-test', null, makeTask()),
-      /identity is required/
+      /subagentRef is required/
+    );
+  });
+
+  it('throws if subagentRef is empty', async () => {
+    await assert.rejects(
+      () => executeSessionWithTracking('agent-test', '', makeTask()),
+      /subagentRef is required/
     );
   });
 
   it('throws if task is missing', async () => {
     await assert.rejects(
-      () => executeSessionWithTracking('agent-test', makeIdentity(), null),
+      () => executeSessionWithTracking('agent-test', SUBAGENT_REF, null),
       /task is required/
     );
   });
@@ -383,7 +397,7 @@ describe('executeSessionWithTracking', () => {
     const mockSpawn = createMockSpawn({ error: new Error('ENOENT') });
 
     await assert.rejects(
-      () => executeSessionWithTracking('agent-test', makeIdentity(), makeTask(), {
+      () => executeSessionWithTracking('agent-test', SUBAGENT_REF, makeTask(), {
         spawnFn: mockSpawn,
         usageStore,
       }),
@@ -404,14 +418,14 @@ describe('createTrackedExecutor', () => {
     usageStore = new UsageStore(tmpDir);
   });
 
-  it('creates an executor function from agent configs', async () => {
+  it('creates an executor function that resolves subagentRef from agent config', async () => {
     const stdout = makeCliOutput();
     const mockSpawn = createMockSpawn({ stdout });
 
     const agentConfigs = {
       'agent-bot': {
         id: 'agent-bot',
-        identity: makeIdentity(),
+        subagentRef: 'agent-bot',
       },
     };
 
@@ -434,8 +448,15 @@ describe('createTrackedExecutor', () => {
 
     assert.ok(result.sessionResult);
     assert.equal(result.sessionResult.agentId, 'agent-bot');
+    assert.equal(result.sessionResult.subagentRef, 'agent-bot');
     assert.equal(result.usageTracked, true);
     assert.ok(result.usageRecord);
+
+    // Verify that the CLI was invoked with the subagent slug, not identity.
+    const args = mockSpawn.lastCall().args;
+    const agentIdx = args.indexOf('--agent');
+    assert.equal(args[agentIdx + 1], 'agent-bot');
+    assert.ok(!args.includes('--system-prompt'));
   });
 
   it('throws if agent config not found for agentId', async () => {
@@ -447,6 +468,18 @@ describe('createTrackedExecutor', () => {
     await assert.rejects(
       () => executor('unknown-agent', { taskId: 'task-1' }),
       /No agent config found for unknown-agent/
+    );
+  });
+
+  it('throws if agent config has no subagentRef', async () => {
+    const executor = createTrackedExecutor({
+      agentConfigs: { 'agent-bot': { id: 'agent-bot' } },
+      usageStore,
+    });
+
+    await assert.rejects(
+      () => executor('agent-bot', { taskId: 'task-1' }),
+      /missing subagentRef/
     );
   });
 
@@ -464,7 +497,7 @@ describe('createTrackedExecutor', () => {
     const agentConfigs = {
       'agent-bot': {
         id: 'agent-bot',
-        identity: makeIdentity(),
+        subagentRef: 'agent-bot',
       },
     };
 
@@ -474,7 +507,6 @@ describe('createTrackedExecutor', () => {
       sessionOpts: { spawnFn: mockSpawn },
     });
 
-    // No payload.description — should use taskId as fallback
     const result = await executor('agent-bot', { taskId: 'task-fallback' });
 
     assert.ok(result.sessionResult);
@@ -486,8 +518,8 @@ describe('createTrackedExecutor', () => {
     const mockSpawn = createMockSpawn({ stdout });
 
     const agentConfigs = {
-      'agent-a': { id: 'agent-a', identity: makeIdentity({ name: 'AgentA' }) },
-      'agent-b': { id: 'agent-b', identity: makeIdentity({ name: 'AgentB' }) },
+      'agent-a': { id: 'agent-a', subagentRef: 'agent-a' },
+      'agent-b': { id: 'agent-b', subagentRef: 'agent-b' },
     };
 
     const executor = createTrackedExecutor({

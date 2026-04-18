@@ -24,10 +24,11 @@ import {
   generateIdempotencyKey,
   createExecutionRecord,
 } from '../storage/execution-store.js';
+import { resolveSubagentFile } from '../subagents/subagent-file.js';
 
 /**
  * @typedef {object} TaskTickResult
- * @property {'task_selected'|'no_pending_tasks'|'all_tasks_finished'|'no_approved_plan'|'skipped'|'error'} outcome
+ * @property {'task_selected'|'no_pending_tasks'|'all_tasks_finished'|'no_approved_plan'|'no_weekly_plans'|'skipped'|'error'} outcome
  * @property {string} agentId
  * @property {object} [task]         - The selected task (when outcome === 'task_selected')
  * @property {number} [taskIndex]    - Original index in plan.tasks
@@ -36,6 +37,13 @@ import {
  * @property {string} [reason]       - Human-readable reason (for non-task outcomes)
  * @property {Error}  [error]        - Error object (when outcome === 'error')
  * @property {string} tickedAt       - ISO timestamp of the tick
+ *
+ * outcome === 'no_weekly_plans' identifies "shell" agents — typically freshly
+ * hired via `hireAllSubagents` — that have a valid subagent `.md` + aweek JSON
+ * wrapper but no weekly plan files on disk yet. These are distinct from
+ * `no_approved_plan` agents (which DO have plans, just none approved); the
+ * resume path is to author + approve a plan via `/aweek:plan`, not to approve
+ * an existing draft.
  */
 
 /**
@@ -63,11 +71,18 @@ import {
  * @returns {function(string): Promise<TaskTickResult>}
  */
 export function createTaskTickCallback(opts = {}) {
-  const { weeklyPlanStore, executionStore, agentStore, windowMs } = opts;
+  const { weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
   if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
 
   return async function taskTickCallback(agentId) {
-    return tickAgent(agentId, { weeklyPlanStore, executionStore, agentStore, windowMs });
+    return tickAgent(agentId, {
+      weeklyPlanStore,
+      executionStore,
+      agentStore,
+      windowMs,
+      projectDir,
+      home,
+    });
   };
 }
 
@@ -82,10 +97,15 @@ export function createTaskTickCallback(opts = {}) {
  * @param {import('../storage/execution-store.js').ExecutionStore} [opts.executionStore] - Optional execution store for deduplication
  * @param {import('../storage/agent-store.js').AgentStore} [opts.agentStore] - Optional agent store for pause-check
  * @param {number} [opts.windowMs=3600000] - Time window for idempotency (default 1 hour)
+ * @param {string} [opts.projectDir] - Project root for subagent-file resolution
+ *   (defaults to `process.cwd()` inside `resolveSubagentFile`). Exposed so
+ *   tests can verify the subagent-missing auto-pause without touching cwd.
+ * @param {string} [opts.home] - User home override for subagent-file resolution
+ *   (tests only; defaults to `os.homedir()`).
  * @returns {Promise<TaskTickResult>}
  */
 export async function tickAgent(agentId, opts = {}) {
-  const { weeklyPlanStore, executionStore, agentStore, windowMs } = opts;
+  const { weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
   if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
   if (!agentId) throw new Error('agentId is required');
 
@@ -93,19 +113,60 @@ export async function tickAgent(agentId, opts = {}) {
   const tickedAt = now.toISOString();
 
   try {
-    // Step 0a: Resume guard — skip paused agents immediately
+    // Step 0a: Resume guard — skip paused agents immediately.
+    //
+    // We read the persisted pausedReason (if any) so the skipped outcome
+    // can surface WHY the agent is paused — a subagent_missing pause, for
+    // example, must not be confused with a budget_exhausted pause because
+    // the resume path is different (restore the .md file, not top up the
+    // token budget).
     if (agentStore) {
-      const paused = await _isAgentPausedSafe(agentStore, agentId);
-      if (paused) {
+      const pausedInfo = await _readAgentPauseStateSafe(agentStore, agentId);
+      if (pausedInfo.paused) {
         await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+        const reason =
+          pausedInfo.pausedReason === 'subagent_missing'
+            ? `Agent "${agentId}" is paused (subagent file missing). Restore .claude/agents/${agentId}.md before executing tasks.`
+            : `Agent "${agentId}" is paused (budget exhausted). Resume the agent before executing tasks.`;
         return {
           outcome: 'skipped',
           agentId,
-          reason: `Agent "${agentId}" is paused (budget exhausted). Resume the agent before executing tasks.`,
-          pausedReason: 'budget_exhausted',
+          reason,
+          pausedReason: pausedInfo.pausedReason || 'budget_exhausted',
           tickedAt,
         };
       }
+    }
+
+    // Step 0a': Subagent-file guard — auto-pause when the backing .md is gone.
+    //
+    // The subagent file at `.claude/agents/<slug>.md` (or the user-level
+    // `~/.claude/agents/<slug>.md`) is the single source of truth for
+    // identity: without it, Claude Code's `--agent <slug>` lookup fails and
+    // any spawn would crash-loop. We therefore:
+    //
+    //   1. Resolve the subagentRef (falling back to the agentId when the
+    //      slug-equals-id invariant holds, which it does post-refactor).
+    //   2. Check EITHER location (`resolveSubagentFile` probes project then
+    //      user level).
+    //   3. If missing, persist `budget.paused = true` + `pausedReason =
+    //      'subagent_missing'` and return `skipped` WITHOUT throwing.
+    //
+    // All error paths degrade gracefully: if the agent store itself is
+    // broken we proceed as if the subagent exists rather than block the
+    // tick. The next tick with a working store will redo the check.
+    if (agentStore) {
+      const missingResult = await _autoPauseIfSubagentMissing({
+        agentStore,
+        agentId,
+        projectDir,
+        home,
+        now,
+        executionStore,
+        windowMs,
+        tickedAt,
+      });
+      if (missingResult) return missingResult;
     }
 
     // Step 0b: Deduplication check — skip if this agent+window was already executed
@@ -123,6 +184,36 @@ export async function tickAgent(agentId, opts = {}) {
           tickedAt,
         };
       }
+    }
+
+    // Step 0c: Shell-agent guard — skip agents with no weekly plan entries.
+    //
+    // Agents created via `hireAllSubagents` (or the `select-some` variant of
+    // the `/aweek:init` post-setup menu) land on disk as "shells": a valid
+    // aweek JSON wrapper + a `.claude/agents/<slug>.md` subagent file, but
+    // NO weekly plan files under `.aweek/agents/<slug>/weekly-plans/`. Ticking
+    // such an agent through `selectNextTask` would work (it returns null, and
+    // we'd fall through to the `no_approved_plan` branch), but conflating
+    // "shell" with "has plans, none approved" hides an actionable distinction:
+    //
+    //   - Shell  → resume path: author + approve a plan (`/aweek:plan`).
+    //   - Has unapproved plan → resume path: `/aweek:approve-plan`.
+    //
+    // Detect it explicitly here so the outcome string and reason can name the
+    // shell case, surface `hasWeeklyPlans: false`, and still record a skipped
+    // execution for dedup parity with the other skipped branches.
+    const weeklyPlanListing = await _listWeeklyPlanWeeksSafe(weeklyPlanStore, agentId);
+    if (weeklyPlanListing.ok && weeklyPlanListing.weeks.length === 0) {
+      await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+      return {
+        outcome: 'no_weekly_plans',
+        agentId,
+        reason:
+          `Agent "${agentId}" has no weekly plan entries — it appears to be a freshly hired shell. ` +
+          `Author and approve a weekly plan before the heartbeat can select tasks.`,
+        hasWeeklyPlans: false,
+        tickedAt,
+      };
     }
 
     // Step 1: Select next pending task from latest approved plan
@@ -239,12 +330,19 @@ async function _recordExecution(executionStore, agentId, date, windowMs, status,
  * @returns {Promise<{status: string, agentId: string, result?: TaskTickResult, reason?: string, error?: Error}>}
  */
 export async function runHeartbeatTick(agentId, opts = {}) {
-  const { scheduler, weeklyPlanStore, executionStore, agentStore, windowMs } = opts;
+  const { scheduler, weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
   if (!scheduler) throw new Error('scheduler is required');
   if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
   if (!agentId) throw new Error('agentId is required');
 
-  const callback = createTaskTickCallback({ weeklyPlanStore, executionStore, agentStore, windowMs });
+  const callback = createTaskTickCallback({
+    weeklyPlanStore,
+    executionStore,
+    agentStore,
+    windowMs,
+    projectDir,
+    home,
+  });
   return scheduler.runHeartbeat(agentId, callback);
 }
 
@@ -262,13 +360,23 @@ export async function runHeartbeatTick(agentId, opts = {}) {
  * @returns {Promise<Array<{status: string, agentId: string, result?: TaskTickResult}>>}
  */
 export async function runHeartbeatTickAll(agentIds, opts = {}) {
-  const { scheduler, weeklyPlanStore, executionStore, agentStore, windowMs } = opts;
+  const { scheduler, weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
   if (!scheduler) throw new Error('scheduler is required');
   if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
   if (!Array.isArray(agentIds)) throw new Error('agentIds must be an array');
 
   return Promise.all(
-    agentIds.map((id) => runHeartbeatTick(id, { scheduler, weeklyPlanStore, executionStore, agentStore, windowMs }))
+    agentIds.map((id) =>
+      runHeartbeatTick(id, {
+        scheduler,
+        weeklyPlanStore,
+        executionStore,
+        agentStore,
+        windowMs,
+        projectDir,
+        home,
+      })
+    )
   );
 }
 
@@ -287,19 +395,145 @@ async function _loadLatestApprovedSafe(store, agentId) {
 }
 
 /**
- * Safely check if an agent is paused (returns false on any error).
+ * Safely list the weekly plan weeks for an agent.
+ *
+ * Used by the shell-agent guard to distinguish "no weekly plan files at all"
+ * (shell) from "has weekly plan files but none approved" (draft pending
+ * approval). The `ok: false` branch lets callers skip the shell guard and
+ * fall through to the downstream plan-approval branches when the store is
+ * unavailable — graceful degradation per the `graceful_degradation`
+ * principle: a missing `.list` method or a filesystem hiccup must not block
+ * the tick.
+ *
+ * @param {import('../storage/weekly-plan-store.js').WeeklyPlanStore} store
+ * @param {string} agentId
+ * @returns {Promise<{ ok: boolean, weeks: string[] }>}
+ *   - `ok: true`  — listing succeeded; `weeks` is the array of YYYY-Www keys.
+ *   - `ok: false` — listing unavailable (no `.list` method or threw); caller
+ *     should skip the shell guard and continue the tick.
+ */
+async function _listWeeklyPlanWeeksSafe(store, agentId) {
+  if (!store || typeof store.list !== 'function') {
+    return { ok: false, weeks: [] };
+  }
+  try {
+    const weeks = await store.list(agentId);
+    return { ok: true, weeks: Array.isArray(weeks) ? weeks : [] };
+  } catch {
+    return { ok: false, weeks: [] };
+  }
+}
+
+/**
+ * Safely read an agent's pause state (returns `{ paused: false }` on any error).
  * Graceful degradation: if the store is unavailable or the agent doesn't exist,
  * we assume the agent is NOT paused (allow execution to proceed).
  *
+ * Surfaces `pausedReason` alongside `paused` so the heartbeat can report the
+ * correct cause in its skipped outcome without re-reading the config.
+ *
  * @param {import('../storage/agent-store.js').AgentStore} agentStore
  * @param {string} agentId
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ paused: boolean, pausedReason: string|undefined }>}
  */
-async function _isAgentPausedSafe(agentStore, agentId) {
+async function _readAgentPauseStateSafe(agentStore, agentId) {
   try {
     const config = await agentStore.load(agentId);
-    return config.budget?.paused === true;
+    return {
+      paused: config.budget?.paused === true,
+      pausedReason: config.budget?.pausedReason,
+    };
   } catch {
-    return false;
+    return { paused: false, pausedReason: undefined };
   }
+}
+
+/**
+ * If the agent's backing subagent .md file is missing at BOTH project and
+ * user level, persist `budget.paused = true` + `budget.pausedReason =
+ * 'subagent_missing'` and return a skipped TaskTickResult. Otherwise return
+ * `null` so the tick proceeds.
+ *
+ * Never throws: every failure mode (agent load error, file-system error,
+ * persist error) is caught and the caller is told to proceed. The
+ * next heartbeat will re-check with fresh state.
+ *
+ * @param {object} params
+ * @param {import('../storage/agent-store.js').AgentStore} params.agentStore
+ * @param {string} params.agentId
+ * @param {string} [params.projectDir]
+ * @param {string} [params.home]
+ * @param {Date}   params.now
+ * @param {import('../storage/execution-store.js').ExecutionStore} [params.executionStore]
+ * @param {number} [params.windowMs]
+ * @param {string} params.tickedAt
+ * @returns {Promise<TaskTickResult|null>}
+ */
+async function _autoPauseIfSubagentMissing(params) {
+  const {
+    agentStore,
+    agentId,
+    projectDir,
+    home,
+    now,
+    executionStore,
+    windowMs,
+    tickedAt,
+  } = params;
+
+  let config;
+  try {
+    config = await agentStore.load(agentId);
+  } catch {
+    // Store unavailable or agent missing → proceed; the existing flow will
+    // emit its own error/skipped outcome.
+    return null;
+  }
+
+  const subagentRef = (typeof config.subagentRef === 'string' && config.subagentRef)
+    ? config.subagentRef
+    : agentId;
+
+  let resolution;
+  try {
+    resolution = await resolveSubagentFile(subagentRef, { projectDir, home });
+  } catch {
+    // File-system probe failed — proceed rather than block. A subsequent
+    // tick will try again.
+    return null;
+  }
+
+  if (resolution.exists) return null;
+
+  // Persist the auto-pause. Never throw: if the write fails we still return
+  // a skipped outcome (the caller has already verified the file is missing,
+  // so proceeding to spawn would crash-loop anyway).
+  try {
+    await agentStore.update(agentId, (cfg) => {
+      if (!cfg.budget) cfg.budget = {};
+      cfg.budget.paused = true;
+      cfg.budget.pausedReason = 'subagent_missing';
+      return cfg;
+    });
+  } catch {
+    // Persist failed; still degrade gracefully by returning the skipped
+    // outcome. The next tick will retry the persist.
+  }
+
+  await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+
+  return {
+    outcome: 'skipped',
+    agentId,
+    reason:
+      `Agent "${agentId}" is paused: subagent file not found at ${resolution.projectPath} or ${resolution.userPath}. ` +
+      `Restore the .md file and resume the agent.`,
+    pausedReason: 'subagent_missing',
+    subagentRef,
+    checkedPaths: {
+      project: resolution.projectPath,
+      user: resolution.userPath,
+    },
+    tickedAt,
+  };
 }

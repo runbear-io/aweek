@@ -73,11 +73,16 @@ function createCrontabHarness() {
 // ---------------------------------------------------------------------------
 
 function buildTestAgent(overrides = {}) {
-  const config = createAgentConfig({
-    name: overrides.name || 'IntegBot',
-    role: overrides.role || 'Integration test agent',
-    systemPrompt: 'You are an integration test agent.',
-  });
+  // Post-refactor identity (name, role, system prompt) lives in the
+  // `.claude/agents/<slug>.md` file — aweek JSON only holds scheduling state.
+  // Tests use the slug-based `createAgentConfig({ subagentRef })` factory and
+  // derive a unique slug per call from the `name` override so multi-agent
+  // isolation checks still work.
+  const slug = (overrides.subagentRef || overrides.name || 'integ-bot')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const config = createAgentConfig({ subagentRef: slug });
 
   const goal = createGoal('Ship the product', '3mo');
   config.goals.push(goal);

@@ -1,9 +1,31 @@
 /**
  * Tests for adjust-goal skill logic.
+ *
+ * Subagent-wrapper invariant under test
+ * -------------------------------------
+ * After the aweek ↔ Claude Code subagent 1-to-1 refactor, every aweek agent
+ * is a thin scheduling wrapper around a subagent .md at
+ * `.claude/agents/SLUG.md`. The .md is the SOLE source of truth for identity
+ * (name, description, system prompt, model, tools, skills, MCP servers); the
+ * aweek JSON owns ONLY scheduling concerns — goals, monthly/weekly plans,
+ * token budget, inbox, execution logs.
+ *
+ * The adjust-goal skill is a scheduling-only operation, so these tests assert
+ * that running goal/monthly/weekly adjustments:
+ *   1. mutates ONLY the scheduling fields of the aweek JSON,
+ *   2. leaves the agent's identity-bearing fields (`id`, `subagentRef`,
+ *      `createdAt`) byte-for-byte unchanged,
+ *   3. never reads, writes, or otherwise touches the subagent .md file.
+ *
+ * Per the `single_source_of_truth` evaluation principle, identity is not
+ * duplicated into aweek JSON anymore — there is no `identity`, `name`,
+ * `role`, or `systemPrompt` field on the agent config. So these tests use
+ * the slug-based `createAgentConfig({ subagentRef })` factory and pin
+ * a subagent .md on disk to verify it survives the adjustment unchanged.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentStore } from '../storage/agent-store.js';
@@ -17,6 +39,10 @@ import {
   addGoal,
 } from '../models/agent.js';
 import {
+  buildSubagentMarkdown,
+  subagentFilePath,
+} from '../subagents/subagent-file.js';
+import {
   validateGoalAdjustment,
   validateMonthlyAdjustment,
   validateWeeklyAdjustment,
@@ -27,12 +53,12 @@ import {
   formatAdjustmentSummary,
 } from './adjust-goal.js';
 
+const TEST_SLUG = 'test-agent';
+
 /** Build a full agent config with goals, monthly plan, and weekly plan for testing. */
-function buildTestAgent() {
+function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const config = createAgentConfig({
-    name: 'Test Agent',
-    role: 'Test role',
-    systemPrompt: 'You are a test agent.',
+    subagentRef,
     weeklyTokenLimit: 100_000,
   });
 
@@ -339,6 +365,28 @@ describe('applyGoalAdjustment', () => {
     assert.equal(r.applied, false);
     assert.ok(r.error);
   });
+
+  it('does not mutate identity-bearing fields when adding a goal (subagent-wrapper invariant)', () => {
+    const { config } = buildTestAgent();
+    // Snapshot every field that belongs to the subagent identity contract.
+    // After the refactor the agent JSON only carries `id`, `subagentRef`,
+    // and `createdAt` as identity-related stable values — there is no
+    // identity blob anymore. None of these may move under a goal write.
+    const idBefore = config.id;
+    const refBefore = config.subagentRef;
+    const createdBefore = config.createdAt;
+
+    applyGoalAdjustment(config, { action: 'add', description: 'New', horizon: '1mo' });
+
+    assert.equal(config.id, idBefore, 'id must not change');
+    assert.equal(config.subagentRef, refBefore, 'subagentRef must not change');
+    assert.equal(config.createdAt, createdBefore, 'createdAt must not change');
+    // Defensive: make sure nobody re-introduced a denormalised identity blob.
+    assert.equal(config.identity, undefined, 'identity must not be reintroduced on the JSON wrapper');
+    assert.equal(config.name, undefined, 'name must live in the .md only');
+    assert.equal(config.role, undefined, 'role must live in the .md only');
+    assert.equal(config.systemPrompt, undefined, 'systemPrompt must live in the .md only');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -609,6 +657,258 @@ describe('adjustGoals', () => {
     const reloaded = await store.load(config.id);
     const goal = reloaded.goals.find((g) => g.id === goal1.id);
     assert.equal(goal.status, 'paused');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subagent-wrapper invariants
+//
+// The aweek JSON owns scheduling data only. Identity (name, description,
+// system prompt, model, tools, skills, MCP servers) lives in the subagent
+// .md. These tests pin a subagent .md on disk and verify that adjust-goal
+// (the canonical scheduling-only operation) leaves the .md byte-for-byte
+// untouched and never extends the persisted JSON with identity fields.
+// ---------------------------------------------------------------------------
+describe('adjustGoals subagent-wrapper invariants', () => {
+  let tmpDir;       // serves as both projectDir and the parent of dataDir
+  let dataDir;      // .aweek/agents
+  let mdPath;       // .claude/agents/<slug>.md
+  let mdContents;   // canonical bytes pinned at setup
+  let mdMtimeMs;    // mtime in ms pinned at setup
+  let store;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'aweek-adjust-goal-md-'));
+    dataDir = join(tmpDir, '.aweek', 'agents');
+    await mkdir(dataDir, { recursive: true });
+    await mkdir(join(tmpDir, '.claude', 'agents'), { recursive: true });
+
+    // Write the subagent .md — single source of truth for identity.
+    mdContents = buildSubagentMarkdown({
+      name: TEST_SLUG,
+      description: 'Quality and docs steward',
+      systemPrompt:
+        'You are the test agent. Improve quality and ship docs.\n' +
+        'Mention the slug verbatim when prompted: ' + TEST_SLUG + '.',
+    });
+    mdPath = subagentFilePath(TEST_SLUG, tmpDir);
+    await writeFile(mdPath, mdContents, 'utf8');
+    // Pin mtime so we can detect any incidental write later.
+    const stBefore = await stat(mdPath);
+    mdMtimeMs = stBefore.mtimeMs;
+
+    // Persist the aweek JSON wrapper into the same project tree.
+    store = new AgentStore(dataDir);
+    const { config } = buildTestAgent({ subagentRef: TEST_SLUG });
+    await store.save(config);
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('leaves the subagent .md byte-for-byte unchanged after a goal adjustment', async () => {
+    const result = await adjustGoals({
+      agentId: TEST_SLUG,
+      goalAdjustments: [{ action: 'add', description: 'Q3 launch', horizon: '3mo' }],
+      dataDir,
+    });
+    assert.equal(result.success, true);
+
+    const after = await readFile(mdPath, 'utf8');
+    assert.equal(
+      after,
+      mdContents,
+      'goal adjustment must not rewrite the subagent .md identity file',
+    );
+    const stAfter = await stat(mdPath);
+    assert.equal(
+      stAfter.mtimeMs,
+      mdMtimeMs,
+      'subagent .md mtime must be unchanged — adjust-goal is scheduling-only',
+    );
+  });
+
+  it('leaves the subagent .md byte-for-byte unchanged after a monthly adjustment', async () => {
+    // Need a goalId for the new monthly objective — load and grab one.
+    const before = await store.load(TEST_SLUG);
+    const goalId = before.goals[0].id;
+
+    const result = await adjustGoals({
+      agentId: TEST_SLUG,
+      monthlyAdjustments: [
+        { action: 'add', month: '2026-04', description: 'Extra objective', goalId },
+      ],
+      dataDir,
+    });
+    assert.equal(result.success, true);
+
+    const after = await readFile(mdPath, 'utf8');
+    assert.equal(after, mdContents);
+    const stAfter = await stat(mdPath);
+    assert.equal(stAfter.mtimeMs, mdMtimeMs);
+  });
+
+  it('leaves the subagent .md byte-for-byte unchanged after a weekly adjustment', async () => {
+    const before = await store.load(TEST_SLUG);
+    const objectiveId = before.monthlyPlans[0].objectives[0].id;
+
+    const result = await adjustGoals({
+      agentId: TEST_SLUG,
+      weeklyAdjustments: [
+        { action: 'add', week: '2026-W16', description: 'Extra task', objectiveId },
+      ],
+      dataDir,
+    });
+    assert.equal(result.success, true);
+
+    const after = await readFile(mdPath, 'utf8');
+    assert.equal(after, mdContents);
+    const stAfter = await stat(mdPath);
+    assert.equal(stAfter.mtimeMs, mdMtimeMs);
+  });
+
+  it('mutates only scheduling fields on the persisted aweek JSON', async () => {
+    // Snapshot identity-bearing fields and the budget envelope before mutation.
+    const before = await store.load(TEST_SLUG);
+    const identitySnapshotBefore = {
+      id: before.id,
+      subagentRef: before.subagentRef,
+      createdAt: before.createdAt,
+      weeklyTokenBudget: before.weeklyTokenBudget,
+      budgetWeeklyTokenLimit: before.budget.weeklyTokenLimit,
+      budgetCurrentUsage: before.budget.currentUsage,
+      budgetPaused: before.budget.paused,
+      budgetSessionsCount: before.budget.sessions.length,
+      inboxCount: before.inbox?.length ?? 0,
+    };
+    // Confirm no stale identity blob ever existed in the persisted JSON.
+    assert.equal(before.identity, undefined);
+    assert.equal(before.name, undefined);
+    assert.equal(before.role, undefined);
+    assert.equal(before.systemPrompt, undefined);
+
+    const goalId = before.goals[0].id;
+    const objectiveId = before.monthlyPlans[0].objectives[0].id;
+
+    const result = await adjustGoals({
+      agentId: TEST_SLUG,
+      goalAdjustments: [
+        { action: 'add', description: 'Stretch goal', horizon: '1yr' },
+        { action: 'update', goalId, status: 'paused' },
+      ],
+      monthlyAdjustments: [
+        { action: 'update', month: '2026-04', objectiveId, status: 'in-progress' },
+      ],
+      weeklyAdjustments: [
+        { action: 'add', week: '2026-W16', description: 'Polish docs', objectiveId },
+      ],
+      dataDir,
+    });
+    assert.equal(result.success, true);
+
+    const after = await store.load(TEST_SLUG);
+
+    // Identity-bearing fields must NOT change.
+    assert.equal(after.id, identitySnapshotBefore.id, 'id (= slug) is immutable');
+    assert.equal(after.subagentRef, identitySnapshotBefore.subagentRef, 'subagentRef is immutable');
+    assert.equal(after.createdAt, identitySnapshotBefore.createdAt, 'createdAt is immutable');
+
+    // Budget envelope must NOT change — adjust-goal is not a budget operation.
+    assert.equal(
+      after.weeklyTokenBudget,
+      identitySnapshotBefore.weeklyTokenBudget,
+      'weeklyTokenBudget is unchanged',
+    );
+    assert.equal(
+      after.budget.weeklyTokenLimit,
+      identitySnapshotBefore.budgetWeeklyTokenLimit,
+      'budget.weeklyTokenLimit is unchanged',
+    );
+    assert.equal(
+      after.budget.currentUsage,
+      identitySnapshotBefore.budgetCurrentUsage,
+      'budget.currentUsage is unchanged',
+    );
+    assert.equal(
+      after.budget.paused,
+      identitySnapshotBefore.budgetPaused,
+      'budget.paused is unchanged',
+    );
+    assert.equal(
+      after.budget.sessions.length,
+      identitySnapshotBefore.budgetSessionsCount,
+      'budget.sessions is unchanged',
+    );
+
+    // Inbox is also a scheduling concern OUTSIDE of adjust-goal — must not move.
+    assert.equal(
+      (after.inbox?.length ?? 0),
+      identitySnapshotBefore.inboxCount,
+      'inbox is unchanged by adjust-goal',
+    );
+
+    // No identity blob may be re-introduced post-write.
+    assert.equal(after.identity, undefined, 'identity blob must not be persisted into aweek JSON');
+    assert.equal(after.name, undefined, 'name must live in the .md only');
+    assert.equal(after.role, undefined, 'role must live in the .md only');
+    assert.equal(after.systemPrompt, undefined, 'systemPrompt must live in the .md only');
+
+    // Scheduling fields DID change (sanity check this isn't a no-op).
+    assert.equal(after.goals.length, before.goals.length + 1, 'a goal was added');
+    assert.equal(
+      after.monthlyPlans[0].objectives.find((o) => o.id === objectiveId).status,
+      'in-progress',
+      'objective status updated',
+    );
+    assert.equal(
+      after.weeklyPlans[0].tasks.length,
+      before.weeklyPlans[0].tasks.length + 1,
+      'a task was added',
+    );
+
+    // updatedAt is allowed to move (it's a scheduling bookkeeping field, not
+    // an identity one) but we don't *require* the timestamp to advance —
+    // when the whole call completes inside a single millisecond the new
+    // value can equal the old one. The invariant we care about is monotonic:
+    // updatedAt must never go backwards.
+    assert.ok(
+      Date.parse(after.updatedAt) >= Date.parse(before.updatedAt),
+      'updatedAt is monotonic (never moves backwards)',
+    );
+  });
+
+  it('does not create or read the subagent .md when the file is absent', async () => {
+    // Remove the .md to prove adjust-goal is filesystem-isolated from
+    // identity. The aweek JSON for this slug remains, but the .md does not.
+    await rm(mdPath, { force: true });
+
+    const before = await store.load(TEST_SLUG);
+
+    const result = await adjustGoals({
+      agentId: TEST_SLUG,
+      goalAdjustments: [{ action: 'add', description: 'Even without .md', horizon: '1mo' }],
+      dataDir,
+    });
+    assert.equal(
+      result.success,
+      true,
+      'adjust-goal does not depend on the .md — it only touches aweek JSON',
+    );
+
+    // The .md must still be absent — adjust-goal must never write one.
+    let mdRecreated = false;
+    try {
+      await stat(mdPath);
+      mdRecreated = true;
+    } catch {
+      // expected: ENOENT
+    }
+    assert.equal(mdRecreated, false, 'adjust-goal must not create the subagent .md');
+
+    // And the persisted scheduling-side change is intact.
+    const after = await store.load(TEST_SLUG);
+    assert.equal(after.goals.length, before.goals.length + 1);
   });
 });
 

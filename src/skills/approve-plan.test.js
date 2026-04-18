@@ -1,8 +1,33 @@
 /**
  * Tests for approve-plan skill logic.
+ *
+ * Subagent-wrapper invariant under test
+ * -------------------------------------
+ * After the aweek ↔ Claude Code subagent 1-to-1 refactor, each aweek agent
+ * is a thin scheduling wrapper around a subagent .md at
+ * `.claude/agents/SLUG.md`. The .md is the SOLE source of truth for identity
+ * (name, description, system prompt, model, tools, skills, MCP servers); the
+ * aweek JSON owns ONLY scheduling concerns — goals, monthly/weekly plans,
+ * token budget, inbox, execution logs.
+ *
+ * The approve-plan skill is a scheduling-only operation, so these tests
+ * assert that running approve/reject/edit:
+ *   1. mutates ONLY the scheduling fields of the aweek JSON,
+ *   2. leaves the agent's identity-bearing fields (`id`, `subagentRef`,
+ *      `createdAt`) byte-for-byte unchanged,
+ *   3. never reads, writes, or otherwise touches the subagent .md file.
+ *
+ * Per the `single_source_of_truth` evaluation principle, identity is not
+ * duplicated into aweek JSON anymore — there is no `identity`, `name`,
+ * `role`, or `systemPrompt` field on the agent config. These tests use the
+ * slug-based `createAgentConfig({ subagentRef })` factory and, where
+ * relevant, pin a subagent .md on disk to verify it survives the approval
+ * flow unchanged.
+ *
  * Covers:
  *  - findPendingPlan (with/without pending plans)
- *  - formatPlanForReview (output content and traceability)
+ *  - formatPlanForReview (output content, traceability, optional live .md
+ *    identity passthrough)
  *  - validateDecision (valid/invalid decisions)
  *  - validateEdits (add/remove/update validations)
  *  - applyEdits (add/remove/update mutations)
@@ -11,12 +36,13 @@
  *  - processApproval — edit (with/without auto-approve)
  *  - formatApprovalResult (all decision types)
  *  - loadPlanForReview (convenience wrapper)
+ *  - Subagent-wrapper invariants (scheduling-only; .md file untouched)
  *  - Edge cases and error handling
  */
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   findPendingPlan,
@@ -40,18 +66,20 @@ import {
   createWeeklyPlan,
 } from '../models/agent.js';
 import { AgentStore } from '../storage/agent-store.js';
+import {
+  buildSubagentMarkdown,
+  subagentFilePath,
+} from '../subagents/subagent-file.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+const TEST_SLUG = 'test-bot';
+
 /** Build a standard test agent with a pending weekly plan */
-function buildTestAgent() {
-  const config = createAgentConfig({
-    name: 'TestBot',
-    role: 'Test agent for approval flow',
-    systemPrompt: 'You are a test agent.',
-  });
+function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
+  const config = createAgentConfig({ subagentRef });
 
   const goal = createGoal('Build a great product', '3mo');
   config.goals.push(goal);
@@ -74,6 +102,51 @@ async function saveTestAgent(config) {
   const store = new AgentStore(tmpDir);
   await store.save(config);
   return { store, tmpDir };
+}
+
+/**
+ * Scaffold a full project tree with an aweek JSON wrapper AND a subagent .md
+ * file pinned on disk. Returns everything the subagent-wrapper invariant
+ * tests need to later verify the .md was not touched.
+ */
+async function scaffoldProjectWithSubagentMd({ subagentRef = TEST_SLUG } = {}) {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'aweek-approve-md-'));
+  const dataDir = join(tmpDir, '.aweek', 'agents');
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(join(tmpDir, '.claude', 'agents'), { recursive: true });
+
+  // Write the subagent .md — single source of truth for identity.
+  const mdContents = buildSubagentMarkdown({
+    name: subagentRef,
+    description: 'Scheduling wrapper test subject',
+    systemPrompt:
+      'You are the approve-plan test subject. Do not write to disk.\n' +
+      'Slug: ' + subagentRef + '.',
+  });
+  const mdPath = subagentFilePath(subagentRef, tmpDir);
+  await writeFile(mdPath, mdContents, 'utf8');
+  const stBefore = await stat(mdPath);
+  const mdMtimeMs = stBefore.mtimeMs;
+
+  const { config, goal, obj, monthlyPlan, weeklyPlan, task1, task2 } = buildTestAgent({ subagentRef });
+  const store = new AgentStore(dataDir);
+  await store.save(config);
+
+  return {
+    tmpDir,
+    dataDir,
+    mdPath,
+    mdContents,
+    mdMtimeMs,
+    store,
+    config,
+    goal,
+    obj,
+    monthlyPlan,
+    weeklyPlan,
+    task1,
+    task2,
+  };
 }
 
 /** No-op install function to prevent real crontab calls in tests */
@@ -133,11 +206,37 @@ describe('findPendingPlan', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatPlanForReview', () => {
-  it('includes agent name and week', () => {
+  it('falls back to the subagent slug when no live identity is provided', () => {
     const { config, weeklyPlan } = buildTestAgent();
     const text = formatPlanForReview(config, weeklyPlan);
-    assert.ok(text.includes('TestBot'));
+    assert.ok(text.includes(TEST_SLUG), `expected slug ${TEST_SLUG} in output`);
     assert.ok(text.includes('2026-W16'));
+    // Must not re-introduce any reference to the removed identity field.
+    assert.ok(!text.includes('undefined'));
+  });
+
+  it('uses the live .md name + description when subagentIdentity is passed', () => {
+    const { config, weeklyPlan } = buildTestAgent();
+    const text = formatPlanForReview(config, weeklyPlan, {
+      subagentIdentity: {
+        missing: false,
+        name: 'Design Lead',
+        description: 'Leads design system work',
+        path: '/ignored',
+      },
+    });
+    assert.ok(text.includes('Design Lead'));
+    assert.ok(text.includes('Leads design system work'));
+    // Slug line still present for traceability.
+    assert.ok(text.includes(`Slug:   ${TEST_SLUG}`));
+  });
+
+  it('falls back to slug when subagentIdentity is marked missing', () => {
+    const { config, weeklyPlan } = buildTestAgent();
+    const text = formatPlanForReview(config, weeklyPlan, {
+      subagentIdentity: { missing: true, name: '', description: '', path: '/x' },
+    });
+    assert.ok(text.includes(TEST_SLUG));
   });
 
   it('lists all tasks with priority and description', () => {
@@ -497,7 +596,7 @@ describe('processApproval — approve', () => {
   it('fails when agent not found', async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), 'aweek-approve-'));
     const result = await processApproval({
-      agentId: 'agent-nonexistent-12345678',
+      agentId: 'agent-nonexistent',
       decision: 'approve',
       dataDir: tmpDir,
       installFn: noopInstallFn,
@@ -566,7 +665,7 @@ describe('processApproval — reject', () => {
 
 describe('processApproval — edit', () => {
   it('applies edits and keeps plan pending', async () => {
-    const { config, task1, obj } = buildTestAgent();
+    const { config, task1 } = buildTestAgent();
     const { tmpDir } = await saveTestAgent(config);
 
     const result = await processApproval({
@@ -635,7 +734,7 @@ describe('processApproval — edit', () => {
   });
 
   it('persists edits to file', async () => {
-    const { config, task1, obj } = buildTestAgent();
+    const { config, obj } = buildTestAgent();
     const { tmpDir } = await saveTestAgent(config);
 
     await processApproval({
@@ -763,14 +862,14 @@ describe('loadPlanForReview', () => {
     assert.ok(result.success);
     assert.ok(result.config);
     assert.ok(result.plan);
-    assert.ok(result.formatted.includes('TestBot'));
+    assert.ok(result.formatted.includes(TEST_SLUG));
     assert.ok(result.formatted.includes('2026-W16'));
   });
 
   it('fails when agent not found', async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), 'aweek-approve-'));
     const result = await loadPlanForReview({
-      agentId: 'agent-nonexistent-12345678',
+      agentId: 'agent-nonexistent',
       dataDir: tmpDir,
     });
 
@@ -836,14 +935,14 @@ describe('processApproval — idempotency', () => {
 
 describe('buildHeartbeatCommand', () => {
   it('builds command with provided project dir', () => {
-    const cmd = buildHeartbeatCommand('agent-test-12345678', '/home/user/project');
-    assert.equal(cmd, 'npx aweek heartbeat agent-test-12345678 --project-dir /home/user/project');
+    const cmd = buildHeartbeatCommand('test-agent', '/home/user/project');
+    assert.equal(cmd, 'npx aweek heartbeat test-agent --project-dir /home/user/project');
   });
 
   it('uses cwd when no project dir provided', () => {
-    const cmd = buildHeartbeatCommand('agent-test-12345678');
+    const cmd = buildHeartbeatCommand('test-agent');
     assert.ok(cmd.includes(process.cwd()));
-    assert.ok(cmd.includes('agent-test-12345678'));
+    assert.ok(cmd.includes('test-agent'));
     assert.ok(cmd.includes('npx aweek heartbeat'));
   });
 });
@@ -861,16 +960,16 @@ describe('activateHeartbeat', () => {
     };
 
     const result = await activateHeartbeat({
-      agentId: 'agent-test-12345678',
+      agentId: 'test-agent',
       schedule: '*/15 * * * *',
-      command: 'node heartbeat.js agent-test-12345678',
+      command: 'node heartbeat.js test-agent',
       installFn: mockInstall,
     });
 
     assert.ok(result.activated);
     assert.equal(result.schedule, '*/15 * * * *');
-    assert.equal(capturedArgs.agentId, 'agent-test-12345678');
-    assert.equal(capturedArgs.command, 'node heartbeat.js agent-test-12345678');
+    assert.equal(capturedArgs.agentId, 'test-agent');
+    assert.equal(capturedArgs.command, 'node heartbeat.js test-agent');
     assert.equal(capturedArgs.schedule, '*/15 * * * *');
   });
 
@@ -882,7 +981,7 @@ describe('activateHeartbeat', () => {
     };
 
     await activateHeartbeat({
-      agentId: 'agent-test-12345678',
+      agentId: 'test-agent',
       command: 'node heartbeat.js',
       installFn: mockInstall,
     });
@@ -898,12 +997,12 @@ describe('activateHeartbeat', () => {
     };
 
     await activateHeartbeat({
-      agentId: 'agent-test-12345678',
+      agentId: 'test-agent',
       projectDir: '/test/project',
       installFn: mockInstall,
     });
 
-    assert.equal(capturedArgs.command, 'npx aweek heartbeat agent-test-12345678 --project-dir /test/project');
+    assert.equal(capturedArgs.command, 'npx aweek heartbeat test-agent --project-dir /test/project');
   });
 
   it('throws if agentId is missing', async () => {
@@ -1053,9 +1152,6 @@ describe('processApproval — heartbeat activation', () => {
 
   it('heartbeat activation is idempotent on repeated approvals', async () => {
     const { config } = buildTestAgent();
-    // Add a second pending plan after the first
-    const task = createTask('Extra task', config.monthlyPlans?.[0]?.objectives?.[0]?.id || 'obj-1', {});
-    // We'll approve the first plan, then add another pending plan
     const { tmpDir } = await saveTestAgent(config);
     const mock = createMockInstall();
 
@@ -1106,5 +1202,197 @@ describe('formatApprovalResult — heartbeat status', () => {
       heartbeatActivated: true,
     }, 'edit');
     assert.ok(text.includes('Heartbeat crontab installed successfully'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subagent-wrapper invariants
+//
+// These tests enforce the 1-to-1 refactor's contract: approve-plan is a
+// scheduling-only skill. It must never read or write `.claude/agents/<slug>.md`
+// and must never reintroduce an `identity` / `name` / `role` /
+// `systemPrompt` blob into aweek JSON (single_source_of_truth principle).
+// ---------------------------------------------------------------------------
+
+describe('Subagent-wrapper invariant — subagent .md is untouched', () => {
+  it('approve leaves the subagent .md byte-for-byte unchanged', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+
+    const result = await processApproval({
+      agentId: ctx.config.id,
+      decision: 'approve',
+      dataDir: ctx.dataDir,
+      installFn: noopInstallFn,
+    });
+    assert.ok(result.success);
+    assert.equal(result.plan.approved, true);
+
+    const after = await readFile(ctx.mdPath, 'utf8');
+    assert.equal(
+      after,
+      ctx.mdContents,
+      'approve must not rewrite the subagent .md identity file',
+    );
+    const stAfter = await stat(ctx.mdPath);
+    assert.equal(
+      stAfter.mtimeMs,
+      ctx.mdMtimeMs,
+      'subagent .md mtime must be unchanged — approve is scheduling-only',
+    );
+  });
+
+  it('reject leaves the subagent .md byte-for-byte unchanged', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+
+    const result = await processApproval({
+      agentId: ctx.config.id,
+      decision: 'reject',
+      dataDir: ctx.dataDir,
+    });
+    assert.ok(result.success);
+
+    const after = await readFile(ctx.mdPath, 'utf8');
+    assert.equal(after, ctx.mdContents);
+    const stAfter = await stat(ctx.mdPath);
+    assert.equal(stAfter.mtimeMs, ctx.mdMtimeMs);
+  });
+
+  it('edit leaves the subagent .md byte-for-byte unchanged', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+
+    const result = await processApproval({
+      agentId: ctx.config.id,
+      decision: 'edit',
+      edits: [
+        { action: 'update', taskId: ctx.task1.id, description: 'Revised description' },
+      ],
+      dataDir: ctx.dataDir,
+    });
+    assert.ok(result.success);
+
+    const after = await readFile(ctx.mdPath, 'utf8');
+    assert.equal(after, ctx.mdContents);
+    const stAfter = await stat(ctx.mdPath);
+    assert.equal(stAfter.mtimeMs, ctx.mdMtimeMs);
+  });
+
+  it('edit+auto-approve leaves the subagent .md byte-for-byte unchanged', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+
+    const result = await processApproval({
+      agentId: ctx.config.id,
+      decision: 'edit',
+      edits: [
+        { action: 'update', taskId: ctx.task1.id, priority: 'critical' },
+      ],
+      autoApproveAfterEdit: true,
+      dataDir: ctx.dataDir,
+      installFn: noopInstallFn,
+    });
+    assert.ok(result.success);
+    assert.equal(result.plan.approved, true);
+
+    const after = await readFile(ctx.mdPath, 'utf8');
+    assert.equal(after, ctx.mdContents);
+    const stAfter = await stat(ctx.mdPath);
+    assert.equal(stAfter.mtimeMs, ctx.mdMtimeMs);
+  });
+
+  it('loadPlanForReview leaves the subagent .md byte-for-byte unchanged', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+
+    const result = await loadPlanForReview({
+      agentId: ctx.config.id,
+      dataDir: ctx.dataDir,
+    });
+    assert.ok(result.success);
+
+    const after = await readFile(ctx.mdPath, 'utf8');
+    assert.equal(after, ctx.mdContents);
+    const stAfter = await stat(ctx.mdPath);
+    assert.equal(stAfter.mtimeMs, ctx.mdMtimeMs);
+  });
+});
+
+describe('Subagent-wrapper invariant — aweek JSON never reintroduces identity', () => {
+  it('approve mutates scheduling fields only; id/subagentRef/createdAt unchanged', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+    const before = await ctx.store.load(ctx.config.id);
+
+    // Confirm no stale identity ever landed on the persisted JSON.
+    assert.equal(before.identity, undefined);
+    assert.equal(before.name, undefined);
+    assert.equal(before.role, undefined);
+    assert.equal(before.systemPrompt, undefined);
+
+    const snapshotBefore = {
+      id: before.id,
+      subagentRef: before.subagentRef,
+      createdAt: before.createdAt,
+      weeklyTokenBudget: before.weeklyTokenBudget,
+    };
+
+    const result = await processApproval({
+      agentId: ctx.config.id,
+      decision: 'approve',
+      dataDir: ctx.dataDir,
+      installFn: noopInstallFn,
+    });
+    assert.ok(result.success);
+
+    const after = await ctx.store.load(ctx.config.id);
+    assert.equal(after.id, snapshotBefore.id, 'id must not change');
+    assert.equal(after.subagentRef, snapshotBefore.subagentRef, 'subagentRef must not change');
+    assert.equal(after.createdAt, snapshotBefore.createdAt, 'createdAt must not change');
+    assert.equal(after.weeklyTokenBudget, snapshotBefore.weeklyTokenBudget);
+    // Identity fields still absent.
+    assert.equal(after.identity, undefined, 'identity must not be reintroduced');
+    assert.equal(after.name, undefined);
+    assert.equal(after.role, undefined);
+    assert.equal(after.systemPrompt, undefined);
+    // Scheduling mutation is observable.
+    assert.equal(after.weeklyPlans[0].approved, true);
+    assert.ok(after.weeklyPlans[0].approvedAt);
+  });
+
+  it('reject removes pending plan but preserves id/subagentRef/createdAt', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+    const before = await ctx.store.load(ctx.config.id);
+
+    const result = await processApproval({
+      agentId: ctx.config.id,
+      decision: 'reject',
+      dataDir: ctx.dataDir,
+    });
+    assert.ok(result.success);
+
+    const after = await ctx.store.load(ctx.config.id);
+    assert.equal(after.id, before.id);
+    assert.equal(after.subagentRef, before.subagentRef);
+    assert.equal(after.createdAt, before.createdAt);
+    assert.equal(after.weeklyPlans.length, 0);
+    assert.equal(after.identity, undefined);
+  });
+
+  it('edit mutates only plan.tasks; id/subagentRef/createdAt unchanged', async () => {
+    const ctx = await scaffoldProjectWithSubagentMd();
+    const before = await ctx.store.load(ctx.config.id);
+
+    const result = await processApproval({
+      agentId: ctx.config.id,
+      decision: 'edit',
+      edits: [
+        { action: 'add', description: 'Added by edit', objectiveId: ctx.obj.id },
+      ],
+      dataDir: ctx.dataDir,
+    });
+    assert.ok(result.success);
+
+    const after = await ctx.store.load(ctx.config.id);
+    assert.equal(after.id, before.id);
+    assert.equal(after.subagentRef, before.subagentRef);
+    assert.equal(after.createdAt, before.createdAt);
+    assert.equal(after.weeklyPlans[0].tasks.length, before.weeklyPlans[0].tasks.length + 1);
+    assert.equal(after.identity, undefined);
   });
 });

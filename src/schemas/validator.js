@@ -5,7 +5,6 @@
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import {
-  identitySchema,
   goalSchema,
   goalsArraySchema,
   monthlyObjectiveSchema,
@@ -38,7 +37,6 @@ const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
 
 // Register all schemas (order matters: referenced schemas first)
-ajv.addSchema(identitySchema);
 ajv.addSchema(goalSchema);
 ajv.addSchema(goalsArraySchema);
 ajv.addSchema(monthlyObjectiveSchema);
@@ -90,7 +88,6 @@ export function assertValid(schemaId, data) {
 
 /** Convenience validators */
 export const validateAgentConfig = (data) => validate('aweek://schemas/agent-config', data);
-export const validateIdentity = (data) => validate('aweek://schemas/identity', data);
 export const validateGoal = (data) => validate('aweek://schemas/goal', data);
 export const validateMonthlyPlan = (data) => validate('aweek://schemas/monthly-plan', data);
 export const validateMonthlyObjective = (data) => validate('aweek://schemas/monthly-objective', data);

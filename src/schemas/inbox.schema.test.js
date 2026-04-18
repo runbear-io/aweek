@@ -107,12 +107,12 @@ describe('inbox message — field constraints', () => {
   });
 
   it('rejects invalid from pattern', () => {
-    const result = validateInboxMessage(validMessage({ from: 'not-an-agent' }));
+    const result = validateInboxMessage(validMessage({ from: 'Not-A-Slug' }));
     assert.equal(result.valid, false);
   });
 
   it('rejects invalid to pattern', () => {
-    const result = validateInboxMessage(validMessage({ to: 'not-an-agent' }));
+    const result = validateInboxMessage(validMessage({ to: 'Not-A-Slug' }));
     assert.equal(result.valid, false);
   });
 

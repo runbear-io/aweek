@@ -72,11 +72,19 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
 
   const scheduler = createScheduler({ lockDir });
 
-  // Step 1: Select next task
+  // Step 1: Select next task.
+  //
+  // `projectDir` is forwarded so the tick's subagent-file guard can probe
+  // `<projectDir>/.claude/agents/<slug>.md` without relying on a CWD that
+  // cron may not preserve. If that file is missing AND the user-level
+  // fallback (`~/.claude/agents/<slug>.md`) is also missing, the tick
+  // persists `pausedReason: 'subagent_missing'` and returns a skipped
+  // outcome rather than spawning a session that would crash-loop.
   const tickResult = await tickAgent(agentId, {
     weeklyPlanStore,
     executionStore,
     agentStore,
+    projectDir,
   });
 
   console.log(`[${agentId}] tick outcome: ${tickResult.outcome}`);
@@ -86,9 +94,10 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
     return tickResult;
   }
 
-  // Step 2: Load agent identity for CLI session
+  // Step 2: Load agent config for CLI session (identity lives in the
+  // subagent .md — we only need the slug).
   const config = await agentStore.load(agentId);
-  const identity = config.identity;
+  const subagentRef = config.subagentRef || agentId;
   const task = tickResult.task;
 
   console.log(`[${agentId}] executing task: ${task.description}`);
@@ -99,8 +108,12 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
   let finalStatus = 'completed';
 
   try {
-    // Step 3: Execute CLI session with token tracking
-    execResult = await executeSessionWithTracking(agentId, identity, {
+    // Step 3: Execute CLI session with token tracking.
+    //
+    // Identity (name, role, system prompt, model, tools) is resolved by
+    // Claude Code itself from `.claude/agents/<subagentRef>.md`; we pass
+    // only the slug here per the subagent-first executor contract.
+    execResult = await executeSessionWithTracking(agentId, subagentRef, {
       taskId: task.id,
       description: task.description,
       objectiveId: task.objectiveId,
