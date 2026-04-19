@@ -1,0 +1,12 @@
+{
+  "name": "aweek",
+  "version": "1.0.0",
+  "description": "Claude Code plugin for managing multiple AI agents on scheduled weekly plans. Each agent is a 1-to-1 wrapper around a Claude Code subagent with its own long-term goals, monthly objectives, weekly tasks, and token budget.",
+  "keywords": [
+    "claude-code",
+    "ai-agents",
+    "scheduling",
+    "subagents",
+    "weekly-planning"
+  ]
+}

@@ -38,7 +38,6 @@ export const REGISTRY = Object.freeze({
   init: {
     detectInitState: init.detectInitState,
     ensureDataDir: init.ensureDataDir,
-    registerSkills: init.registerSkills,
     installHeartbeat: init.installHeartbeat,
     queryHeartbeat: init.queryHeartbeat,
     finalizeInit: init.finalizeInit,

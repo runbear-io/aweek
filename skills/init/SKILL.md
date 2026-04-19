@@ -1,19 +1,24 @@
 ---
-name: aweek:init
-description: Initialize an aweek project — create the data directory, register skills, and optionally install the heartbeat crontab
+name: init
+description: Initialize an aweek project — create the data directory and optionally install the heartbeat crontab
 trigger: aweek init, init aweek, initialize aweek, setup aweek, bootstrap aweek, aweek setup, aweek bootstrap
 ---
 
 # aweek:init
 
 Bootstrap a project for the aweek agent scheduler. This is the first skill a
-user should run in a fresh repository — it prepares the filesystem layout,
-registers the `/aweek:*` slash commands in `.claude/commands/`, and (optionally)
-installs the hourly heartbeat crontab entry that drives agent execution.
+user should run in a fresh repository — it prepares the filesystem layout
+and (optionally) installs the hourly heartbeat crontab entry that drives
+agent execution.
+
+Slash-command discovery is handled by the Claude Code plugin system — this
+skill does not copy markdown into `.claude/commands/`. Users who installed
+aweek via `/plugin install aweek@…` already have every `/aweek:*` command
+available.
 
 This skill is a thin UX wrapper on top of `src/skills/init.js`. All filesystem
 mutations, crontab writes, and idempotency checks live in that module — do
-**not** edit `.aweek/`, `.claude/commands/`, or the user's crontab directly.
+**not** edit `.aweek/` or the user's crontab directly.
 
 ## Arguments
 
@@ -23,7 +28,7 @@ options for advanced / non-interactive invocation:
 
 | Option            | Type     | Default           | Description |
 |-------------------|----------|-------------------|-------------|
-| `projectDir`      | string   | `process.cwd()`   | Project root where `.aweek/` and `.claude/` will be created |
+| `projectDir`      | string   | `process.cwd()`   | Project root where `.aweek/` will be created |
 | `dataDir`         | string   | `.aweek/agents`   | Path (relative to `projectDir`) for the agent data directory |
 | `installHeartbeat`| boolean  | `false`           | Whether to install the hourly heartbeat crontab entry (destructive — requires confirmation) |
 | `heartbeatSchedule`| string  | `0 * * * *`       | Cron schedule used when `installHeartbeat` is true |
@@ -51,11 +56,12 @@ changed versus what was left alone.
 On a re-run against an already-initialized project the skill MUST:
 
 1. Call `detectInitState()` FIRST and use the returned flags to decide which
-   steps to skip silently vs. report as already-done. Do not run `ensureDataDir`,
-   `registerSkills`, or `installHeartbeat` when the corresponding `needsWork.*`
-   flag is `false` — just report the step as `skipped` and move on.
+   steps to skip silently vs. report as already-done. Do not run
+   `ensureDataDir` or `installHeartbeat` when the corresponding
+   `needsWork.*` flag is `false` — just report the step as `skipped` and
+   move on.
 2. **Never re-prompt** for the heartbeat install if it is already installed.
-3. On the final step (Step 6), still invoke `finalizeInit()` — it will return
+3. On the final step (Step 5), still invoke `finalizeInit()` — it will return
    `mode: 'add-another'` so the wizard can offer the user a chance to hire
    another agent via `/aweek:hire`. Re-runs must not feel like dead-ends.
 
@@ -67,7 +73,6 @@ confirmation** *before* the change is applied.
 | Step                          | Destructive | Confirmation required |
 |-------------------------------|-------------|-----------------------|
 | Create `.aweek/agents/` dir   | No          | No |
-| Register skills in `.claude/commands/` | No   | No (idempotent copies) |
 | Install heartbeat crontab     | Yes         | **Yes** |
 | Overwrite existing data dir   | Yes         | **Yes** |
 
@@ -90,7 +95,6 @@ The returned object has this shape:
 ```json
 {
   "dataDir": { "path": ".aweek/agents", "exists": true, "agentCount": 0 },
-  "skillsRegistered": { "hire": true, "plan": true, "calendar": false, "summary": true, "manage": true, "delegateTask": true, "init": true },
   "heartbeat": { "installed": false, "schedule": null }
 }
 ```
@@ -111,20 +115,7 @@ If the directory already exists, report `skipped` and move on — do NOT
 overwrite or wipe an existing `.aweek/agents/` unless the user has explicitly
 asked for a clean-slate reset AND confirmed via AskUserQuestion.
 
-### Step 3: Register skills in `.claude/commands/`
-
-Invoke the skill-registration helper (this wraps `scripts/setup-skills.sh`
-semantics so the workflow can call it directly without shelling out):
-
-```bash
-aweek exec init registerSkills
-```
-
-The result lists every slash command with its outcome (`created`, `updated`,
-or `skipped`) plus any old pre-refactor commands that were removed. Present
-the list to the user.
-
-### Step 4: Offer heartbeat installation (destructive — confirmation required)
+### Step 3: Offer heartbeat installation (destructive — confirmation required)
 
 Ask the user via `AskUserQuestion`:
 
@@ -148,7 +139,7 @@ they can install it later.
 If the heartbeat is already installed (detected in Step 1), skip the prompt
 entirely and report `skipped` — never re-install unprompted.
 
-### Step 5: Summarize
+### Step 4: Summarize
 
 Print a final summary table showing each step's outcome:
 
@@ -157,7 +148,6 @@ Print a final summary table showing each step's outcome:
 Project: /path/to/project
 
   Data directory       : created (.aweek/agents)
-  Skills registered    : 6 created, 1 skipped, 0 removed
   Heartbeat crontab    : skipped (user declined)
 
 Next steps:
@@ -166,7 +156,7 @@ Next steps:
   3. Run /aweek:summary to see the dashboard
 ```
 
-### Step 6: Offer the four-option hire menu as the final interactive step (or auto-delegate)
+### Step 5: Offer the four-option hire menu as the final interactive step (or auto-delegate)
 
 Infrastructure setup is just the foundation; the user's real goal is to have at
 least one working agent. After the summary prints, always run the post-init
@@ -242,13 +232,13 @@ The returned object has one of two shapes:
 }
 ```
 
-#### 6.0 Honor the fall-through before showing the menu
+#### 5.0 Honor the fall-through before showing the menu
 
 If `decision.fallThrough` is `true`:
 
 1. Echo the `decision.reason` to the user (one short line — they should see
    *why* the menu was skipped, not be left guessing).
-2. **Do NOT call `AskUserQuestion`.** Skip Step 6.1 entirely.
+2. **Do NOT call `AskUserQuestion`.** Skip Step 5.1 entirely.
 3. Invoke `/aweek:hire` immediately. Honor the `decision.route` descriptor —
    `route: 'create-new'` means launch the three-field create-new wizard with
    no pre-filled fields.
@@ -256,10 +246,10 @@ If `decision.fallThrough` is `true`:
 This auto-delegation is non-destructive (the hire wizard creates new state,
 never overwrites). No additional `confirmed: true` gate is required.
 
-If `decision.fallThrough` is `false`, proceed to Step 6.1 to present the menu
-as documented below. The remainder of Step 6 only applies on the choose path.
+If `decision.fallThrough` is `false`, proceed to Step 5.1 to present the menu
+as documented below. The remainder of Step 5 only applies on the choose path.
 
-#### 6.1 Present the menu
+#### 5.1 Present the menu
 
 Display `menu.promptText` and, when `menu.hasUnhired` is true, the list of
 unhired subagent slugs. Then invoke `AskUserQuestion` with the options from
@@ -269,11 +259,11 @@ identifiers stay in sync with the backing module.
 | Choice          | Available when        | Meaning |
 |-----------------|-----------------------|---------|
 | **Hire all**    | `hasUnhired === true` | Wrap every slug in `menu.unhired` into an aweek scheduling JSON in one pass. |
-| **Select some** | `hasUnhired === true` | Prompt the user a second time with a multi-select over `menu.unhired` and hire only the picked slugs. See Step 6.2b for the helper pipeline (`buildSelectSomeChoices` → `AskUserQuestion` multi-select → `runSelectSomeHire`). |
+| **Select some** | `hasUnhired === true` | Prompt the user a second time with a multi-select over `menu.unhired` and hire only the picked slugs. See Step 5.2b for the helper pipeline (`buildSelectSomeChoices` → `AskUserQuestion` multi-select → `runSelectSomeHire`). |
 | **Create new**  | Always                | Skip adoption and launch the `/aweek:hire` wizard's create-new path (three-field identity capture). |
 | **Skip**        | Always                | Finish init without hiring. The user can always run `/aweek:hire` later. |
 
-#### 6.2 Route the user's choice
+#### 5.2 Route the user's choice
 
 Call `routeInitHireMenuChoice` to convert the user's selection into a stable
 handler descriptor:
@@ -333,7 +323,7 @@ Dispatch based on the descriptor:
   tasks should run `/aweek:plan` against each newly-hired slug afterwards —
   bulk hires intentionally leave plans empty so the user can tailor each
   roadmap rather than inheriting a generic template.
-- **`select-some`** (`bulk: true`): see **Step 6.2b** below — it requires a
+- **`select-some`** (`bulk: true`): see **Step 5.2b** below — it requires a
   second `AskUserQuestion` (a multi-select) before the wrapper pass.
 - **`create-new`** (`bulk: false`): delegate to `/aweek:hire`'s create-new
   wizard so the user collects the three-field identity (name, description,
@@ -355,7 +345,7 @@ Dispatch based on the descriptor:
 
   Alternatively, when the three identity fields have already been collected
   (e.g. from a non-interactive test harness), call `runCreateNewHire` to run
-  the same two-step flow the wizard's Step 6a + 6b would run — it writes or
+  the same two-step flow the wizard's Step 1a + 6b would run — it writes or
   adopts `.claude/agents/<slug>.md` via `createNewSubagent`, then delegates
   to `hireAllSubagents` so the aweek JSON shell shape matches every other
   menu branch:
@@ -414,7 +404,7 @@ Dispatch based on the descriptor:
 - **`skip`**: finish here. Remind the user they can run `/aweek:hire` at any
   time to add an agent later.
 
-#### 6.2b Select-some branch (multi-select + wrap)
+#### 5.2b Select-some branch (multi-select + wrap)
 
 When `route.action === 'select-some'` the markdown must run a **second**
 interactive prompt — a multi-select over `menu.unhired` — before touching the
@@ -422,7 +412,7 @@ filesystem. The helpers in `src/skills/hire-select-some.js` own this flow so
 the markdown does not have to hand-roll the choice payload or the
 validation-and-dispatch glue.
 
-**Step 6.2b-1 — Build the multi-select payload.** Use `buildSelectSomeChoices`
+**Step 5.2b-1 — Build the multi-select payload.** Use `buildSelectSomeChoices`
 to turn `menu.unhired` into a ready-to-show `AskUserQuestion` payload. Each
 choice is enriched with the live `name` + `description` from
 `.claude/agents/<slug>.md` so users see what they are picking:
@@ -448,13 +438,13 @@ The returned payload has this shape:
 }
 ```
 
-**Step 6.2b-2 — Render the multi-select.** Display `payload.promptText` and
+**Step 5.2b-2 — Render the multi-select.** Display `payload.promptText` and
 invoke `AskUserQuestion` with `payload.choices`, enabling checkbox / multi-pick
 semantics (`multiSelect: true`). Users MUST be able to pick more than one slug
 — a single-select would defeat the purpose of this branch. Collect the user's
 picks as a `string[]` — call it `selectedSlugs`.
 
-**Step 6.2b-3 — Validate + wrap.** Pass `selectedSlugs` to `runSelectSomeHire`
+**Step 5.2b-3 — Validate + wrap.** Pass `selectedSlugs` to `runSelectSomeHire`
 which re-validates the selection against the menu's unhired list (defense in
 depth against stale menus or slugs hired concurrently) and then delegates to
 `hireAllSubagents` to wrap every picked slug:
@@ -512,10 +502,10 @@ a pre-existing aweek JSON. No `confirmed: true` gate is required because the
 only filesystem writes are new `.aweek/agents/<slug>.json` files; no
 `.md` or crontab entries are touched.
 
-Never skip Step 6 — the init flow exists to give the user a clear next action,
+Never skip Step 5 — the init flow exists to give the user a clear next action,
 whether this is their first agent or a re-run after adding more subagents.
 
-#### 6.3 Error handling
+#### 5.3 Error handling
 
 - If `routeInitHireMenuChoice` throws `EINIT_HIRE_MENU_BAD_CHOICE`, re-present
   the menu (the user's selection did not match any available option, usually
@@ -529,7 +519,7 @@ whether this is their first agent or a re-run after adding more subagents.
 The menu is **non-destructive**: it only reads the filesystem. Launching
 `/aweek:hire` afterwards creates new state but is itself non-destructive (no
 `.md` overwrites — adopt-on-collision is enforced inside `createNewSubagent`).
-No additional `confirmed: true` gate is required for Step 6.
+No additional `confirmed: true` gate is required for Step 5.
 
 ## Error handling
 

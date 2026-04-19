@@ -1,5 +1,5 @@
 ---
-name: aweek:plan
+name: plan
 description: Manage an agent's goals, monthly objectives, weekly tasks, and pending plan approvals from a single entry point
 trigger: aweek plan, adjust goal, change goal, update goal, modify goal, edit goal, adjust plan, change plan, update plan, approve plan, review plan, approve weekly plan, reject plan, edit plan
 ---
@@ -31,49 +31,31 @@ List all agents and show which ones have pending weekly plans awaiting
 approval. The pending-plan marker is what signals "this agent needs
 review" so the user can pick it fast.
 
-`listAllAgents` returns a flat array of agent configs. Each config has
-`id`, `subagentRef`, `goals`, `weeklyPlans`, `budget`, etc. — but **no
-`identity` field**, because identity (name + role) lives in
-`.claude/agents/<slug>.md`, not in the aweek JSON. The slug is the
-agent id, so `config.id` is the human-readable handle for selection.
-
 ```bash
-node --input-type=module -e "
-import { listAllAgents } from './src/storage/agent-helpers.js';
-
-const agents = await listAllAgents({ dataDir: '.aweek/agents' });
-if (agents.length === 0) {
-  console.log('NO_AGENTS');
-} else {
-  const rows = agents.map((config) => {
-    const pending = (config.weeklyPlans || []).find((p) => p.approved === false);
-    return {
-      id: config.id,
-      subagentRef: config.subagentRef,
-      goals: (config.goals || []).length,
-      monthlyPlans: (config.monthlyPlans || []).length,
-      weeklyPlans: (config.weeklyPlans || []).length,
-      pendingWeek: pending?.week || null,
-      pendingTasks: pending?.tasks?.length || 0,
-      paused: !!config.budget?.paused,
-    };
-  });
-  console.log(JSON.stringify(rows, null, 2));
-}
-"
+echo '{"dataDir":".aweek/agents"}' \
+  | aweek exec agent-helpers listAllAgents --input-json -
 ```
 
-- If `NO_AGENTS`, tell the user: **"No agents found. Use /aweek:hire to
+The response is an array of `{ config }` records. For each entry, compute
+the display row:
+
+```js
+const pending = (config.weeklyPlans || []).find((p) => p.approved === false);
+const row = {
+  id: config.id,
+  name: config.identity?.name,
+  role: config.identity?.role,
+  goals: (config.goals || []).length,
+  pendingWeek: pending?.week || null,
+  pendingTasks: pending?.tasks?.length || 0,
+};
+```
+
+- If the response array is empty, tell the user: **"No agents found. Use /aweek:hire to
   create one first."** and stop.
-- Otherwise display a numbered list keyed on `config.id` (the subagent
-  slug), with goal / monthly / weekly counts and the
-  `pending: <week> (<N> tasks)` marker when a plan is awaiting approval.
-  If you need the human-readable agent name, read the `name:` /
-  `description:` frontmatter from `.claude/agents/<id>.md` — but for
-  selection prompts the slug alone is usually enough.
-- If exactly one agent exists, auto-select it and skip the
-  `AskUserQuestion` (a one-option pick is just noise).
-- Otherwise ask the user to pick one using `AskUserQuestion`.
+- Otherwise display a numbered list: agent name, role, goal count, and
+  `pending: <week> (<N> tasks)` when a plan is awaiting approval.
+- Ask the user to pick one using `AskUserQuestion`.
 
 ### Step 2: Choose an Operation
 
@@ -134,33 +116,17 @@ fields. Keep looping until the user says they are done.
 
 **Monthly (`monthlyAdjustments`)**
 
-- `create` → bootstrap a brand-new monthly plan when none exists for the
-  month yet. Required: `month` (`YYYY-MM`, must NOT already exist),
-  `objectives` (array of `{ description, goalId }` with at least one
-  entry — the schema requires `objectives.minItems: 1`). Optional:
-  `status` (`draft` / `active` / `completed` / `archived`, default
-  `active`), `summary` (non-empty string).
-- `add` → append an objective to an existing monthly plan. Required:
-  `month` (must match an existing monthly plan), `description`, `goalId`
-  (pick from the numbered goals list).
-- `update` → `month`, `objectiveId`, then at least one of: description,
-  status (`planned` / `in-progress` / `completed` / `dropped`).
+- `add` → month (`YYYY-MM`, must match an existing monthly plan),
+  description (required), goalId (pick from the numbered goals list).
+- `update` → month, objectiveId, then at least one of: description, status
+  (`planned` / `in-progress` / `completed` / `dropped`).
 
 **Weekly (`weeklyAdjustments`)**
 
-- `create` → bootstrap a brand-new weekly plan when none exists for the
-  week yet. Required: `week` (`YYYY-Www`, must NOT already exist),
-  `month` (`YYYY-MM`, must reference an existing monthly plan on this
-  agent — create the monthly plan first if it doesn't exist). Optional:
-  `tasks` array — each entry `{ description, objectiveId, priority?,
-  estimatedMinutes? }` with the same per-task constraints as `add`. The
-  new plan starts as `approved: false` and must be reviewed via
-  Branch B before the heartbeat picks it up.
-- `add` → append a task to an existing weekly plan. Required: `week`
-  (must match an existing weekly plan), `description`, `objectiveId`
-  (pick from the numbered objectives list, flattened across all monthly
-  plans).
-- `update` → `week`, `taskId`, then at least one of: description, status
+- `add` → week (`YYYY-Www`, must match an existing weekly plan),
+  description (required), objectiveId (pick from the numbered objectives
+  list, flattened across all monthly plans).
+- `update` → week, taskId, then at least one of: description, status
   (`pending` / `in-progress` / `completed` / `failed` / `delegated` /
   `skipped`).
 
@@ -192,24 +158,25 @@ Ask `AskUserQuestion`: **"Apply these changes? (yes / no / edit)"**.
 Execute the batch through `plan.adjustPlan`:
 
 ```bash
-node --input-type=module -e "
-import { adjustPlan, formatAdjustmentResult } from './src/skills/plan.js';
-
-const result = await adjustPlan({
-  agentId: '<AGENT_ID>',
-  goalAdjustments:   [<GOAL_OPS>],
-  monthlyAdjustments: [<MONTHLY_OPS>],
-  weeklyAdjustments:  [<WEEKLY_OPS>],
-});
-
-if (!result.success) {
-  console.error('ERRORS:', JSON.stringify(result.errors));
-  process.exit(1);
-}
-
-console.log(formatAdjustmentResult(result.results));
-"
+echo '{
+  "agentId": "<AGENT_ID>",
+  "goalAdjustments":   [<GOAL_OPS>],
+  "monthlyAdjustments": [<MONTHLY_OPS>],
+  "weeklyAdjustments":  [<WEEKLY_OPS>]
+}' | aweek exec plan adjustPlan --input-json -
 ```
+
+If `result.success === false`, surface `result.errors` and stop. On
+success, format the batch via:
+
+```bash
+# $RESULT is the JSON payload from adjustPlan
+echo "$RESULT" | aweek exec plan formatAdjustmentResult \
+  --input-json - --format text
+```
+
+`formatAdjustmentResult` accepts either the full `result` object (it
+unwraps `result.results` automatically) or a raw `results` slice.
 
 Substitute the collected operation objects, properly JSON-escaped. Each
 operation object must match one of these shapes:
@@ -217,10 +184,8 @@ operation object must match one of these shapes:
 - **Goal add:** `{ "action": "add", "description": "...", "horizon": "1mo|3mo|1yr" }`
 - **Goal update:** `{ "action": "update", "goalId": "goal-xxx", "description": "...", "status": "...", "horizon": "..." }`
 - **Goal remove:** `{ "action": "remove", "goalId": "goal-xxx" }`
-- **Monthly create:** `{ "action": "create", "month": "YYYY-MM", "objectives": [{ "description": "...", "goalId": "goal-xxx" }, ...], "status": "active", "summary": "..." }`
 - **Monthly add:** `{ "action": "add", "month": "YYYY-MM", "description": "...", "goalId": "goal-xxx" }`
 - **Monthly update:** `{ "action": "update", "month": "YYYY-MM", "objectiveId": "obj-xxx", "description": "...", "status": "..." }`
-- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "medium", "estimatedMinutes": 60 }, ...] }`
 - **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx" }`
 - **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "..." }`
 
@@ -237,31 +202,16 @@ Only offered when the agent has at least one plan with `approved: false`.
 Load and display the formatted pending plan via `plan.reviewPlan`:
 
 ```bash
-node --input-type=module -e "
-import { reviewPlan } from './src/skills/plan.js';
-
-const result = await reviewPlan({ agentId: '<AGENT_ID>' });
-if (!result.success) {
-  console.error('ERROR:', result.errors.join(', '));
-  process.exit(1);
-}
-console.log(result.formatted);
-"
+echo '{"agentId":"<AGENT_ID>"}' \
+  | aweek exec plan reviewPlan --input-json -
 ```
 
-**IMPORTANT — Not collapsed display:** After running the script, you
-MUST re-emit `result.formatted` as direct text in your next assistant
-message, wrapped in a fenced code block. Do NOT rely on the user being
-able to read the Bash tool result — the Claude Code UI collapses Bash
-output by default, so a plan that only lives inside the Bash result is
-invisible to a human reviewer who is about to make an
-approve/reject/edit decision. The review display is the single most
-important artifact of Branch B; surface it directly.
+The response JSON exposes `success`, `errors`, and `formatted`. Print
+`result.formatted` verbatim.
 
 The formatter includes agent identity, the week / month, every task with
 priority and estimated minutes, and the full Goal → Objective → Task
-traceability chain. Print `result.formatted` verbatim — do not
-summarise, truncate, or reformat it.
+traceability chain. Print `result.formatted` verbatim.
 
 ### B2: Ask for a Decision
 
@@ -278,14 +228,16 @@ Use `AskUserQuestion`:
 ### B3a: Approve
 
 ```bash
-node --input-type=module -e "
-import { approve, formatApprovalResult } from './src/skills/plan.js';
+RESULT=$(echo '{"agentId":"<AGENT_ID>"}' \
+  | aweek exec plan approve --input-json -)
 
-const result = await approve({ agentId: '<AGENT_ID>' });
-console.log(formatApprovalResult(result, 'approve'));
-if (!result.success) process.exit(1);
-"
+# Wrap the approve response + decision tag and stream through the formatter.
+jq -n --argjson r "$RESULT" '{result: $r, action: "approve"}' \
+  | aweek exec plan formatApprovalResult --input-json - --format text
 ```
+
+`formatApprovalResult` takes a `{ result, action }` input. If `RESULT`'s
+`success` field is `false`, surface the errors and stop.
 
 Print the formatted result. If this was the **first** approval for the
 agent (the result will say so), emphasize that **the heartbeat system is
@@ -307,18 +259,14 @@ confirmation at the skill layer.
    `confirmed: true`. Without that flag the adapter refuses to run:
 
 ```bash
-node --input-type=module -e "
-import { reject, formatApprovalResult } from './src/skills/plan.js';
+RESULT=$(echo '{
+  "agentId": "<AGENT_ID>",
+  "rejectionReason": "<REASON_OR_EMPTY>",
+  "confirmed": true
+}' | aweek exec plan reject --input-json -)
 
-const result = await reject({
-  agentId: '<AGENT_ID>',
-  rejectionReason: '<REASON_OR_EMPTY>',
-  confirmed: true,
-});
-
-console.log(formatApprovalResult(result, 'reject'));
-if (!result.success) process.exit(1);
-"
+jq -n --argjson r "$RESULT" '{result: $r, action: "reject"}' \
+  | aweek exec plan formatApprovalResult --input-json - --format text
 ```
 
 After rejection, suggest: **"You can regenerate a fresh weekly plan, or
@@ -343,18 +291,14 @@ After the last edit, ask `AskUserQuestion`:
 — `yes` sets `autoApproveAfterEdit: true`, `no` leaves the plan pending.
 
 ```bash
-node --input-type=module -e "
-import { edit, formatApprovalResult } from './src/skills/plan.js';
+RESULT=$(echo '{
+  "agentId": "<AGENT_ID>",
+  "edits": <EDITS_JSON_ARRAY>,
+  "autoApproveAfterEdit": <true_or_false>
+}' | aweek exec plan edit --input-json -)
 
-const result = await edit({
-  agentId: '<AGENT_ID>',
-  edits: <EDITS_JSON_ARRAY>,
-  autoApproveAfterEdit: <true_or_false>,
-});
-
-console.log(formatApprovalResult(result, 'edit'));
-if (!result.success) process.exit(1);
-"
+jq -n --argjson r "$RESULT" '{result: $r, action: "edit"}' \
+  | aweek exec plan formatApprovalResult --input-json - --format text
 ```
 
 Each edit object must match one of these shapes:
