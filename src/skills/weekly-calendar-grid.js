@@ -75,15 +75,7 @@ function pad(s, w) {
 
 /**
  * Distribute tasks across days and hours.
- *
- * Placement order:
- *   1. Tasks with a `runAt` ISO timestamp are pre-placed at the day/hour
- *      derived from that timestamp (anchored on `weekMonday`). Their slot
- *      is reserved before pack/spread runs.
- *   2. Remaining tasks (no `runAt`) are placed sequentially within each
- *      day's working hours via `pack` or `spread` — skipping any cell
- *      already claimed by a runAt task.
- *
+ * Tasks are placed sequentially within each day's working hours.
  * If a day fills up, remaining tasks spill to the next day.
  *
  * @param {Array} tasks - Weekly plan tasks
@@ -92,19 +84,10 @@ function pad(s, w) {
  * @param {number} opts.endHour - Last working hour exclusive (default: 18)
  * @param {number} opts.daysCount - Number of days to schedule across (default: 5 for weekdays)
  * @param {string} opts.spread - Distribution mode: 'pack' (fill each day) or 'spread' (round-robin across days)
- * @param {Date} [opts.weekMonday] - Monday (UTC) of the plan's week. Required
- *   to place `runAt`-tagged tasks; without it, tasks with `runAt` fall
- *   through to the regular pack/spread path.
  * @returns {Map<string, Map<number, object>>} dayKey -> hour -> task assignment
  */
 export function distributeTasks(tasks, opts = {}) {
-  const {
-    startHour = 9,
-    endHour = 18,
-    daysCount = 5,
-    spread = 'pack',
-    weekMonday,
-  } = opts;
+  const { startHour = 9, endHour = 18, daysCount = 5, spread = 'pack' } = opts;
 
   // grid[dayIndex][hour] = { task, isStart, spanHours }
   const grid = new Map();
@@ -112,88 +95,23 @@ export function distributeTasks(tasks, opts = {}) {
     grid.set(DAY_KEYS[d], new Map());
   }
 
-  // ---- Pass 1: pre-place runAt-tagged tasks -------------------------------
-  const runAtPlaced = new Set();
-  if (weekMonday instanceof Date && !Number.isNaN(weekMonday.getTime())) {
-    const weekStartMs = Date.UTC(
-      weekMonday.getUTCFullYear(),
-      weekMonday.getUTCMonth(),
-      weekMonday.getUTCDate(),
-    );
-    for (const task of tasks) {
-      if (task.runAt == null) continue;
-      const ts = Date.parse(task.runAt);
-      if (Number.isNaN(ts)) continue;
-
-      const msInDay = 24 * 60 * 60 * 1000;
-      const dayOffset = Math.floor((ts - weekStartMs) / msInDay);
-      if (dayOffset < 0 || dayOffset >= daysCount) continue;
-
-      const hour = new Date(ts).getUTCHours();
-      if (hour < startHour || hour >= endHour) continue;
-
-      const minutes = task.estimatedMinutes || 60;
-      const spanHours = Math.max(1, Math.ceil(minutes / 60));
-      const dayKey = DAY_KEYS[dayOffset];
-      const dayGrid = grid.get(dayKey);
-
-      // Skip if the target cells are already taken (earlier runAt wins).
-      let clear = true;
-      for (let h = 0; h < spanHours; h++) {
-        if (hour + h >= endHour || dayGrid.has(hour + h)) {
-          clear = false;
-          break;
-        }
-      }
-      if (!clear) continue;
-
-      for (let h = 0; h < spanHours; h++) {
-        dayGrid.set(hour + h, {
-          task,
-          isStart: h === 0,
-          spanHours,
-          offset: h,
-        });
-      }
-      runAtPlaced.add(task.id);
-    }
-  }
-
-  // Remaining tasks get the pack/spread treatment.
-  const remaining = tasks.filter((t) => !runAtPlaced.has(t.id));
-
-  // Advance past any runAt-reserved cells when placing unscheduled tasks.
-  const firstFreeHourFrom = (dayGrid, fromHour, spanHours) => {
-    for (let h = fromHour; h + spanHours <= endHour; h++) {
-      let clear = true;
-      for (let k = 0; k < spanHours; k++) {
-        if (dayGrid.has(h + k)) {
-          clear = false;
-          break;
-        }
-      }
-      if (clear) return h;
-    }
-    return -1;
-  };
-
   if (spread === 'spread') {
     // Round-robin: one task per day, then wrap
     const nextHour = new Array(daysCount).fill(startHour);
 
-    for (let i = 0; i < remaining.length; i++) {
-      const task = remaining[i];
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
       const dayIdx = i % daysCount;
       const minutes = task.estimatedMinutes || 60;
       const spanHours = Math.max(1, Math.ceil(minutes / 60));
 
+      if (nextHour[dayIdx] + spanHours > endHour) continue; // skip if day full
+
       const dayKey = DAY_KEYS[dayIdx];
       const dayGrid = grid.get(dayKey);
-      const slot = firstFreeHourFrom(dayGrid, nextHour[dayIdx], spanHours);
-      if (slot === -1) continue; // day full
 
       for (let h = 0; h < spanHours; h++) {
-        dayGrid.set(slot + h, {
+        dayGrid.set(nextHour[dayIdx] + h, {
           task,
           isStart: h === 0,
           spanHours,
@@ -201,7 +119,7 @@ export function distributeTasks(tasks, opts = {}) {
         });
       }
 
-      nextHour[dayIdx] = slot + spanHours;
+      nextHour[dayIdx] += spanHours;
     }
 
     return grid;
@@ -211,27 +129,24 @@ export function distributeTasks(tasks, opts = {}) {
   let currentDay = 0;
   let currentHour = startHour;
 
-  for (const task of remaining) {
+  for (const task of tasks) {
     if (currentDay >= daysCount) break;
 
     const minutes = task.estimatedMinutes || 60;
     const spanHours = Math.max(1, Math.ceil(minutes / 60));
 
-    let slot = -1;
-    while (currentDay < daysCount) {
-      const dayGrid = grid.get(DAY_KEYS[currentDay]);
-      slot = firstFreeHourFrom(dayGrid, currentHour, spanHours);
-      if (slot !== -1) break;
+    // Check if task fits in current day
+    if (currentHour + spanHours > endHour) {
       currentDay++;
       currentHour = startHour;
+      if (currentDay >= daysCount) break;
     }
-    if (currentDay >= daysCount || slot === -1) break;
 
     const dayKey = DAY_KEYS[currentDay];
     const dayGrid = grid.get(dayKey);
 
     for (let h = 0; h < spanHours; h++) {
-      dayGrid.set(slot + h, {
+      dayGrid.set(currentHour + h, {
         task,
         isStart: h === 0,
         spanHours,
@@ -239,7 +154,8 @@ export function distributeTasks(tasks, opts = {}) {
       });
     }
 
-    currentHour = slot + spanHours;
+    currentHour += spanHours;
+
     if (currentHour >= endHour) {
       currentDay++;
       currentHour = startHour;
@@ -288,13 +204,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
   });
 
   // Distribute tasks and build task index (number → task mapping)
-  const grid = distributeTasks(plan.tasks || [], {
-    startHour,
-    endHour,
-    daysCount,
-    spread,
-    weekMonday: monday,
-  });
+  const grid = distributeTasks(plan.tasks || [], { startHour, endHour, daysCount, spread });
   const taskIndex = []; // 1-based: taskIndex[0] = task #1
 
   // Assign numbers to tasks in grid order (top-to-bottom, left-to-right)

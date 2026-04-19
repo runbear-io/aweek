@@ -84,30 +84,6 @@ All three adjustment scopes share the same execution path via
 `plan.adjustPlan(...)`. Operations are validated up front and applied
 atomically — if any single operation fails validation, none are applied.
 
-### Task planning convention — one task = one atomic action
-
-Heartbeat picks one task per tick and runs it to completion in a single
-Claude Code CLI session. A task like **"publish 10 X.com posts"** will
-burn through all ten in one burst — exactly the "too AI agent" pacing
-we want to avoid.
-
-Prefer **one atomic action per task**, and use the optional `runAt`
-field to schedule each task at a specific time:
-
-- ✅ 10 tasks, each `"publish one X.com post"`, with `runAt` at
-  09:00, 10:00, … 18:00. The heartbeat fires one per hour — human-like
-  pacing.
-- ❌ 1 task `"publish 10 X.com posts"` with `estimatedMinutes: 300`.
-  The task will run in one session and likely post all 10 immediately.
-
-When a user asks for bulk work (e.g. "publish 10 posts a day", "reply
-to 5 people"), **offer to split it** into N atomic tasks with `runAt`
-timestamps spread across working hours. Default cadence: one task per
-hour starting at the day's startHour, but ask before imposing.
-
-`runAt` is an **optional** ISO 8601 string. Tasks without it fall back
-to the usual FIFO/priority rules, so existing plans keep working.
-
 ### A1: Show Current State
 
 Before collecting edits, load the agent config and display the relevant
@@ -165,19 +141,16 @@ fields. Keep looping until the user says they are done.
   (required), objectiveId (pick from the numbered objectives list,
   flattened across all monthly plans), optional priority (`critical` /
   `high` / `medium` / `low`, default `medium`), optional
-  estimatedMinutes (integer 1-480), optional **`runAt`** (ISO 8601
-  date-time; the earliest time the task becomes eligible for
-  execution). Seed tasks default to an empty list — you can bootstrap
-  an empty plan and add tasks later via `add`. **Freshly-created
-  weekly plans start `approved: false`** and activate the heartbeat
-  only after Branch B approval.
+  estimatedMinutes (integer 1-480). Seed tasks default to an empty list
+  — you can bootstrap an empty plan and add tasks later via `add`.
+  **Freshly-created weekly plans start `approved: false`** and activate
+  the heartbeat only after Branch B approval.
 - `add` → week (`YYYY-Www`, must match an existing weekly plan),
   description (required), objectiveId (pick from the numbered objectives
-  list, flattened across all monthly plans), optional `runAt`.
+  list, flattened across all monthly plans).
 - `update` → week, taskId, then at least one of: description, status
   (`pending` / `in-progress` / `completed` / `failed` / `delegated` /
-  `skipped`), `runAt` (pass `null` to clear the schedule and return the
-  task to FIFO/priority selection).
+  `skipped`).
 
 ### A3: Confirm the Batch
 
@@ -238,43 +211,9 @@ operation object must match one of these shapes:
 - **Monthly create:** `{ "action": "create", "month": "YYYY-MM", "objectives": [{ "description": "...", "goalId": "goal-xxx" }, …], "status": "...", "summary": "..." }`
 - **Monthly add:** `{ "action": "add", "month": "YYYY-MM", "description": "...", "goalId": "goal-xxx" }`
 - **Monthly update:** `{ "action": "update", "month": "YYYY-MM", "objectiveId": "obj-xxx", "description": "...", "status": "..." }`
-- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "...", "estimatedMinutes": 60, "runAt": "2026-04-20T09:00:00Z" }, …] }`
-- **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx", "runAt": "2026-04-20T10:00:00Z" }`
-- **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "...", "runAt": "2026-04-20T11:00:00Z" }`
-
-### Bulk distribution example
-
-When the user says **"publish 10 X.com posts on Monday"**, don't create
-one long task — generate 10 seed tasks with `runAt` timestamps spread
-one hour apart. Sample payload for Monday 2026-04-20, 09:00–18:00 UTC:
-
-```json
-{
-  "agentId": "<AGENT_ID>",
-  "weeklyAdjustments": [
-    {
-      "action": "create",
-      "week": "2026-W17",
-      "month": "2026-04",
-      "tasks": [
-        { "description": "Publish X.com post 1/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T09:00:00Z" },
-        { "description": "Publish X.com post 2/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T10:00:00Z" },
-        { "description": "Publish X.com post 3/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T11:00:00Z" },
-        { "description": "Publish X.com post 4/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T12:00:00Z" },
-        { "description": "Publish X.com post 5/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T13:00:00Z" },
-        { "description": "Publish X.com post 6/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T14:00:00Z" },
-        { "description": "Publish X.com post 7/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T15:00:00Z" },
-        { "description": "Publish X.com post 8/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T16:00:00Z" },
-        { "description": "Publish X.com post 9/10",  "objectiveId": "obj-xxx", "runAt": "2026-04-20T17:00:00Z" },
-        { "description": "Publish X.com post 10/10", "objectiveId": "obj-xxx", "runAt": "2026-04-20T18:00:00Z" }
-      ]
-    }
-  ]
-}
-```
-
-The heartbeat picks exactly one task per hourly tick — the agent looks
-like a human posting on a steady cadence instead of an AI firehose.
+- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "...", "estimatedMinutes": 60 }, …] }`
+- **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx" }`
+- **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "..." }`
 
 Print the `formatAdjustmentResult` output verbatim to the user.
 
@@ -428,9 +367,6 @@ Print the formatted approval result. Call out:
   agent; `objectives` must contain at least one seed `{description, goalId}`.
 - **Weekly `create`:** target week must NOT already have a plan; parent
   `month` must already have a monthly plan on this agent.
-- **`runAt`:** ISO 8601 date-time (e.g. `"2026-04-20T09:00:00Z"`). Tasks
-  with `runAt > now` are skipped by the heartbeat until their slot
-  arrives. Pass `null` on `update` to clear the schedule.
 - All operations validated against JSON schemas before persisting;
   batches are atomic — all succeed or all fail.
 

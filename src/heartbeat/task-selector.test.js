@@ -11,8 +11,6 @@ import { randomBytes } from 'node:crypto';
 import {
   priorityWeight,
   filterPendingTasks,
-  filterEligibleTasks,
-  isRunAtReady,
   sortByPriority,
   selectNextTaskFromPlan,
   getTaskStatusSummary,
@@ -569,106 +567,5 @@ describe('selectNextTaskForWeek', () => {
     await assert.rejects(() => selectNextTaskForWeek(null, 'a', 'w'), /store is required/);
     await assert.rejects(() => selectNextTaskForWeek(store, '', 'w'), /agentId is required/);
     await assert.rejects(() => selectNextTaskForWeek(store, 'a', ''), /week is required/);
-  });
-});
-
-describe('task-selector — runAt scheduling', () => {
-  const fixed = Date.parse('2026-04-20T10:00:00Z');
-
-  it('isRunAtReady treats missing runAt as always ready', () => {
-    assert.equal(isRunAtReady({}, fixed), true);
-    assert.equal(isRunAtReady({ runAt: null }, fixed), true);
-  });
-
-  it('isRunAtReady skips tasks whose runAt is in the future', () => {
-    assert.equal(isRunAtReady({ runAt: '2026-04-20T11:00:00Z' }, fixed), false);
-    assert.equal(isRunAtReady({ runAt: '2026-04-20T10:00:00Z' }, fixed), true);
-    assert.equal(isRunAtReady({ runAt: '2026-04-20T09:00:00Z' }, fixed), true);
-  });
-
-  it('isRunAtReady tolerates malformed runAt (fail-open, not fail-closed)', () => {
-    // Malformed values should not block the task forever — the schema
-    // validator already rejects them at write time, so if one makes it
-    // through we'd rather run it than silently stall the agent.
-    assert.equal(isRunAtReady({ runAt: 'not-a-date' }, fixed), true);
-  });
-
-  it('filterEligibleTasks excludes pending-but-not-yet-due tasks', () => {
-    const tasks = [
-      { id: 'task-a', status: 'pending', runAt: '2026-04-20T09:00:00Z' },
-      { id: 'task-b', status: 'pending', runAt: '2026-04-20T11:00:00Z' },
-      { id: 'task-c', status: 'pending' }, // no runAt → always eligible
-      { id: 'task-d', status: 'completed', runAt: '2026-04-20T09:00:00Z' },
-    ];
-    const eligible = filterEligibleTasks(tasks, { nowMs: fixed });
-    assert.deepEqual(
-      eligible.map((t) => t.id).sort(),
-      ['task-a', 'task-c'],
-    );
-  });
-
-  it('selectNextTaskFromPlan skips tasks with runAt > now', () => {
-    const plan = makePlan({
-      tasks: [
-        makeTask({ id: 'task-future', runAt: '2026-04-20T15:00:00Z' }),
-        makeTask({ id: 'task-now', runAt: '2026-04-20T10:00:00Z' }),
-      ],
-    });
-    const result = selectNextTaskFromPlan(plan, { nowMs: fixed });
-    assert.ok(result);
-    assert.equal(result.task.id, 'task-now');
-  });
-
-  it('returns null when every pending task is scheduled for later', () => {
-    const plan = makePlan({
-      tasks: [
-        makeTask({ id: 'task-a', runAt: '2026-04-20T12:00:00Z' }),
-        makeTask({ id: 'task-b', runAt: '2026-04-20T15:00:00Z' }),
-      ],
-    });
-    assert.equal(selectNextTaskFromPlan(plan, { nowMs: fixed }), null);
-  });
-
-  it('runAt task becomes selectable once its slot arrives', () => {
-    const plan = makePlan({
-      tasks: [
-        makeTask({ id: 'task-a', runAt: '2026-04-20T12:00:00Z' }),
-        makeTask({ id: 'task-b', runAt: '2026-04-20T10:00:00Z' }),
-      ],
-    });
-
-    // Before either task's runAt — no eligible tasks
-    assert.equal(
-      selectNextTaskFromPlan(plan, { nowMs: Date.parse('2026-04-20T09:59:00Z') }),
-      null,
-    );
-
-    // task-b now eligible; task-a still pending
-    const at1001 = selectNextTaskFromPlan(plan, { nowMs: Date.parse('2026-04-20T10:01:00Z') });
-    assert.equal(at1001.task.id, 'task-b');
-
-    // Both eligible — original array order wins (task-a first)
-    const at1201 = selectNextTaskFromPlan(plan, { nowMs: Date.parse('2026-04-20T12:01:00Z') });
-    assert.equal(at1201.task.id, 'task-a');
-  });
-
-  it('runAt does not override priority ordering', () => {
-    // Both tasks are eligible at fixed-now, but task-b is higher priority.
-    const plan = makePlan({
-      tasks: [
-        makeTask({
-          id: 'task-low',
-          priority: 'low',
-          runAt: '2026-04-20T09:00:00Z',
-        }),
-        makeTask({
-          id: 'task-high',
-          priority: 'high',
-          runAt: '2026-04-20T09:30:00Z',
-        }),
-      ],
-    });
-    const result = selectNextTaskFromPlan(plan, { nowMs: fixed });
-    assert.equal(result.task.id, 'task-high');
   });
 });
