@@ -299,3 +299,51 @@ describe('weekly plan schema', () => {
     });
   });
 });
+
+describe('weekly task schema — track field', () => {
+  const makeTask = () => {
+    const goal = createGoal('Test goal', '3mo');
+    const obj = createObjective('Test objective', goal.id);
+    return createTask('Publish one X.com post', obj.id);
+  };
+
+  it('accepts a task with a valid track', () => {
+    const task = makeTask();
+    task.track = 'x-com';
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    assert.equal(validateWeeklyPlan(plan).valid, true);
+  });
+
+  it('accepts a task without a track (optional field)', () => {
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [makeTask()]);
+    assert.equal(validateWeeklyPlan(plan).valid, true);
+  });
+
+  it('rejects an empty-string track', () => {
+    const task = makeTask();
+    task.track = '';
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    assert.equal(validateWeeklyPlan(plan).valid, false);
+  });
+
+  it('rejects a track longer than 64 chars', () => {
+    const task = makeTask();
+    task.track = 'a'.repeat(65);
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    assert.equal(validateWeeklyPlan(plan).valid, false);
+  });
+
+  it('createTask attaches track when provided via opts', () => {
+    const goal = createGoal('Test goal', '3mo');
+    const obj = createObjective('Test objective', goal.id);
+    const task = createTask('X post 1', obj.id, { track: 'x-com' });
+    assert.equal(task.track, 'x-com');
+  });
+
+  it('createTask omits track when not provided', () => {
+    const goal = createGoal('Test goal', '3mo');
+    const obj = createObjective('Test objective', goal.id);
+    const task = createTask('Just do it', obj.id);
+    assert.equal(task.track, undefined);
+  });
+});

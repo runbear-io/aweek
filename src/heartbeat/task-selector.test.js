@@ -13,6 +13,8 @@ import {
   filterPendingTasks,
   sortByPriority,
   selectNextTaskFromPlan,
+  selectTasksForTickFromPlan,
+  trackKeyOf,
   getTaskStatusSummary,
   isAllTasksFinished,
   selectNextTask,
@@ -567,5 +569,126 @@ describe('selectNextTaskForWeek', () => {
     await assert.rejects(() => selectNextTaskForWeek(null, 'a', 'w'), /store is required/);
     await assert.rejects(() => selectNextTaskForWeek(store, '', 'w'), /agentId is required/);
     await assert.rejects(() => selectNextTaskForWeek(store, 'a', ''), /week is required/);
+  });
+});
+
+describe('task-selector — track-based selection', () => {
+  it('trackKeyOf prefers explicit track', () => {
+    assert.equal(trackKeyOf({ track: 'x-com', objectiveId: 'obj-1' }), 'x-com');
+  });
+
+  it('trackKeyOf falls back to objectiveId', () => {
+    assert.equal(trackKeyOf({ objectiveId: 'obj-1' }), 'obj-1');
+  });
+
+  it('trackKeyOf returns a sentinel for tasks without either field', () => {
+    assert.equal(trackKeyOf({}), '__no_track__');
+  });
+
+  it('selectTasksForTickFromPlan returns one pick per distinct track', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-x1', track: 'x-com',  priority: 'medium' }),
+        makeTask({ id: 'task-x2', track: 'x-com',  priority: 'medium' }),
+        makeTask({ id: 'task-x3', track: 'x-com',  priority: 'medium' }),
+        makeTask({ id: 'task-r1', track: 'reddit', priority: 'medium' }),
+        makeTask({ id: 'task-r2', track: 'reddit', priority: 'medium' }),
+      ],
+    });
+
+    const picks = selectTasksForTickFromPlan(plan);
+    const keys = picks.map((p) => p.trackKey).sort();
+    assert.deepEqual(keys, ['reddit', 'x-com']);
+    // Each pick is the FIRST pending task in its track (stable FIFO within priority).
+    const pickIds = picks.map((p) => p.task.id).sort();
+    assert.deepEqual(pickIds, ['task-r1', 'task-x1']);
+  });
+
+  it('defaults to objectiveId when track is absent', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-a', objectiveId: 'obj-1' }),
+        makeTask({ id: 'task-b', objectiveId: 'obj-1' }),
+        makeTask({ id: 'task-c', objectiveId: 'obj-2' }),
+      ],
+    });
+
+    const picks = selectTasksForTickFromPlan(plan);
+    assert.equal(picks.length, 2, 'one pick per distinct objectiveId');
+    const pickIds = picks.map((p) => p.task.id).sort();
+    assert.deepEqual(pickIds, ['task-a', 'task-c']);
+  });
+
+  it('explicit track overrides objectiveId grouping', () => {
+    // Two tasks under the same objective but different explicit tracks
+    // should produce TWO picks, not one.
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-a', objectiveId: 'obj-1', track: 'x-com' }),
+        makeTask({ id: 'task-b', objectiveId: 'obj-1', track: 'reddit' }),
+      ],
+    });
+    const picks = selectTasksForTickFromPlan(plan);
+    assert.equal(picks.length, 2);
+  });
+
+  it('within a track, priority still wins', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-a', track: 'x-com', priority: 'low' }),
+        makeTask({ id: 'task-b', track: 'x-com', priority: 'critical' }),
+        makeTask({ id: 'task-c', track: 'x-com', priority: 'medium' }),
+      ],
+    });
+    const picks = selectTasksForTickFromPlan(plan);
+    assert.equal(picks.length, 1);
+    assert.equal(picks[0].task.id, 'task-b'); // critical wins
+  });
+
+  it('across tracks, the returned array is sorted by priority', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-low',  track: 'x-com',  priority: 'low' }),
+        makeTask({ id: 'task-crit', track: 'reddit', priority: 'critical' }),
+      ],
+    });
+    const picks = selectTasksForTickFromPlan(plan);
+    assert.equal(picks[0].task.id, 'task-crit', 'highest priority first');
+    assert.equal(picks[1].task.id, 'task-low');
+  });
+
+  it('returns empty array for unapproved plan', () => {
+    const plan = makePlan({
+      approved: false,
+      tasks: [makeTask({ track: 'x-com' })],
+    });
+    assert.deepEqual(selectTasksForTickFromPlan(plan), []);
+  });
+
+  it('ignores non-pending tasks', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-a', track: 'x-com', status: 'completed' }),
+        makeTask({ id: 'task-b', track: 'x-com', status: 'pending' }),
+        makeTask({ id: 'task-c', track: 'reddit', status: 'failed' }),
+      ],
+    });
+    const picks = selectTasksForTickFromPlan(plan);
+    assert.equal(picks.length, 1);
+    assert.equal(picks[0].task.id, 'task-b');
+  });
+
+  it('selectNextTaskFromPlan still returns the overall top-priority pick', () => {
+    // Backward-compat smoke test: the single-pick API should return the
+    // first element of the track-aware pick array (highest priority).
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-a', track: 'x-com',  priority: 'medium' }),
+        makeTask({ id: 'task-b', track: 'reddit', priority: 'critical' }),
+      ],
+    });
+    const single = selectNextTaskFromPlan(plan);
+    assert.ok(single);
+    assert.equal(single.task.id, 'task-b');
   });
 });

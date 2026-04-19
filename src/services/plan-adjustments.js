@@ -59,6 +59,18 @@ import { createAgentStore } from '../storage/agent-helpers.js';
 // ---------------------------------------------------------------------------
 
 /**
+ * Check whether `value` is a valid track identifier: a non-empty string
+ * up to 64 chars. Matches the JSON schema's `track` constraints so we
+ * surface a friendly error before the final schema check fires.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isValidTrack(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 64;
+}
+
+/**
  * Validate a goal adjustment operation.
  * @param {object} op
  * @param {'add' | 'update' | 'remove'} op.action
@@ -306,6 +318,11 @@ export function validateWeeklyAdjustment(op, agentConfig) {
               errors.push(`tasks[${i}].estimatedMinutes must be an integer between 1 and 480`);
             }
           }
+          if (seed.track !== undefined && !isValidTrack(seed.track)) {
+            errors.push(
+              `tasks[${i}].track must be a non-empty string (max 64 chars)`,
+            );
+          }
         }
       }
     }
@@ -336,8 +353,19 @@ export function validateWeeklyAdjustment(op, agentConfig) {
       if (op.description !== undefined && (typeof op.description !== 'string' || op.description.trim().length === 0)) {
         errors.push('description must be a non-empty string');
       }
-      if (!op.status && op.description === undefined) {
-        errors.push('At least one field to update is required (status or description)');
+      if (op.track !== undefined && op.track !== null && !isValidTrack(op.track)) {
+        errors.push(
+          'track must be a non-empty string (max 64 chars), or null to clear',
+        );
+      }
+      if (
+        !op.status &&
+        op.description === undefined &&
+        op.track === undefined
+      ) {
+        errors.push(
+          'At least one field to update is required (status, description, or track)',
+        );
       }
     }
 
@@ -359,6 +387,9 @@ export function validateWeeklyAdjustment(op, agentConfig) {
         if (!found) {
           errors.push(`Objective not found: ${op.objectiveId}`);
         }
+      }
+      if (op.track !== undefined && !isValidTrack(op.track)) {
+        errors.push('track must be a non-empty string (max 64 chars)');
       }
     }
   }
@@ -472,6 +503,7 @@ export function applyWeeklyAdjustment(config, op) {
             ...(seed.estimatedMinutes !== undefined
               ? { estimatedMinutes: seed.estimatedMinutes }
               : {}),
+            ...(seed.track !== undefined ? { track: seed.track } : {}),
           })
         )
       : [];
@@ -486,7 +518,9 @@ export function applyWeeklyAdjustment(config, op) {
   if (!plan) return { applied: false, result: null, error: `No weekly plan for ${op.week}` };
 
   if (op.action === 'add') {
-    const task = createTask(op.description, op.objectiveId);
+    const task = createTask(op.description, op.objectiveId, {
+      ...(op.track !== undefined ? { track: op.track } : {}),
+    });
     plan.tasks.push(task);
     plan.updatedAt = new Date().toISOString();
     config.updatedAt = new Date().toISOString();
@@ -503,6 +537,10 @@ export function applyWeeklyAdjustment(config, op) {
       if (op.status === 'completed') {
         task.completedAt = new Date().toISOString();
       }
+    }
+    if (op.track !== undefined) {
+      if (op.track === null) delete task.track;
+      else task.track = op.track;
     }
     plan.updatedAt = new Date().toISOString();
     config.updatedAt = new Date().toISOString();

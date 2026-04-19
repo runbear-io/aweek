@@ -1,15 +1,23 @@
 /**
- * Task selector — reads an agent's weekly plan and selects the next pending task.
+ * Task selector — reads an agent's weekly plan and selects tasks to run
+ * on the current heartbeat tick.
  *
- * Selection strategy:
- * 1. Only approved weekly plans are considered
- * 2. Only tasks with status 'pending' are eligible
- * 3. Tasks are sorted by priority: critical > high > medium > low
- * 4. Within the same priority, original array order is preserved (stable sort)
- * 5. The first eligible task is returned
+ * Track-based selection:
+ *   - Each task optionally carries a `track` string (e.g. "x-com",
+ *     "reddit"). When `track` is absent, `objectiveId` is used as the
+ *     default track key so tasks under the same objective pace together.
+ *   - At each tick the selector picks ONE top-priority pending task per
+ *     distinct track key. Tracks are parallel lanes — the heartbeat
+ *     runner drains them serially within a single tick.
  *
- * Idempotent: calling selectNextTask multiple times with the same plan state
- * always returns the same task — no side effects, no mutations.
+ * Ordering:
+ *   - Within a track, pick top-priority pending task; ties broken by
+ *     original array order (stable).
+ *   - Across tracks, the returned array is sorted by the same rule so
+ *     the first element is always the overall top-priority task.
+ *
+ * Idempotent: pure functions with no side effects; calling
+ * selectTasksForTick twice on the same plan returns the same picks.
  *
  * File source of truth: reads from WeeklyPlanStore, never caches.
  */
@@ -63,29 +71,78 @@ export function sortByPriority(tasks) {
 }
 
 /**
- * Select the next pending task from a weekly plan object.
- * Returns null if the plan is not approved or has no pending tasks.
+ * Resolve the track key for a task: explicit `track` wins, else
+ * `objectiveId` is used so tasks under the same objective share a lane.
  *
- * Pure function — no side effects, no mutations, idempotent.
+ * @param {object} task
+ * @returns {string}
+ */
+export function trackKeyOf(task) {
+  return task?.track ?? task?.objectiveId ?? '__no_track__';
+}
+
+/**
+ * Select one pending task per distinct track from a weekly plan.
+ * Returns an array of `{ task, index, trackKey }` sorted by priority
+ * (highest first) so callers that only need the top task can take [0].
+ *
+ * Returns `[]` if the plan is not approved or has no pending tasks.
  *
  * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
- * @returns {{ task: object, index: number } | null} The selected task and its index in the original array, or null
+ * @returns {Array<{ task: object, index: number, trackKey: string }>}
  */
-export function selectNextTaskFromPlan(plan) {
-  if (!plan) return null;
-  if (!plan.approved) return null;
-  if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return null;
+export function selectTasksForTickFromPlan(plan) {
+  if (!plan) return [];
+  if (!plan.approved) return [];
+  if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return [];
 
   const pending = filterPendingTasks(plan.tasks);
-  if (pending.length === 0) return null;
+  if (pending.length === 0) return [];
 
-  const sorted = sortByPriority(pending);
-  const selected = sorted[0];
+  // Group eligible tasks by track key (explicit `track` or objectiveId).
+  const groups = new Map();
+  for (const task of pending) {
+    const key = trackKeyOf(task);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  }
 
-  // Find original index for traceability
-  const index = plan.tasks.findIndex((t) => t.id === selected.id);
+  // Pick top-priority task per track (stable within priority).
+  const picks = [];
+  for (const [trackKey, tasks] of groups) {
+    const sorted = sortByPriority(tasks);
+    const selected = sorted[0];
+    const index = plan.tasks.findIndex((t) => t.id === selected.id);
+    picks.push({ task: selected, index, trackKey });
+  }
 
-  return { task: selected, index };
+  // Order the per-track picks by priority so the first element is the
+  // overall top-priority task — preserves backward compatibility for
+  // selectNextTaskFromPlan, which just returns picks[0].
+  picks.sort((a, b) => {
+    const diff = priorityWeight(a.task.priority) - priorityWeight(b.task.priority);
+    return diff !== 0 ? diff : a.index - b.index;
+  });
+
+  return picks;
+}
+
+/**
+ * Select the top-priority pending task from a weekly plan.
+ * Returns null if the plan is not approved or has no pending tasks.
+ *
+ * Equivalent to `selectTasksForTickFromPlan(plan)[0]`. Retained for
+ * callers that only need a single selection; the heartbeat tick runner
+ * uses the multi-pick variant directly.
+ *
+ * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
+ * @returns {{ task: object, index: number } | null}
+ */
+export function selectNextTaskFromPlan(plan) {
+  const picks = selectTasksForTickFromPlan(plan);
+  if (picks.length === 0) return null;
+  const [{ task, index }] = picks;
+  return { task, index };
 }
 
 /**
@@ -172,6 +229,31 @@ export async function selectNextTask(store, agentId) {
     week: plan.week,
     plan,
   };
+}
+
+/**
+ * Load the latest approved plan and select one task per track.
+ *
+ * Heartbeat's multi-track entry point — the tick runner drains every
+ * returned pick serially within a single tick.
+ *
+ * @param {import('../storage/weekly-plan-store.js').WeeklyPlanStore} store
+ * @param {string} agentId
+ * @returns {Promise<{
+ *   picks: Array<{ task: object, index: number, trackKey: string }>,
+ *   week: string | null,
+ *   plan: object | null,
+ * }>}
+ */
+export async function selectTasksForTick(store, agentId) {
+  if (!store) throw new Error('store is required');
+  if (!agentId) throw new Error('agentId is required');
+
+  const plan = await store.loadLatestApproved(agentId);
+  if (!plan) return { picks: [], week: null, plan: null };
+
+  const picks = selectTasksForTickFromPlan(plan);
+  return { picks, week: plan.week, plan };
 }
 
 /**
