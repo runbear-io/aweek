@@ -564,9 +564,11 @@ export {
 // Free-form per-agent planning markdown (replaces config.goals /
 // config.monthlyPlans). See src/storage/plan-markdown-store.js.
 export {
+  CANONICAL_SECTIONS as PLAN_CANONICAL_SECTIONS,
   PLAN_FILENAME,
   buildInitialPlan,
   exists as planExists,
+  parsePlanMarkdownSections,
   planPath,
   readPlan,
   writePlan,

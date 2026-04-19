@@ -24,6 +24,7 @@ describe('dispatcher registry', () => {
       'init-hire-menu',
       'manage',
       'plan',
+      'plan-markdown',
       'summary',
     ];
     assert.deepEqual(listModules(), expected);

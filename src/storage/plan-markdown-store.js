@@ -98,6 +98,93 @@ export async function writePlan(agentsDir, agentId, body) {
 }
 
 /**
+ * Canonical H2 section names the template emits. Consumers that want to
+ * pull "just the long-term goals" or "just the strategies" can pass
+ * these into `parsePlanMarkdownSections`. Unrecognized headings are
+ * preserved under the `extras` bucket so a user who renames a section
+ * doesn't lose content.
+ */
+export const CANONICAL_SECTIONS = Object.freeze([
+  'Long-term goals',
+  'Monthly plans',
+  'Strategies',
+  'Notes',
+]);
+
+/**
+ * Parse a plan.md body into labeled sections. The parser is intentionally
+ * loose — any line starting with `## ` opens a new section, and content
+ * up to the next H2 (or end of file) is collected verbatim. This means
+ * subsections (`### 2026-04`) live *inside* their parent section's text
+ * blob, which is what the weekly-plan flow wants anyway: it passes the
+ * whole blob to the model rather than trying to pick out structure.
+ *
+ * Returned shape:
+ *   {
+ *     heading: string|null,        // text after `# ` on the first H1
+ *     preamble: string,            // body between H1 and first H2
+ *     sections: [{ title, body }], // preserves order as written
+ *     byTitle: Record<string,string>, // title → body, latest-wins on dup
+ *   }
+ *
+ * @param {string} markdown
+ * @returns {{heading: string|null, preamble: string, sections: Array<{title: string, body: string}>, byTitle: Record<string, string>}}
+ */
+export function parsePlanMarkdownSections(markdown) {
+  const empty = { heading: null, preamble: '', sections: [], byTitle: {} };
+  if (typeof markdown !== 'string' || markdown.length === 0) return empty;
+
+  const lines = markdown.split(/\r?\n/);
+  let heading = null;
+  const preambleLines = [];
+  const sections = [];
+  let currentTitle = null;
+  let currentBody = [];
+  let sawH2 = false;
+
+  const flush = () => {
+    if (currentTitle == null) return;
+    sections.push({
+      title: currentTitle,
+      body: currentBody.join('\n').replace(/\n+$/, ''),
+    });
+    currentTitle = null;
+    currentBody = [];
+  };
+
+  for (const line of lines) {
+    const h1 = /^#\s+(.+)$/.exec(line);
+    const h2 = /^##\s+(.+)$/.exec(line);
+    if (h1 && heading == null && !sawH2) {
+      heading = h1[1].trim();
+      continue;
+    }
+    if (h2) {
+      sawH2 = true;
+      flush();
+      currentTitle = h2[1].trim();
+      continue;
+    }
+    if (currentTitle != null) {
+      currentBody.push(line);
+    } else if (sawH2 === false) {
+      preambleLines.push(line);
+    }
+  }
+  flush();
+
+  const byTitle = {};
+  for (const s of sections) byTitle[s.title] = s.body;
+
+  return {
+    heading,
+    preamble: preambleLines.join('\n').replace(/^\n+|\n+$/g, ''),
+    sections,
+    byTitle,
+  };
+}
+
+/**
  * Produce the starter template for a brand-new agent. `/aweek:hire` calls
  * this once after creating the subagent `.md` so the user has a ready-
  * to-edit shell instead of a blank file. The conventions mirror what the
