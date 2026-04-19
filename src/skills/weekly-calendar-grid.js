@@ -48,6 +48,32 @@ export function mondayFromISOWeek(isoWeek) {
 }
 
 /**
+ * Derive a per-day cell width that fits within a terminal width.
+ *
+ * The grid's total printed width is `hourWidth + (cellWidth + 1) * daysCount + 1`
+ * (with `hourWidth === 7`). Solving for `cellWidth` and flooring gives the
+ * widest cell that still fits. Clamped to `minCellWidth` so very narrow
+ * terminals still produce a usable grid (truncated, but not broken).
+ *
+ * @param {number} terminalWidth - Available columns in the terminal.
+ * @param {number} daysCount - Number of day columns (5 or 7).
+ * @param {object} [opts]
+ * @param {number} [opts.minCellWidth=12]
+ * @param {number} [opts.maxCellWidth=32]
+ * @returns {number}
+ */
+export function computeCellWidth(terminalWidth, daysCount, opts = {}) {
+  const { minCellWidth = 12, maxCellWidth = 32 } = opts;
+  const hourWidth = 7;
+  if (!Number.isFinite(terminalWidth) || terminalWidth <= 0) {
+    return Math.min(maxCellWidth, Math.max(minCellWidth, 24));
+  }
+  const available = terminalWidth - hourWidth - 2; // minus "│" borders on each side
+  const cell = Math.floor(available / daysCount) - 1;
+  return Math.min(maxCellWidth, Math.max(minCellWidth, cell));
+}
+
+/**
  * Truncate a string, appending '…' if truncated.
  * @param {string} str
  * @param {number} max
@@ -256,7 +282,8 @@ export function distributeTasks(tasks, opts = {}) {
  * @param {object} [params.opts]
  * @param {number} [params.opts.startHour=9]
  * @param {number} [params.opts.endHour=18]
- * @param {number} [params.opts.cellWidth=20]
+ * @param {number} [params.opts.cellWidth] - Explicit cell width. Overrides terminalWidth-derived width.
+ * @param {number} [params.opts.terminalWidth] - Available terminal columns; used to auto-fit cellWidth when cellWidth is not set.
  * @param {boolean} [params.opts.showWeekend=false]
  * @returns {string} Rendered grid
  */
@@ -264,12 +291,17 @@ export function renderGrid({ agent, plan, opts = {} }) {
   const {
     startHour = 9,
     endHour = 18,
-    cellWidth = 20,
+    cellWidth: cellWidthOpt,
+    terminalWidth,
     showWeekend = false,
     spread = 'pack',
   } = opts;
 
   const daysCount = showWeekend ? 7 : 5;
+  const cellWidth =
+    Number.isFinite(cellWidthOpt) && cellWidthOpt > 0
+      ? cellWidthOpt
+      : computeCellWidth(terminalWidth, daysCount);
   const dayLabels = DAY_LABELS.slice(0, daysCount);
   const dayKeys = DAY_KEYS.slice(0, daysCount);
 
