@@ -422,7 +422,12 @@ export function renderGrid({ agent, plan, opts = {} }) {
   const status = plan.approved ? 'Approved' : 'Pending';
   lines.push(`┌${'─'.repeat(totalWidth - 2)}┐`);
   lines.push(`│ ${pad(title, totalWidth - 4)} │`);
-  lines.push(`│ ${pad(`Status: ${status} | Tasks: ${(plan.tasks || []).length}`, totalWidth - 4)} │`);
+  // Surface the effective time zone in the header so the user can tell at
+  // a glance which zone the day/hour axes correspond to.
+  const displayTz = useLocalTz ? tz : 'UTC';
+  lines.push(
+    `│ ${pad(`Status: ${status} | Tasks: ${(plan.tasks || []).length} | TZ: ${displayTz}`, totalWidth - 4)} │`,
+  );
   lines.push(`├${'─'.repeat(hourWidth)}${'┬' + '─'.repeat(cellWidth)}`.repeat(1).slice(0, 0) +
     `├${'─'.repeat(hourWidth)}${dayKeys.map(() => `┬${'─'.repeat(cellWidth)}`).join('')}┤`);
 

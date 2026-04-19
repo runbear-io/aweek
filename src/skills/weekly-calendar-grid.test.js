@@ -362,6 +362,21 @@ describe('distributeTasks / renderGrid — time-zone-aware placement', () => {
     assert.equal(grid.get('mon').get(17), undefined);
   });
 
+  it('surfaces the effective time zone in the header status line', () => {
+    const { text: laText } = renderGrid({
+      agent: { id: 'a', identity: { name: 'A' } },
+      plan: { week: '2026-W17', approved: true, tasks: [] },
+      opts: { tz: 'America/Los_Angeles' },
+    });
+    assert.match(laText, /TZ: America\/Los_Angeles/);
+
+    const { text: utcText } = renderGrid({
+      agent: { id: 'a', identity: { name: 'A' } },
+      plan: { week: '2026-W17', approved: true, tasks: [] },
+    });
+    assert.match(utcText, /TZ: UTC/);
+  });
+
   it("renders date labels using the zone's Monday when tz is supplied", () => {
     // 2026-W17 Monday in LA is 2026-04-20. Render Mon label "4/20".
     const { text } = renderGrid({
