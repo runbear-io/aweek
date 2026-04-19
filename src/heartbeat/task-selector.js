@@ -82,26 +82,64 @@ export function trackKeyOf(task) {
 }
 
 /**
+ * Check whether a task's `runAt` slot has arrived.
+ *
+ * Missing / malformed `runAt` is treated as always-eligible — we'd
+ * rather run a task with a bogus timestamp than block the agent forever
+ * on a validator miss. Schema validation already rejects malformed
+ * values at write time.
+ *
+ * @param {object} task
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+export function isRunAtReady(task, nowMs) {
+  if (!task || task.runAt == null) return true;
+  const scheduledMs = Date.parse(task.runAt);
+  if (Number.isNaN(scheduledMs)) return true;
+  return scheduledMs <= nowMs;
+}
+
+/**
+ * Filter tasks that are both pending AND time-eligible (no runAt OR
+ * runAt <= now).
+ *
+ * @param {object[]} tasks
+ * @param {object} [opts]
+ * @param {number} [opts.nowMs=Date.now()]
+ * @returns {object[]}
+ */
+export function filterEligibleTasks(tasks, { nowMs = Date.now() } = {}) {
+  return filterPendingTasks(tasks).filter((t) => isRunAtReady(t, nowMs));
+}
+
+/**
  * Select one pending task per distinct track from a weekly plan.
  * Returns an array of `{ task, index, trackKey }` sorted by priority
  * (highest first) so callers that only need the top task can take [0].
  *
- * Returns `[]` if the plan is not approved or has no pending tasks.
+ * Tasks whose `runAt` is still in the future are excluded; tracks
+ * whose only pending tasks are future-scheduled contribute no pick
+ * this tick.
+ *
+ * Returns `[]` if the plan is not approved or has no eligible tasks.
  *
  * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
+ * @param {object} [opts]
+ * @param {number} [opts.nowMs=Date.now()]
  * @returns {Array<{ task: object, index: number, trackKey: string }>}
  */
-export function selectTasksForTickFromPlan(plan) {
+export function selectTasksForTickFromPlan(plan, { nowMs = Date.now() } = {}) {
   if (!plan) return [];
   if (!plan.approved) return [];
   if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return [];
 
-  const pending = filterPendingTasks(plan.tasks);
-  if (pending.length === 0) return [];
+  const eligible = filterEligibleTasks(plan.tasks, { nowMs });
+  if (eligible.length === 0) return [];
 
   // Group eligible tasks by track key (explicit `track` or objectiveId).
   const groups = new Map();
-  for (const task of pending) {
+  for (const task of eligible) {
     const key = trackKeyOf(task);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(task);
@@ -138,8 +176,8 @@ export function selectTasksForTickFromPlan(plan) {
  * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
  * @returns {{ task: object, index: number } | null}
  */
-export function selectNextTaskFromPlan(plan) {
-  const picks = selectTasksForTickFromPlan(plan);
+export function selectNextTaskFromPlan(plan, opts) {
+  const picks = selectTasksForTickFromPlan(plan, opts);
   if (picks.length === 0) return null;
   const [{ task, index }] = picks;
   return { task, index };

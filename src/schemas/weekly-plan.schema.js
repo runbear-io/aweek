@@ -61,6 +61,16 @@ export const weeklyTaskSchema = {
         'Defaults to objectiveId when omitted, so tasks under the same ' +
         'objective naturally pace together unless the user wants otherwise.',
     },
+    runAt: {
+      type: 'string',
+      format: 'date-time',
+      description:
+        'Earliest time this task becomes eligible for execution. Tasks ' +
+        'with runAt > now are skipped by the selector until the slot ' +
+        'arrives, and the calendar grid renders them at their declared ' +
+        'day/hour. Tracks handle cadence; runAt handles absolute time ' +
+        'pinning — the two compose.',
+    },
     completedAt: { type: 'string', format: 'date-time' },
   },
   additionalProperties: false,

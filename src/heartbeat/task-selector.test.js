@@ -11,6 +11,8 @@ import { randomBytes } from 'node:crypto';
 import {
   priorityWeight,
   filterPendingTasks,
+  filterEligibleTasks,
+  isRunAtReady,
   sortByPriority,
   selectNextTaskFromPlan,
   selectTasksForTickFromPlan,
@@ -690,5 +692,70 @@ describe('task-selector — track-based selection', () => {
     const single = selectNextTaskFromPlan(plan);
     assert.ok(single);
     assert.equal(single.task.id, 'task-b');
+  });
+});
+
+describe('task-selector — runAt filtering', () => {
+  const fixed = Date.parse('2026-04-20T10:00:00Z');
+
+  it('isRunAtReady treats missing runAt as always ready', () => {
+    assert.equal(isRunAtReady({}, fixed), true);
+    assert.equal(isRunAtReady({ runAt: null }, fixed), true);
+  });
+
+  it('isRunAtReady returns false when runAt > now', () => {
+    assert.equal(isRunAtReady({ runAt: '2026-04-20T11:00:00Z' }, fixed), false);
+    assert.equal(isRunAtReady({ runAt: '2026-04-20T10:00:00Z' }, fixed), true);
+  });
+
+  it('isRunAtReady fails open on malformed runAt', () => {
+    assert.equal(isRunAtReady({ runAt: 'not-a-date' }, fixed), true);
+  });
+
+  it('filterEligibleTasks excludes future-scheduled pending tasks', () => {
+    const tasks = [
+      { id: 'task-a', status: 'pending', runAt: '2026-04-20T09:00:00Z' },
+      { id: 'task-b', status: 'pending', runAt: '2026-04-20T11:00:00Z' },
+      { id: 'task-c', status: 'pending' },
+    ];
+    const eligible = filterEligibleTasks(tasks, { nowMs: fixed });
+    assert.deepEqual(eligible.map((t) => t.id).sort(), ['task-a', 'task-c']);
+  });
+
+  it('selectTasksForTickFromPlan skips tracks whose only pending task is in the future', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-x-future', track: 'x-com', runAt: '2026-04-20T15:00:00Z' }),
+        makeTask({ id: 'task-r-now', track: 'reddit', runAt: '2026-04-20T09:00:00Z' }),
+      ],
+    });
+    const picks = selectTasksForTickFromPlan(plan, { nowMs: fixed });
+    assert.equal(picks.length, 1);
+    assert.equal(picks[0].task.id, 'task-r-now');
+  });
+
+  it('returns empty when every task is future-scheduled', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-a', runAt: '2026-04-20T12:00:00Z' }),
+        makeTask({ id: 'task-b', runAt: '2026-04-20T15:00:00Z' }),
+      ],
+    });
+    assert.deepEqual(selectTasksForTickFromPlan(plan, { nowMs: fixed }), []);
+  });
+
+  it('future task becomes eligible once its slot arrives', () => {
+    const plan = makePlan({
+      tasks: [
+        makeTask({ id: 'task-a', runAt: '2026-04-20T12:00:00Z' }),
+      ],
+    });
+    assert.deepEqual(
+      selectTasksForTickFromPlan(plan, { nowMs: Date.parse('2026-04-20T11:59:00Z') }),
+      [],
+    );
+    const at = selectTasksForTickFromPlan(plan, { nowMs: Date.parse('2026-04-20T12:01:00Z') });
+    assert.equal(at.length, 1);
+    assert.equal(at[0].task.id, 'task-a');
   });
 });

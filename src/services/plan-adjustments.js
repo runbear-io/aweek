@@ -71,6 +71,25 @@ function isValidTrack(value) {
 }
 
 /**
+ * Check whether `value` is an ISO 8601 date-time string with explicit
+ * time + timezone (Z or ±hh:mm). Matches what the AJV `date-time` format
+ * validator accepts so we surface a clean error up-front instead of at
+ * the final schema check.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isValidIsoDateTime(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return false;
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(value)
+  ) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
+}
+
+/**
  * Validate a goal adjustment operation.
  * @param {object} op
  * @param {'add' | 'update' | 'remove'} op.action
@@ -323,6 +342,11 @@ export function validateWeeklyAdjustment(op, agentConfig) {
               `tasks[${i}].track must be a non-empty string (max 64 chars)`,
             );
           }
+          if (seed.runAt !== undefined && !isValidIsoDateTime(seed.runAt)) {
+            errors.push(
+              `tasks[${i}].runAt must be an ISO 8601 date-time (e.g. "2026-04-20T09:00:00Z")`,
+            );
+          }
         }
       }
     }
@@ -358,13 +382,19 @@ export function validateWeeklyAdjustment(op, agentConfig) {
           'track must be a non-empty string (max 64 chars), or null to clear',
         );
       }
+      if (op.runAt !== undefined && op.runAt !== null && !isValidIsoDateTime(op.runAt)) {
+        errors.push(
+          'runAt must be an ISO 8601 date-time string, or null to clear',
+        );
+      }
       if (
         !op.status &&
         op.description === undefined &&
-        op.track === undefined
+        op.track === undefined &&
+        op.runAt === undefined
       ) {
         errors.push(
-          'At least one field to update is required (status, description, or track)',
+          'At least one field to update is required (status, description, track, or runAt)',
         );
       }
     }
@@ -390,6 +420,11 @@ export function validateWeeklyAdjustment(op, agentConfig) {
       }
       if (op.track !== undefined && !isValidTrack(op.track)) {
         errors.push('track must be a non-empty string (max 64 chars)');
+      }
+      if (op.runAt !== undefined && !isValidIsoDateTime(op.runAt)) {
+        errors.push(
+          'runAt must be an ISO 8601 date-time (e.g. "2026-04-20T09:00:00Z")',
+        );
       }
     }
   }
@@ -504,6 +539,7 @@ export function applyWeeklyAdjustment(config, op) {
               ? { estimatedMinutes: seed.estimatedMinutes }
               : {}),
             ...(seed.track !== undefined ? { track: seed.track } : {}),
+            ...(seed.runAt !== undefined ? { runAt: seed.runAt } : {}),
           })
         )
       : [];
@@ -520,6 +556,7 @@ export function applyWeeklyAdjustment(config, op) {
   if (op.action === 'add') {
     const task = createTask(op.description, op.objectiveId, {
       ...(op.track !== undefined ? { track: op.track } : {}),
+      ...(op.runAt !== undefined ? { runAt: op.runAt } : {}),
     });
     plan.tasks.push(task);
     plan.updatedAt = new Date().toISOString();
@@ -541,6 +578,10 @@ export function applyWeeklyAdjustment(config, op) {
     if (op.track !== undefined) {
       if (op.track === null) delete task.track;
       else task.track = op.track;
+    }
+    if (op.runAt !== undefined) {
+      if (op.runAt === null) delete task.runAt;
+      else task.runAt = op.runAt;
     }
     plan.updatedAt = new Date().toISOString();
     config.updatedAt = new Date().toISOString();

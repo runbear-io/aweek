@@ -347,3 +347,51 @@ describe('weekly task schema — track field', () => {
     assert.equal(task.track, undefined);
   });
 });
+
+describe('weekly task schema — runAt field', () => {
+  const makeTask = () => {
+    const goal = createGoal('Test goal', '3mo');
+    const obj = createObjective('Test objective', goal.id);
+    return createTask('Publish one X.com post', obj.id);
+  };
+
+  it('accepts a task with a valid ISO 8601 runAt', () => {
+    const task = makeTask();
+    task.runAt = '2026-04-20T09:00:00Z';
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    assert.equal(validateWeeklyPlan(plan).valid, true);
+  });
+
+  it('rejects a malformed runAt (not a date-time)', () => {
+    const task = makeTask();
+    task.runAt = 'tomorrow morning';
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    const result = validateWeeklyPlan(plan);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => /runAt/.test(JSON.stringify(e))));
+  });
+
+  it('createTask attaches runAt when provided', () => {
+    const goal = createGoal('Test goal', '3mo');
+    const obj = createObjective('Test objective', goal.id);
+    const task = createTask('Publish', obj.id, {
+      runAt: '2026-04-20T14:00:00Z',
+    });
+    assert.equal(task.runAt, '2026-04-20T14:00:00Z');
+  });
+
+  it('createTask omits runAt when not provided', () => {
+    const goal = createGoal('Test goal', '3mo');
+    const obj = createObjective('Test objective', goal.id);
+    const task = createTask('No schedule', obj.id);
+    assert.equal(task.runAt, undefined);
+  });
+
+  it('accepts combined track + runAt on the same task', () => {
+    const task = makeTask();
+    task.track = 'x-com';
+    task.runAt = '2026-04-20T09:00:00Z';
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    assert.equal(validateWeeklyPlan(plan).valid, true);
+  });
+});
