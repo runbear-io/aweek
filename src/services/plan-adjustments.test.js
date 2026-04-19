@@ -309,6 +309,125 @@ describe('validateWeeklyAdjustment', () => {
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('YYYY-Www')));
   });
+
+  it('accepts a valid runAt on add', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'add',
+        week: '2026-W16',
+        description: 'New task',
+        objectiveId: obj1.id,
+        runAt: '2026-04-20T09:00:00Z',
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('rejects a malformed runAt on add', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'add',
+        week: '2026-W16',
+        description: 'New task',
+        objectiveId: obj1.id,
+        runAt: 'tomorrow morning',
+      },
+      config,
+    );
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => /runAt/.test(e)));
+  });
+
+  it('accepts a valid runAt on update', () => {
+    const { config, task1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'update',
+        week: '2026-W16',
+        taskId: task1.id,
+        runAt: '2026-04-20T14:00:00Z',
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('accepts null runAt on update (clear the schedule)', () => {
+    const { config, task1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'update',
+        week: '2026-W16',
+        taskId: task1.id,
+        runAt: null,
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('rejects update with no fields to change (runAt omitted counts as no-op)', () => {
+    const { config, task1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      { action: 'update', week: '2026-W16', taskId: task1.id },
+      config,
+    );
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.errors.some((e) =>
+        /status, description, or runAt/.test(e),
+      ),
+    );
+  });
+
+  it('accepts runAt on seed tasks in create', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'create',
+        week: '2026-W17',
+        month: '2026-04',
+        tasks: [
+          {
+            description: 'Publish post 1',
+            objectiveId: obj1.id,
+            runAt: '2026-04-20T09:00:00Z',
+          },
+          {
+            description: 'Publish post 2',
+            objectiveId: obj1.id,
+            runAt: '2026-04-20T10:00:00Z',
+          },
+        ],
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('rejects a malformed runAt on a seed task in create', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'create',
+        week: '2026-W17',
+        month: '2026-04',
+        tasks: [
+          {
+            description: 'Publish post',
+            objectiveId: obj1.id,
+            runAt: '2026-04-20 09:00', // no T separator, no TZ
+          },
+        ],
+      },
+      config,
+    );
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => /tasks\[0\]\.runAt/.test(e)));
+  });
 });
 
 // ---------------------------------------------------------------------------
