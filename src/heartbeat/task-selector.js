@@ -4,12 +4,20 @@
  * Selection strategy:
  * 1. Only approved weekly plans are considered
  * 2. Only tasks with status 'pending' are eligible
- * 3. Tasks are sorted by priority: critical > high > medium > low
- * 4. Within the same priority, original array order is preserved (stable sort)
- * 5. The first eligible task is returned
+ * 3. Tasks with a `runAt` timestamp in the future are skipped until their slot
+ *    arrives; tasks without `runAt` are always time-eligible
+ * 4. Tasks are sorted by priority: critical > high > medium > low
+ * 5. Within the same priority, original array order is preserved (stable sort)
+ * 6. The first eligible task is returned
+ *
+ * The `runAt` check enables "one task = one atomic action" planning — users
+ * can schedule 10 small tasks at 09:00, 10:00, 11:00 … and the heartbeat
+ * will naturally pace them to one per tick, instead of one big task that
+ * burns through all 10 actions in a single session.
  *
  * Idempotent: calling selectNextTask multiple times with the same plan state
- * always returns the same task — no side effects, no mutations.
+ * and the same clock always returns the same task — no side effects, no
+ * mutations.
  *
  * File source of truth: reads from WeeklyPlanStore, never caches.
  */
@@ -45,6 +53,37 @@ export function filterPendingTasks(tasks) {
 }
 
 /**
+ * Check whether a task's `runAt` slot has arrived.
+ *
+ * A missing / malformed `runAt` is treated as "always eligible" so the
+ * field stays fully backwards-compatible — existing plans without `runAt`
+ * keep their old FIFO/priority behavior.
+ *
+ * @param {object} task
+ * @param {number} nowMs - Current time in epoch milliseconds
+ * @returns {boolean}
+ */
+export function isRunAtReady(task, nowMs) {
+  if (!task || task.runAt == null) return true;
+  const scheduledMs = Date.parse(task.runAt);
+  if (Number.isNaN(scheduledMs)) return true; // malformed → don't block forever
+  return scheduledMs <= nowMs;
+}
+
+/**
+ * Filter tasks to those actually eligible to execute right now: pending
+ * status AND (no runAt OR runAt <= now).
+ *
+ * @param {object[]} tasks
+ * @param {object} [opts]
+ * @param {number} [opts.nowMs=Date.now()] - Injectable clock for tests
+ * @returns {object[]}
+ */
+export function filterEligibleTasks(tasks, { nowMs = Date.now() } = {}) {
+  return filterPendingTasks(tasks).filter((t) => isRunAtReady(t, nowMs));
+}
+
+/**
  * Sort tasks by priority (critical > high > medium > low).
  * Stable sort: tasks with the same priority retain their original order.
  * Returns a new array — does not mutate the input.
@@ -64,22 +103,26 @@ export function sortByPriority(tasks) {
 
 /**
  * Select the next pending task from a weekly plan object.
- * Returns null if the plan is not approved or has no pending tasks.
+ * Returns null if the plan is not approved, has no pending tasks, or the
+ * only pending tasks have a `runAt` that has not arrived yet.
  *
- * Pure function — no side effects, no mutations, idempotent.
+ * Pure function — no side effects, no mutations, idempotent given a fixed
+ * clock.
  *
  * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
+ * @param {object} [opts]
+ * @param {number} [opts.nowMs=Date.now()] - Injectable clock for tests
  * @returns {{ task: object, index: number } | null} The selected task and its index in the original array, or null
  */
-export function selectNextTaskFromPlan(plan) {
+export function selectNextTaskFromPlan(plan, { nowMs = Date.now() } = {}) {
   if (!plan) return null;
   if (!plan.approved) return null;
   if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return null;
 
-  const pending = filterPendingTasks(plan.tasks);
-  if (pending.length === 0) return null;
+  const eligible = filterEligibleTasks(plan.tasks, { nowMs });
+  if (eligible.length === 0) return null;
 
-  const sorted = sortByPriority(pending);
+  const sorted = sortByPriority(eligible);
   const selected = sorted[0];
 
   // Find original index for traceability
@@ -156,14 +199,14 @@ export function isAllTasksFinished(plan) {
  * @param {string} agentId - The agent ID
  * @returns {Promise<{ task: object, index: number, week: string, plan: object } | null>}
  */
-export async function selectNextTask(store, agentId) {
+export async function selectNextTask(store, agentId, { nowMs } = {}) {
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
 
   const plan = await store.loadLatestApproved(agentId);
   if (!plan) return null;
 
-  const result = selectNextTaskFromPlan(plan);
+  const result = selectNextTaskFromPlan(plan, { nowMs });
   if (!result) return null;
 
   return {
@@ -183,7 +226,7 @@ export async function selectNextTask(store, agentId) {
  * @param {string} week - YYYY-Www
  * @returns {Promise<{ task: object, index: number, week: string, plan: object } | null>}
  */
-export async function selectNextTaskForWeek(store, agentId, week) {
+export async function selectNextTaskForWeek(store, agentId, week, { nowMs } = {}) {
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
   if (!week) throw new Error('week is required');
@@ -195,7 +238,7 @@ export async function selectNextTaskForWeek(store, agentId, week) {
     return null; // Plan doesn't exist
   }
 
-  const result = selectNextTaskFromPlan(plan);
+  const result = selectNextTaskFromPlan(plan, { nowMs });
   if (!result) return null;
 
   return {

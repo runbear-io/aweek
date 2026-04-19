@@ -59,6 +59,29 @@ import { createAgentStore } from '../storage/agent-helpers.js';
 // ---------------------------------------------------------------------------
 
 /**
+ * Check whether `value` is an ISO 8601 date-time string (UTC or with offset).
+ *
+ * Accepts the subset Date.parse understands and that round-trips through
+ * `new Date(value).toISOString()` when coerced, which matches what the
+ * AJV `date-time` format validator allows on the persisted schema. We do
+ * the check here at input time so validators can surface a clear,
+ * user-facing error before hitting schema validation.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isValidIsoDateTime(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return false;
+  // Require an ISO 8601 date-time with explicit time component + TZ
+  // (T separator, HH:MM:SS, and either Z or ±HH:MM).
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return false;
+  }
+  const ts = Date.parse(value);
+  return !Number.isNaN(ts);
+}
+
+/**
  * Validate a goal adjustment operation.
  * @param {object} op
  * @param {'add' | 'update' | 'remove'} op.action
@@ -306,6 +329,11 @@ export function validateWeeklyAdjustment(op, agentConfig) {
               errors.push(`tasks[${i}].estimatedMinutes must be an integer between 1 and 480`);
             }
           }
+          if (seed.runAt !== undefined && !isValidIsoDateTime(seed.runAt)) {
+            errors.push(
+              `tasks[${i}].runAt must be an ISO 8601 date-time string (e.g. "2026-04-20T09:00:00Z")`,
+            );
+          }
         }
       }
     }
@@ -336,8 +364,17 @@ export function validateWeeklyAdjustment(op, agentConfig) {
       if (op.description !== undefined && (typeof op.description !== 'string' || op.description.trim().length === 0)) {
         errors.push('description must be a non-empty string');
       }
-      if (!op.status && op.description === undefined) {
-        errors.push('At least one field to update is required (status or description)');
+      if (op.runAt !== undefined && op.runAt !== null && !isValidIsoDateTime(op.runAt)) {
+        errors.push('runAt must be an ISO 8601 date-time string (or null to clear)');
+      }
+      if (
+        !op.status &&
+        op.description === undefined &&
+        op.runAt === undefined
+      ) {
+        errors.push(
+          'At least one field to update is required (status, description, or runAt)',
+        );
       }
     }
 
@@ -359,6 +396,11 @@ export function validateWeeklyAdjustment(op, agentConfig) {
         if (!found) {
           errors.push(`Objective not found: ${op.objectiveId}`);
         }
+      }
+      if (op.runAt !== undefined && !isValidIsoDateTime(op.runAt)) {
+        errors.push(
+          'runAt must be an ISO 8601 date-time string (e.g. "2026-04-20T09:00:00Z")',
+        );
       }
     }
   }
@@ -472,6 +514,7 @@ export function applyWeeklyAdjustment(config, op) {
             ...(seed.estimatedMinutes !== undefined
               ? { estimatedMinutes: seed.estimatedMinutes }
               : {}),
+            ...(seed.runAt !== undefined ? { runAt: seed.runAt } : {}),
           })
         )
       : [];
@@ -486,7 +529,9 @@ export function applyWeeklyAdjustment(config, op) {
   if (!plan) return { applied: false, result: null, error: `No weekly plan for ${op.week}` };
 
   if (op.action === 'add') {
-    const task = createTask(op.description, op.objectiveId);
+    const task = createTask(op.description, op.objectiveId, {
+      ...(op.runAt !== undefined ? { runAt: op.runAt } : {}),
+    });
     plan.tasks.push(task);
     plan.updatedAt = new Date().toISOString();
     config.updatedAt = new Date().toISOString();
@@ -503,6 +548,10 @@ export function applyWeeklyAdjustment(config, op) {
       if (op.status === 'completed') {
         task.completedAt = new Date().toISOString();
       }
+    }
+    if (op.runAt !== undefined) {
+      if (op.runAt === null) delete task.runAt;
+      else task.runAt = op.runAt;
     }
     plan.updatedAt = new Date().toISOString();
     config.updatedAt = new Date().toISOString();
