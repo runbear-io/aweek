@@ -265,7 +265,7 @@ describe('plan skill adapter — adjustPlan happy path', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it('applies a single goal-add through the adapter and persists it', async () => {
+  it('rejects goalAdjustments and points at plan.md', async () => {
     const { config } = buildTestAgent();
     await store.save(config);
 
@@ -277,32 +277,32 @@ describe('plan skill adapter — adjustPlan happy path', () => {
       ],
     });
 
-    assert.equal(result.success, true, JSON.stringify(result.errors));
-    const reloaded = await store.load(config.id);
-    assert.equal(reloaded.goals.length, 2);
+    assert.equal(result.success, false);
     assert.ok(
-      reloaded.goals.some((g) => g.description === 'Improve test coverage'),
+      result.errors.some((e) => /plan\.md/.test(e)),
+      JSON.stringify(result.errors),
     );
+    const reloaded = await store.load(config.id);
+    assert.equal(reloaded.goals.length, 1, 'goals must be unchanged');
   });
 
-  it('rejects a batch atomically when one operation is invalid', async () => {
+  it('rejects monthlyAdjustments and points at plan.md', async () => {
     const { config } = buildTestAgent();
     await store.save(config);
 
     const result = await adjustPlan({
       agentId: config.id,
       dataDir: tempDir,
-      goalAdjustments: [
-        { action: 'add', description: 'OK goal', horizon: '1yr' },
-        // Invalid — empty description
-        { action: 'add', description: '', horizon: '1mo' },
+      monthlyAdjustments: [
+        { action: 'add', month: '2026-04', description: 'obj', goalId: config.goals[0].id },
       ],
     });
 
     assert.equal(result.success, false);
-    const reloaded = await store.load(config.id);
-    // Atomicity: the OK goal must NOT be persisted.
-    assert.equal(reloaded.goals.length, 1);
+    assert.ok(
+      result.errors.some((e) => /plan\.md/.test(e)),
+      JSON.stringify(result.errors),
+    );
   });
 });
 
