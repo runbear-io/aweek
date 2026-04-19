@@ -9,9 +9,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  CANONICAL_SECTIONS,
   PLAN_FILENAME,
   buildInitialPlan,
   exists,
+  parsePlanMarkdownSections,
   planPath,
   readPlan,
   writePlan,
@@ -110,5 +112,72 @@ describe('plan-markdown-store — buildInitialPlan', () => {
 
   it('defaults to "Agent" when no name is passed', () => {
     assert.match(buildInitialPlan(), /^# Agent/);
+  });
+});
+
+describe('plan-markdown-store — parsePlanMarkdownSections', () => {
+  it('returns the empty shape on missing / blank input', () => {
+    const empty = parsePlanMarkdownSections('');
+    assert.equal(empty.heading, null);
+    assert.equal(empty.preamble, '');
+    assert.deepEqual(empty.sections, []);
+    assert.deepEqual(empty.byTitle, {});
+    assert.deepEqual(parsePlanMarkdownSections(null), empty);
+    assert.deepEqual(parsePlanMarkdownSections(undefined), empty);
+  });
+
+  it('captures the H1 heading, optional preamble, and H2 sections in order', () => {
+    const body = [
+      '# Writer bot',
+      '',
+      'Ships a weekly blog post.',
+      '',
+      '## Long-term goals',
+      '- 1y: 50 posts',
+      '',
+      '## Strategies',
+      'Prefer draft over polish.',
+    ].join('\n');
+    const parsed = parsePlanMarkdownSections(body);
+    assert.equal(parsed.heading, 'Writer bot');
+    assert.equal(parsed.preamble, 'Ships a weekly blog post.');
+    assert.deepEqual(parsed.sections.map((s) => s.title), [
+      'Long-term goals',
+      'Strategies',
+    ]);
+    assert.equal(parsed.byTitle['Long-term goals'], '- 1y: 50 posts');
+    assert.equal(parsed.byTitle['Strategies'], 'Prefer draft over polish.');
+  });
+
+  it('preserves subsection content (### ...) inside its parent H2', () => {
+    const body = [
+      '# Agent',
+      '## Monthly plans',
+      '### 2026-04',
+      '- Ship the newsletter',
+      '### 2026-05',
+      '- Start a podcast',
+    ].join('\n');
+    const parsed = parsePlanMarkdownSections(body);
+    const monthly = parsed.byTitle['Monthly plans'];
+    assert.ok(monthly.includes('### 2026-04'));
+    assert.ok(monthly.includes('### 2026-05'));
+    assert.ok(monthly.includes('Start a podcast'));
+  });
+
+  it('treats a heading-less markdown body as preamble only', () => {
+    const body = 'Just some prose, no headings at all.';
+    const parsed = parsePlanMarkdownSections(body);
+    assert.equal(parsed.heading, null);
+    assert.equal(parsed.preamble, body);
+    assert.deepEqual(parsed.sections, []);
+  });
+
+  it('exposes the canonical section list the template emits', () => {
+    assert.ok(Array.isArray(CANONICAL_SECTIONS));
+    assert.ok(CANONICAL_SECTIONS.includes('Long-term goals'));
+    assert.ok(CANONICAL_SECTIONS.includes('Monthly plans'));
+    assert.ok(CANONICAL_SECTIONS.includes('Strategies'));
+    assert.ok(CANONICAL_SECTIONS.includes('Notes'));
   });
 });

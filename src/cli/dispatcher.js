@@ -26,6 +26,7 @@ import * as summary from '../skills/summary.js';
 import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
+import * as planMarkdown from '../storage/plan-markdown-store.js';
 
 export class DispatchError extends Error {
   constructor(code, message) {
@@ -136,6 +137,19 @@ export const REGISTRY = Object.freeze({
     delegateTask: delegateTask.delegateTask,
     formatDelegationResult: (input) =>
       delegateTask.formatDelegationResult(input?.message ?? input),
+  },
+  // Free-form per-agent plan.md — authored by the user, read by skills as
+  // context for weekly-plan generation. Each adapter promotes the
+  // positional (agentsDir, agentId, ...) signature of the underlying
+  // store into the JSON-object surface `aweek exec` uses everywhere else.
+  'plan-markdown': {
+    read: (input) => planMarkdown.readPlan(input?.agentsDir, input?.agentId),
+    write: (input) =>
+      planMarkdown.writePlan(input?.agentsDir, input?.agentId, input?.body ?? ''),
+    exists: (input) => planMarkdown.exists(input?.agentsDir, input?.agentId),
+    path: (input) => planMarkdown.planPath(input?.agentsDir, input?.agentId),
+    buildInitial: (input) => planMarkdown.buildInitialPlan(input ?? {}),
+    parse: (input) => planMarkdown.parsePlanMarkdownSections(input?.body ?? ''),
   },
   'agent-helpers': {
     listAllAgents: agentHelpers.listAllAgents,
