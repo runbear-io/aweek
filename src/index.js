@@ -561,3 +561,13 @@ export {
   loadConfig,
   saveConfig,
 } from './storage/config-store.js';
+// Free-form per-agent planning markdown (replaces config.goals /
+// config.monthlyPlans). See src/storage/plan-markdown-store.js.
+export {
+  PLAN_FILENAME,
+  buildInitialPlan,
+  exists as planExists,
+  planPath,
+  readPlan,
+  writePlan,
+} from './storage/plan-markdown-store.js';
