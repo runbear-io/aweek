@@ -29,6 +29,17 @@ empty array as the no-agents case.
 
 ### Step 2: Render the Calendar Grid
 
+First, detect the terminal width so the grid auto-fits the screen:
+
+```bash
+tput cols 2>/dev/null || echo 120
+```
+
+Use the printed number as `<TERMINAL_WIDTH>` below. Pass it via `terminalWidth`
+rather than setting `cellWidth` — the renderer derives the widest per-day cell
+that still fits, clamped between 12 and 32 characters. Only set `cellWidth`
+explicitly when the user asked for a specific column size in "Adjust view".
+
 Run the grid renderer to get the calendar text and task index:
 
 ```bash
@@ -37,7 +48,7 @@ echo '{
   "opts": {
     "startHour": 9,
     "endHour": 18,
-    "cellWidth": 24,
+    "terminalWidth": <TERMINAL_WIDTH>,
     "showWeekend": false,
     "spread": "spread"
   }
@@ -122,7 +133,8 @@ Keep the interaction loop going (Step 3) until the user selects "Done".
 |--------|---------|-------------|
 | `startHour` | 9 | First hour row (0-23) |
 | `endHour` | 18 | Last hour row exclusive (1-24) |
-| `cellWidth` | 24 | Width of each day column in characters |
+| `terminalWidth` | — | Available terminal columns; auto-fits `cellWidth` when set |
+| `cellWidth` | auto | Explicit per-day column width. Overrides `terminalWidth` |
 | `showWeekend` | false | Include Saturday and Sunday columns |
 | `spread` | `pack` | Distribution: `pack` (fill days) or `spread` (round-robin) |
 

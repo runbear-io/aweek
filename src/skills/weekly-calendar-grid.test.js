@@ -4,7 +4,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { distributeTasks, mondayFromISOWeek } from './weekly-calendar-grid.js';
+import {
+  computeCellWidth,
+  distributeTasks,
+  mondayFromISOWeek,
+  renderGrid,
+} from './weekly-calendar-grid.js';
 
 // Monday of ISO 2026-W17 is 2026-04-20 (UTC)
 const WEEK_MONDAY = mondayFromISOWeek('2026-W17');
@@ -145,5 +150,75 @@ describe('distributeTasks — runAt placement', () => {
       daysCount: 5,
     });
     assert.equal(grid.get('mon').get(9).task.id, 'task-a');
+  });
+});
+
+describe('computeCellWidth', () => {
+  it('fits the grid within the terminal width for 5-day weeks', () => {
+    const daysCount = 5;
+    const termWidth = 120;
+    const cellWidth = computeCellWidth(termWidth, daysCount);
+    const hourWidth = 7;
+    const totalWidth = hourWidth + (cellWidth + 1) * daysCount + 1;
+    assert.ok(totalWidth <= termWidth, `totalWidth ${totalWidth} > termWidth ${termWidth}`);
+  });
+
+  it('fits the grid within the terminal width for 7-day weeks', () => {
+    const daysCount = 7;
+    const termWidth = 140;
+    const cellWidth = computeCellWidth(termWidth, daysCount);
+    const hourWidth = 7;
+    const totalWidth = hourWidth + (cellWidth + 1) * daysCount + 1;
+    assert.ok(totalWidth <= termWidth, `totalWidth ${totalWidth} > termWidth ${termWidth}`);
+  });
+
+  it('clamps to minCellWidth on very narrow terminals', () => {
+    assert.equal(computeCellWidth(40, 5), 12);
+  });
+
+  it('clamps to maxCellWidth on very wide terminals', () => {
+    assert.equal(computeCellWidth(500, 5), 32);
+  });
+
+  it('falls back to a sensible default when terminalWidth is not a number', () => {
+    const cell = computeCellWidth(undefined, 5);
+    assert.ok(cell >= 12 && cell <= 32);
+  });
+});
+
+describe('renderGrid — terminal-width autofit', () => {
+  const baseAgent = { id: 'a1', identity: { name: 'Agent One' } };
+  const basePlan = {
+    week: '2026-W17',
+    approved: true,
+    tasks: [
+      { id: 't1', description: 'Task one', status: 'pending' },
+    ],
+  };
+
+  it('keeps every rendered line within terminalWidth when cellWidth is not set', () => {
+    const termWidth = 100;
+    const { text } = renderGrid({
+      agent: baseAgent,
+      plan: basePlan,
+      opts: { terminalWidth: termWidth },
+    });
+    for (const line of text.split('\n')) {
+      assert.ok(
+        line.length <= termWidth,
+        `line length ${line.length} > ${termWidth}: ${JSON.stringify(line)}`,
+      );
+    }
+  });
+
+  it('honors an explicit cellWidth over terminalWidth', () => {
+    const { text } = renderGrid({
+      agent: baseAgent,
+      plan: basePlan,
+      opts: { terminalWidth: 200, cellWidth: 15 },
+    });
+    // With cellWidth=15, daysCount=5, hourWidth=7, totalWidth = 7 + 16*5 + 1 = 88
+    const headerBorder = text.split('\n').find((l) => l.startsWith('┌'));
+    assert.equal(headerBorder.length, 88);
   });
 });
