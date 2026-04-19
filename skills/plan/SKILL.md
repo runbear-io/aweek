@@ -63,8 +63,10 @@ Ask the user, via `AskUserQuestion`, what they want to do with the
 selected agent. Present these options:
 
 1. **Adjust goals** — add, update, or remove long-term goals
-2. **Adjust monthly objectives** — add or update a monthly objective
-3. **Adjust weekly tasks** — add or update a weekly task
+2. **Adjust monthly plan** — create a new monthly plan, or add / update
+   objectives on an existing one
+3. **Adjust weekly plan** — create a new weekly plan, or add / update
+   tasks on an existing one
 4. **Review pending plan** — approve / reject / edit the pending weekly
    plan (only offer this option when the agent actually has a pending
    plan from Step 1)
@@ -91,10 +93,14 @@ slice so the user sees what they are editing:
   horizon · status`.
 - **Monthly branch** — show each monthly plan (`YYYY-MM`) with its
   objectives: `id · description · linked goal · status`. If no monthly
-  plans exist, say so and return to Step 2.
+  plans exist, tell the user and route them straight to Step A2's
+  `create` action below — this is the bootstrap path for a
+  freshly-hired agent.
 - **Weekly branch** — show each weekly plan (`YYYY-Www`) with its tasks:
   `id · description · linked objective · status`. If no weekly plans
-  exist, say so and return to Step 2.
+  exist, tell the user and route them to Step A2's `create` action.
+  Creating a weekly plan requires the parent month to already have a
+  monthly plan — if none exists, run the monthly `create` first.
 
 ### A2: Collect One Adjustment at a Time
 
@@ -116,6 +122,12 @@ fields. Keep looping until the user says they are done.
 
 **Monthly (`monthlyAdjustments`)**
 
+- `create` → month (`YYYY-MM`, must NOT already have a plan on this
+  agent), plus a seed list of objectives (≥ 1). For each objective
+  collect description (required, non-empty) + goalId (pick from the
+  numbered goals list). Optional: status (`planned` / `in-progress` /
+  `completed` / `dropped`), summary (non-empty string). Use this when no
+  monthly plan exists for the target month — it is the bootstrap path.
 - `add` → month (`YYYY-MM`, must match an existing monthly plan),
   description (required), goalId (pick from the numbered goals list).
 - `update` → month, objectiveId, then at least one of: description, status
@@ -123,6 +135,16 @@ fields. Keep looping until the user says they are done.
 
 **Weekly (`weeklyAdjustments`)**
 
+- `create` → week (`YYYY-Www`, must NOT already have a plan on this
+  agent), month (`YYYY-MM`, must already have a monthly plan — this is
+  the parent month), optional seed tasks. Each task: description
+  (required), objectiveId (pick from the numbered objectives list,
+  flattened across all monthly plans), optional priority (`critical` /
+  `high` / `medium` / `low`, default `medium`), optional
+  estimatedMinutes (integer 1-480). Seed tasks default to an empty list
+  — you can bootstrap an empty plan and add tasks later via `add`.
+  **Freshly-created weekly plans start `approved: false`** and activate
+  the heartbeat only after Branch B approval.
 - `add` → week (`YYYY-Www`, must match an existing weekly plan),
   description (required), objectiveId (pick from the numbered objectives
   list, flattened across all monthly plans).
@@ -142,9 +164,11 @@ Planned adjustments for agent "<AGENT_NAME>":
     - Remove: goal-abc123  (user confirmed)
 
   Monthly Objectives:
+    - Create plan: 2026-04 (seed objectives: 2, linked goals: 2)
     - Update: 2026-04 / obj-abc123 → status: in-progress
 
   Weekly Tasks:
+    - Create plan: 2026-W16 (parent month: 2026-04, seed tasks: 3)
     - Add: "New task description" (objective: obj-xyz789)
 ```
 
@@ -184,8 +208,10 @@ operation object must match one of these shapes:
 - **Goal add:** `{ "action": "add", "description": "...", "horizon": "1mo|3mo|1yr" }`
 - **Goal update:** `{ "action": "update", "goalId": "goal-xxx", "description": "...", "status": "...", "horizon": "..." }`
 - **Goal remove:** `{ "action": "remove", "goalId": "goal-xxx" }`
+- **Monthly create:** `{ "action": "create", "month": "YYYY-MM", "objectives": [{ "description": "...", "goalId": "goal-xxx" }, …], "status": "...", "summary": "..." }`
 - **Monthly add:** `{ "action": "add", "month": "YYYY-MM", "description": "...", "goalId": "goal-xxx" }`
 - **Monthly update:** `{ "action": "update", "month": "YYYY-MM", "objectiveId": "obj-xxx", "description": "...", "status": "..." }`
+- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "...", "estimatedMinutes": 60 }, …] }`
 - **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx" }`
 - **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "..." }`
 
@@ -337,6 +363,10 @@ Print the formatted approval result. Call out:
 - At least one adjustment required per apply in Branch A.
 - Descriptions are non-empty strings.
 - Referenced goals / objectives / tasks must exist.
+- **Monthly `create`:** target month must NOT already have a plan on this
+  agent; `objectives` must contain at least one seed `{description, goalId}`.
+- **Weekly `create`:** target week must NOT already have a plan; parent
+  `month` must already have a monthly plan on this agent.
 - All operations validated against JSON schemas before persisting;
   batches are atomic — all succeed or all fail.
 
