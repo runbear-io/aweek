@@ -515,6 +515,10 @@ describe('full plan hierarchy — serialization', () => {
     const t2 = createTask('Task B', obj2.id);
     const wp = createWeeklyPlan('2026-W16', '2026-04', [t1, t2]);
 
+    // This is a pure serialisation test — the hierarchy is kept as a
+    // plain bag for round-trip verification. It intentionally does not
+    // shape the object like an agent config (which no longer carries
+    // `weeklyPlans` as a field).
     const full = { goals: [g1, g2], monthlyPlans: [mp1, mp2], weeklyPlans: [wp] };
     const restored = JSON.parse(JSON.stringify(full));
 

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AgentStore } from './agent-store.js';
+import { WeeklyPlanStore } from './weekly-plan-store.js';
 import { createAgentConfig } from '../models/agent.js';
 import {
   DEFAULT_DATA_DIR,
@@ -143,11 +144,18 @@ describe('getAgentChoices', () => {
   it('returns lightweight choice entries with label / paused / latest week', async () => {
     const store = new AgentStore(tmpDir);
     const agent = createAgentConfig({ subagentRef: 'ada' });
-    agent.weeklyPlans = [
-      { week: '2026-W16', month: '2026-04', tasks: [], approved: true },
-    ];
     agent.budget.paused = true;
     await store.save(agent);
+    // Weekly plans live in the file store — seed one there.
+    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+    await weeklyPlanStore.save(agent.id, {
+      week: '2026-W16',
+      month: '2026-04',
+      tasks: [],
+      approved: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
 
     const [choice] = await getAgentChoices({ dataDir: tmpDir });
     assert.equal(choice.id, agent.id);

@@ -104,10 +104,6 @@ export const agentConfigSchema = {
       type: 'array',
       items: { $ref: 'aweek://schemas/monthly-plan' },
     },
-    weeklyPlans: {
-      type: 'array',
-      items: { $ref: 'aweek://schemas/weekly-plan' },
-    },
     weeklyTokenBudget: {
       type: 'integer',
       minimum: 0,

@@ -45,14 +45,15 @@ import {
   updateObjectiveStatus,
   getMonthlyPlan,
 } from '../models/agent.js';
-import { validateAgentConfig } from '../schemas/validator.js';
+import { validateAgentConfig, validateWeeklyPlan } from '../schemas/validator.js';
 import { GOAL_HORIZONS } from '../schemas/goals.schema.js';
 import {
   MONTHLY_PLAN_STATUSES,
   OBJECTIVE_STATUSES,
 } from '../schemas/monthly-plan.schema.js';
 import { TASK_PRIORITIES } from '../schemas/weekly-plan.schema.js';
-import { createAgentStore } from '../storage/agent-helpers.js';
+import { createAgentStore, resolveDataDir } from '../storage/agent-helpers.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 
 // ---------------------------------------------------------------------------
 // Input validation helpers
@@ -271,10 +272,14 @@ export function validateMonthlyAdjustment(op, agentConfig) {
  * @param {string} [op.description] - Required for add
  * @param {string} [op.objectiveId] - Required for add
  * @param {string} [op.status] - For update
- * @param {object} agentConfig
+ * @param {object} agentConfig - Agent config (used for monthly-plan lookups)
+ * @param {object[]} [weeklyPlans=[]] - Weekly plans array (loaded from
+ *   WeeklyPlanStore by the orchestrator). Used for `create` existence checks
+ *   and `add`/`update` task lookups. Defaults to `[]` when omitted so legacy
+ *   tests that pass only the config still run the shape checks.
  * @returns {{ valid: boolean, errors: string[] }}
  */
-export function validateWeeklyAdjustment(op, agentConfig) {
+export function validateWeeklyAdjustment(op, agentConfig, weeklyPlans = []) {
   const errors = [];
   const validActions = ['create', 'add', 'update'];
 
@@ -297,7 +302,7 @@ export function validateWeeklyAdjustment(op, agentConfig) {
   // week threads back to a real plan), and any seed tasks must reference an
   // objective from some monthly plan on this agent.
   if (op.action === 'create') {
-    if (agentConfig.weeklyPlans?.find((p) => p.week === op.week)) {
+    if (weeklyPlans.find((p) => p.week === op.week)) {
       errors.push(`Weekly plan already exists for ${op.week} — use action: "add" to append tasks`);
     }
     if (!op.month || typeof op.month !== 'string' || !/^\d{4}-\d{2}$/.test(op.month)) {
@@ -354,7 +359,7 @@ export function validateWeeklyAdjustment(op, agentConfig) {
   }
 
   // `add` and `update` both require an existing weekly plan to mutate.
-  const plan = agentConfig.weeklyPlans?.find((p) => p.week === op.week);
+  const plan = weeklyPlans.find((p) => p.week === op.week);
   if (!plan) {
     errors.push(`No weekly plan found for ${op.week} — use action: "create" to bootstrap one`);
     return { valid: false, errors };
@@ -521,14 +526,25 @@ export function applyMonthlyAdjustment(config, op) {
 }
 
 /**
- * Apply a weekly task adjustment to an agent config (mutates config).
- * @param {object} config - Agent config
+ * Apply a weekly task adjustment (mutates `config` for `updatedAt` and
+ * `weeklyPlans` for the plan contents).
+ *
+ * Weekly plans are no longer embedded in the agent config — they live in
+ * `WeeklyPlanStore`. The orchestrator (`adjustGoals`) loads the array via
+ * `weeklyPlanStore.loadAll`, passes it in here so this function can stay
+ * pure-ish (no I/O), and persists each affected plan afterwards.
+ *
+ * @param {object} config - Agent config (only `updatedAt` is touched)
  * @param {object} op - Weekly adjustment operation
+ * @param {object[]} weeklyPlans - Mutable array of weekly plans. For
+ *   `create`, the new plan is pushed onto this array. For `add`/`update`,
+ *   the matching plan in the array is mutated in place. The orchestrator
+ *   persists the resulting plan(s) via `WeeklyPlanStore.save`.
  * @returns {{ applied: boolean, result: object | null, error?: string }}
  */
-export function applyWeeklyAdjustment(config, op) {
+export function applyWeeklyAdjustment(config, op, weeklyPlans = []) {
   if (op.action === 'create') {
-    if (config.weeklyPlans?.find((p) => p.week === op.week)) {
+    if (weeklyPlans.find((p) => p.week === op.week)) {
       return { applied: false, result: null, error: `Weekly plan already exists for ${op.week}` };
     }
     const tasks = Array.isArray(op.tasks)
@@ -544,13 +560,12 @@ export function applyWeeklyAdjustment(config, op) {
         )
       : [];
     const newPlan = createWeeklyPlan(op.week, op.month, tasks);
-    if (!Array.isArray(config.weeklyPlans)) config.weeklyPlans = [];
-    config.weeklyPlans.push(newPlan);
+    weeklyPlans.push(newPlan);
     config.updatedAt = new Date().toISOString();
     return { applied: true, result: newPlan };
   }
 
-  const plan = config.weeklyPlans?.find((p) => p.week === op.week);
+  const plan = weeklyPlans.find((p) => p.week === op.week);
   if (!plan) return { applied: false, result: null, error: `No weekly plan for ${op.week}` };
 
   if (op.action === 'add') {
@@ -632,6 +647,18 @@ export async function adjustGoals({
     return { success: false, errors: [`Agent not found: ${agentId}`] };
   }
 
+  // Load weekly plans from the file store — they're no longer embedded
+  // in the agent config. The array is mutated by `applyWeeklyAdjustment`
+  // (push for create, in-place mutation for add/update); we persist the
+  // affected plans after validation succeeds.
+  const weeklyPlanStore = new WeeklyPlanStore(resolveDataDir(dataDir));
+  let weeklyPlans;
+  try {
+    weeklyPlans = await weeklyPlanStore.loadAll(agentId);
+  } catch {
+    weeklyPlans = [];
+  }
+
   // Validate all adjustments before applying any
   for (const [i, op] of goalAdjustments.entries()) {
     const result = validateGoalAdjustment(op, config);
@@ -648,7 +675,7 @@ export async function adjustGoals({
   }
 
   for (const [i, op] of weeklyAdjustments.entries()) {
-    const result = validateWeeklyAdjustment(op, config);
+    const result = validateWeeklyAdjustment(op, config, weeklyPlans);
     if (!result.valid) {
       allErrors.push(...result.errors.map((e) => `weekly[${i}]: ${e}`));
     }
@@ -658,8 +685,10 @@ export async function adjustGoals({
     return { success: false, errors: allErrors };
   }
 
-  // Apply all adjustments
+  // Apply all adjustments. Track which weekly plans were touched so we
+  // persist each of them individually afterwards.
   const results = { goals: [], monthly: [], weekly: [] };
+  const touchedWeeks = new Set();
 
   for (const op of goalAdjustments) {
     const r = applyGoalAdjustment(config, op);
@@ -672,11 +701,12 @@ export async function adjustGoals({
   }
 
   for (const op of weeklyAdjustments) {
-    const r = applyWeeklyAdjustment(config, op);
+    const r = applyWeeklyAdjustment(config, op, weeklyPlans);
     results.weekly.push(r);
+    if (r.applied && op.week) touchedWeeks.add(op.week);
   }
 
-  // Final schema validation before persisting
+  // Final agent-schema validation before persisting
   const schemaResult = validateAgentConfig(config);
   if (!schemaResult.valid) {
     const messages = schemaResult.errors.map(
@@ -685,8 +715,27 @@ export async function adjustGoals({
     return { success: false, errors: messages };
   }
 
-  // Persist
+  // Validate every touched weekly plan against the per-item schema so
+  // invalid plans never land in the file store.
+  for (const week of touchedWeeks) {
+    const plan = weeklyPlans.find((p) => p.week === week);
+    if (!plan) continue;
+    const planResult = validateWeeklyPlan(plan);
+    if (!planResult.valid) {
+      const messages = planResult.errors.map(
+        (e) => `weeklyPlans[${week}]${e.instancePath || ''}: ${e.message}`,
+      );
+      return { success: false, errors: messages };
+    }
+  }
+
+  // Persist the agent config and every touched weekly plan atomically
+  // from the caller's perspective (we fail fast on the first error).
   await store.save(config);
+  for (const week of touchedWeeks) {
+    const plan = weeklyPlans.find((p) => p.week === week);
+    if (plan) await weeklyPlanStore.save(agentId, plan);
+  }
 
   return { success: true, results };
 }

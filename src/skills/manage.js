@@ -72,7 +72,12 @@ import {
   formatPausedAgentDetails as formatPausedAgentDetailsImpl,
   formatResumeResult as formatResumeResultImpl,
 } from './resume-agent.js';
-import { createAgentStore, loadAgent } from '../storage/agent-helpers.js';
+import {
+  createAgentStore,
+  loadAgent,
+  resolveDataDir,
+} from '../storage/agent-helpers.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 
 /**
  * Default project-level subagents directory.
@@ -389,6 +394,17 @@ export async function deleteAgent(params = {}) {
     };
   }
 
+  // Count weekly plans BEFORE deleting the agent JSON. Plans live in
+  // `<baseDir>/<agentId>/weekly-plans/` per-week files; we only delete
+  // the top-level JSON here so the per-week files might still exist,
+  // but computing this first keeps the snapshot stable even if a future
+  // change ever removes that subdirectory as part of the delete path.
+  const weeklyPlanStore = new WeeklyPlanStore(resolveDataDir(dataDir));
+  const weeklyPlanCount = await weeklyPlanStore
+    .list(agentId)
+    .then((ws) => ws.length)
+    .catch(() => 0);
+
   try {
     await store.delete(agentId);
   } catch (err) {
@@ -443,9 +459,7 @@ export async function deleteAgent(params = {}) {
       name: snapshot.identity?.name,
       role: snapshot.identity?.role,
       goalCount: Array.isArray(snapshot.goals) ? snapshot.goals.length : 0,
-      weeklyPlanCount: Array.isArray(snapshot.weeklyPlans)
-        ? snapshot.weeklyPlans.length
-        : 0,
+      weeklyPlanCount,
     },
     subagentMd,
     message: `Agent "${snapshot.identity?.name || agentId}" (${agentId}) has been deleted.`,

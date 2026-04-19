@@ -90,7 +90,9 @@ describe('hire-all — hireAllSubagents', () => {
       assert.equal(loaded.subagentRef, slug);
       assert.deepEqual(loaded.goals, []);
       assert.deepEqual(loaded.monthlyPlans, []);
-      assert.deepEqual(loaded.weeklyPlans, []);
+      // Weekly plans live in the per-week file store — the agent JSON
+      // no longer carries a `weeklyPlans` field at all.
+      assert.equal(loaded.weeklyPlans, undefined);
       assert.deepEqual(loaded.inbox, []);
       assert.equal(loaded.budget.paused, false);
       // pausedReason is explicitly null on a fresh hire — distinguishable
@@ -147,7 +149,9 @@ describe('hire-all — hireAllSubagents', () => {
       // shell never leaks populated defaults from a future model drift).
       assert.deepEqual(parsed.goals, []);
       assert.deepEqual(parsed.monthlyPlans, []);
-      assert.deepEqual(parsed.weeklyPlans, []);
+      // Weekly plans live in the file store — never serialised into
+      // the agent JSON.
+      assert.equal(parsed.weeklyPlans, undefined);
       assert.deepEqual(parsed.inbox, []);
       // Raw JSON must literally contain the `"pausedReason": null` token.
       assert.match(raw, /"pausedReason":\s*null/);

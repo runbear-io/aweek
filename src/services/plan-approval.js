@@ -37,7 +37,8 @@
 import { createTask } from '../models/agent.js';
 import { validateWeeklyPlan } from '../schemas/validator.js';
 import { install as installCrontab } from '../heartbeat/crontab-manager.js';
-import { createAgentStore } from '../storage/agent-helpers.js';
+import { createAgentStore, resolveDataDir } from '../storage/agent-helpers.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 
 /** Valid approval decisions */
 export const APPROVAL_DECISIONS = ['approve', 'reject', 'edit'];
@@ -47,16 +48,27 @@ export const APPROVAL_DECISIONS = ['approve', 'reject', 'edit'];
 // ---------------------------------------------------------------------------
 
 /**
- * Find the pending (unapproved) weekly plan for an agent.
- * Searches the agent config's weeklyPlans array for the first unapproved plan.
+ * Find the pending (unapproved) weekly plan from a weekly-plans array.
  *
- * @param {object} agentConfig - The agent config object
+ * Weekly plans live in `WeeklyPlanStore` (per-week files) — callers load
+ * the array via `weeklyPlanStore.loadAll(agentId)` before handing it to
+ * this function. A legacy overload also accepts an agent config object
+ * with an embedded `weeklyPlans` field so tests that hand-roll a config
+ * continue to work.
+ *
+ * @param {object[] | {weeklyPlans?: object[]}} input - Either a weekly-plans
+ *   array or an agent config with an embedded `weeklyPlans` array.
  * @returns {{ plan: object, week: string } | null} The pending plan and its week, or null
  */
-export function findPendingPlan(agentConfig) {
-  if (!agentConfig || !Array.isArray(agentConfig.weeklyPlans)) return null;
+export function findPendingPlan(input) {
+  const plans = Array.isArray(input)
+    ? input
+    : input && Array.isArray(input.weeklyPlans)
+      ? input.weeklyPlans
+      : null;
+  if (!plans) return null;
 
-  const pending = agentConfig.weeklyPlans.find((p) => p.approved === false);
+  const pending = plans.find((p) => p.approved === false);
   if (!pending) return null;
 
   return { plan: pending, week: pending.week };
@@ -373,7 +385,7 @@ export async function activateHeartbeat({
  * Process a weekly plan approval decision.
  *
  * - **approve**: Marks the plan as approved with timestamp. First approval triggers heartbeat.
- * - **reject**: Deletes the plan from the agent's weeklyPlans array. Agent can regenerate.
+ * - **reject**: Deletes the plan from the WeeklyPlanStore. Agent can regenerate.
  * - **edit**: Applies edits, then optionally auto-approves if autoApprove is set.
  *
  * @param {object} params
@@ -416,8 +428,18 @@ export async function processApproval({
     return { success: false, errors: [`Agent not found: ${agentId}`] };
   }
 
+  // Load weekly plans from the file store — they are no longer embedded
+  // in the agent config.
+  const weeklyPlanStore = new WeeklyPlanStore(resolveDataDir(dataDir));
+  let plans;
+  try {
+    plans = await weeklyPlanStore.loadAll(agentId);
+  } catch {
+    plans = [];
+  }
+
   // Find pending plan
-  const pending = findPendingPlan(config);
+  const pending = findPendingPlan(plans);
   if (!pending) {
     return { success: false, errors: ['No pending weekly plan found for this agent'] };
   }
@@ -425,13 +447,14 @@ export async function processApproval({
   const { plan } = pending;
 
   // Check if this is the first-ever approval for this agent
-  const hasAnyApproved = config.weeklyPlans.some((p) => p.approved === true);
+  const hasAnyApproved = plans.some((p) => p.approved === true);
 
   // --- APPROVE ---
   if (decision === 'approve') {
     plan.approved = true;
     plan.approvedAt = new Date().toISOString();
     plan.updatedAt = new Date().toISOString();
+    await weeklyPlanStore.save(agentId, plan);
     config.updatedAt = new Date().toISOString();
     await store.save(config);
 
@@ -462,10 +485,7 @@ export async function processApproval({
 
   // --- REJECT ---
   if (decision === 'reject') {
-    const idx = config.weeklyPlans.indexOf(plan);
-    if (idx !== -1) {
-      config.weeklyPlans.splice(idx, 1);
-    }
+    await weeklyPlanStore.delete(agentId, plan.week);
     config.updatedAt = new Date().toISOString();
     await store.save(config);
 
@@ -517,6 +537,7 @@ export async function processApproval({
       }
     }
 
+    await weeklyPlanStore.save(agentId, plan);
     config.updatedAt = new Date().toISOString();
     await store.save(config);
 
@@ -698,7 +719,16 @@ export async function loadPlanForReview({ agentId, dataDir }) {
     return { success: false, errors: [`Agent not found: ${agentId}`] };
   }
 
-  const pending = findPendingPlan(config);
+  // Load weekly plans from the file store.
+  const weeklyPlanStore = new WeeklyPlanStore(resolveDataDir(dataDir));
+  let plans;
+  try {
+    plans = await weeklyPlanStore.loadAll(agentId);
+  } catch {
+    plans = [];
+  }
+
+  const pending = findPendingPlan(plans);
   if (!pending) {
     return { success: false, errors: ['No pending weekly plan found for this agent'] };
   }

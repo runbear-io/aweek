@@ -434,8 +434,8 @@ export async function loadAndRenderGrid(params) {
     } else {
       plan = await weeklyPlanStore.loadLatestApproved(agentId);
       if (!plan) {
-        // Try any plan
-        const plans = agent.weeklyPlans || [];
+        // Fall back to the most recent plan regardless of approval state.
+        const plans = await weeklyPlanStore.loadAll(agentId).catch(() => []);
         plan = plans[plans.length - 1];
       }
     }

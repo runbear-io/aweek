@@ -14,6 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentStore } from './agent-store.js';
+import { WeeklyPlanStore } from './weekly-plan-store.js';
 import {
   createAgentConfig,
   createGoal,
@@ -23,6 +24,7 @@ import {
   createWeeklyPlan,
 } from '../models/agent.js';
 import { validateAgentConfig } from '../schemas/validator.js';
+import { writeFile, mkdir } from 'node:fs/promises';
 
 describe('AgentStore', () => {
   let store;
@@ -65,10 +67,12 @@ describe('AgentStore', () => {
     assert.equal(loaded.subagentRef, 'schedbot');
     assert.equal(loaded.id, loaded.subagentRef);
 
-    // Scheduling fields exist and are correctly shaped.
+    // Scheduling fields exist and are correctly shaped. Weekly plans
+    // live in the per-week `WeeklyPlanStore` file store — the agent
+    // JSON no longer carries a `weeklyPlans` field at all.
     assert.deepStrictEqual(loaded.goals, []);
     assert.deepStrictEqual(loaded.monthlyPlans, []);
-    assert.deepStrictEqual(loaded.weeklyPlans, []);
+    assert.equal(loaded.weeklyPlans, undefined);
     assert.deepStrictEqual(loaded.inbox, []);
     assert.ok(loaded.budget);
     assert.equal(typeof loaded.createdAt, 'string');
@@ -165,25 +169,27 @@ describe('AgentStore', () => {
 
     const task = createTask('Write unit tests', obj.id);
     const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
-    config.weeklyPlans.push(weeklyPlan);
 
-    // NOTE: inbox messages are validated by inbox-store.test.js. The inbox
-    // schema's from/to pattern is migrated in its own sibling AC — this
-    // storage test stays focused on the scheduling-only round-trip of
-    // goals + monthly plans + weekly plans.
-
-    // Validate
+    // Validate the config on its own (no embedded weeklyPlans field).
     const result = validateAgentConfig(config);
     assert.equal(result.valid, true, `Validation errors: ${JSON.stringify(result.errors)}`);
 
-    // Save & reload
+    // Save the config and the weekly plan via the file store.
     await store.save(config);
+    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+    await weeklyPlanStore.save(config.id, weeklyPlan);
+
     const loaded = await store.load(config.id);
     assert.equal(loaded.goals.length, 1);
     assert.equal(loaded.monthlyPlans.length, 1);
-    assert.equal(loaded.weeklyPlans.length, 1);
+    // `weeklyPlans` is no longer embedded on the agent JSON.
+    assert.equal(loaded.weeklyPlans, undefined);
     assert.equal(loaded.inbox.length, 0);
-    assert.equal(loaded.weeklyPlans[0].approved, false);
+
+    // The weekly plan round-trips through the file store.
+    const reloadedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
+    assert.equal(reloadedPlan.approved, false);
+    assert.equal(reloadedPlan.tasks.length, 1);
   });
 
   it('should be idempotent — saving same config twice produces same result', async () => {
@@ -218,5 +224,47 @@ describe('AgentStore', () => {
     assert.equal(all.length, 2);
 
     await rm(freshDir, { recursive: true, force: true });
+  });
+
+  it('migrates legacy embedded weeklyPlans onto the file store and drops the field', async () => {
+    // Simulate a pre-Phase-3 agent JSON that still carries an embedded
+    // `weeklyPlans: [...]` array. `AgentStore.load` must:
+    //   1. Copy each plan into the per-week file store.
+    //   2. Strip `weeklyPlans` from the returned config (the new schema
+    //      does not permit the field; `assertValid` would reject it).
+    const migrateDir = await mkdtemp(join(tmpdir(), 'aweek-migrate-'));
+    const migrateStore = new AgentStore(migrateDir);
+    await migrateStore.init();
+
+    const goal = createGoal('Legacy goal');
+    const obj = createObjective('Legacy obj', goal.id);
+    const task = createTask('Legacy task', obj.id);
+    const legacyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
+
+    const base = createAgentConfig({ subagentRef: 'legacy-bot' });
+    base.goals.push(goal);
+    base.monthlyPlans.push(createMonthlyPlan('2026-04', [obj]));
+
+    // Write the JSON file directly so we can embed the legacy
+    // `weeklyPlans` field that the new schema no longer permits.
+    const legacyOnDisk = { ...base, weeklyPlans: [legacyPlan] };
+    await mkdir(migrateDir, { recursive: true });
+    await writeFile(
+      join(migrateDir, `${base.id}.json`),
+      JSON.stringify(legacyOnDisk, null, 2) + '\n',
+      'utf-8',
+    );
+
+    const loaded = await migrateStore.load(base.id);
+    assert.equal(loaded.weeklyPlans, undefined, 'weeklyPlans must be stripped from the loaded config');
+    assert.equal(loaded.id, base.id);
+
+    // The plan now lives in the file store.
+    const weeklyPlanStore = new WeeklyPlanStore(migrateDir);
+    const migratedPlan = await weeklyPlanStore.load(base.id, '2026-W16');
+    assert.equal(migratedPlan.week, legacyPlan.week);
+    assert.equal(migratedPlan.tasks.length, 1);
+
+    await rm(migrateDir, { recursive: true, force: true });
   });
 });

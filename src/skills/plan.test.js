@@ -55,6 +55,7 @@ import {
 import * as adjustmentsService from '../services/plan-adjustments.js';
 import * as approvalService from '../services/plan-approval.js';
 import { AgentStore } from '../storage/agent-store.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import {
   createAgentConfig,
   createGoal,
@@ -89,9 +90,15 @@ function buildTestAgent({ subagentRef = TEST_SLUG, planApproved = false } = {}) 
   });
   const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
   weeklyPlan.approved = planApproved;
-  config.weeklyPlans.push(weeklyPlan);
 
   return { config, goal, objective, task, monthlyPlan, weeklyPlan };
+}
+
+/** Persist both the config and the weekly plan to the file store. */
+async function saveFixture({ store, dir, config, weeklyPlan }) {
+  await store.save(config);
+  const weeklyPlanStore = new WeeklyPlanStore(dir);
+  await weeklyPlanStore.save(config.id, weeklyPlan);
 }
 
 async function withTempStore(fn) {
@@ -209,8 +216,8 @@ describe('plan skill adapter — reject confirmation gate', () => {
     // store: a real reject succeeds and the persisted JSON has no
     // `confirmed` artifact anywhere.
     await withTempStore(async ({ store, dir }) => {
-      const { config } = buildTestAgent();
-      await store.save(config);
+      const { config, weeklyPlan } = buildTestAgent();
+      await saveFixture({ store, dir, config, weeklyPlan });
 
       const result = await reject({
         agentId: config.id,
@@ -221,8 +228,10 @@ describe('plan skill adapter — reject confirmation gate', () => {
 
       assert.equal(result.success, true, JSON.stringify(result.errors));
       const reloaded = await store.load(config.id);
-      // Pending plan removed.
-      assert.equal((reloaded.weeklyPlans || []).length, 0);
+      // Pending plan removed — WeeklyPlanStore has no entry left.
+      const weeklyPlanStore = new WeeklyPlanStore(dir);
+      const remaining = await weeklyPlanStore.loadAll(config.id).catch(() => []);
+      assert.equal(remaining.length, 0);
       // No `confirmed` field anywhere on the persisted config.
       const serialised = JSON.stringify(reloaded);
       assert.equal(
@@ -311,8 +320,8 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
   });
 
   it('reviewPlan returns a formatted summary of the pending plan', async () => {
-    const { config, task } = buildTestAgent();
-    await store.save(config);
+    const { config, task, weeklyPlan } = buildTestAgent();
+    await saveFixture({ store, dir: tempDir, config, weeklyPlan });
 
     const result = await reviewPlan({ agentId: config.id, dataDir: tempDir });
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -326,7 +335,7 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
 
   it('approve marks the plan as approved without an `installFn` (heartbeat install is non-fatal)', async () => {
     const { config, weeklyPlan } = buildTestAgent();
-    await store.save(config);
+    await saveFixture({ store, dir: tempDir, config, weeklyPlan });
 
     const result = await approve({
       agentId: config.id,
@@ -336,14 +345,14 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
-    const reloaded = await store.load(config.id);
-    const persistedPlan = reloaded.weeklyPlans.find((p) => p.week === weeklyPlan.week);
+    const weeklyPlanStore = new WeeklyPlanStore(tempDir);
+    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
     assert.equal(persistedPlan.approved, true);
   });
 
   it('edit applies an add-task operation and leaves the plan pending by default', async () => {
     const { config, objective, weeklyPlan } = buildTestAgent();
-    await store.save(config);
+    await saveFixture({ store, dir: tempDir, config, weeklyPlan });
 
     const result = await edit({
       agentId: config.id,
@@ -360,8 +369,8 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
-    const reloaded = await store.load(config.id);
-    const persistedPlan = reloaded.weeklyPlans.find((p) => p.week === weeklyPlan.week);
+    const weeklyPlanStore = new WeeklyPlanStore(tempDir);
+    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
     assert.equal(persistedPlan.tasks.length, 2);
     assert.ok(persistedPlan.tasks.some((t) => t.description === 'Write the README'));
     // Default behavior: still pending.
@@ -370,7 +379,7 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
 
   it('edit + autoApproveAfterEdit:true approves and persists in one call', async () => {
     const { config, objective, weeklyPlan } = buildTestAgent();
-    await store.save(config);
+    await saveFixture({ store, dir: tempDir, config, weeklyPlan });
 
     const result = await edit({
       agentId: config.id,
@@ -389,8 +398,8 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
-    const reloaded = await store.load(config.id);
-    const persistedPlan = reloaded.weeklyPlans.find((p) => p.week === weeklyPlan.week);
+    const weeklyPlanStore = new WeeklyPlanStore(tempDir);
+    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
     assert.equal(persistedPlan.approved, true);
     assert.equal(persistedPlan.tasks.length, 2);
   });

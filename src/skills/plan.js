@@ -121,7 +121,7 @@ export function approve(params) {
 /**
  * Reject an agent's pending weekly plan.
  *
- * **Destructive** — removes the plan from the agent's `weeklyPlans` array.
+ * **Destructive** — deletes the pending plan from the WeeklyPlanStore.
  * Per project constraints, destructive operations require explicit user
  * confirmation. This wrapper enforces that guard: the caller (the skill
  * markdown) must pass `confirmed: true` after collecting an interactive

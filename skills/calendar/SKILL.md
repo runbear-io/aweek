@@ -87,23 +87,21 @@ Then ask what they'd like to do with it:
 3. **Change priority** — Set to critical, high, medium, or low
 4. **Edit description** — Update the task description
 
-If they change a task, apply the update:
+If they change a task, apply the update via the WeeklyPlanStore:
 
 ```bash
 node --input-type=module -e "
-import { readFile, writeFile } from 'node:fs/promises';
+import { WeeklyPlanStore } from './src/storage/weekly-plan-store.js';
 
-const file = '.aweek/agents/<AGENT_ID>.json';
-const config = JSON.parse(await readFile(file, 'utf-8'));
-const plan = config.weeklyPlans.find(p => p.week === '<WEEK>');
+const store = new WeeklyPlanStore('.aweek/agents');
+const plan = await store.load('<AGENT_ID>', '<WEEK>');
 const task = plan.tasks.find(t => t.id === '<TASK_ID>');
 
 // Apply the change
 <APPLY_CHANGE>
 
 plan.updatedAt = new Date().toISOString();
-config.updatedAt = new Date().toISOString();
-await writeFile(file, JSON.stringify(config, null, 2) + '\n');
+await store.save('<AGENT_ID>', plan);
 console.log('Updated successfully');
 "
 ```

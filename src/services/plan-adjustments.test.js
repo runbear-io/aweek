@@ -29,6 +29,7 @@ import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentStore } from '../storage/agent-store.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import {
   createAgentConfig,
   createGoal,
@@ -55,7 +56,15 @@ import {
 
 const TEST_SLUG = 'test-agent';
 
-/** Build a full agent config with goals, monthly plan, and weekly plan for testing. */
+/**
+ * Build a full agent config with goals, monthly plan, and a weekly plan
+ * for testing.
+ *
+ * Weekly plans are no longer embedded on the agent config — they live
+ * in `WeeklyPlanStore`. The helper returns the weekly plan and a
+ * mutable `weeklyPlans` array so callers can hand them to the apply
+ * functions without having to reassemble the shape every time.
+ */
 function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const config = createAgentConfig({
     subagentRef,
@@ -75,9 +84,9 @@ function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const task1 = createTask('Refactor utils.js', obj1.id);
   const task2 = createTask('Draft API overview', obj2.id);
   const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
-  config.weeklyPlans.push(weeklyPlan);
+  const weeklyPlans = [weeklyPlan];
 
-  return { config, goal1, goal2, obj1, obj2, task1, task2 };
+  return { config, weeklyPlans, weeklyPlan, goal1, goal2, obj1, obj2, task1, task2 };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,65 +262,71 @@ describe('validateMonthlyAdjustment', () => {
 // ---------------------------------------------------------------------------
 describe('validateWeeklyAdjustment', () => {
   it('validates a valid add task', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       { action: 'add', week: '2026-W16', description: 'New task', objectiveId: obj1.id },
-      config
+      config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('rejects add with nonexistent objectiveId', () => {
-    const { config } = buildTestAgent();
+    const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       { action: 'add', week: '2026-W16', description: 'Task', objectiveId: 'obj-nonexistent' },
-      config
+      config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('Objective not found')));
   });
 
   it('rejects when weekly plan does not exist', () => {
-    const { config } = buildTestAgent();
+    const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       { action: 'add', week: '2026-W99', description: 'Task', objectiveId: 'obj-x' },
-      config
+      config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('No weekly plan')));
   });
 
   it('validates a valid update task', () => {
-    const { config, task1 } = buildTestAgent();
+    const { config, weeklyPlans, task1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       { action: 'update', week: '2026-W16', taskId: task1.id, status: 'in-progress' },
-      config
+      config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('rejects update with nonexistent taskId', () => {
-    const { config } = buildTestAgent();
+    const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       { action: 'update', week: '2026-W16', taskId: 'task-nonexistent', status: 'completed' },
-      config
+      config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('Task not found')));
   });
 
   it('rejects invalid week format', () => {
-    const { config } = buildTestAgent();
+    const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       { action: 'add', week: 'week16', description: 'Task', objectiveId: 'obj-x' },
-      config
+      config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('YYYY-Www')));
   });
 
   it('accepts a valid track on add', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'add',
@@ -321,12 +336,13 @@ describe('validateWeeklyAdjustment', () => {
         track: 'x-com',
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('rejects an empty-string track on add', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'add',
@@ -336,13 +352,14 @@ describe('validateWeeklyAdjustment', () => {
         track: '',
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => /track/.test(e)));
   });
 
   it('rejects an over-long track on add', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'add',
@@ -352,12 +369,13 @@ describe('validateWeeklyAdjustment', () => {
         track: 'a'.repeat(65),
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
   });
 
   it('accepts a track update (setting track)', () => {
-    const { config, task1 } = buildTestAgent();
+    const { config, weeklyPlans, task1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'update',
@@ -366,12 +384,13 @@ describe('validateWeeklyAdjustment', () => {
         track: 'x-com',
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('accepts null track on update (clear the track)', () => {
-    const { config, task1 } = buildTestAgent();
+    const { config, weeklyPlans, task1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'update',
@@ -380,15 +399,17 @@ describe('validateWeeklyAdjustment', () => {
         track: null,
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('rejects update with no fields changed', () => {
-    const { config, task1 } = buildTestAgent();
+    const { config, weeklyPlans, task1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       { action: 'update', week: '2026-W16', taskId: task1.id },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(
@@ -399,7 +420,7 @@ describe('validateWeeklyAdjustment', () => {
   });
 
   it('accepts track on seed tasks in create', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'create',
@@ -411,12 +432,13 @@ describe('validateWeeklyAdjustment', () => {
         ],
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('rejects an empty-string track on a seed task in create', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'create',
@@ -425,13 +447,14 @@ describe('validateWeeklyAdjustment', () => {
         tasks: [{ description: 'X', objectiveId: obj1.id, track: '' }],
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => /tasks\[0\]\.track/.test(e)));
   });
 
   it('accepts a valid runAt on add', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'add',
@@ -441,12 +464,13 @@ describe('validateWeeklyAdjustment', () => {
         runAt: '2026-04-20T09:00:00Z',
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('rejects a malformed runAt on add', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'add',
@@ -456,13 +480,14 @@ describe('validateWeeklyAdjustment', () => {
         runAt: 'tomorrow',
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => /runAt/.test(e)));
   });
 
   it('accepts runAt on update; null clears', () => {
-    const { config, task1 } = buildTestAgent();
+    const { config, weeklyPlans, task1 } = buildTestAgent();
     const setResult = validateWeeklyAdjustment(
       {
         action: 'update',
@@ -471,17 +496,19 @@ describe('validateWeeklyAdjustment', () => {
         runAt: '2026-04-20T14:00:00Z',
       },
       config,
+      weeklyPlans,
     );
     assert.equal(setResult.valid, true);
     const clearResult = validateWeeklyAdjustment(
       { action: 'update', week: '2026-W16', taskId: task1.id, runAt: null },
       config,
+      weeklyPlans,
     );
     assert.equal(clearResult.valid, true);
   });
 
   it('accepts runAt on seed tasks in create', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'create',
@@ -497,12 +524,13 @@ describe('validateWeeklyAdjustment', () => {
         ],
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, true);
   });
 
   it('rejects malformed runAt on a seed task in create', () => {
-    const { config, obj1 } = buildTestAgent();
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
       {
         action: 'create',
@@ -513,6 +541,7 @@ describe('validateWeeklyAdjustment', () => {
         ],
       },
       config,
+      weeklyPlans,
     );
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => /tasks\[0\]\.runAt/.test(e)));
@@ -657,52 +686,68 @@ describe('applyMonthlyAdjustment', () => {
 // ---------------------------------------------------------------------------
 describe('applyWeeklyAdjustment', () => {
   it('adds a task to a weekly plan', () => {
-    const { config, obj1 } = buildTestAgent();
-    const before = config.weeklyPlans[0].tasks.length;
-    const r = applyWeeklyAdjustment(config, {
-      action: 'add',
-      week: '2026-W16',
-      description: 'New task',
-      objectiveId: obj1.id,
-    });
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
+    const before = weeklyPlans[0].tasks.length;
+    const r = applyWeeklyAdjustment(
+      config,
+      {
+        action: 'add',
+        week: '2026-W16',
+        description: 'New task',
+        objectiveId: obj1.id,
+      },
+      weeklyPlans,
+    );
     assert.equal(r.applied, true);
-    assert.equal(config.weeklyPlans[0].tasks.length, before + 1);
+    assert.equal(weeklyPlans[0].tasks.length, before + 1);
     assert.ok(r.result.id.startsWith('task-'));
   });
 
   it('updates a task status to completed', () => {
-    const { config, task1 } = buildTestAgent();
-    const r = applyWeeklyAdjustment(config, {
-      action: 'update',
-      week: '2026-W16',
-      taskId: task1.id,
-      status: 'completed',
-    });
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const r = applyWeeklyAdjustment(
+      config,
+      {
+        action: 'update',
+        week: '2026-W16',
+        taskId: task1.id,
+        status: 'completed',
+      },
+      weeklyPlans,
+    );
     assert.equal(r.applied, true);
     assert.equal(r.result.status, 'completed');
     assert.ok(r.result.completedAt);
   });
 
   it('updates a task description', () => {
-    const { config, task1 } = buildTestAgent();
-    const r = applyWeeklyAdjustment(config, {
-      action: 'update',
-      week: '2026-W16',
-      taskId: task1.id,
-      description: 'Revised task',
-    });
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const r = applyWeeklyAdjustment(
+      config,
+      {
+        action: 'update',
+        week: '2026-W16',
+        taskId: task1.id,
+        description: 'Revised task',
+      },
+      weeklyPlans,
+    );
     assert.equal(r.applied, true);
     assert.equal(r.result.description, 'Revised task');
   });
 
   it('fails for nonexistent week', () => {
-    const { config, obj1 } = buildTestAgent();
-    const r = applyWeeklyAdjustment(config, {
-      action: 'add',
-      week: '2026-W99',
-      description: 'Task',
-      objectiveId: obj1.id,
-    });
+    const { config, weeklyPlans, obj1 } = buildTestAgent();
+    const r = applyWeeklyAdjustment(
+      config,
+      {
+        action: 'add',
+        week: '2026-W99',
+        description: 'Task',
+        objectiveId: obj1.id,
+      },
+      weeklyPlans,
+    );
     assert.equal(r.applied, false);
     assert.ok(r.error);
   });
@@ -725,9 +770,13 @@ describe('adjustGoals', () => {
   });
 
   async function saveTestAgent() {
-    const { config, goal1, goal2, obj1, obj2, task1, task2 } = buildTestAgent();
+    const { config, weeklyPlans, weeklyPlan, goal1, goal2, obj1, obj2, task1, task2 } = buildTestAgent();
     await store.save(config);
-    return { config, goal1, goal2, obj1, obj2, task1, task2 };
+    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+    for (const plan of weeklyPlans) {
+      await weeklyPlanStore.save(config.id, plan);
+    }
+    return { config, weeklyPlan, goal1, goal2, obj1, obj2, task1, task2 };
   }
 
   it('adds a goal and persists', async () => {
@@ -786,8 +835,9 @@ describe('adjustGoals', () => {
     });
     assert.equal(result.success, true);
 
-    const reloaded = await store.load(config.id);
-    assert.equal(reloaded.weeklyPlans[0].tasks.length, 3);
+    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+    const reloadedPlan = await weeklyPlanStore.load(config.id, '2026-W16');
+    assert.equal(reloadedPlan.tasks.length, 3);
   });
 
   it('applies multiple adjustments atomically', async () => {
@@ -905,10 +955,16 @@ describe('adjustGoals subagent-wrapper invariants', () => {
     const stBefore = await stat(mdPath);
     mdMtimeMs = stBefore.mtimeMs;
 
-    // Persist the aweek JSON wrapper into the same project tree.
+    // Persist the aweek JSON wrapper into the same project tree,
+    // and seed the weekly-plan file store so the adjust-goal tests can
+    // exercise the weekly branch.
     store = new AgentStore(dataDir);
-    const { config } = buildTestAgent({ subagentRef: TEST_SLUG });
+    const { config, weeklyPlans } = buildTestAgent({ subagentRef: TEST_SLUG });
     await store.save(config);
+    const weeklyPlanStore = new WeeklyPlanStore(dataDir);
+    for (const plan of weeklyPlans) {
+      await weeklyPlanStore.save(config.id, plan);
+    }
   });
 
   afterEach(async () => {
@@ -1069,11 +1125,12 @@ describe('adjustGoals subagent-wrapper invariants', () => {
       'in-progress',
       'objective status updated',
     );
-    assert.equal(
-      after.weeklyPlans[0].tasks.length,
-      before.weeklyPlans[0].tasks.length + 1,
-      'a task was added',
-    );
+    // Weekly plans live in the file store — load and count there.
+    const weeklyPlanStore = new WeeklyPlanStore(dataDir);
+    const planBefore = await weeklyPlanStore.load(TEST_SLUG, '2026-W16');
+    // (planBefore reflects what's on disk AFTER mutation; we assert the
+    // +1 delta relative to the fixture's seed count of 2.)
+    assert.equal(planBefore.tasks.length, 3, 'a task was added');
 
     // updatedAt is allowed to move (it's a scheduling bookkeeping field, not
     // an identity one) but we don't *require* the timestamp to advance —

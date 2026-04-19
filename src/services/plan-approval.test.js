@@ -66,6 +66,7 @@ import {
   createWeeklyPlan,
 } from '../models/agent.js';
 import { AgentStore } from '../storage/agent-store.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import {
   buildSubagentMarkdown,
   subagentFilePath,
@@ -77,7 +78,10 @@ import {
 
 const TEST_SLUG = 'test-bot';
 
-/** Build a standard test agent with a pending weekly plan */
+/** Build a standard test agent with a pending weekly plan. Weekly plans
+ *  live in their own file store — returned as a separate `weeklyPlans`
+ *  array so callers can choose to persist them via `saveTestAgent`.
+ */
 function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const config = createAgentConfig({ subagentRef });
 
@@ -91,17 +95,24 @@ function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const task1 = createTask('Design database schema', obj.id, { priority: 'high', estimatedMinutes: 60 });
   const task2 = createTask('Write API endpoints', obj.id, { priority: 'medium', estimatedMinutes: 120 });
   const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
-  config.weeklyPlans.push(weeklyPlan);
+  const weeklyPlans = [weeklyPlan];
 
-  return { config, goal, obj, monthlyPlan, weeklyPlan, task1, task2 };
+  return { config, weeklyPlans, goal, obj, monthlyPlan, weeklyPlan, task1, task2 };
 }
 
-/** Save an agent to a temp directory and return store + dir */
-async function saveTestAgent(config) {
+/**
+ * Save the agent config and every weekly plan in the returned array to
+ * the file store. Returns the stores + tmpDir for assertions.
+ */
+async function saveTestAgent(config, weeklyPlans = []) {
   const tmpDir = await mkdtemp(join(tmpdir(), 'aweek-approve-'));
   const store = new AgentStore(tmpDir);
   await store.save(config);
-  return { store, tmpDir };
+  const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+  for (const plan of weeklyPlans) {
+    await weeklyPlanStore.save(config.id, plan);
+  }
+  return { store, weeklyPlanStore, tmpDir };
 }
 
 /**
@@ -128,9 +139,13 @@ async function scaffoldProjectWithSubagentMd({ subagentRef = TEST_SLUG } = {}) {
   const stBefore = await stat(mdPath);
   const mdMtimeMs = stBefore.mtimeMs;
 
-  const { config, goal, obj, monthlyPlan, weeklyPlan, task1, task2 } = buildTestAgent({ subagentRef });
+  const { config, weeklyPlans, goal, obj, monthlyPlan, weeklyPlan, task1, task2 } = buildTestAgent({ subagentRef });
   const store = new AgentStore(dataDir);
   await store.save(config);
+  const weeklyPlanStore = new WeeklyPlanStore(dataDir);
+  for (const plan of weeklyPlans) {
+    await weeklyPlanStore.save(config.id, plan);
+  }
 
   return {
     tmpDir,
@@ -139,6 +154,7 @@ async function scaffoldProjectWithSubagentMd({ subagentRef = TEST_SLUG } = {}) {
     mdContents,
     mdMtimeMs,
     store,
+    weeklyPlanStore,
     config,
     goal,
     obj,
@@ -158,44 +174,42 @@ const noopInstallFn = async () => ({ installed: true, entry: 'noop' });
 
 describe('findPendingPlan', () => {
   it('finds the first unapproved weekly plan', () => {
-    const { config, weeklyPlan } = buildTestAgent();
-    const result = findPendingPlan(config);
+    const { weeklyPlans, weeklyPlan } = buildTestAgent();
+    const result = findPendingPlan(weeklyPlans);
     assert.ok(result);
     assert.equal(result.plan.week, weeklyPlan.week);
     assert.equal(result.week, '2026-W16');
   });
 
   it('returns null when all plans are approved', () => {
-    const { config } = buildTestAgent();
-    config.weeklyPlans[0].approved = true;
-    const result = findPendingPlan(config);
+    const { weeklyPlans } = buildTestAgent();
+    weeklyPlans[0].approved = true;
+    const result = findPendingPlan(weeklyPlans);
     assert.equal(result, null);
   });
 
   it('returns null when there are no weekly plans', () => {
-    const { config } = buildTestAgent();
-    config.weeklyPlans = [];
-    const result = findPendingPlan(config);
+    const result = findPendingPlan([]);
     assert.equal(result, null);
   });
 
-  it('returns null for null config', () => {
+  it('returns null for null input', () => {
     assert.equal(findPendingPlan(null), null);
   });
 
-  it('returns null for config without weeklyPlans', () => {
+  it('returns null for input without weeklyPlans (legacy config shape)', () => {
     assert.equal(findPendingPlan({}), null);
   });
 
   it('skips approved plans and finds the pending one', () => {
-    const { config } = buildTestAgent();
+    const { weeklyPlans } = buildTestAgent();
     // Add an approved plan first
     const approvedPlan = createWeeklyPlan('2026-W15', '2026-04', []);
     approvedPlan.approved = true;
     approvedPlan.approvedAt = new Date().toISOString();
-    config.weeklyPlans.unshift(approvedPlan);
+    weeklyPlans.unshift(approvedPlan);
 
-    const result = findPendingPlan(config);
+    const result = findPendingPlan(weeklyPlans);
     assert.ok(result);
     assert.equal(result.week, '2026-W16');
   });
@@ -508,8 +522,8 @@ describe('applyEdits', () => {
 
 describe('processApproval — approve', () => {
   it('approves a pending plan', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -524,8 +538,8 @@ describe('processApproval — approve', () => {
   });
 
   it('detects first approval', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -538,14 +552,14 @@ describe('processApproval — approve', () => {
   });
 
   it('detects subsequent approval (not first)', async () => {
-    const { config } = buildTestAgent();
+    const { config, weeklyPlans } = buildTestAgent();
     // Add an already-approved plan
     const oldPlan = createWeeklyPlan('2026-W15', '2026-04', []);
     oldPlan.approved = true;
     oldPlan.approvedAt = new Date().toISOString();
-    config.weeklyPlans.unshift(oldPlan);
+    weeklyPlans.unshift(oldPlan);
 
-    const { tmpDir } = await saveTestAgent(config);
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -559,8 +573,8 @@ describe('processApproval — approve', () => {
   });
 
   it('persists approval to file', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     await processApproval({
       agentId: config.id,
@@ -570,17 +584,17 @@ describe('processApproval — approve', () => {
     });
 
     // Reload and verify
-    const store = new AgentStore(tmpDir);
-    const reloaded = await store.load(config.id);
-    assert.equal(reloaded.weeklyPlans[0].approved, true);
-    assert.ok(reloaded.weeklyPlans[0].approvedAt);
+    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+    const plans = await weeklyPlanStore.loadAll(config.id);
+    assert.equal(plans[0].approved, true);
+    assert.ok(plans[0].approvedAt);
   });
 
   it('fails when no pending plan exists', async () => {
-    const { config } = buildTestAgent();
-    config.weeklyPlans[0].approved = true;
-    config.weeklyPlans[0].approvedAt = new Date().toISOString();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    weeklyPlans[0].approved = true;
+    weeklyPlans[0].approvedAt = new Date().toISOString();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -613,8 +627,8 @@ describe('processApproval — approve', () => {
 
 describe('processApproval — reject', () => {
   it('removes the pending plan', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -626,14 +640,14 @@ describe('processApproval — reject', () => {
     assert.ok(result.plan._rejected);
 
     // Verify plan is removed from file
-    const store = new AgentStore(tmpDir);
-    const reloaded = await store.load(config.id);
-    assert.equal(reloaded.weeklyPlans.length, 0);
+    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+    const remainingPlans = await weeklyPlanStore.loadAll(config.id);
+    assert.equal(remainingPlans.length, 0);
   });
 
   it('preserves rejection reason', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -646,8 +660,8 @@ describe('processApproval — reject', () => {
   });
 
   it('isFirstApproval is false on rejection', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -665,8 +679,8 @@ describe('processApproval — reject', () => {
 
 describe('processApproval — edit', () => {
   it('applies edits and keeps plan pending', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -683,8 +697,8 @@ describe('processApproval — edit', () => {
   });
 
   it('applies edits with auto-approve', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -704,8 +718,8 @@ describe('processApproval — edit', () => {
   });
 
   it('fails with invalid edits', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -719,8 +733,8 @@ describe('processApproval — edit', () => {
   });
 
   it('fails with no edits provided', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -734,8 +748,8 @@ describe('processApproval — edit', () => {
   });
 
   it('persists edits to file', async () => {
-    const { config, obj } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans, obj } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     await processApproval({
       agentId: config.id,
@@ -746,9 +760,9 @@ describe('processApproval — edit', () => {
       dataDir: tmpDir,
     });
 
-    const store = new AgentStore(tmpDir);
-    const reloaded = await store.load(config.id);
-    assert.equal(reloaded.weeklyPlans[0].tasks.length, 3); // 2 original + 1 added
+    const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+    const editedPlan = await weeklyPlanStore.load(config.id, '2026-W16');
+    assert.equal(editedPlan.tasks.length, 3); // 2 original + 1 added
   });
 });
 
@@ -758,8 +772,8 @@ describe('processApproval — edit', () => {
 
 describe('processApproval — invalid decision', () => {
   it('fails with invalid decision string', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await processApproval({
       agentId: config.id,
@@ -851,8 +865,8 @@ describe('formatApprovalResult', () => {
 
 describe('loadPlanForReview', () => {
   it('loads agent and formats pending plan', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await loadPlanForReview({
       agentId: config.id,
@@ -878,10 +892,10 @@ describe('loadPlanForReview', () => {
   });
 
   it('fails when no pending plan', async () => {
-    const { config } = buildTestAgent();
-    config.weeklyPlans[0].approved = true;
-    config.weeklyPlans[0].approvedAt = new Date().toISOString();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    weeklyPlans[0].approved = true;
+    weeklyPlans[0].approvedAt = new Date().toISOString();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const result = await loadPlanForReview({
       agentId: config.id,
@@ -899,8 +913,8 @@ describe('loadPlanForReview', () => {
 
 describe('processApproval — idempotency', () => {
   it('approving an already-rejected agent (no plan) returns appropriate error', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     // Reject first
     await processApproval({ agentId: config.id, decision: 'reject', dataDir: tmpDir });
@@ -912,8 +926,8 @@ describe('processApproval — idempotency', () => {
   });
 
   it('double approval returns no-pending error on second call', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
     const mockInstall = async ({ agentId, command, schedule }) => ({
       installed: true,
@@ -1029,8 +1043,8 @@ describe('processApproval — heartbeat activation', () => {
   }
 
   it('activates heartbeat on approve', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const mock = createMockInstall();
 
     const result = await processApproval({
@@ -1047,8 +1061,8 @@ describe('processApproval — heartbeat activation', () => {
   });
 
   it('activates heartbeat on edit with auto-approve', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const mock = createMockInstall();
 
     const result = await processApproval({
@@ -1066,8 +1080,8 @@ describe('processApproval — heartbeat activation', () => {
   });
 
   it('does NOT activate heartbeat on edit without auto-approve', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const mock = createMockInstall();
 
     const result = await processApproval({
@@ -1085,8 +1099,8 @@ describe('processApproval — heartbeat activation', () => {
   });
 
   it('does NOT activate heartbeat on reject', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const mock = createMockInstall();
 
     const result = await processApproval({
@@ -1102,8 +1116,8 @@ describe('processApproval — heartbeat activation', () => {
   });
 
   it('uses custom schedule for heartbeat', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const mock = createMockInstall();
 
     await processApproval({
@@ -1118,8 +1132,8 @@ describe('processApproval — heartbeat activation', () => {
   });
 
   it('uses custom heartbeat command', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const mock = createMockInstall();
 
     await processApproval({
@@ -1134,8 +1148,8 @@ describe('processApproval — heartbeat activation', () => {
   });
 
   it('succeeds even if heartbeat activation fails', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const failingInstall = async () => { throw new Error('crontab not available'); };
 
     const result = await processApproval({
@@ -1151,8 +1165,8 @@ describe('processApproval — heartbeat activation', () => {
   });
 
   it('heartbeat activation is idempotent on repeated approvals', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
     const mock = createMockInstall();
 
     // Approve first plan
@@ -1351,8 +1365,9 @@ describe('Subagent-wrapper invariant — aweek JSON never reintroduces identity'
     assert.equal(after.role, undefined);
     assert.equal(after.systemPrompt, undefined);
     // Scheduling mutation is observable.
-    assert.equal(after.weeklyPlans[0].approved, true);
-    assert.ok(after.weeklyPlans[0].approvedAt);
+    const afterPlans = await ctx.weeklyPlanStore.loadAll(ctx.config.id);
+    assert.equal(afterPlans[0].approved, true);
+    assert.ok(afterPlans[0].approvedAt);
   });
 
   it('reject removes pending plan but preserves id/subagentRef/createdAt', async () => {
@@ -1370,13 +1385,15 @@ describe('Subagent-wrapper invariant — aweek JSON never reintroduces identity'
     assert.equal(after.id, before.id);
     assert.equal(after.subagentRef, before.subagentRef);
     assert.equal(after.createdAt, before.createdAt);
-    assert.equal(after.weeklyPlans.length, 0);
+    const afterPlansR = await ctx.weeklyPlanStore.loadAll(ctx.config.id);
+    assert.equal(afterPlansR.length, 0);
     assert.equal(after.identity, undefined);
   });
 
   it('edit mutates only plan.tasks; id/subagentRef/createdAt unchanged', async () => {
     const ctx = await scaffoldProjectWithSubagentMd();
     const before = await ctx.store.load(ctx.config.id);
+    const beforePlans = await ctx.weeklyPlanStore.loadAll(ctx.config.id);
 
     const result = await processApproval({
       agentId: ctx.config.id,
@@ -1389,10 +1406,11 @@ describe('Subagent-wrapper invariant — aweek JSON never reintroduces identity'
     assert.ok(result.success);
 
     const after = await ctx.store.load(ctx.config.id);
+    const afterPlansE = await ctx.weeklyPlanStore.loadAll(ctx.config.id);
     assert.equal(after.id, before.id);
     assert.equal(after.subagentRef, before.subagentRef);
     assert.equal(after.createdAt, before.createdAt);
-    assert.equal(after.weeklyPlans[0].tasks.length, before.weeklyPlans[0].tasks.length + 1);
+    assert.equal(afterPlansE[0].tasks.length, beforePlans[0].tasks.length + 1);
     assert.equal(after.identity, undefined);
   });
 });
