@@ -297,18 +297,19 @@ export function validateWeeklyAdjustment(op, agentConfig, weeklyPlans = []) {
     return { valid: false, errors };
   }
 
-  // `create` is the bootstrap path: the weekly plan must NOT already exist,
-  // its parent month must already have a monthly plan on this agent (so the
-  // week threads back to a real plan), and any seed tasks must reference an
-  // objective from some monthly plan on this agent.
+  // `create` is the bootstrap path: the weekly plan must NOT already exist.
+  // `month` (YYYY-MM) is now a free-form label (it typically matches a
+  // `### YYYY-MM` subsection in plan.md) — we still enforce the shape when
+  // present but no longer require the agent to carry a structured monthly
+  // plan for it.
   if (op.action === 'create') {
     if (weeklyPlans.find((p) => p.week === op.week)) {
       errors.push(`Weekly plan already exists for ${op.week} — use action: "add" to append tasks`);
     }
-    if (!op.month || typeof op.month !== 'string' || !/^\d{4}-\d{2}$/.test(op.month)) {
-      errors.push('month is required for create in YYYY-MM format (parent month of the weekly plan)');
-    } else if (!getMonthlyPlan(agentConfig, op.month)) {
-      errors.push(`No monthly plan found for ${op.month} — create the monthly plan first via monthlyAdjustments action: "create"`);
+    if (op.month !== undefined && op.month !== null) {
+      if (typeof op.month !== 'string' || !/^\d{4}-\d{2}$/.test(op.month)) {
+        errors.push('month must be a YYYY-MM string when provided');
+      }
     }
     if (op.tasks !== undefined) {
       if (!Array.isArray(op.tasks)) {
@@ -322,17 +323,10 @@ export function validateWeeklyAdjustment(op, agentConfig, weeklyPlans = []) {
           if (!seed.description || typeof seed.description !== 'string' || seed.description.trim().length === 0) {
             errors.push(`tasks[${i}].description must be a non-empty string`);
           }
-          if (!seed.objectiveId || typeof seed.objectiveId !== 'string') {
-            errors.push(`tasks[${i}].objectiveId is required`);
-          } else {
-            let found = false;
-            for (const mp of agentConfig.monthlyPlans || []) {
-              if (mp.objectives.find((o) => o.id === seed.objectiveId)) {
-                found = true;
-                break;
-              }
+          if (seed.objectiveId !== undefined && seed.objectiveId !== null) {
+            if (typeof seed.objectiveId !== 'string' || seed.objectiveId.length === 0) {
+              errors.push(`tasks[${i}].objectiveId must be a non-empty string when provided`);
             }
-            if (!found) errors.push(`tasks[${i}]: objective not found: ${seed.objectiveId}`);
           }
           if (seed.priority !== undefined && !TASK_PRIORITIES.includes(seed.priority)) {
             errors.push(`tasks[${i}].priority must be one of: ${TASK_PRIORITIES.join(', ')}`);
@@ -408,19 +402,12 @@ export function validateWeeklyAdjustment(op, agentConfig, weeklyPlans = []) {
       if (!op.description || typeof op.description !== 'string' || op.description.trim().length === 0) {
         errors.push('description is required for adding a task');
       }
-      if (!op.objectiveId || typeof op.objectiveId !== 'string') {
-        errors.push('objectiveId is required for adding a task');
-      } else {
-        // Verify the objective exists in some monthly plan
-        let found = false;
-        for (const mp of agentConfig.monthlyPlans || []) {
-          if (mp.objectives.find((o) => o.id === op.objectiveId)) {
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          errors.push(`Objective not found: ${op.objectiveId}`);
+      // `objectiveId` is now a free-form string that typically points at a
+      // monthly section heading in plan.md — no longer required, no longer
+      // validated against a structured monthlyPlans array.
+      if (op.objectiveId !== undefined && op.objectiveId !== null) {
+        if (typeof op.objectiveId !== 'string' || op.objectiveId.length === 0) {
+          errors.push('objectiveId must be a non-empty string when provided');
         }
       }
       if (op.track !== undefined && !isValidTrack(op.track)) {

@@ -271,15 +271,25 @@ describe('validateWeeklyAdjustment', () => {
     assert.equal(result.valid, true);
   });
 
-  it('rejects add with nonexistent objectiveId', () => {
+  it('accepts add with a free-form objectiveId (no longer validated against monthlyPlans)', () => {
     const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
-      { action: 'add', week: '2026-W16', description: 'Task', objectiveId: 'obj-nonexistent' },
+      { action: 'add', week: '2026-W16', description: 'Task', objectiveId: '2026-04' },
+      config,
+      weeklyPlans,
+    );
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+  });
+
+  it('rejects add with an empty-string objectiveId', () => {
+    const { config, weeklyPlans } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      { action: 'add', week: '2026-W16', description: 'Task', objectiveId: '' },
       config,
       weeklyPlans,
     );
     assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes('Objective not found')));
+    assert.ok(result.errors.some((e) => /non-empty/.test(e)));
   });
 
   it('rejects when weekly plan does not exist', () => {

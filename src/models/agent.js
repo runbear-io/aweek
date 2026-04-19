@@ -122,10 +122,14 @@ export function createTask(
   const task = {
     id: `task-${shortId()}`,
     description,
-    objectiveId,
     priority,
     status: 'pending',
   };
+  // objectiveId is now optional: set it only when the caller actually
+  // supplied a non-empty tag so the resulting JSON validates cleanly.
+  if (typeof objectiveId === 'string' && objectiveId.length > 0) {
+    task.objectiveId = objectiveId;
+  }
   if (estimatedMinutes != null) task.estimatedMinutes = estimatedMinutes;
   if (track != null) task.track = track;
   if (runAt != null) task.runAt = runAt;
