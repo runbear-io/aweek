@@ -314,6 +314,66 @@ describe('renderGrid — variable-height hourly summary', () => {
   });
 });
 
+describe('distributeTasks — DST-week placement stays correct in local tz', () => {
+  it('places Sunday task on day 6 of 2026-W10 in LA (DST spring-forward week)', () => {
+    const mon = mondayFromISOWeek('2026-W10', 'America/Los_Angeles');
+    // Sunday 2026-03-08 16:00 PDT (post-jump) = 23:00 UTC.
+    const tasks = [
+      {
+        id: 't1',
+        description: 'Post-DST Sunday',
+        status: 'pending',
+        runAt: '2026-03-08T23:00:00Z',
+      },
+    ];
+    const grid = distributeTasks(tasks, {
+      startHour: 9,
+      endHour: 18,
+      daysCount: 7,
+      weekMonday: mon,
+      tz: 'America/Los_Angeles',
+    });
+    // Sun 16:00 PDT → column 6 ("sun"), hour 16.
+    assert.equal(grid.get('sun').get(16)?.[0]?.task.id, 't1');
+  });
+});
+
+describe('distributeTasks / renderGrid — time-zone-aware placement', () => {
+  it('places a 17:00-UTC task on Monday 10:00 when tz=America/Los_Angeles', () => {
+    // 2026-04-20 17:00Z = 10:00 PDT Monday.
+    const tasks = [
+      {
+        id: 't1',
+        description: 'LA 10am',
+        status: 'pending',
+        runAt: '2026-04-20T17:00:00Z',
+      },
+    ];
+    const monday = mondayFromISOWeek('2026-W17', 'America/Los_Angeles');
+    const grid = distributeTasks(tasks, {
+      startHour: 9,
+      endHour: 18,
+      daysCount: 5,
+      weekMonday: monday,
+      tz: 'America/Los_Angeles',
+    });
+    assert.equal(grid.get('mon').get(10)?.[0]?.task.id, 't1');
+    // Not at the UTC hour (17).
+    assert.equal(grid.get('mon').get(17), undefined);
+  });
+
+  it("renders date labels using the zone's Monday when tz is supplied", () => {
+    // 2026-W17 Monday in LA is 2026-04-20. Render Mon label "4/20".
+    const { text } = renderGrid({
+      agent: { id: 'a', identity: { name: 'A' } },
+      plan: { week: '2026-W17', approved: true, tasks: [] },
+      opts: { tz: 'America/Los_Angeles', cellWidth: 14 },
+    });
+    const header = text.split('\n').find((l) => l.includes('Hour'));
+    assert.ok(header.includes('Mon 4/20'), header);
+  });
+});
+
 describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
   it('shows tasks at :00 and :30 of the same hour in the same cell', () => {
     const { text } = renderGrid({

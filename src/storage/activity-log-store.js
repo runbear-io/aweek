@@ -13,6 +13,7 @@ import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { assertValid } from '../schemas/validator.js';
+import { currentWeekKey, localParts, mondayOfWeek } from '../time/zone.js';
 
 const ENTRY_SCHEMA_ID = 'aweek://schemas/activity-log-entry';
 const LOG_SCHEMA_ID = 'aweek://schemas/activity-log';
@@ -22,10 +23,19 @@ const shortId = () => randomBytes(4).toString('hex');
 
 /**
  * Get the Monday ISO date string for a given date.
+ * When `tz` is supplied, the Monday is resolved inside the user's zone so
+ * log rotation aligns to the local week.
  * @param {Date} [date]
+ * @param {string} [tz]
  * @returns {string} e.g. "2026-04-13"
  */
-export function getMondayDate(date = new Date()) {
+export function getMondayDate(date = new Date(), tz) {
+  if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
+    const weekKey = currentWeekKey(tz, date);
+    const monUtc = mondayOfWeek(weekKey, tz);
+    const parts = localParts(monUtc, tz);
+    return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  }
   const d = new Date(date);
   const day = d.getUTCDay();
   const diff = day === 0 ? -6 : 1 - day;

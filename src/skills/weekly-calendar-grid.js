@@ -10,6 +10,14 @@ import { join } from 'node:path';
 import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { getAgentChoices } from '../storage/agent-helpers.js';
+import { loadConfig } from '../storage/config-store.js';
+import {
+  isValidTimeZone,
+  localDayOffset,
+  localHour,
+  localParts,
+  mondayOfWeek,
+} from '../time/zone.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,11 +40,19 @@ const STATUS_ICONS = {
 // ---------------------------------------------------------------------------
 
 /**
- * Get the Monday date for an ISO week string like "2026-W16".
+ * Get the Monday instant for an ISO week string like "2026-W16".
+ * When `tz` is supplied, returns the UTC `Date` that corresponds to
+ * Monday 00:00 *local time* in that zone. Default behavior (no `tz`)
+ * stays UTC-only so existing callers and tests are unchanged.
+ *
  * @param {string} isoWeek
+ * @param {string} [tz]
  * @returns {Date}
  */
-export function mondayFromISOWeek(isoWeek) {
+export function mondayFromISOWeek(isoWeek, tz) {
+  if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
+    return mondayOfWeek(isoWeek, tz);
+  }
   const [yearStr, weekStr] = isoWeek.split('-W');
   const year = parseInt(yearStr, 10);
   const week = parseInt(weekStr, 10);
@@ -134,7 +150,10 @@ export function distributeTasks(tasks, opts = {}) {
     daysCount = 5,
     spread = 'pack',
     weekMonday,
+    tz,
   } = opts;
+
+  const useLocalTz = typeof tz === 'string' && tz !== 'UTC' && isValidTimeZone(tz);
 
   // dayKey → Map(hour → Array<Entry>)
   const grid = new Map();
@@ -165,11 +184,21 @@ export function distributeTasks(tasks, opts = {}) {
       const ts = Date.parse(task.runAt);
       if (Number.isNaN(ts)) continue;
 
-      const msInDay = 24 * 60 * 60 * 1000;
-      const dayOffset = Math.floor((ts - weekStartMs) / msInDay);
+      // Day / hour derivation runs in `tz` when supplied so half-hour local
+      // tasks (e.g. 13:30 LA) anchor to the same local 13:00 bucket as a
+      // 13:00 LA task does. Default path stays UTC for back-compat with
+      // callers that don't plumb a time zone through yet.
+      let dayOffset;
+      let hour;
+      if (useLocalTz) {
+        dayOffset = localDayOffset(ts, weekMonday, tz);
+        hour = localHour(ts, tz);
+      } else {
+        const msInDay = 24 * 60 * 60 * 1000;
+        dayOffset = Math.floor((ts - weekStartMs) / msInDay);
+        hour = new Date(ts).getUTCHours();
+      }
       if (dayOffset < 0 || dayOffset >= daysCount) continue;
-
-      const hour = new Date(ts).getUTCHours();
       if (hour < startHour || hour >= endHour) continue;
 
       const minutes = task.estimatedMinutes || 60;
@@ -313,7 +342,10 @@ export function renderGrid({ agent, plan, opts = {} }) {
     terminalWidth,
     showWeekend = false,
     spread = 'pack',
+    tz,
   } = opts;
+
+  const useLocalTz = typeof tz === 'string' && tz !== 'UTC' && isValidTimeZone(tz);
 
   const daysCount = showWeekend ? 7 : 5;
   // Fit the grid to a terminal (120 cols by default). An explicit cellWidth
@@ -330,9 +362,15 @@ export function renderGrid({ agent, plan, opts = {} }) {
   const dayLabels = DAY_LABELS.slice(0, daysCount);
   const dayKeys = DAY_KEYS.slice(0, daysCount);
 
-  // Compute date labels
-  const monday = mondayFromISOWeek(plan.week);
+  // Compute date labels. When tz is supplied, the labels come from the
+  // local-zone projection of Monday 00:00 + N days; otherwise we render
+  // the UTC date (old behavior).
+  const monday = mondayFromISOWeek(plan.week, tz);
   const dateLabels = dayKeys.map((_, i) => {
+    if (useLocalTz) {
+      const parts = localParts(monday.getTime() + i * 86400000, tz);
+      return `${parts.month}/${parts.day}`;
+    }
     const d = new Date(monday);
     d.setUTCDate(d.getUTCDate() + i);
     return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
@@ -343,6 +381,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
     startHour,
     endHour,
     daysCount,
+    tz,
     spread,
     weekMonday: monday,
   });
@@ -489,7 +528,21 @@ export async function loadAndRenderGrid(params) {
       return { success: false, errors: ['No weekly plan found for this agent'] };
     }
 
-    const { text, taskIndex } = renderGrid({ agent, plan, opts });
+    // Auto-resolve the user's time zone from `.aweek/config.json` unless
+    // the caller already provided one in opts. Keeping the default
+    // loader here (rather than pushing it into renderGrid) means unit
+    // tests of renderGrid stay filesystem-free.
+    const resolvedOpts = { ...opts };
+    if (resolvedOpts.tz == null) {
+      try {
+        const config = await loadConfig(dataDir);
+        if (config?.timeZone) resolvedOpts.tz = config.timeZone;
+      } catch {
+        // Config read failures are non-fatal — fall back to UTC rendering.
+      }
+    }
+
+    const { text, taskIndex } = renderGrid({ agent, plan, opts: resolvedOpts });
     return { success: true, output: text, taskIndex };
   } catch (err) {
     return { success: false, errors: [err.message] };

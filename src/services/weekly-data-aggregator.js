@@ -10,14 +10,29 @@
  * task lists, and aggregate completion counts for the entire week.
  */
 
+import {
+  localParts as _localParts,
+  mondayOfWeek as _mondayOfWeek,
+} from '../time/zone.js';
+
 /**
  * Get the Monday date string for a given ISO week (YYYY-Www).
+ * When `tz` is supplied, the Monday is the one at the start of Monday
+ * 00:00 *local* time in that zone — returned as a `YYYY-MM-DD` local
+ * date.
  * @param {string} isoWeek - e.g. "2026-W16"
+ * @param {string} [tz]
  * @returns {string} Monday date string (YYYY-MM-DD)
  */
-export function mondayFromISOWeek(isoWeek) {
+export function mondayFromISOWeek(isoWeek, tz) {
   const match = isoWeek.match(/^(\d{4})-W(\d{2})$/);
   if (!match) throw new Error(`Invalid ISO week format: ${isoWeek}`);
+
+  if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
+    const mon = _mondayOfWeek(isoWeek, tz);
+    const parts = _localParts(mon, tz);
+    return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  }
 
   const year = parseInt(match[1], 10);
   const week = parseInt(match[2], 10);

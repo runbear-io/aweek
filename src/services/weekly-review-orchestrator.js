@@ -34,7 +34,10 @@ import {
   buildCompletionReport,
   formatCompletionReport,
 } from './completion-rate-calculator.js';
-import { aggregateWeeklyData } from './weekly-data-aggregator.js';
+import {
+  aggregateWeeklyData,
+  mondayFromISOWeek as aggregatorMondayFromISOWeek,
+} from './weekly-data-aggregator.js';
 import { renderWeeklyCalendar } from './weekly-calendar-renderer.js';
 import { generateNextWeekPlanSection } from './next-week-plan-generator.js';
 
@@ -76,23 +79,14 @@ export function isoWeeksInYear(year) {
 
 /**
  * Get the Monday date string for a given ISO week.
+ * When `tz` is supplied, returns the Monday 00:00 *local* date in that
+ * zone so review artifacts align to the user's week boundary.
  * @param {string} isoWeek - e.g. "2026-W16"
+ * @param {string} [tz]
  * @returns {string} Monday date string (YYYY-MM-DD)
  */
-export function mondayFromISOWeek(isoWeek) {
-  const match = isoWeek.match(/^(\d{4})-W(\d{2})$/);
-  if (!match) throw new Error(`Invalid ISO week format: ${isoWeek}`);
-
-  const year = parseInt(match[1], 10);
-  const week = parseInt(match[2], 10);
-
-  const jan4 = new Date(Date.UTC(year, 0, 4));
-  const jan4Day = jan4.getUTCDay() || 7;
-  const week1Monday = new Date(jan4);
-  week1Monday.setUTCDate(jan4.getUTCDate() - (jan4Day - 1));
-  const target = new Date(week1Monday);
-  target.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
-  return target.toISOString().slice(0, 10);
+export function mondayFromISOWeek(isoWeek, tz) {
+  return aggregatorMondayFromISOWeek(isoWeek, tz);
 }
 
 // ---------------------------------------------------------------------------

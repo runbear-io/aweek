@@ -17,13 +17,21 @@ import { UsageStore } from '../storage/usage-store.js';
 import { InboxStore } from '../storage/inbox-store.js';
 import { listAllAgents } from '../storage/agent-helpers.js';
 import { queryLock } from '../lock/lock-manager.js';
+import { currentWeekKey, localParts, mondayOfWeek } from '../time/zone.js';
 
 /**
  * Get the ISO week string (YYYY-Www) for a given date.
+ * When `tz` is supplied, the ISO week is computed in that zone; otherwise
+ * we use the historical UTC implementation.
+ *
  * @param {Date} [date]
+ * @param {string} [tz]
  * @returns {string}
  */
-export function getCurrentWeekString(date = new Date()) {
+export function getCurrentWeekString(date = new Date(), tz) {
+  if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
+    return currentWeekKey(tz, date);
+  }
   const d = new Date(date);
   d.setUTCHours(0, 0, 0, 0);
   // ISO week: Thursday of the week determines the year
@@ -35,11 +43,20 @@ export function getCurrentWeekString(date = new Date()) {
 }
 
 /**
- * Get the Monday ISO date string for a given date.
+ * Get the Monday ISO date string for a given date. When `tz` is supplied,
+ * the returned date is the Monday of that date's *local* ISO week.
+ *
  * @param {Date} [date]
+ * @param {string} [tz]
  * @returns {string}
  */
-export function getMondayDate(date = new Date()) {
+export function getMondayDate(date = new Date(), tz) {
+  if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
+    const weekKey = currentWeekKey(tz, date);
+    const monUtc = mondayOfWeek(weekKey, tz);
+    const parts = localParts(monUtc, tz);
+    return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  }
   const d = new Date(date);
   const day = d.getUTCDay();
   const diff = day === 0 ? -6 : 1 - day;

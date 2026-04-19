@@ -28,6 +28,8 @@ import {
 } from './task-selector.js';
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
+import { loadConfig } from '../storage/config-store.js';
+import { detectSystemTimeZone } from '../time/zone.js';
 
 /**
  * Extract URLs and file paths from session stdout.
@@ -335,6 +337,29 @@ async function _recordStarted(executionStore, agentId, taskId) {
 export async function runHeartbeatForAll(opts = {}) {
   const projectDir = opts.projectDir || process.cwd();
   const agentsDir = join(projectDir, '.aweek', 'agents');
+
+  // Cron fires in the system local zone, but the user's scheduling
+  // intent lives in the zone they configured in .aweek/config.json.
+  // When those differ, print a single one-line warning so the mismatch
+  // is visible in the heartbeat log rather than silently drifting hours.
+  try {
+    const config = await loadConfig(agentsDir);
+    const systemTz = detectSystemTimeZone();
+    if (
+      config?.timeZone &&
+      systemTz &&
+      config.timeZone !== 'UTC' &&
+      config.timeZone !== systemTz
+    ) {
+      console.warn(
+        `[heartbeat] config timeZone (${config.timeZone}) differs from system zone (${systemTz}). ` +
+          `Cron fires on system time, so task selection may drift relative to your configured week. ` +
+          `Run crontab in the configured zone or update .aweek/config.json to silence this warning.`,
+      );
+    }
+  } catch {
+    // Config read is best-effort; never block heartbeat on it.
+  }
 
   let files;
   try {

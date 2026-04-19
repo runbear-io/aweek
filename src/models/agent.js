@@ -4,6 +4,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { SUBAGENT_SLUG_PATTERN } from '../schemas/agent.schema.js';
+import { currentWeekKey, mondayOfWeek } from '../time/zone.js';
 
 /** Generate a short random ID suffix (used by goals/objectives/tasks/messages — NOT agents). */
 const shortId = () => randomBytes(4).toString('hex');
@@ -356,10 +357,20 @@ export function addObjectiveToMonthlyPlan(config, month, objective) {
 }
 
 /**
- * Get the ISO date-time string for Monday 00:00 UTC of the current week.
+ * Get the ISO date-time string for Monday 00:00 of the current week.
+ * When `tz` is omitted (or 'UTC') the Monday is computed in UTC —
+ * existing behavior. When a valid IANA zone is supplied, the Monday is
+ * computed in that zone (00:00 local) and returned as the equivalent
+ * UTC ISO string.
+ *
+ * @param {string} [tz]
  * @returns {string}
  */
-export function getMondayISO() {
+export function getMondayISO(tz) {
+  if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
+    const weekKey = currentWeekKey(tz);
+    return mondayOfWeek(weekKey, tz).toISOString();
+  }
   const now = new Date();
   const day = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
   const diff = day === 0 ? 6 : day - 1; // days since Monday
