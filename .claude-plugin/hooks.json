@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v aweek >/dev/null 2>&1 || { echo '[aweek plugin] Installing aweek CLI via npm…' >&2; npm install -g aweek 2>&1 || { echo >&2; echo '[aweek plugin] Automatic install failed. The /aweek:* commands need the \"aweek\" binary on PATH.' >&2; echo '[aweek plugin] Install it manually with: npm install -g aweek' >&2; echo '[aweek plugin] Or, for the source you are looking at: cd <aweek-repo> && pnpm install && pnpm link --global' >&2; }; }"
+          }
+        ]
+      }
+    ]
+  }
+}

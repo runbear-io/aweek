@@ -1,5 +1,5 @@
 ---
-name: aweek:hire
+name: hire
 description: Hire (create) a new aweek agent — identity-only (name, description, system prompt). Goals and plans are added separately via /aweek:plan.
 trigger: aweek hire, hire agent, new agent, add agent, create agent, aweek create agent
 ---

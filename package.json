@@ -1,21 +1,43 @@
 {
   "name": "aweek",
   "version": "1.0.0",
-  "description": "Claude Code skill system for managing multiple AI agents with scheduled routines",
+  "description": "Claude Code plugin for managing multiple AI agents on scheduled weekly plans. Each agent is a 1-to-1 wrapper around a Claude Code subagent with its own goals, objectives, tasks, and token budget.",
   "type": "module",
   "main": "src/index.js",
   "bin": {
     "aweek": "./bin/aweek.js"
   },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    ".claude-plugin",
+    "README.md"
+  ],
   "scripts": {
     "test": "node --test src/**/*.test.js",
     "test:verbose": "node --test --test-reporter=spec src/**/*.test.js",
     "lint": "node --check src/**/*.js",
     "build": "node --check src/index.js"
   },
-  "keywords": ["claude-code", "ai-agents", "scheduling"],
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "ai-agents",
+    "subagents",
+    "scheduling",
+    "weekly-planning"
+  ],
   "author": "",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ssowonny/aweek.git"
+  },
+  "homepage": "https://github.com/ssowonny/aweek#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "packageManager": "pnpm@10.7.0",
   "dependencies": {
     "ajv": "^8.17.1",

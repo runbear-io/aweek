@@ -19,12 +19,14 @@
  *   - **Framework-agnostic.** No AskUserQuestion / Claude Code harness coupling.
  *     The `skills/aweek-init.md` wrapper handles interactive confirmation.
  *
- * Follow-up sub-ACs will layer the remaining init functions on top of these
- * primitives: `detectInitState`, `registerSkills`, `installHeartbeat`, and the
- * orchestrating `runInit` / `summarizeInitResult` helpers.
+ * Higher-level init helpers compose on top of these primitives:
+ * `detectInitState` reports idempotency state, and `installHeartbeat`
+ * gates the destructive crontab write behind explicit user confirmation.
+ * Slash-command discovery is handled by the Claude Code plugin system
+ * (see `.claude-plugin/plugin.json`), not this module.
  */
 import { spawn } from 'node:child_process';
-import { access, copyFile, mkdir, readdir, stat, unlink } from 'node:fs/promises';
+import { access, mkdir, readdir, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import {
@@ -706,78 +708,6 @@ export const DEFAULT_ADD_AGENT_PROMPT_TEXT =
   'aweek is already initialized. Would you like to hire another agent now via /aweek:hire?';
 
 /**
- * Canonical list of `/aweek:*` slash commands registered by the init
- * flow into `.claude/commands/`. Paired with their expected filenames
- * inside that directory so `detectInitState` can report which ones are
- * present/missing on a re-run.
- *
- * Order is the documented invocation order (init → hire → plan → …)
- * so callers iterating for a UI preserve a sensible display sequence.
- *
- * `/aweek:delegate-task` is intentionally included (it survived the
- * refactor unchanged) and keyed as `delegateTask` so JS consumers can
- * use dot access without quoting.
- */
-export const AWEEK_SKILL_COMMANDS = Object.freeze([
-  Object.freeze({
-    key: 'init',
-    name: '/aweek:init',
-    filename: 'init.md',
-    source: 'aweek-init.md',
-  }),
-  Object.freeze({
-    key: 'hire',
-    name: '/aweek:hire',
-    filename: 'hire.md',
-    source: 'aweek-hire.md',
-  }),
-  Object.freeze({
-    key: 'plan',
-    name: '/aweek:plan',
-    filename: 'plan.md',
-    source: 'aweek-plan.md',
-  }),
-  Object.freeze({
-    key: 'calendar',
-    name: '/aweek:calendar',
-    filename: 'calendar.md',
-    source: 'aweek-calendar.md',
-  }),
-  Object.freeze({
-    key: 'summary',
-    name: '/aweek:summary',
-    filename: 'summary.md',
-    source: 'aweek-summary.md',
-  }),
-  Object.freeze({
-    key: 'manage',
-    name: '/aweek:manage',
-    filename: 'manage.md',
-    source: 'aweek-manage.md',
-  }),
-  Object.freeze({
-    key: 'delegateTask',
-    name: '/aweek:delegate-task',
-    filename: 'delegate-task.md',
-    source: 'aweek-delegate-task.md',
-  }),
-]);
-
-/**
- * Old pre-refactor command filenames that must be removed from
- * `.claude/commands/` so they don't shadow the new consolidated skills in
- * Claude Code's command picker.
- */
-export const OLD_PRE_REFACTOR_COMMANDS = Object.freeze([
-  'create-agent.md',
-  'adjust-goal.md',
-  'adjust-weekly-plan.md',
-  'approve-plan.md',
-  'weekly-calendar.md',
-  'resume-agent.md',
-]);
-
-/**
  * Check whether the project already has at least one agent config.
  *
  * Inspects `.aweek/agents/` for any `*.json` files. Missing directory
@@ -974,24 +904,20 @@ export async function finalizeInit({
  * It lets the wizard skip completed steps (idempotency) and present a
  * readable state summary to the user before taking any action.
  *
- * The report covers the three mutable init artifacts:
+ * The report covers the two mutable init artifacts the plugin does not
+ * handle itself:
  *
- *   1. `dataDir` — `.aweek/` existence + agent count. Feeds step 2
- *      ("ensure data directory exists"): if `exists === true`, the
+ *   1. `dataDir` — `.aweek/` existence + agent count. Feeds the
+ *      "ensure data directory exists" step: if `exists === true`, the
  *      markdown reports it as skipped without re-creating.
  *
- *   2. `skillsRegistered` — per-command presence of each
- *      `.claude/commands/<name>.md`. Feeds step 3 ("register skills"):
- *      if all skills are present, the markdown can either skip the
- *      copy entirely or invoke `setup-skills.sh` in idempotent mode.
- *
- *   3. `heartbeat` — delegates to {@link queryHeartbeat} so the
+ *   2. `heartbeat` — delegates to {@link queryHeartbeat} so the
  *      markdown can avoid re-prompting for crontab install when the
  *      project heartbeat is already in place.
  *
- * All filesystem + crontab reads are injectable so tests can exercise
- * the full control flow without touching the real filesystem or user
- * crontab.
+ * Slash-command discovery is handled by the Claude Code plugin system
+ * (see `.claude-plugin/plugin.json`); init no longer copies markdown
+ * into `.claude/commands/`.
  */
 
 /**
@@ -1003,8 +929,6 @@ export async function finalizeInit({
  * @param {string} [opts.projectDir] - Defaults to `process.cwd()`.
  * @param {string} [opts.dataDir=DEFAULT_DATA_DIR] - `.aweek/` root
  *   (accepts `.aweek` or `.aweek/agents`; normalized internally).
- * @param {string} [opts.commandsDir='.claude/commands'] - Relative
- *   path (under `projectDir`) where skills are registered.
  * @param {Function} [opts.readCrontabFn] - Injectable crontab reader;
  *   forwarded to {@link queryHeartbeat}.
  * @returns {Promise<{
@@ -1014,8 +938,6 @@ export async function finalizeInit({
  *     exists: boolean,
  *     agentCount: number,
  *   },
- *   skillsRegistered: Record<string, boolean>,
- *   skillsMissing: string[],
  *   heartbeat: {
  *     installed: boolean,
  *     schedule: string | null,
@@ -1023,115 +945,14 @@ export async function finalizeInit({
  *   },
  *   needsWork: {
  *     dataDir: boolean,
- *     skills: boolean,
  *     heartbeat: boolean,
  *   },
  *   fullyInitialized: boolean,
  * }>}
  */
-/**
- * Register all aweek slash commands in `.claude/commands/` so Claude Code can
- * discover them. Copies each `skills/aweek-<key>.md` to the corresponding
- * `.claude/commands/<filename>` and removes any stale pre-refactor command
- * files so they don't shadow the new consolidated skills.
- *
- * Idempotent:
- *   - If the target file already exists with identical content → `skipped`
- *   - If the target file exists with different content → `updated`
- *   - If the target file doesn't exist → `created`
- *   - Missing source files are reported as `missing` (not an error — a
- *     partial install can still register whatever skills are available).
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root (defaults to `process.cwd()`).
- * @param {string} [opts.skillsDir='skills'] - Directory holding skill sources.
- * @param {string} [opts.commandsDir='.claude/commands'] - Target registration dir.
- * @returns {Promise<{
- *   projectDir: string,
- *   commandsDir: string,
- *   registered: Array<{key: string, name: string, filename: string, action: 'created'|'updated'|'skipped'|'missing'}>,
- *   removed: string[],
- * }>}
- */
-export async function registerSkills({
-  projectDir,
-  skillsDir = 'skills',
-  commandsDir = '.claude/commands',
-} = {}) {
-  const resolvedProject = resolveProjectDir(projectDir);
-  const skillsAbsolute = resolve(resolvedProject, skillsDir);
-  const commandsAbsolute = resolve(resolvedProject, commandsDir);
-
-  await mkdir(commandsAbsolute, { recursive: true });
-
-  const registered = [];
-  for (const skill of AWEEK_SKILL_COMMANDS) {
-    const sourcePath = join(skillsAbsolute, skill.source);
-    const targetPath = join(commandsAbsolute, skill.filename);
-
-    const sourceExists = await pathExists(sourcePath);
-    if (!sourceExists) {
-      registered.push({
-        key: skill.key,
-        name: skill.name,
-        filename: skill.filename,
-        action: 'missing',
-      });
-      continue;
-    }
-
-    const targetExists = await pathExists(targetPath);
-    let action = 'created';
-    if (targetExists) {
-      const [sourceContent, targetContent] = await Promise.all([
-        readFileSafe(sourcePath),
-        readFileSafe(targetPath),
-      ]);
-      action = sourceContent === targetContent ? 'skipped' : 'updated';
-    }
-
-    if (action !== 'skipped') {
-      await copyFile(sourcePath, targetPath);
-    }
-
-    registered.push({
-      key: skill.key,
-      name: skill.name,
-      filename: skill.filename,
-      action,
-    });
-  }
-
-  const removed = [];
-  for (const oldFilename of OLD_PRE_REFACTOR_COMMANDS) {
-    const oldPath = join(commandsAbsolute, oldFilename);
-    if (await pathExists(oldPath)) {
-      try {
-        await unlink(oldPath);
-        removed.push(oldFilename);
-      } catch (err) {
-        if (err && err.code !== 'ENOENT') throw err;
-      }
-    }
-  }
-
-  return {
-    projectDir: resolvedProject,
-    commandsDir: commandsAbsolute,
-    registered,
-    removed,
-  };
-}
-
-async function readFileSafe(path) {
-  const { readFile } = await import('node:fs/promises');
-  return readFile(path, 'utf-8');
-}
-
 export async function detectInitState({
   projectDir,
   dataDir = DEFAULT_DATA_DIR,
-  commandsDir = '.claude/commands',
   readCrontabFn,
 } = {}) {
   const resolvedProject = resolveProjectDir(projectDir);
@@ -1154,22 +975,12 @@ export async function detectInitState({
     }
   }
 
-  const commandsAbsolute = resolve(resolvedProject, commandsDir);
-  const skillsRegistered = {};
-  const skillsMissing = [];
-  for (const skill of AWEEK_SKILL_COMMANDS) {
-    const registered = await pathExists(join(commandsAbsolute, skill.filename));
-    skillsRegistered[skill.key] = registered;
-    if (!registered) skillsMissing.push(skill.name);
-  }
-
   const heartbeat = await queryHeartbeat({
     projectDir: resolvedProject,
     readCrontabFn,
   });
 
   const needsDataDir = !rootExists;
-  const needsSkills = skillsMissing.length > 0;
   const needsHeartbeat = !heartbeat.installed;
 
   return {
@@ -1179,8 +990,6 @@ export async function detectInitState({
       exists: rootExists,
       agentCount,
     },
-    skillsRegistered,
-    skillsMissing,
     heartbeat: {
       installed: heartbeat.installed,
       schedule: heartbeat.schedule,
@@ -1188,10 +997,9 @@ export async function detectInitState({
     },
     needsWork: {
       dataDir: needsDataDir,
-      skills: needsSkills,
       heartbeat: needsHeartbeat,
     },
-    fullyInitialized: !needsDataDir && !needsSkills && !needsHeartbeat,
+    fullyInitialized: !needsDataDir && !needsHeartbeat,
   };
 }
 

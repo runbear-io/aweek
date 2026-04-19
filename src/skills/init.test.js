@@ -15,7 +15,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  AWEEK_SKILL_COMMANDS,
   AWEEK_SUBDIRS,
   DEFAULT_ADD_AGENT_PROMPT_TEXT,
   DEFAULT_DATA_DIR,
@@ -1159,39 +1158,6 @@ describe('init — finalizeInit', () => {
  * detectInitState (AC 2 — idempotency)
  * ------------------------------------------------------------------ */
 
-describe('init — AWEEK_SKILL_COMMANDS registry', () => {
-  it('enumerates the canonical /aweek:* slash commands', () => {
-    const names = AWEEK_SKILL_COMMANDS.map((s) => s.name);
-    assert.ok(names.includes('/aweek:init'));
-    assert.ok(names.includes('/aweek:hire'));
-    assert.ok(names.includes('/aweek:plan'));
-    assert.ok(names.includes('/aweek:calendar'));
-    assert.ok(names.includes('/aweek:summary'));
-    assert.ok(names.includes('/aweek:manage'));
-    assert.ok(names.includes('/aweek:delegate-task'));
-  });
-
-  it('is frozen at both the array and entry level', () => {
-    assert.ok(Object.isFrozen(AWEEK_SKILL_COMMANDS));
-    for (const entry of AWEEK_SKILL_COMMANDS) {
-      assert.ok(Object.isFrozen(entry));
-    }
-  });
-
-  it('does not include removed pre-refactor skills', () => {
-    const removed = [
-      '/aweek:create-agent',
-      '/aweek:adjust-goal',
-      '/aweek:approve-plan',
-      '/aweek:resume-agent',
-      '/aweek:adjust-weekly-plan',
-      '/aweek:weekly-calendar',
-    ];
-    const names = AWEEK_SKILL_COMMANDS.map((s) => s.name);
-    for (const old of removed) assert.ok(!names.includes(old), `should not include ${old}`);
-  });
-});
-
 describe('init — detectInitState', () => {
   it('reports a fully uninitialized project on a bare tmp dir', async () => {
     const tmp = await makeTmpProject();
@@ -1204,21 +1170,9 @@ describe('init — detectInitState', () => {
 
       assert.equal(state.dataDir.exists, false);
       assert.equal(state.dataDir.agentCount, 0);
-      for (const entry of AWEEK_SKILL_COMMANDS) {
-        assert.equal(
-          state.skillsRegistered[entry.key],
-          false,
-          `expected ${entry.key} to be unregistered`,
-        );
-      }
-      assert.deepEqual(
-        state.skillsMissing.sort(),
-        AWEEK_SKILL_COMMANDS.map((s) => s.name).sort(),
-      );
       assert.equal(state.heartbeat.installed, false);
       assert.equal(state.heartbeat.schedule, null);
       assert.equal(state.needsWork.dataDir, true);
-      assert.equal(state.needsWork.skills, true);
       assert.equal(state.needsWork.heartbeat, true);
       assert.equal(state.fullyInitialized, false);
     } finally {
@@ -1266,42 +1220,6 @@ describe('init — detectInitState', () => {
     }
   });
 
-  it('reports per-skill registration status from .claude/commands/', async () => {
-    const tmp = await makeTmpProject();
-    try {
-      await mkdir(join(tmp.dir, '.claude', 'commands'), { recursive: true });
-      await writeFile(join(tmp.dir, '.claude', 'commands', 'hire.md'), '---\n');
-      await writeFile(join(tmp.dir, '.claude', 'commands', 'init.md'), '---\n');
-      await writeFile(
-        join(tmp.dir, '.claude', 'commands', 'delegate-task.md'),
-        '---\n',
-      );
-
-      const fake = makeFakeCrontab('');
-      const state = await detectInitState({
-        projectDir: tmp.dir,
-        readCrontabFn: fake.readCrontabFn,
-      });
-
-      assert.equal(state.skillsRegistered.hire, true);
-      assert.equal(state.skillsRegistered.init, true);
-      assert.equal(state.skillsRegistered.delegateTask, true);
-      assert.equal(state.skillsRegistered.plan, false);
-      assert.equal(state.skillsRegistered.calendar, false);
-      assert.equal(state.skillsRegistered.summary, false);
-      assert.equal(state.skillsRegistered.manage, false);
-
-      assert.ok(state.skillsMissing.includes('/aweek:plan'));
-      assert.ok(state.skillsMissing.includes('/aweek:calendar'));
-      assert.ok(state.skillsMissing.includes('/aweek:summary'));
-      assert.ok(state.skillsMissing.includes('/aweek:manage'));
-      assert.ok(!state.skillsMissing.includes('/aweek:hire'));
-      assert.equal(state.needsWork.skills, true);
-    } finally {
-      await tmp.cleanup();
-    }
-  });
-
   it('reflects the heartbeat crontab entry when installed', async () => {
     const tmp = await makeTmpProject();
     try {
@@ -1332,13 +1250,6 @@ describe('init — detectInitState', () => {
     const tmp = await makeTmpProject();
     try {
       await ensureDataDir({ projectDir: tmp.dir });
-      await mkdir(join(tmp.dir, '.claude', 'commands'), { recursive: true });
-      for (const skill of AWEEK_SKILL_COMMANDS) {
-        await writeFile(
-          join(tmp.dir, '.claude', 'commands', skill.filename),
-          '---\n',
-        );
-      }
 
       const fake = makeFakeCrontab('');
       await installHeartbeat({
@@ -1355,7 +1266,6 @@ describe('init — detectInitState', () => {
 
       assert.equal(state.fullyInitialized, true);
       assert.equal(state.needsWork.dataDir, false);
-      assert.equal(state.needsWork.skills, false);
       assert.equal(state.needsWork.heartbeat, false);
     } finally {
       await tmp.cleanup();
