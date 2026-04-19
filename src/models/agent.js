@@ -111,12 +111,13 @@ export function createMonthlyPlan(month, objectives, { status = 'active', summar
  * @param {'critical' | 'high' | 'medium' | 'low'} [opts.priority='medium'] - Task priority
  * @param {number} [opts.estimatedMinutes] - Estimated time in minutes (1–480)
  * @param {string} [opts.track] - Independent pacing lane. Defaults to objectiveId at selection time.
+ * @param {string} [opts.runAt] - ISO 8601 date-time; earliest time the task is eligible for execution
  * @returns {object}
  */
 export function createTask(
   description,
   objectiveId,
-  { priority = 'medium', estimatedMinutes, track } = {},
+  { priority = 'medium', estimatedMinutes, track, runAt } = {},
 ) {
   const task = {
     id: `task-${shortId()}`,
@@ -127,6 +128,7 @@ export function createTask(
   };
   if (estimatedMinutes != null) task.estimatedMinutes = estimatedMinutes;
   if (track != null) task.track = track;
+  if (runAt != null) task.runAt = runAt;
   return task;
 }
 

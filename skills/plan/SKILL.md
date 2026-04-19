@@ -165,16 +165,20 @@ fields. Keep looping until the user says they are done.
   flattened across all monthly plans), optional priority (`critical` /
   `high` / `medium` / `low`, default `medium`), optional
   estimatedMinutes (integer 1-480), optional **`track`** (string, 1–64
-  chars — lane identifier, defaults to objectiveId). Seed tasks default
-  to an empty list — you can bootstrap an empty plan and add tasks
-  later via `add`. **Freshly-created weekly plans start `approved:
-  false`** and activate the heartbeat only after Branch B approval.
+  chars — lane identifier, defaults to objectiveId), optional
+  **`runAt`** (ISO 8601 date-time — pins the task to a specific slot).
+  Seed tasks default to an empty list — you can bootstrap an empty plan
+  and add tasks later via `add`. **Freshly-created weekly plans start
+  `approved: false`** and activate the heartbeat only after Branch B
+  approval.
 - `add` → week (`YYYY-Www`, must match an existing weekly plan),
   description (required), objectiveId (pick from the numbered objectives
-  list, flattened across all monthly plans), optional `track`.
+  list, flattened across all monthly plans), optional `track`,
+  optional `runAt`.
 - `update` → week, taskId, then at least one of: description, status
   (`pending` / `in-progress` / `completed` / `failed` / `delegated` /
-  `skipped`), `track` (pass `null` to fall back to objectiveId pacing).
+  `skipped`), `track` (pass `null` to fall back to objectiveId pacing),
+  `runAt` (pass `null` to clear the schedule).
 
 ### A3: Confirm the Batch
 
@@ -235,9 +239,9 @@ operation object must match one of these shapes:
 - **Monthly create:** `{ "action": "create", "month": "YYYY-MM", "objectives": [{ "description": "...", "goalId": "goal-xxx" }, …], "status": "...", "summary": "..." }`
 - **Monthly add:** `{ "action": "add", "month": "YYYY-MM", "description": "...", "goalId": "goal-xxx" }`
 - **Monthly update:** `{ "action": "update", "month": "YYYY-MM", "objectiveId": "obj-xxx", "description": "...", "status": "..." }`
-- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "...", "estimatedMinutes": 60, "track": "x-com" }, …] }`
-- **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx", "track": "reddit" }`
-- **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "...", "track": "x-com" }`
+- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "...", "estimatedMinutes": 60, "track": "x-com", "runAt": "2026-04-20T09:00:00Z" }, …] }`
+- **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx", "track": "reddit", "runAt": "2026-04-20T10:00:00Z" }`
+- **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "...", "track": "x-com", "runAt": "2026-04-20T11:00:00Z" }`
 
 ### Multi-track example
 
@@ -253,13 +257,13 @@ split them into 7 atomic tasks across two tracks:
       "week": "2026-W17",
       "month": "2026-04",
       "tasks": [
-        { "description": "Publish X.com post 1/3",  "objectiveId": "obj-xxx", "track": "x-com" },
-        { "description": "Publish X.com post 2/3",  "objectiveId": "obj-xxx", "track": "x-com" },
-        { "description": "Publish X.com post 3/3",  "objectiveId": "obj-xxx", "track": "x-com" },
-        { "description": "Publish Reddit post 1/4", "objectiveId": "obj-yyy", "track": "reddit" },
-        { "description": "Publish Reddit post 2/4", "objectiveId": "obj-yyy", "track": "reddit" },
-        { "description": "Publish Reddit post 3/4", "objectiveId": "obj-yyy", "track": "reddit" },
-        { "description": "Publish Reddit post 4/4", "objectiveId": "obj-yyy", "track": "reddit" }
+        { "description": "Publish X.com post 1/3",  "objectiveId": "obj-xxx", "track": "x-com",  "runAt": "2026-04-20T09:00:00Z" },
+        { "description": "Publish X.com post 2/3",  "objectiveId": "obj-xxx", "track": "x-com",  "runAt": "2026-04-20T12:00:00Z" },
+        { "description": "Publish X.com post 3/3",  "objectiveId": "obj-xxx", "track": "x-com",  "runAt": "2026-04-20T16:00:00Z" },
+        { "description": "Publish Reddit post 1/4", "objectiveId": "obj-yyy", "track": "reddit", "runAt": "2026-04-20T09:00:00Z" },
+        { "description": "Publish Reddit post 2/4", "objectiveId": "obj-yyy", "track": "reddit", "runAt": "2026-04-20T11:00:00Z" },
+        { "description": "Publish Reddit post 3/4", "objectiveId": "obj-yyy", "track": "reddit", "runAt": "2026-04-20T14:00:00Z" },
+        { "description": "Publish Reddit post 4/4", "objectiveId": "obj-yyy", "track": "reddit", "runAt": "2026-04-20T17:00:00Z" }
       ]
     }
   ]
@@ -427,6 +431,10 @@ Print the formatted approval result. Call out:
   `track` pace together; distinct tracks run in parallel lanes. Omit to
   inherit the `objectiveId` as the default lane. On `update`, pass
   `null` to clear the explicit track and fall back to the default.
+- **`runAt`:** ISO 8601 date-time (e.g. `"2026-04-20T09:00:00Z"`). Tasks
+  with `runAt > now` are skipped by the selector until the slot arrives;
+  the calendar grid renders them at the declared day/hour. On `update`,
+  pass `null` to clear.
 - All operations validated against JSON schemas before persisting;
   batches are atomic — all succeed or all fail.
 
