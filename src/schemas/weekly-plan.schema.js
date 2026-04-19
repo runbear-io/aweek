@@ -50,12 +50,6 @@ export const weeklyTaskSchema = {
       type: 'string',
       description: 'Agent ID if task was delegated',
     },
-    runAt: {
-      type: 'string',
-      format: 'date-time',
-      description:
-        'Earliest time this task becomes eligible for heartbeat execution. Tasks with runAt > now are skipped until their slot arrives; tasks without runAt follow the usual FIFO/priority rules. Encourages many small, time-slotted tasks over one long task that would burn through everything in a single session.',
-    },
     completedAt: { type: 'string', format: 'date-time' },
   },
   additionalProperties: false,

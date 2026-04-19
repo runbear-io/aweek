@@ -110,14 +110,9 @@ export function createMonthlyPlan(month, objectives, { status = 'active', summar
  * @param {object} [opts]
  * @param {'critical' | 'high' | 'medium' | 'low'} [opts.priority='medium'] - Task priority
  * @param {number} [opts.estimatedMinutes] - Estimated time in minutes (1–480)
- * @param {string} [opts.runAt] - ISO 8601 date-time; earliest time the task is eligible for execution
  * @returns {object}
  */
-export function createTask(
-  description,
-  objectiveId,
-  { priority = 'medium', estimatedMinutes, runAt } = {},
-) {
+export function createTask(description, objectiveId, { priority = 'medium', estimatedMinutes } = {}) {
   const task = {
     id: `task-${shortId()}`,
     description,
@@ -126,7 +121,6 @@ export function createTask(
     status: 'pending',
   };
   if (estimatedMinutes != null) task.estimatedMinutes = estimatedMinutes;
-  if (runAt != null) task.runAt = runAt;
   return task;
 }
 
