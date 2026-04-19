@@ -85,7 +85,11 @@ export const budgetSchema = {
 export const agentConfigSchema = {
   $id: 'aweek://schemas/agent-config',
   type: 'object',
-  required: ['id', 'subagentRef', 'goals', 'budget', 'createdAt'],
+  // `goals` / `monthlyPlans` are now optional — long-term goals and
+  // monthly plans live in free-form `.aweek/agents/<slug>/plan.md`
+  // (see src/storage/plan-markdown-store.js). Existing agents may still
+  // carry them; new hires default to an empty array for compatibility.
+  required: ['id', 'subagentRef', 'budget', 'createdAt'],
   properties: {
     id: {
       type: 'string',
