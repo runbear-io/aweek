@@ -77,13 +77,33 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Apply a batch of goal / monthly / weekly adjustments to an agent.
- * See {@link adjustGoals} in `src/services/plan-adjustments.js`.
+ * Apply a batch of weekly-task adjustments to an agent.
+ *
+ * Goals and monthly plans live in `.aweek/agents/<slug>/plan.md` — they are
+ * no longer edited through this surface. Passing `goalAdjustments` or
+ * `monthlyAdjustments` returns an error pointing the caller at the
+ * markdown workflow instead of silently succeeding (or silently
+ * dropping the user's edit).
+ *
+ * See {@link adjustGoals} in `src/services/plan-adjustments.js` for the
+ * underlying weekly logic.
  *
  * @param {Parameters<typeof adjustGoals>[0]} params
  * @returns {ReturnType<typeof adjustGoals>}
  */
-export function adjustPlan(params) {
+export function adjustPlan(params = {}) {
+  const legacyGoals = Array.isArray(params.goalAdjustments) && params.goalAdjustments.length > 0;
+  const legacyMonthly = Array.isArray(params.monthlyAdjustments) && params.monthlyAdjustments.length > 0;
+  if (legacyGoals || legacyMonthly) {
+    return Promise.resolve({
+      success: false,
+      errors: [
+        'adjustPlan no longer accepts goalAdjustments / monthlyAdjustments. ' +
+          'Long-term goals and monthly plans live in .aweek/agents/<slug>/plan.md now — ' +
+          'edit the markdown through /aweek:plan Branch A (or `aweek exec plan-markdown write`).',
+      ],
+    });
+  }
   return adjustGoals(params);
 }
 
