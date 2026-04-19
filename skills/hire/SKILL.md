@@ -1,6 +1,6 @@
 ---
 name: hire
-description: Hire (create) a new aweek agent — identity-only (name, description, system prompt). Goals and plans are added separately via /aweek:plan.
+description: Hire (create) a new aweek agent — identity-only (name, description, system prompt). Long-term goals live in plan.md (edited via /aweek:plan); weekly tasks are added separately.
 trigger: aweek hire, hire agent, new agent, add agent, create agent, aweek create agent
 ---
 
@@ -9,8 +9,11 @@ trigger: aweek hire, hire agent, new agent, add agent, create agent, aweek creat
 Hire a new aweek agent interactively. Each aweek agent is a **1-to-1 wrapper
 around a Claude Code subagent** defined in `.claude/agents/<slug>.md`. This
 skill captures identity only (name, description, system prompt) and writes
-both the `.md` and the minimal aweek scheduling JSON shell. Long-term goals,
-monthly objectives, and weekly tasks are added afterwards via `/aweek:plan`.
+three things: the subagent `.md`, the minimal aweek scheduling JSON shell,
+and a starter `plan.md` at `.aweek/agents/<slug>/plan.md` pre-populated
+with the four canonical sections (Long-term goals, Monthly plans,
+Strategies, Notes). After the hire finishes, point the user at `/aweek:plan`
+for goals/plans editing and weekly-task adjustments.
 
 The skill is a thin UX wrapper on top of `src/skills/hire-create-new-menu.js`
 (for the create-new branch) and `src/skills/hire-all.js` (when adopting an
