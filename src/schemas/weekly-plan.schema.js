@@ -14,7 +14,7 @@ export const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 export const weeklyTaskSchema = {
   $id: 'aweek://schemas/weekly-task',
   type: 'object',
-  required: ['id', 'description', 'objectiveId', 'status'],
+  required: ['id', 'description', 'status'],
   properties: {
     id: {
       type: 'string',
@@ -28,8 +28,12 @@ export const weeklyTaskSchema = {
     },
     objectiveId: {
       type: 'string',
-      pattern: '^obj-[a-z0-9-]+$',
-      description: 'Traces back to a monthly objective',
+      minLength: 1,
+      description:
+        'Free-form tag linking the task back to a monthly section in ' +
+        "plan.md (typically the H3 heading, e.g. \"2026-04\"). Legacy " +
+        'agents may still carry structured `obj-xxxxx` IDs here — the ' +
+        'field is now optional and any non-empty string is accepted.',
     },
     priority: {
       type: 'string',

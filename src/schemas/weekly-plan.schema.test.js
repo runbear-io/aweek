@@ -219,21 +219,35 @@ describe('weekly plan schema', () => {
       assert.equal(result.valid, false);
     });
 
-    it('should reject task without objectiveId', () => {
+    it('accepts a task without objectiveId (free-form in the plan.md world)', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
-        description: 'Missing objective ref',
+        description: 'No objective ref',
+        priority: 'medium',
         status: 'pending',
       }]);
       const result = validateWeeklyPlan(plan);
-      assert.equal(result.valid, false);
+      assert.equal(result.valid, true, JSON.stringify(result.errors));
     });
 
-    it('should reject task with invalid objectiveId pattern', () => {
+    it('accepts any non-empty objectiveId string (e.g. a plan.md section heading)', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
-        description: 'Bad objective ref',
-        objectiveId: 'not-an-obj-id',
+        description: 'Links to a plan.md section',
+        objectiveId: '2026-04',
+        priority: 'medium',
+        status: 'pending',
+      }]);
+      const result = validateWeeklyPlan(plan);
+      assert.equal(result.valid, true, JSON.stringify(result.errors));
+    });
+
+    it('rejects an empty-string objectiveId', () => {
+      const plan = createWeeklyPlan('2026-W16', '2026-04', [{
+        id: 'task-abc12345',
+        description: 'Empty tag',
+        objectiveId: '',
+        priority: 'medium',
         status: 'pending',
       }]);
       const result = validateWeeklyPlan(plan);
