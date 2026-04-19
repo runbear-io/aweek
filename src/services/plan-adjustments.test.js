@@ -309,6 +309,126 @@ describe('validateWeeklyAdjustment', () => {
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('YYYY-Www')));
   });
+
+  it('accepts a valid track on add', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'add',
+        week: '2026-W16',
+        description: 'Publish X post',
+        objectiveId: obj1.id,
+        track: 'x-com',
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('rejects an empty-string track on add', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'add',
+        week: '2026-W16',
+        description: 'X',
+        objectiveId: obj1.id,
+        track: '',
+      },
+      config,
+    );
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => /track/.test(e)));
+  });
+
+  it('rejects an over-long track on add', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'add',
+        week: '2026-W16',
+        description: 'X',
+        objectiveId: obj1.id,
+        track: 'a'.repeat(65),
+      },
+      config,
+    );
+    assert.equal(result.valid, false);
+  });
+
+  it('accepts a track update (setting track)', () => {
+    const { config, task1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'update',
+        week: '2026-W16',
+        taskId: task1.id,
+        track: 'x-com',
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('accepts null track on update (clear the track)', () => {
+    const { config, task1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'update',
+        week: '2026-W16',
+        taskId: task1.id,
+        track: null,
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('rejects update with no fields changed', () => {
+    const { config, task1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      { action: 'update', week: '2026-W16', taskId: task1.id },
+      config,
+    );
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.errors.some((e) =>
+        /status, description, or track/.test(e),
+      ),
+    );
+  });
+
+  it('accepts track on seed tasks in create', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'create',
+        week: '2026-W17',
+        month: '2026-04',
+        tasks: [
+          { description: 'X post 1', objectiveId: obj1.id, track: 'x-com' },
+          { description: 'Reddit 1', objectiveId: obj1.id, track: 'reddit' },
+        ],
+      },
+      config,
+    );
+    assert.equal(result.valid, true);
+  });
+
+  it('rejects an empty-string track on a seed task in create', () => {
+    const { config, obj1 } = buildTestAgent();
+    const result = validateWeeklyAdjustment(
+      {
+        action: 'create',
+        week: '2026-W17',
+        month: '2026-04',
+        tasks: [{ description: 'X', objectiveId: obj1.id, track: '' }],
+      },
+      config,
+    );
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => /tasks\[0\]\.track/.test(e)));
+  });
 });
 
 // ---------------------------------------------------------------------------

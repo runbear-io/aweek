@@ -84,6 +84,29 @@ All three adjustment scopes share the same execution path via
 `plan.adjustPlan(...)`. Operations are validated up front and applied
 atomically — if any single operation fails validation, none are applied.
 
+### Task planning convention — tracks for independent pacing
+
+The heartbeat picks **one task per distinct track per tick**. Tracks are
+independent lanes that each fire at the cron cadence, so you can express
+"publish 3 X.com posts AND 4 Reddit posts in parallel this hour" without
+the two chains interfering.
+
+- Explicit `track` string on a task (e.g. `"x-com"`, `"reddit"`) opts
+  that task into a specific lane.
+- When `track` is omitted, the task's `objectiveId` is used as the
+  default lane key. Tasks under the same objective pace together
+  unless you set `track` to split them.
+- Prefer **one task = one atomic action**. "Publish one X.com post" is a
+  task; "publish 10 posts" is not. The runner will burn through whatever
+  the task description says in a single Claude Code session — pacing
+  comes from the heartbeat firing atomic tasks, not from timing inside
+  a task.
+
+Throughput budget: at `*/15` cron (4 ticks/hour), each track fires up to
+**4 tasks/hour**. Total per-agent throughput is roughly
+`active_tracks × cron_frequency`, bounded by how long each session
+runs — the per-agent lock is held across the full per-tick drain.
+
 ### A1: Show Current State
 
 Before collecting edits, load the agent config and display the relevant
@@ -141,16 +164,17 @@ fields. Keep looping until the user says they are done.
   (required), objectiveId (pick from the numbered objectives list,
   flattened across all monthly plans), optional priority (`critical` /
   `high` / `medium` / `low`, default `medium`), optional
-  estimatedMinutes (integer 1-480). Seed tasks default to an empty list
-  — you can bootstrap an empty plan and add tasks later via `add`.
-  **Freshly-created weekly plans start `approved: false`** and activate
-  the heartbeat only after Branch B approval.
+  estimatedMinutes (integer 1-480), optional **`track`** (string, 1–64
+  chars — lane identifier, defaults to objectiveId). Seed tasks default
+  to an empty list — you can bootstrap an empty plan and add tasks
+  later via `add`. **Freshly-created weekly plans start `approved:
+  false`** and activate the heartbeat only after Branch B approval.
 - `add` → week (`YYYY-Www`, must match an existing weekly plan),
   description (required), objectiveId (pick from the numbered objectives
-  list, flattened across all monthly plans).
+  list, flattened across all monthly plans), optional `track`.
 - `update` → week, taskId, then at least one of: description, status
   (`pending` / `in-progress` / `completed` / `failed` / `delegated` /
-  `skipped`).
+  `skipped`), `track` (pass `null` to fall back to objectiveId pacing).
 
 ### A3: Confirm the Batch
 
@@ -211,9 +235,41 @@ operation object must match one of these shapes:
 - **Monthly create:** `{ "action": "create", "month": "YYYY-MM", "objectives": [{ "description": "...", "goalId": "goal-xxx" }, …], "status": "...", "summary": "..." }`
 - **Monthly add:** `{ "action": "add", "month": "YYYY-MM", "description": "...", "goalId": "goal-xxx" }`
 - **Monthly update:** `{ "action": "update", "month": "YYYY-MM", "objectiveId": "obj-xxx", "description": "...", "status": "..." }`
-- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "...", "estimatedMinutes": 60 }, …] }`
-- **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx" }`
-- **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "..." }`
+- **Weekly create:** `{ "action": "create", "week": "YYYY-Www", "month": "YYYY-MM", "tasks": [{ "description": "...", "objectiveId": "obj-xxx", "priority": "...", "estimatedMinutes": 60, "track": "x-com" }, …] }`
+- **Weekly add:** `{ "action": "add", "week": "YYYY-Www", "description": "...", "objectiveId": "obj-xxx", "track": "reddit" }`
+- **Weekly update:** `{ "action": "update", "week": "YYYY-Www", "taskId": "task-xxx", "description": "...", "status": "...", "track": "x-com" }`
+
+### Multi-track example
+
+When the user says **"publish 3 X.com posts and 4 Reddit posts today"**,
+split them into 7 atomic tasks across two tracks:
+
+```json
+{
+  "agentId": "<AGENT_ID>",
+  "weeklyAdjustments": [
+    {
+      "action": "create",
+      "week": "2026-W17",
+      "month": "2026-04",
+      "tasks": [
+        { "description": "Publish X.com post 1/3",  "objectiveId": "obj-xxx", "track": "x-com" },
+        { "description": "Publish X.com post 2/3",  "objectiveId": "obj-xxx", "track": "x-com" },
+        { "description": "Publish X.com post 3/3",  "objectiveId": "obj-xxx", "track": "x-com" },
+        { "description": "Publish Reddit post 1/4", "objectiveId": "obj-yyy", "track": "reddit" },
+        { "description": "Publish Reddit post 2/4", "objectiveId": "obj-yyy", "track": "reddit" },
+        { "description": "Publish Reddit post 3/4", "objectiveId": "obj-yyy", "track": "reddit" },
+        { "description": "Publish Reddit post 4/4", "objectiveId": "obj-yyy", "track": "reddit" }
+      ]
+    }
+  ]
+}
+```
+
+At `*/15` cron, each tick picks one X-com task and one Reddit task in
+parallel. The 3 X-com tasks drain in ticks 1-3 (one per 15 min); the 4
+Reddit tasks drain in ticks 1-4. Both lanes run independently, each
+paced at the cron cadence.
 
 Print the `formatAdjustmentResult` output verbatim to the user.
 
@@ -367,6 +423,10 @@ Print the formatted approval result. Call out:
   agent; `objectives` must contain at least one seed `{description, goalId}`.
 - **Weekly `create`:** target week must NOT already have a plan; parent
   `month` must already have a monthly plan on this agent.
+- **`track`:** non-empty string, max 64 chars. Tasks with the same
+  `track` pace together; distinct tracks run in parallel lanes. Omit to
+  inherit the `objectiveId` as the default lane. On `update`, pass
+  `null` to clear the explicit track and fall back to the default.
 - All operations validated against JSON schemas before persisting;
   batches are atomic — all succeed or all fail.
 

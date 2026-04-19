@@ -50,6 +50,17 @@ export const weeklyTaskSchema = {
       type: 'string',
       description: 'Agent ID if task was delegated',
     },
+    track: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 64,
+      description:
+        'Independent pacing lane (e.g. "x-com", "reddit", "email-replies"). ' +
+        'At each heartbeat tick the selector picks ONE task per distinct track, ' +
+        'so tracks are parallel lanes that each fire at the cron cadence. ' +
+        'Defaults to objectiveId when omitted, so tasks under the same ' +
+        'objective naturally pace together unless the user wants otherwise.',
+    },
     completedAt: { type: 'string', format: 'date-time' },
   },
   additionalProperties: false,
