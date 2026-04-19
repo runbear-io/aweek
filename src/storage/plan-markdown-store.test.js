@@ -12,7 +12,9 @@ import {
   CANONICAL_SECTIONS,
   PLAN_FILENAME,
   buildInitialPlan,
+  buildPlanFromLegacy,
   exists,
+  migrateLegacyPlan,
   parsePlanMarkdownSections,
   planPath,
   readPlan,
@@ -179,5 +181,104 @@ describe('plan-markdown-store — parsePlanMarkdownSections', () => {
     assert.ok(CANONICAL_SECTIONS.includes('Monthly plans'));
     assert.ok(CANONICAL_SECTIONS.includes('Strategies'));
     assert.ok(CANONICAL_SECTIONS.includes('Notes'));
+  });
+});
+
+describe('plan-markdown-store — buildPlanFromLegacy', () => {
+  it('renders goals as horizon-tagged bullets under Long-term goals', () => {
+    const body = buildPlanFromLegacy({
+      name: 'Writer',
+      goals: [
+        { id: 'g1', description: 'Publish weekly', horizon: '3mo', status: 'active' },
+        { id: 'g2', description: 'Retire ads',     horizon: '1yr', status: 'paused' },
+      ],
+    });
+    const parsed = parsePlanMarkdownSections(body);
+    const longTerm = parsed.byTitle['Long-term goals'];
+    assert.ok(longTerm.includes('(3mo) Publish weekly'));
+    // Paused status gets an explicit tag.
+    assert.ok(longTerm.includes('(1yr) Retire ads [paused]'));
+  });
+
+  it('emits ### YYYY-MM subsections and objective bullets under Monthly plans', () => {
+    const body = buildPlanFromLegacy({
+      name: 'Writer',
+      monthlyPlans: [
+        {
+          month: '2026-04',
+          objectives: [
+            { id: 'o1', description: 'Ship 4 posts' },
+            { id: 'o2', description: 'Start podcast', status: 'in-progress' },
+          ],
+        },
+      ],
+    });
+    const parsed = parsePlanMarkdownSections(body);
+    const monthly = parsed.byTitle['Monthly plans'];
+    assert.ok(monthly.includes('### 2026-04'));
+    assert.ok(monthly.includes('- Ship 4 posts'));
+    assert.ok(monthly.includes('- Start podcast [in-progress]'));
+  });
+
+  it('leaves placeholder comments when no legacy data was passed', () => {
+    const body = buildPlanFromLegacy();
+    assert.ok(body.includes('No long-term goals recorded'));
+    assert.ok(body.includes('No monthly plans yet'));
+  });
+});
+
+describe('plan-markdown-store — migrateLegacyPlan', () => {
+  it('writes plan.md from legacy fields when the file is missing', async () => {
+    const { base, agentsDir } = await tempAgentsDir();
+    try {
+      const result = await migrateLegacyPlan({
+        agentsDir,
+        agentId: 'writer',
+        config: {
+          identity: { name: 'Writer' },
+          goals: [{ description: 'Publish weekly', horizon: '3mo', status: 'active' }],
+          monthlyPlans: [],
+        },
+      });
+      assert.equal(result.outcome, 'migrated');
+      const body = await readPlan(agentsDir, 'writer');
+      assert.ok(body.includes('Publish weekly'));
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('skips when plan.md already exists', async () => {
+    const { base, agentsDir } = await tempAgentsDir();
+    try {
+      await writePlan(agentsDir, 'writer', '# Existing\n');
+      const result = await migrateLegacyPlan({
+        agentsDir,
+        agentId: 'writer',
+        config: { goals: [{ description: 'x', horizon: '3mo' }] },
+      });
+      assert.equal(result.outcome, 'skipped');
+      assert.match(result.reason, /already exists/);
+      // Untouched.
+      assert.equal(await readPlan(agentsDir, 'writer'), '# Existing\n');
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('skips with a no-legacy-data reason when goals and monthlyPlans are empty', async () => {
+    const { base, agentsDir } = await tempAgentsDir();
+    try {
+      const result = await migrateLegacyPlan({
+        agentsDir,
+        agentId: 'writer',
+        config: { goals: [], monthlyPlans: [] },
+      });
+      assert.equal(result.outcome, 'skipped');
+      assert.match(result.reason, /no legacy/);
+      assert.equal(await exists(agentsDir, 'writer'), false);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });

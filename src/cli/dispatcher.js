@@ -149,7 +149,9 @@ export const REGISTRY = Object.freeze({
     exists: (input) => planMarkdown.exists(input?.agentsDir, input?.agentId),
     path: (input) => planMarkdown.planPath(input?.agentsDir, input?.agentId),
     buildInitial: (input) => planMarkdown.buildInitialPlan(input ?? {}),
+    buildFromLegacy: (input) => planMarkdown.buildPlanFromLegacy(input ?? {}),
     parse: (input) => planMarkdown.parsePlanMarkdownSections(input?.body ?? ''),
+    migrateLegacy: (input) => planMarkdown.migrateLegacyPlan(input ?? {}),
   },
   'agent-helpers': {
     listAllAgents: agentHelpers.listAllAgents,

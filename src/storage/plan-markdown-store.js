@@ -98,6 +98,53 @@ export async function writePlan(agentsDir, agentId, body) {
 }
 
 /**
+ * Migrate a legacy agent config on-demand: if `plan.md` is absent and the
+ * agent JSON still carries `goals` / `monthlyPlans` content, render them
+ * into `plan.md` and return `{ outcome: 'migrated' }`. When the file
+ * already exists or there's nothing to migrate, returns a no-op status
+ * so the caller can report `skipped`.
+ *
+ * This is the only sanctioned path for bringing pre-markdown agents up
+ * to the new layout — UI surfaces call it once at the top of `/aweek:plan`
+ * (Branch A) so the user never has to remember.
+ *
+ * @param {object} params
+ * @param {string} params.agentsDir - `.aweek/agents` root.
+ * @param {string} params.agentId
+ * @param {object} params.config - The agent JSON (needs identity + goals
+ *   + monthlyPlans to render anything useful).
+ * @param {string} [params.name] - Optional override for the H1; falls
+ *   back to `config.identity?.name` or the agent id.
+ * @param {string} [params.description] - Optional preamble override.
+ * @returns {Promise<{outcome:'migrated'|'skipped', path:string, reason?:string}>}
+ */
+export async function migrateLegacyPlan({
+  agentsDir,
+  agentId,
+  config,
+  name,
+  description,
+} = {}) {
+  const path = planPath(agentsDir, agentId);
+  if (await exists(agentsDir, agentId)) {
+    return { outcome: 'skipped', path, reason: 'plan.md already exists' };
+  }
+  const goals = Array.isArray(config?.goals) ? config.goals : [];
+  const monthlyPlans = Array.isArray(config?.monthlyPlans) ? config.monthlyPlans : [];
+  if (goals.length === 0 && monthlyPlans.length === 0) {
+    return { outcome: 'skipped', path, reason: 'no legacy goals or monthly plans' };
+  }
+  const body = buildPlanFromLegacy({
+    name: name ?? config?.identity?.name ?? agentId,
+    description: description ?? config?.identity?.description,
+    goals,
+    monthlyPlans,
+  });
+  await writePlan(agentsDir, agentId, body);
+  return { outcome: 'migrated', path };
+}
+
+/**
  * Canonical H2 section names the template emits. Consumers that want to
  * pull "just the long-term goals" or "just the strategies" can pass
  * these into `parsePlanMarkdownSections`. Unrecognized headings are
@@ -182,6 +229,95 @@ export function parsePlanMarkdownSections(markdown) {
     sections,
     byTitle,
   };
+}
+
+/**
+ * Render legacy `config.goals` + `config.monthlyPlans` arrays into a
+ * ready-to-edit markdown body. Used by the one-shot migration path so
+ * agents hired before plan.md existed don't lose their structured
+ * planning state when the JSON columns are retired.
+ *
+ * The output uses the canonical H2 headings. Each goal becomes a bullet
+ * under `## Long-term goals` ("- (1mo / 3mo / 1yr) — <description>").
+ * Each monthly plan becomes an `### YYYY-MM` subsection under `## Monthly
+ * plans` with its objectives as bullets ("- <description>"). Status
+ * suffixes (`[completed]`, `[dropped]`, ...) are appended only when not
+ * the default — keeps the output tidy for the common case.
+ *
+ * @param {object} opts
+ * @param {string} [opts.name] - Agent display name for the H1.
+ * @param {string} [opts.description] - Optional preamble (subagent description).
+ * @param {Array} [opts.goals] - Legacy `config.goals`.
+ * @param {Array} [opts.monthlyPlans] - Legacy `config.monthlyPlans`.
+ * @returns {string}
+ */
+export function buildPlanFromLegacy({
+  name = 'Agent',
+  description,
+  goals = [],
+  monthlyPlans = [],
+} = {}) {
+  const lines = [`# ${name}`];
+  if (description && typeof description === 'string' && description.trim()) {
+    lines.push('', description.trim());
+  }
+
+  lines.push('', '## Long-term goals', '');
+  if (Array.isArray(goals) && goals.length > 0) {
+    for (const g of goals) {
+      if (!g || typeof g !== 'object') continue;
+      const horizon = g.horizon ? `(${g.horizon}) ` : '';
+      const status =
+        g.status && g.status !== 'active' ? ` [${g.status}]` : '';
+      const desc = (g.description ?? '').trim() || '(no description)';
+      lines.push(`- ${horizon}${desc}${status}`);
+    }
+  } else {
+    lines.push('<!-- No long-term goals recorded. Add them here. -->');
+  }
+
+  lines.push('', '## Monthly plans', '');
+  if (Array.isArray(monthlyPlans) && monthlyPlans.length > 0) {
+    const sorted = [...monthlyPlans].sort((a, b) =>
+      String(a?.month ?? '').localeCompare(String(b?.month ?? '')),
+    );
+    for (const plan of sorted) {
+      if (!plan || typeof plan !== 'object') continue;
+      const monthLabel = plan.month || 'undated';
+      lines.push(`### ${monthLabel}`);
+      if (plan.summary && typeof plan.summary === 'string' && plan.summary.trim()) {
+        lines.push('', plan.summary.trim());
+      }
+      lines.push('');
+      if (Array.isArray(plan.objectives) && plan.objectives.length > 0) {
+        for (const obj of plan.objectives) {
+          if (!obj || typeof obj !== 'object') continue;
+          const status =
+            obj.status && obj.status !== 'planned' ? ` [${obj.status}]` : '';
+          const desc = (obj.description ?? '').trim() || '(no description)';
+          lines.push(`- ${desc}${status}`);
+        }
+      } else {
+        lines.push('<!-- No objectives recorded for this month. -->');
+      }
+      lines.push('');
+    }
+  } else {
+    lines.push('<!-- No monthly plans yet. Add `### YYYY-MM` sections here. -->');
+  }
+
+  lines.push(
+    '',
+    '## Strategies',
+    '',
+    '<!-- Migrated automatically from legacy goals/monthlyPlans JSON. Add preferred tools, rituals, and guardrails here. -->',
+    '',
+    '## Notes',
+    '',
+    '<!-- Freeform context the weekly-plan generator should know about. -->',
+    '',
+  );
+  return lines.join('\n');
 }
 
 /**
