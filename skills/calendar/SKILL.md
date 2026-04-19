@@ -1,12 +1,12 @@
 ---
 name: calendar
-description: Display an agent's weekly plan as an interactive calendar grid with day columns and hour rows
+description: Display an agent's weekly plan as a calendar grid with day columns and hour rows
 trigger: aweek calendar, weekly calendar, plan calendar, show calendar, agent calendar
 ---
 
 # aweek:calendar
 
-Display an agent's weekly plan as an interactive calendar grid with day columns and hour rows. Tasks are numbered for selection.
+Display an agent's weekly plan as a calendar grid with day columns and hour rows. Tasks are numbered so users can ask about any task by number.
 
 ## Instructions
 
@@ -29,16 +29,12 @@ empty array as the no-agents case.
 
 ### Step 2: Render the Calendar Grid
 
-First, detect the terminal width so the grid auto-fits the screen:
-
-```bash
-tput cols 2>/dev/null || echo 120
-```
-
-Use the printed number as `<TERMINAL_WIDTH>` below. Pass it via `terminalWidth`
-rather than setting `cellWidth` — the renderer derives the widest per-day cell
-that still fits, clamped between 12 and 32 characters. Only set `cellWidth`
-explicitly when the user asked for a specific column size in "Adjust view".
+The grid fits into `terminalWidth` columns (default 120). Day columns are
+sized so the whole grid lands within that width. Each task is capped at 30
+visible characters and wraps across multiple lines inside its cell, so
+narrow columns just take more vertical room. If the user explicitly asks
+for a wider/narrower grid, pass a different `terminalWidth` on the next
+run.
 
 Run the grid renderer to get the calendar text and task index:
 
@@ -48,7 +44,7 @@ echo '{
   "opts": {
     "startHour": 9,
     "endHour": 18,
-    "terminalWidth": <TERMINAL_WIDTH>,
+    "terminalWidth": 120,
     "showWeekend": false,
     "spread": "spread"
   }
@@ -56,8 +52,7 @@ echo '{
 ```
 
 The response JSON contains `success`, `output` (the rendered grid text),
-`taskIndex` (the task list for interactive selection), and `errors` when
-`success === false`.
+`taskIndex` (the numbered task list), and `errors` when `success === false`.
 
 **IMPORTANT — Not collapsed display:** After running the command, you MUST
 output the calendar grid text as direct text in your response (inside a
@@ -65,67 +60,16 @@ markdown code block). Do NOT just show the bash output — copy `result.output`
 and display it yourself so it appears expanded, not collapsed inside a bash
 result.
 
-Also parse `result.taskIndex` to get the task list for interactive selection.
+### Step 3: Stop (no follow-up question)
 
-### Step 3: Interactive Navigation
+The rendered grid already ends with `Select a task number (1-N) to see details.`
+— that is the only prompt the user needs. Do **not** emit an `AskUserQuestion`,
+a "What would you like to do?" menu, an adjust-view picker, or any other
+interactive step after displaying the calendar. Just end your turn.
 
-After displaying the calendar, use AskUserQuestion to offer interaction. Combine task selection and navigation into a **single question** so users can type a task number directly:
-
-Present options in this exact order:
-1. **Select a task** — "Type a task number (1-N) to see details" — This MUST be the first option. When the user selects this, they type the task number directly in the text input field.
-2. **Adjust view** — Change hours, show weekends, change cell width, toggle spread/pack
-3. **Done** — Exit
-
-The question text should say: "What would you like to do?"
-When the user selects "Select a task" and types a number, parse it and show the task details. No second question needed.
-
-#### When user selects a task number:
-
-Display the full task details:
-
-```
-Task #3: Research keywords & outline for Blog Post 2
-  ID:        task-abc12345
-  Status:    pending
-  Priority:  medium
-  Estimated: 120 minutes (2h)
-  Objective: obj-14be9eb8
-```
-
-Then ask what they'd like to do with it:
-1. **Back to calendar** — Return to the grid view
-2. **Change status** — Mark as in-progress, completed, failed, etc.
-3. **Change priority** — Set to critical, high, medium, or low
-4. **Edit description** — Update the task description
-
-If they change a task, apply the update via the WeeklyPlanStore:
-
-```bash
-node --input-type=module -e "
-import { WeeklyPlanStore } from './src/storage/weekly-plan-store.js';
-
-const store = new WeeklyPlanStore('.aweek/agents');
-const plan = await store.load('<AGENT_ID>', '<WEEK>');
-const task = plan.tasks.find(t => t.id === '<TASK_ID>');
-
-// Apply the change
-<APPLY_CHANGE>
-
-plan.updatedAt = new Date().toISOString();
-await store.save('<AGENT_ID>', plan);
-console.log('Updated successfully');
-"
-```
-
-Then re-render and display the updated calendar.
-
-#### When user adjusts the view:
-
-Ask which options to change using AskUserQuestion, then re-render with the new options.
-
-### Step 4: Loop
-
-Keep the interaction loop going (Step 3) until the user selects "Done".
+Keep `result.taskIndex` in mind for the follow-up turn: if the user later
+types a task number (or asks about a specific task), look it up there and
+respond with its details. Do not volunteer that lookup until asked.
 
 ## Render Options
 
@@ -140,10 +84,11 @@ Keep the interaction loop going (Step 3) until the user selects "Done".
 
 ## How It Works
 
-- Tasks are numbered in grid order (top-to-bottom, left-to-right) for selection
-- Each task occupies rows based on its `estimatedMinutes` (default: 60 min = 1 row)
+- Tasks are numbered in column-major order (top-to-bottom per day, then the next day) for selection
+- Each hour row is as tall as its fullest cell. Every task gets its own block of wrapped lines inside the cell; empty cells pad with blanks to line up.
+- Each task displays up to **30 visible characters** (`<icon> <num>. <description>`). Anything beyond collapses with a trailing `…`. Those 30 chars wrap across cell lines based on column width — narrow columns just use more rows.
+- Half-hour tasks (e.g. `runAt` at `HH:30`) bucket into the same `HH:00` cell as `HH:00` tasks, so they don't disappear from the view.
 - Status icons show progress: ○ pending, ► in-progress, ✓ completed, ✗ failed
-- Multi-hour tasks show a continuation marker in subsequent rows
 - The calendar is displayed as direct text (not bash output) so it's always visible
 
 ## Related Skills

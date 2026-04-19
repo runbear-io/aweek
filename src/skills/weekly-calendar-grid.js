@@ -62,13 +62,16 @@ export function mondayFromISOWeek(isoWeek) {
  * @param {number} [opts.maxCellWidth=32]
  * @returns {number}
  */
+export const DEFAULT_TERMINAL_WIDTH = 120;
+
 export function computeCellWidth(terminalWidth, daysCount, opts = {}) {
   const { minCellWidth = 12, maxCellWidth = 32 } = opts;
   const hourWidth = 7;
-  if (!Number.isFinite(terminalWidth) || terminalWidth <= 0) {
-    return Math.min(maxCellWidth, Math.max(minCellWidth, 24));
-  }
-  const available = terminalWidth - hourWidth - 2; // minus "│" borders on each side
+  const width =
+    Number.isFinite(terminalWidth) && terminalWidth > 0
+      ? terminalWidth
+      : DEFAULT_TERMINAL_WIDTH;
+  const available = width - hourWidth - 2; // minus "│" borders on each side
   const cell = Math.floor(available / daysCount) - 1;
   return Math.min(maxCellWidth, Math.max(minCellWidth, cell));
 }
@@ -102,13 +105,18 @@ function pad(s, w) {
 /**
  * Distribute tasks across days and hours.
  *
+ * Each (day, hour) cell holds an ORDERED LIST of entries, not a single
+ * entry — multiple tasks with the same floor-hour (e.g. a 13:00 task and a
+ * 13:30 task) both land in the same 13:00 bucket rather than one being
+ * dropped on collision. The renderer decides how to summarize crowded
+ * buckets; the distributor never hides a task.
+ *
  * Placement runs in two passes:
- *   1. Tasks with a `runAt` ISO timestamp are pre-placed at the
- *      day/hour derived from that timestamp (anchored on `weekMonday`).
- *      Their cells are reserved before pack/spread runs.
- *   2. Remaining tasks (no `runAt`, or `runAt` outside the visible
- *      window) are placed via `pack` or `spread` around the reserved
- *      cells.
+ *   1. Tasks with a `runAt` ISO timestamp are appended to their bucket,
+ *      stacking on collision.
+ *   2. Remaining tasks (no `runAt`, or `runAt` outside the visible window)
+ *      are placed via `pack` or `spread`, treating any non-empty bucket as
+ *      occupied so they settle into truly free slots.
  *
  * @param {Array} tasks - Weekly plan tasks
  * @param {object} opts
@@ -117,7 +125,7 @@ function pad(s, w) {
  * @param {number} opts.daysCount - Number of days to schedule across (default: 5 for weekdays)
  * @param {string} opts.spread - Distribution mode: 'pack' (fill each day) or 'spread' (round-robin across days)
  * @param {Date} [opts.weekMonday] - Monday (UTC) of the plan's week. Required to place runAt-tagged tasks; if omitted, tasks with runAt fall through to the default placement.
- * @returns {Map<string, Map<number, object>>} dayKey -> hour -> task assignment
+ * @returns {Map<string, Map<number, Array<{task: object, isStart: boolean, spanHours: number, offset: number, sortKey?: number}>>>}
  */
 export function distributeTasks(tasks, opts = {}) {
   const {
@@ -128,13 +136,23 @@ export function distributeTasks(tasks, opts = {}) {
     weekMonday,
   } = opts;
 
-  // grid[dayIndex][hour] = { task, isStart, spanHours }
+  // dayKey → Map(hour → Array<Entry>)
   const grid = new Map();
   for (let d = 0; d < 7; d++) {
     grid.set(DAY_KEYS[d], new Map());
   }
 
-  // ---- Pass 1: pre-place runAt-tagged tasks -------------------------------
+  const append = (dayKey, hour, entry) => {
+    const dayGrid = grid.get(dayKey);
+    let bucket = dayGrid.get(hour);
+    if (!bucket) {
+      bucket = [];
+      dayGrid.set(hour, bucket);
+    }
+    bucket.push(entry);
+  };
+
+  // ---- Pass 1: runAt-anchored placement ----------------------------------
   const runAtPlaced = new Set();
   if (weekMonday instanceof Date && !Number.isNaN(weekMonday.getTime())) {
     const weekStartMs = Date.UTC(
@@ -157,38 +175,37 @@ export function distributeTasks(tasks, opts = {}) {
       const minutes = task.estimatedMinutes || 60;
       const spanHours = Math.max(1, Math.ceil(minutes / 60));
       const dayKey = DAY_KEYS[dayOffset];
-      const dayGrid = grid.get(dayKey);
 
-      // Earlier runAt wins on collision.
-      let clear = true;
-      for (let h = 0; h < spanHours; h++) {
-        if (hour + h >= endHour || dayGrid.has(hour + h)) {
-          clear = false;
-          break;
-        }
-      }
-      if (!clear) continue;
-
-      for (let h = 0; h < spanHours; h++) {
-        dayGrid.set(hour + h, {
+      for (let h = 0; h < spanHours && hour + h < endHour; h++) {
+        append(dayKey, hour + h, {
           task,
           isStart: h === 0,
           spanHours,
           offset: h,
+          sortKey: ts,
         });
       }
       runAtPlaced.add(task.id);
     }
   }
 
+  // Within a bucket, earlier runAt comes first so numbering is deterministic.
+  for (const dayGrid of grid.values()) {
+    for (const bucket of dayGrid.values()) {
+      bucket.sort((a, b) => (a.sortKey ?? 0) - (b.sortKey ?? 0));
+    }
+  }
+
   const remaining = tasks.filter((t) => !runAtPlaced.has(t.id));
 
-  // Advance past any runAt-reserved cells when placing unscheduled tasks.
+  // A bucket is "free" for unscheduled placement only if it's completely
+  // empty — preserves the pre-refactor reserve semantics.
   const firstFreeHourFrom = (dayGrid, fromHour, spanHours) => {
     for (let h = fromHour; h + spanHours <= endHour; h++) {
       let clear = true;
       for (let k = 0; k < spanHours; k++) {
-        if (dayGrid.has(h + k)) {
+        const bucket = dayGrid.get(h + k);
+        if (bucket && bucket.length > 0) {
           clear = false;
           break;
         }
@@ -214,7 +231,7 @@ export function distributeTasks(tasks, opts = {}) {
       if (slot === -1) continue;
 
       for (let h = 0; h < spanHours; h++) {
-        dayGrid.set(slot + h, {
+        append(dayKey, slot + h, {
           task,
           isStart: h === 0,
           spanHours,
@@ -248,10 +265,9 @@ export function distributeTasks(tasks, opts = {}) {
     if (currentDay >= daysCount || slot === -1) break;
 
     const dayKey = DAY_KEYS[currentDay];
-    const dayGrid = grid.get(dayKey);
 
     for (let h = 0; h < spanHours; h++) {
-      dayGrid.set(slot + h, {
+      append(dayKey, slot + h, {
         task,
         isStart: h === 0,
         spanHours,
@@ -282,11 +298,13 @@ export function distributeTasks(tasks, opts = {}) {
  * @param {object} [params.opts]
  * @param {number} [params.opts.startHour=9]
  * @param {number} [params.opts.endHour=18]
- * @param {number} [params.opts.cellWidth] - Explicit cell width. Overrides terminalWidth-derived width.
- * @param {number} [params.opts.terminalWidth] - Available terminal columns; used to auto-fit cellWidth when cellWidth is not set.
+ * @param {number} [params.opts.cellWidth] - Explicit cell width. Overrides the terminalWidth-derived default.
+ * @param {number} [params.opts.terminalWidth] - Terminal columns the grid should fit. Defaults to DEFAULT_TERMINAL_WIDTH (120) when omitted.
  * @param {boolean} [params.opts.showWeekend=false]
  * @returns {string} Rendered grid
  */
+export const TASK_CONTENT_MAX = 30;
+
 export function renderGrid({ agent, plan, opts = {} }) {
   const {
     startHour = 9,
@@ -298,10 +316,17 @@ export function renderGrid({ agent, plan, opts = {} }) {
   } = opts;
 
   const daysCount = showWeekend ? 7 : 5;
+  // Fit the grid to a terminal (120 cols by default). An explicit cellWidth
+  // takes precedence; otherwise derive cellWidth from the terminal width so
+  // every column is the same.
+  const resolvedTerminalWidth =
+    Number.isFinite(terminalWidth) && terminalWidth > 0
+      ? terminalWidth
+      : DEFAULT_TERMINAL_WIDTH;
   const cellWidth =
     Number.isFinite(cellWidthOpt) && cellWidthOpt > 0
       ? cellWidthOpt
-      : computeCellWidth(terminalWidth, daysCount);
+      : computeCellWidth(resolvedTerminalWidth, daysCount);
   const dayLabels = DAY_LABELS.slice(0, daysCount);
   const dayKeys = DAY_KEYS.slice(0, daysCount);
 
@@ -323,15 +348,20 @@ export function renderGrid({ agent, plan, opts = {} }) {
   });
   const taskIndex = []; // 1-based: taskIndex[0] = task #1
 
-  // Assign numbers to tasks in grid order (top-to-bottom, left-to-right)
+  // Assign numbers in column-major order: walk each day top-to-bottom, then
+  // move to the next day. Within each hour bucket, entries are already sorted
+  // by runAt so the earliest-scheduled task gets the lowest number.
   const taskNumMap = new Map(); // task.id → number
-  for (let h = startHour; h < endHour; h++) {
-    for (const dayKey of dayKeys) {
-      const entry = grid.get(dayKey)?.get(h);
-      if (entry?.isStart && !taskNumMap.has(entry.task.id)) {
-        const num = taskIndex.length + 1;
-        taskNumMap.set(entry.task.id, num);
-        taskIndex.push(entry.task);
+  for (const dayKey of dayKeys) {
+    for (let h = startHour; h < endHour; h++) {
+      const bucket = grid.get(dayKey)?.get(h);
+      if (!bucket) continue;
+      for (const entry of bucket) {
+        if (entry.isStart && !taskNumMap.has(entry.task.id)) {
+          const num = taskIndex.length + 1;
+          taskNumMap.set(entry.task.id, num);
+          taskIndex.push(entry.task);
+        }
       }
     }
   }
@@ -364,64 +394,47 @@ export function renderGrid({ agent, plan, opts = {} }) {
   lines.push(`│ ${pad('Hour', hourWidth - 2)} │${headerCells.map(c => `${c}│`).join('')}`);
   lines.push(`├${'─'.repeat(hourWidth)}${dayKeys.map(() => `┼${'─'.repeat(cellWidth)}`).join('')}┤`);
 
-  // Hour rows (3 lines per hour for task description wrapping)
-  const linesPerCell = 3;
+  // Each task is rendered as a small block of wrapped lines inside its
+  // cell. Every task gets at most TASK_CONTENT_MAX visible chars total
+  // (prefix + description); anything beyond collapses with `…`. The capped
+  // text is then chunked across lines of `cellWidth` columns so narrow
+  // cells simply take more lines. Hour row height = the tallest cell in
+  // that row; shorter cells pad with blanks.
+  const wrapTaskBlock = (entry) => {
+    const { task } = entry;
+    const icon = STATUS_ICONS[task.status] || '?';
+    const num = taskNumMap.get(task.id);
+    const prefix = `${icon} ${num}. `;
+    const capped = trunc(`${prefix}${task.description}`, TASK_CONTENT_MAX);
+    const chunks = [];
+    for (let i = 0; i < capped.length; i += cellWidth) {
+      chunks.push(pad(capped.slice(i, i + cellWidth), cellWidth));
+    }
+    if (chunks.length === 0) chunks.push(pad('', cellWidth));
+    return chunks;
+  };
+
   for (let h = startHour; h < endHour; h++) {
     const hourLabel = pad(`${String(h).padStart(2, '0')}:00`, hourWidth - 1);
-    const cellLines = dayKeys.map(() => Array.from({ length: linesPerCell }, () => pad('', cellWidth)));
 
-    for (let di = 0; di < dayKeys.length; di++) {
-      const entry = grid.get(dayKeys[di])?.get(h);
-      if (!entry) continue;
+    // For each day cell, flatten every task's wrapped block into a stack
+    // of lines. Empty cells still reserve one blank line so the hour
+    // label row never collapses to zero height.
+    const cells = dayKeys.map((dayKey) => {
+      const bucket = grid.get(dayKey)?.get(h);
+      if (!bucket || bucket.length === 0) return [pad('', cellWidth)];
+      return bucket.flatMap(wrapTaskBlock);
+    });
 
-      const { task, isStart } = entry;
-      const icon = STATUS_ICONS[task.status] || '?';
-
-      if (isStart) {
-        const num = taskNumMap.get(task.id);
-        const prefix = `${icon} ${num}.`;
-        const contPrefix = '│ ';
-        const maxLine1 = cellWidth - prefix.length;
-        const contWidth = cellWidth - contPrefix.length;
-        const desc = task.description;
-
-        // Word-wrap with hyphens across 3 lines
-        let remaining = desc;
-
-        // Line 1: icon + number + description start
-        if (remaining.length <= maxLine1) {
-          cellLines[di][0] = pad(`${prefix}${remaining}`, cellWidth);
-          remaining = '';
-        } else {
-          cellLines[di][0] = pad(`${prefix}${remaining.slice(0, maxLine1 - 1)}-`, cellWidth);
-          remaining = remaining.slice(maxLine1 - 1);
-        }
-
-        // Lines 2-3: continuation with │ prefix
-        for (let ln = 1; ln < linesPerCell; ln++) {
-          if (!remaining) break;
-          const isLast = ln === linesPerCell - 1;
-          if (remaining.length <= contWidth || isLast) {
-            cellLines[di][ln] = pad(`${contPrefix}${trunc(remaining, contWidth)}`, cellWidth);
-            remaining = '';
-          } else {
-            cellLines[di][ln] = pad(`${contPrefix}${remaining.slice(0, contWidth - 1)}-`, cellWidth);
-            remaining = remaining.slice(contWidth - 1);
-          }
-        }
-      } else {
-        // Continuation row for multi-hour tasks — pipe on all lines
-        for (let ln = 0; ln < linesPerCell; ln++) {
-          cellLines[di][ln] = pad(`│`, cellWidth);
-        }
-      }
+    const linesPerCell = Math.max(...cells.map((c) => c.length), 1);
+    for (const c of cells) {
+      while (c.length < linesPerCell) c.push(pad('', cellWidth));
     }
 
-    // Emit all lines for this hour
     for (let ln = 0; ln < linesPerCell; ln++) {
       const hourCol = ln === 0 ? hourLabel : pad('', hourWidth - 1);
-      const row = cellLines.map(c => c[ln]);
-      lines.push(`│${hourCol} │${row.map(c => `${c}│`).join('')}`);
+      const row = cells.map((c) => c[ln]);
+      lines.push(`│${hourCol} │${row.map((c) => `${c}│`).join('')}`);
     }
   }
 
