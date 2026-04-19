@@ -170,7 +170,9 @@ describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
     assert.equal(agent.budget.weeklyTokenLimit, DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT);
     assert.deepEqual(agent.goals, []);
     assert.deepEqual(agent.monthlyPlans, []);
-    assert.deepEqual(agent.weeklyPlans, []);
+    // Weekly plans live in the per-week file store; agent JSON never
+    // carries the field.
+    assert.equal(agent.weeklyPlans, undefined);
   });
 
   it('adopts an existing .md and still creates the aweek wrapper', async () => {

@@ -65,7 +65,9 @@ describe('agent model — factory functions', () => {
     assert.equal(config.identity, undefined);
     assert.deepStrictEqual(config.goals, []);
     assert.deepStrictEqual(config.monthlyPlans, []);
-    assert.deepStrictEqual(config.weeklyPlans, []);
+    // `weeklyPlans` is no longer a field on the agent config — weekly
+    // plans live in the per-week `WeeklyPlanStore` file store.
+    assert.equal(config.weeklyPlans, undefined);
     assert.equal(config.budget.weeklyTokenLimit, 500_000);
     assert.equal(config.budget.paused, false);
   });
@@ -493,11 +495,12 @@ describe('agent model — plan traceability', () => {
   it('goals -> objectives -> tasks form a traceable chain', () => {
     const { config, goals, objectives } = makeTestAgent();
 
-    // Add weekly plan with tasks tracing to objectives
+    // Weekly plans live in their own file store — assert traceability
+    // on the in-memory task/objective/goal references without mutating
+    // the agent config.
     const task1 = createTask('Task for obj1', objectives[0].id);
     const task2 = createTask('Task for obj2', objectives[1].id);
-    const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
-    config.weeklyPlans.push(weeklyPlan);
+    createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
 
     // Verify traceability: task -> objective -> goal
     assert.equal(task1.objectiveId, objectives[0].id);
@@ -505,15 +508,17 @@ describe('agent model — plan traceability', () => {
     assert.equal(task2.objectiveId, objectives[1].id);
     assert.equal(objectives[1].goalId, goals[1].id);
 
-    // Verify full config is schema-valid
+    // Verify full config is schema-valid (weeklyPlans is NOT a field).
     const result = validateAgentConfig(config);
     assert.equal(result.valid, true, JSON.stringify(result.errors));
   });
 
-  it('full agent with goals + monthly plan + weekly plan validates', () => {
-    const { config, goals, objectives } = makeTestAgent();
+  it('full agent with goals + monthly plan validates (weekly plans live in file store)', () => {
+    const { config, objectives } = makeTestAgent();
+    // Build a weekly plan but do NOT attach it to the config — the new
+    // schema forbids `weeklyPlans` on the agent JSON.
     const task = createTask('Weekly task', objectives[0].id);
-    config.weeklyPlans.push(createWeeklyPlan('2026-W16', '2026-04', [task]));
+    createWeeklyPlan('2026-W16', '2026-04', [task]);
 
     const result = validateAgentConfig(config);
     assert.equal(result.valid, true, JSON.stringify(result.errors));

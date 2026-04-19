@@ -36,18 +36,29 @@ echo '{"dataDir":".aweek/agents"}' \
   | aweek exec agent-helpers listAllAgents --input-json -
 ```
 
-The response is an array of `{ config }` records. For each entry, compute
-the display row:
+The response is an array of `{ config }` records. For each entry, load
+its weekly plans from the file store and find the pending one:
+
+```bash
+# Per agent:
+echo '{"agentId":"<AGENT_ID>","dataDir":".aweek/agents"}' \
+  | aweek exec plan reviewPlan --input-json -
+```
+
+`plan.reviewPlan` returns `{ success, plan, formatted, errors }`. When
+`success === false` with `errors: ["No pending ..."]`, the agent has no
+plan awaiting approval — skip the pending marker for that row. When
+`success === true`, use `plan.week` and `plan.tasks.length` for the
+display row:
 
 ```js
-const pending = (config.weeklyPlans || []).find((p) => p.approved === false);
 const row = {
   id: config.id,
   name: config.identity?.name,
   role: config.identity?.role,
   goals: (config.goals || []).length,
-  pendingWeek: pending?.week || null,
-  pendingTasks: pending?.tasks?.length || 0,
+  pendingWeek: pendingResult.success ? pendingResult.plan.week : null,
+  pendingTasks: pendingResult.success ? pendingResult.plan.tasks.length : 0,
 };
 ```
 
@@ -332,9 +343,10 @@ executing tasks on the next tick.
 
 ### B3b: Reject (destructive — requires explicit confirmation)
 
-Rejecting **permanently removes** the pending plan from the agent's
-`weeklyPlans` array. Per project policy this requires explicit user
-confirmation at the skill layer.
+Rejecting **permanently removes** the pending plan from the per-week
+file store (`.aweek/agents/<AGENT_ID>/weekly-plans/<WEEK>.json`). Per
+project policy this requires explicit user confirmation at the skill
+layer.
 
 1. Ask `AskUserQuestion`: **"Are you sure you want to reject this plan?
    This deletes it. (yes / no)"**. If the user does not answer `yes`,

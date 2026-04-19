@@ -150,8 +150,10 @@ echo '{"agentId":"AGENT_ID","dataDir":".aweek/agents"}' \
   | aweek exec agent-helpers loadAgent --input-json -
 ```
 
-Project the response to `{ id, identity.name, identity.role, goals.length,
-weeklyPlans.length }` for display.
+Project the response to `{ id, identity.name, identity.role, goals.length }`
+for display. Weekly plan counts are surfaced via `manage.deleteAgent`'s
+`snapshot.weeklyPlanCount` field — compute them by listing the per-agent
+`weekly-plans/` directory directly if you need them before delete.
 
 Then ask the user to **explicitly confirm** via AskUserQuestion (phrase it as "This will permanently delete agent X. This cannot be undone. Proceed?"). If they decline, report that no changes were made and stop.
 
@@ -228,7 +230,7 @@ About to delete:
   "name": "ContentWriter",
   "role": "writes articles",
   "goals": 2,
-  "weeklyPlans": 4
+  "weeklyPlanCount": 4
 }
 
 This will permanently delete agent ContentWriter. This cannot be undone. Proceed? (yes / no)

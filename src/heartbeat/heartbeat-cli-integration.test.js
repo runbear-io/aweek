@@ -94,7 +94,6 @@ function makeAgentConfig(overrides = {}) {
     subagentRef: overrides.subagentRef || id,
     goals: [],
     monthlyPlans: [],
-    weeklyPlans: [],
     budget: { weeklyTokenLimit: 500000, currentUsage: 0 },
     inbox: [],
     createdAt: '2026-01-01T00:00:00.000Z',

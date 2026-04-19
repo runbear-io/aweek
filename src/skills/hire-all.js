@@ -11,7 +11,8 @@
  * wrapper. A fresh shell contains:
  *
  *   - `id` + `subagentRef` equal to the slug (1-to-1 filesystem mapping),
- *   - empty `goals`, `monthlyPlans`, `weeklyPlans`, and `inbox`,
+ *   - empty `goals`, `monthlyPlans`, and `inbox` (weekly plans live in
+ *     the `WeeklyPlanStore` file store, not on the agent JSON),
  *   - a default-weekly-budget `budget` block anchored at Monday 00:00 UTC
  *     with `paused: false` and `pausedReason: null` (explicit "never
  *     paused" marker — distinguishable from a missing field),
@@ -222,11 +223,16 @@ export async function hireAllSubagents({
 
     // Normalise the shell to the explicit "fresh hire" shape:
     //
-    //   - empty `goals`, `monthlyPlans`, `weeklyPlans`, and `inbox` arrays
+    //   - empty `goals`, `monthlyPlans`, and `inbox` arrays
     //     (defensive — `createAgentConfig` already produces them, but we
     //     re-set so a future drift in the model can't silently leak
     //     populated defaults into a batch hire),
     //   - `budget.paused` = false and `budget.pausedReason` = null.
+    //
+    // Weekly plans are intentionally NOT re-set here — they live in the
+    // per-week `WeeklyPlanStore` file store (`<agentId>/weekly-plans/`),
+    // not on the agent JSON, so there is nothing to seed on a fresh
+    // hire.
     //
     // Writing `pausedReason: null` explicitly (rather than omitting the
     // field) gives downstream readers — the heartbeat, the summary table,
@@ -236,7 +242,6 @@ export async function hireAllSubagents({
     // field for exactly this reason.
     config.goals = [];
     config.monthlyPlans = [];
-    config.weeklyPlans = [];
     config.inbox = [];
     config.budget.paused = false;
     config.budget.pausedReason = null;

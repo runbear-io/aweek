@@ -36,7 +36,6 @@ export function createAgentConfig({ subagentRef, weeklyTokenLimit = 500_000 } = 
     subagentRef,
     goals: [],
     monthlyPlans: [],
-    weeklyPlans: [],
     weeklyTokenBudget: weeklyTokenLimit,
     budget: {
       weeklyTokenLimit,

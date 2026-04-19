@@ -44,6 +44,7 @@
  */
 import { join } from 'node:path';
 import { AgentStore } from './agent-store.js';
+import { WeeklyPlanStore } from './weekly-plan-store.js';
 
 /**
  * Resolve the default data directory for aweek agents.
@@ -181,21 +182,26 @@ export function formatAgentChoice(agent) {
  */
 export async function getAgentChoices(opts = {}) {
   const configs = await listAllAgents(opts);
-  return configs.map((config) => {
-    const plans = config.weeklyPlans || [];
-    const latest = plans[plans.length - 1] || null;
-    const entry = {
-      id: config.id,
-      name: config.identity?.name || config.id,
-      role: config.identity?.role || '',
-      paused: !!config.budget?.paused,
-      latestWeek: latest?.week || null,
-      taskCount: latest?.tasks?.length || 0,
-      approved: !!latest?.approved,
-    };
-    entry.label = formatAgentChoice(entry);
-    return entry;
-  });
+  const weeklyPlanStore = new WeeklyPlanStore(resolveDataDir(opts.dataDir));
+  return Promise.all(
+    configs.map(async (config) => {
+      const plans = await weeklyPlanStore.loadAll(config.id).catch(() => []);
+      // WeeklyPlanStore.list sorts weeks ascending, so the last plan is
+      // the most recent one by week key.
+      const latest = plans[plans.length - 1] || null;
+      const entry = {
+        id: config.id,
+        name: config.identity?.name || config.id,
+        role: config.identity?.role || '',
+        paused: !!config.budget?.paused,
+        latestWeek: latest?.week || null,
+        taskCount: latest?.tasks?.length || 0,
+        approved: !!latest?.approved,
+      };
+      entry.label = formatAgentChoice(entry);
+      return entry;
+    }),
+  );
 }
 
 /**

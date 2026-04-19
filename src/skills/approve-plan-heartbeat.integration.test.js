@@ -36,6 +36,7 @@ import {
   createWeeklyPlan,
 } from '../models/agent.js';
 import { AgentStore } from '../storage/agent-store.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import {
   buildCronEntry,
   parseHeartbeatEntries,
@@ -94,16 +95,20 @@ function buildTestAgent(overrides = {}) {
   const task1 = createTask('Implement data layer', obj.id, { priority: 'high', estimatedMinutes: 60 });
   const task2 = createTask('Write unit tests', obj.id, { priority: 'medium', estimatedMinutes: 90 });
   const weeklyPlan = createWeeklyPlan(overrides.week || '2026-W16', '2026-04', [task1, task2]);
-  config.weeklyPlans.push(weeklyPlan);
+  const weeklyPlans = [weeklyPlan];
 
-  return { config, goal, obj, monthlyPlan, weeklyPlan, task1, task2 };
+  return { config, weeklyPlans, goal, obj, monthlyPlan, weeklyPlan, task1, task2 };
 }
 
-async function saveAgent(config) {
+async function saveAgent(config, weeklyPlans = []) {
   const tmpDir = await mkdtemp(join(tmpdir(), 'aweek-integ-'));
   const store = new AgentStore(tmpDir);
   await store.save(config);
-  return { store, tmpDir };
+  const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
+  for (const plan of weeklyPlans) {
+    await weeklyPlanStore.save(config.id, plan);
+  }
+  return { store, weeklyPlanStore, tmpDir };
 }
 
 // ---------------------------------------------------------------------------
@@ -112,8 +117,8 @@ async function saveAgent(config) {
 
 describe('Integration: approve-plan → heartbeat auto-activation', () => {
   it('first approval installs a crontab entry with correct agent ID', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     const result = await processApproval({
@@ -137,8 +142,8 @@ describe('Integration: approve-plan → heartbeat auto-activation', () => {
   });
 
   it('crontab entry command matches buildHeartbeatCommand output', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
     const projectDir = '/home/user/aweek';
 
@@ -155,8 +160,8 @@ describe('Integration: approve-plan → heartbeat auto-activation', () => {
   });
 
   it('custom schedule propagates to crontab entry', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     await processApproval({
@@ -173,8 +178,8 @@ describe('Integration: approve-plan → heartbeat auto-activation', () => {
   });
 
   it('custom heartbeat command propagates to crontab entry', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     await processApproval({
@@ -197,8 +202,8 @@ describe('Integration: approve-plan → heartbeat auto-activation', () => {
 
 describe('Integration: subsequent approvals are idempotent', () => {
   it('approving two plans for the same agent produces exactly one crontab entry', async () => {
-    const { config, obj } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, obj } = buildTestAgent();
+    const { tmpDir, weeklyPlanStore } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     // First approval
@@ -209,13 +214,10 @@ describe('Integration: subsequent approvals are idempotent', () => {
       installFn: harness.install,
     });
 
-    // Add a second pending plan and approve it
-    const store = new AgentStore(tmpDir);
-    const reloaded = await store.load(config.id);
+    // Add a second pending plan and save via weeklyPlanStore
     const task = createTask('Follow-up work', obj.id, { priority: 'medium' });
     const plan2 = createWeeklyPlan('2026-W17', '2026-04', [task]);
-    reloaded.weeklyPlans.push(plan2);
-    await store.save(reloaded);
+    await weeklyPlanStore.save(config.id, plan2);
 
     const result2 = await processApproval({
       agentId: config.id,
@@ -235,8 +237,8 @@ describe('Integration: subsequent approvals are idempotent', () => {
   });
 
   it('reinstalling with different schedule replaces the entry', async () => {
-    const { config, obj } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, obj } = buildTestAgent();
+    const { tmpDir, weeklyPlanStore } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     // First approval with default schedule
@@ -247,13 +249,10 @@ describe('Integration: subsequent approvals are idempotent', () => {
       installFn: harness.install,
     });
 
-    // Add second plan and approve with custom schedule
-    const store = new AgentStore(tmpDir);
-    const reloaded = await store.load(config.id);
+    // Add second plan via weeklyPlanStore and approve with custom schedule
     const task = createTask('More work', obj.id);
     const plan2 = createWeeklyPlan('2026-W17', '2026-04', [task]);
-    reloaded.weeklyPlans.push(plan2);
-    await store.save(reloaded);
+    await weeklyPlanStore.save(config.id, plan2);
 
     await processApproval({
       agentId: config.id,
@@ -275,8 +274,8 @@ describe('Integration: subsequent approvals are idempotent', () => {
 
 describe('Integration: edit+auto-approve → heartbeat activation', () => {
   it('edit with autoApproveAfterEdit installs crontab entry', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     const result = await processApproval({
@@ -299,8 +298,8 @@ describe('Integration: edit+auto-approve → heartbeat activation', () => {
   });
 
   it('edit without autoApproveAfterEdit does NOT install crontab entry', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     const result = await processApproval({
@@ -322,8 +321,8 @@ describe('Integration: edit+auto-approve → heartbeat activation', () => {
   });
 
   it('edit+auto-approve with custom schedule installs correct schedule', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     await processApproval({
@@ -347,8 +346,8 @@ describe('Integration: edit+auto-approve → heartbeat activation', () => {
 
 describe('Integration: reject does NOT activate heartbeat', () => {
   it('rejecting a plan does not install any crontab entry', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     const result = await processApproval({
@@ -364,8 +363,8 @@ describe('Integration: reject does NOT activate heartbeat', () => {
   });
 
   it('reject after a previous approval does not remove existing crontab entry', async () => {
-    const { config, obj } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, obj } = buildTestAgent();
+    const { tmpDir, weeklyPlanStore } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     // First: approve the plan
@@ -377,13 +376,10 @@ describe('Integration: reject does NOT activate heartbeat', () => {
     });
     assert.equal(harness.entries().length, 1);
 
-    // Add a new pending plan
-    const store = new AgentStore(tmpDir);
-    const reloaded = await store.load(config.id);
+    // Add a new pending plan via weeklyPlanStore
     const task = createTask('New work', obj.id);
     const plan2 = createWeeklyPlan('2026-W17', '2026-04', [task]);
-    reloaded.weeklyPlans.push(plan2);
-    await store.save(reloaded);
+    await weeklyPlanStore.save(config.id, plan2);
 
     // Reject the new plan
     await processApproval({
@@ -405,8 +401,8 @@ describe('Integration: reject does NOT activate heartbeat', () => {
 
 describe('Integration: heartbeat activation failure is non-fatal', () => {
   it('plan is still approved even when installFn throws', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir, weeklyPlanStore } = await saveAgent(config, weeklyPlans);
 
     const failingInstall = async () => {
       throw new Error('crontab: permission denied');
@@ -425,14 +421,13 @@ describe('Integration: heartbeat activation failure is non-fatal', () => {
     assert.equal(result.heartbeatActivated, false);
 
     // Verify persisted state — plan is approved in file
-    const store = new AgentStore(tmpDir);
-    const reloaded = await store.load(config.id);
-    assert.equal(reloaded.weeklyPlans[0].approved, true);
+    const plans = await weeklyPlanStore.loadAll(config.id);
+    assert.equal(plans[0].approved, true);
   });
 
   it('edit+auto-approve persists even when heartbeat fails', async () => {
-    const { config, task1 } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, task1 } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
 
     const failingInstall = async () => {
       throw new Error('crontab: not available');
@@ -463,11 +458,11 @@ describe('Integration: multi-agent crontab isolation', () => {
 
     // Create and save agent A
     const agentA = buildTestAgent({ name: 'AlphaBot' });
-    const { tmpDir: dirA } = await saveAgent(agentA.config);
+    const { tmpDir: dirA } = await saveAgent(agentA.config, agentA.weeklyPlans);
 
     // Create and save agent B
     const agentB = buildTestAgent({ name: 'BetaBot' });
-    const { tmpDir: dirB } = await saveAgent(agentB.config);
+    const { tmpDir: dirB } = await saveAgent(agentB.config, agentB.weeklyPlans);
 
     // Approve agent A
     await processApproval({
@@ -497,9 +492,9 @@ describe('Integration: multi-agent crontab isolation', () => {
     const harness = createCrontabHarness();
 
     const agentA = buildTestAgent({ name: 'FastBot' });
-    const { tmpDir: dirA } = await saveAgent(agentA.config);
+    const { tmpDir: dirA } = await saveAgent(agentA.config, agentA.weeklyPlans);
     const agentB = buildTestAgent({ name: 'SlowBot' });
-    const { tmpDir: dirB } = await saveAgent(agentB.config);
+    const { tmpDir: dirB } = await saveAgent(agentB.config, agentB.weeklyPlans);
 
     await processApproval({
       agentId: agentA.config.id,
@@ -529,9 +524,9 @@ describe('Integration: multi-agent crontab isolation', () => {
     const harness = createCrontabHarness();
 
     const agentA = buildTestAgent({ name: 'StableBot' });
-    const { tmpDir: dirA } = await saveAgent(agentA.config);
+    const { tmpDir: dirA } = await saveAgent(agentA.config, agentA.weeklyPlans);
     const agentB = buildTestAgent({ name: 'ChangingBot' });
-    const { tmpDir: dirB } = await saveAgent(agentB.config);
+    const { tmpDir: dirB, weeklyPlanStore: wpsB } = await saveAgent(agentB.config, agentB.weeklyPlans);
 
     // Approve both
     await processApproval({
@@ -549,13 +544,11 @@ describe('Integration: multi-agent crontab isolation', () => {
 
     assert.equal(harness.entries().length, 2);
 
-    // Add new plan for agent B and re-approve with different schedule
-    const storeB = new AgentStore(dirB);
-    const reloadedB = await storeB.load(agentB.config.id);
-    const task = createTask('New task', agentB.obj?.id || reloadedB.monthlyPlans[0].objectives[0].id);
+    // Add new plan for agent B via weeklyPlanStore and re-approve with different schedule
+    const objId = agentB.obj?.id;
+    const task = createTask('New task', objId);
     const plan2 = createWeeklyPlan('2026-W17', '2026-04', [task]);
-    reloadedB.weeklyPlans.push(plan2);
-    await storeB.save(reloadedB);
+    await wpsB.save(agentB.config.id, plan2);
 
     await processApproval({
       agentId: agentB.config.id,
@@ -583,8 +576,8 @@ describe('Integration: multi-agent crontab isolation', () => {
 
 describe('Integration: full approval lifecycle with crontab', () => {
   it('approve → add plan → reject → add plan → approve maintains single entry', async () => {
-    const { config, obj } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans, obj } = buildTestAgent();
+    const { tmpDir, weeklyPlanStore } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     // Step 1: Approve first plan
@@ -599,12 +592,9 @@ describe('Integration: full approval lifecycle with crontab', () => {
     assert.equal(harness.entries().length, 1);
 
     // Step 2: Add second plan and reject it
-    const store = new AgentStore(tmpDir);
-    let reloaded = await store.load(config.id);
     const task2 = createTask('Plan 2 work', obj.id);
     const plan2 = createWeeklyPlan('2026-W17', '2026-04', [task2]);
-    reloaded.weeklyPlans.push(plan2);
-    await store.save(reloaded);
+    await weeklyPlanStore.save(config.id, plan2);
 
     const r2 = await processApproval({
       agentId: config.id,
@@ -617,11 +607,9 @@ describe('Integration: full approval lifecycle with crontab', () => {
     assert.equal(harness.entries().length, 1);
 
     // Step 3: Add third plan and approve it
-    reloaded = await store.load(config.id);
     const task3 = createTask('Plan 3 work', obj.id);
     const plan3 = createWeeklyPlan('2026-W18', '2026-04', [task3]);
-    reloaded.weeklyPlans.push(plan3);
-    await store.save(reloaded);
+    await weeklyPlanStore.save(config.id, plan3);
 
     const r3 = await processApproval({
       agentId: config.id,
@@ -644,8 +632,8 @@ describe('Integration: full approval lifecycle with crontab', () => {
 
 describe('Integration: crontab preserves pre-existing entries', () => {
   it('approval does not clobber existing non-aweek crontab entries', async () => {
-    const { config } = buildTestAgent();
-    const { tmpDir } = await saveAgent(config);
+    const { config, weeklyPlans } = buildTestAgent();
+    const { tmpDir } = await saveAgent(config, weeklyPlans);
     const harness = createCrontabHarness();
 
     // Simulate existing system crontab entries
