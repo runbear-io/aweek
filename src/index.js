@@ -567,6 +567,7 @@ export {
   CANONICAL_SECTIONS as PLAN_CANONICAL_SECTIONS,
   PLAN_FILENAME,
   buildInitialPlan,
+  buildPlanFromInterview,
   buildPlanFromLegacy,
   exists as planExists,
   migrateLegacyPlan,

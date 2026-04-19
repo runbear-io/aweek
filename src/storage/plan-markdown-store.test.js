@@ -12,6 +12,7 @@ import {
   CANONICAL_SECTIONS,
   PLAN_FILENAME,
   buildInitialPlan,
+  buildPlanFromInterview,
   buildPlanFromLegacy,
   exists,
   migrateLegacyPlan,
@@ -280,5 +281,44 @@ describe('plan-markdown-store — migrateLegacyPlan', () => {
     } finally {
       await rm(base, { recursive: true, force: true });
     }
+  });
+});
+
+describe('plan-markdown-store — buildPlanFromInterview', () => {
+  it('renders each interview answer under its canonical H2', () => {
+    const body = buildPlanFromInterview({
+      name: 'Writer bot',
+      description: 'Writes blog posts.',
+      longTermGoals: '- 1yr: 50 posts\n- 3mo: launch newsletter',
+      monthlyPlans: '### 2026-04\n- Ship 4 posts',
+      strategies: '- Prefer draft over polish.',
+      notes: 'Voice: plain, direct.',
+    });
+    assert.match(body, /^# Writer bot/);
+    assert.ok(body.includes('Writes blog posts.'));
+    const parsed = parsePlanMarkdownSections(body);
+    assert.match(parsed.byTitle['Long-term goals'], /50 posts/);
+    assert.match(parsed.byTitle['Monthly plans'], /### 2026-04/);
+    assert.match(parsed.byTitle['Strategies'], /draft over polish/);
+    assert.match(parsed.byTitle['Notes'], /plain, direct/);
+  });
+
+  it('falls back to placeholder comments for empty / missing answers', () => {
+    const body = buildPlanFromInterview({ name: 'Writer bot' });
+    const parsed = parsePlanMarkdownSections(body);
+    // Every canonical section exists even without answers.
+    for (const title of CANONICAL_SECTIONS) {
+      assert.ok(title in parsed.byTitle, `missing section ${title}`);
+      assert.match(parsed.byTitle[title], /^<!--/);
+    }
+  });
+
+  it('trims whitespace in supplied answers', () => {
+    const body = buildPlanFromInterview({
+      name: 'A',
+      longTermGoals: '   \n\nHit the 1yr goal.\n\n   ',
+    });
+    const parsed = parsePlanMarkdownSections(body);
+    assert.equal(parsed.byTitle['Long-term goals'], 'Hit the 1yr goal.');
   });
 });
