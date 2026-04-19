@@ -77,11 +77,11 @@ The underlying adapters refuse to run without `confirmed: true` — do not bypas
 
 ### Plan model
 
-Goals → Monthly Objectives → Weekly Tasks form a strict traceability chain enforced by JSON schemas in `src/schemas/`:
+Long-term goals, monthly plans, and strategies live in a per-agent free-form markdown at `.aweek/agents/<slug>/plan.md` (see `src/storage/plan-markdown-store.js`). The file uses four canonical H2 sections — Long-term goals, Monthly plans, Strategies, Notes — but the structure is a convention, not a schema: the weekly-plan generator reads the whole body as context rather than enforcing shape. Legacy agents with `config.goals` / `config.monthlyPlans` JSON can be migrated to `plan.md` via `migrateLegacyPlan`; those JSON columns are now optional on the agent schema and will be removed in a follow-up.
 
-- `goals.schema.js` — long-term goals (`1mo` / `3mo` / `1yr` horizons).
-- `monthly-plan.schema.js` — monthly objectives keyed by `YYYY-MM`, each linked to a `goalId`.
-- `weekly-plan.schema.js` — weekly tasks keyed by `YYYY-Www`, each linked to an `objectiveId`. Plans start `approved: false` and only activate the heartbeat after the first `/aweek:plan` approval.
+Only weekly tasks remain structured:
+
+- `weekly-plan.schema.js` — weekly tasks keyed by `YYYY-Www`. `objectiveId` is a free-form string (typically the H3 heading a task traces to in `plan.md`, e.g. `"2026-04"`). Plans start `approved: false` and only activate the heartbeat after the first `/aweek:plan` approval.
 
 Persistence is split across stores in `src/storage/` (agent, weekly-plan, monthly-plan, goal, inbox, usage, activity-log, artifact, execution).
 
