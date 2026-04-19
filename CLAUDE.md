@@ -85,6 +85,18 @@ Goals → Monthly Objectives → Weekly Tasks form a strict traceability chain e
 
 Persistence is split across stores in `src/storage/` (agent, weekly-plan, monthly-plan, goal, inbox, usage, activity-log, artifact, execution).
 
+### Time zone
+
+`.aweek/config.json` carries a single `timeZone` field (IANA name, e.g. `"America/Los_Angeles"`). `/aweek:init` seeds it with the host's detected zone.
+
+Storage stays UTC — `runAt`, `createdAt`, week keys on disk, and all millisecond comparisons (`task-selector.isRunAtReady`, etc.) are absolute. The configured zone is applied at every *date-field extraction*: calendar day/hour placement, ISO-week key derivation, Monday boundary for budget/usage/activity stores. The primitives live in `src/time/zone.js` (`currentWeekKey`, `mondayOfWeek`, `localParts`, `localDayOffset`, `localHour`, `localWallClockToUtc`, `parseLocalWallClock`) and are re-exported from `src/index.js`.
+
+Every helper that touches date fields (`getMondayISO`, `getMondayDate` in the usage/activity/execution stores, `getCurrentWeekString`, calendar `mondayFromISOWeek`, `distributeTasks`, `renderGrid`) accepts an optional `tz` argument and stays UTC-default for backward compatibility. Runtime callers resolve the zone via `loadConfig(dataDir)` and pass it through; unit tests without a zone continue to see UTC behavior.
+
+Cron fires in the system local zone. `runHeartbeatForAll` compares the configured zone against the detected system zone on each tick and prints a one-line warning when they diverge (so mismatches show up in heartbeat logs instead of silently drifting).
+
+DST seams are handled explicitly: `localWallClockToUtc` returns the first instant past a spring-forward gap and the earlier of two candidates for a fall-back ambiguous wall clock. See `src/time/zone.test.js`.
+
 ### Subagent discovery
 
 `src/subagents/subagent-discovery.js` scans both `.claude/agents/` (project) and `~/.claude/agents/` (user) and returns `{ slug, scope, path, hired }` records. The hire wizard's pick-existing branch and the init four-option menu both consume this list, filtering out plugin-namespaced and already-hired slugs.

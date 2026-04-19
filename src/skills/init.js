@@ -33,6 +33,8 @@ import {
   readCrontab as defaultReadCrontab,
   writeCrontab as defaultWriteCrontab,
 } from '../heartbeat/crontab-manager.js';
+import { configPath, loadConfig, saveConfig } from '../storage/config-store.js';
+import { DEFAULT_TZ } from '../time/zone.js';
 
 /**
  * Canonical subdirectories that live under `.aweek/`.
@@ -183,6 +185,20 @@ export async function ensureDataDir({
     };
   }
 
+  // Seed `.aweek/config.json` with the detected system time zone on a
+  // fresh init. A re-init against an existing config is a no-op — we
+  // don't touch a user-edited `timeZone` value, just report `skipped`.
+  const configAbsPath = configPath(subdirs.agents.path);
+  const configExisted = await pathExists(configAbsPath);
+  let configOutcome;
+  if (configExisted) {
+    configOutcome = 'skipped';
+  } else {
+    await saveConfig(subdirs.agents.path, { timeZone: DEFAULT_TZ });
+    configOutcome = 'created';
+  }
+  const configState = await loadConfig(subdirs.agents.path);
+
   return {
     root: aweekRoot,
     outcome: rootExisted ? 'skipped' : 'created',
@@ -190,6 +206,11 @@ export async function ensureDataDir({
     agentsPath: subdirs.agents.path,
     logsPath: subdirs.logs.path,
     statePath: subdirs.state.path,
+    config: {
+      path: configAbsPath,
+      outcome: configOutcome,
+      timeZone: configState.timeZone,
+    },
   };
 }
 

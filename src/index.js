@@ -540,3 +540,24 @@ export {
   validateInitHireMenuChoice,
   validateSelectedSlugs as validateInitHireMenuSelectedSlugs,
 } from './skills/init-hire-menu.js';
+
+// Time-zone utilities and the tiny .aweek/config.json store. Skill modules
+// import from here rather than from the submodules directly so the public
+// surface stays flat.
+export {
+  DEFAULT_TZ,
+  currentWeekKey,
+  detectSystemTimeZone,
+  isValidTimeZone,
+  localDayOffset,
+  localHour,
+  localParts,
+  localWallClockToUtc,
+  mondayOfWeek,
+  parseLocalWallClock,
+} from './time/zone.js';
+export {
+  configPath,
+  loadConfig,
+  saveConfig,
+} from './storage/config-store.js';
