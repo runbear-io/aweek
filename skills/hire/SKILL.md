@@ -1,6 +1,6 @@
 ---
 name: hire
-description: Hire (create) a new aweek agent — identity-only (name, description, system prompt). Long-term goals live in plan.md (edited via /aweek:plan); weekly tasks are added separately.
+description: Hire (create) a new aweek agent — collect identity, then interview the user to author plan.md (long-term goals, monthly plans, strategies, notes) so the agent is plan-ready immediately.
 trigger: aweek hire, hire agent, new agent, add agent, create agent, aweek create agent
 ---
 
@@ -8,12 +8,17 @@ trigger: aweek hire, hire agent, new agent, add agent, create agent, aweek creat
 
 Hire a new aweek agent interactively. Each aweek agent is a **1-to-1 wrapper
 around a Claude Code subagent** defined in `.claude/agents/<slug>.md`. This
-skill captures identity only (name, description, system prompt) and writes
-three things: the subagent `.md`, the minimal aweek scheduling JSON shell,
-and a starter `plan.md` at `.aweek/agents/<slug>/plan.md` pre-populated
-with the four canonical sections (Long-term goals, Monthly plans,
-Strategies, Notes). After the hire finishes, point the user at `/aweek:plan`
-for goals/plans editing and weekly-task adjustments.
+skill captures identity (name, description, system prompt) AND conducts a
+short interview to populate the agent's planning markdown. It writes three
+things:
+
+1. The subagent `.md` at `.claude/agents/<slug>.md`.
+2. The aweek scheduling JSON shell at `.aweek/agents/<slug>.json`.
+3. A fully-written `plan.md` at `.aweek/agents/<slug>/plan.md`, built from
+   the interview answers (not the blank template).
+
+After the hire finishes, the user can move straight to `/aweek:plan`
+Branch B to schedule their first week — no editor round-trip required.
 
 The skill is a thin UX wrapper on top of `src/skills/hire-create-new-menu.js`
 (for the create-new branch) and `src/skills/hire-all.js` (when adopting an
@@ -174,6 +179,61 @@ The handler is idempotent (re-wrapping an already-hired slug reports
 `.md` files, and invalid slug shapes surface as structured `skipped` /
 `failed` entries instead of throwing).
 
+### Step 3: Interview the User to Build plan.md
+
+After the hire completes (either branch), the subagent directory contains
+a blank-template `plan.md` (the `hireAllSubagents` handler seeds it
+automatically). Replace that template with a plan derived from a short
+interview — this is the whole point of the hire flow feeling "complete":
+the user walks away with an agent that already has direction.
+
+Collect four free-form answers via `AskUserQuestion`, **one at a time**.
+Each prompt should be short and concrete; the answer field accepts
+multi-line input. Skip-to-next is allowed — an empty answer falls back
+to a placeholder comment in the rendered plan.
+
+1. **Long-term goals** — "What should <agent name> achieve over the
+   next 1 month / 3 months / 1 year? Bullet points are fine."
+2. **Monthly plans** — "What's the focus for the current month? Add
+   more `### YYYY-MM` sections below if you're already thinking ahead."
+3. **Strategies** — "How should <agent name> work? Preferred tone,
+   tools, rituals, guardrails — anything the weekly planner should
+   respect."
+4. **Notes** — "Anything else the agent should know?" (Optional.)
+
+After collecting the answers, render the plan body and write it —
+overwriting the template seeded by the hire handler:
+
+```bash
+echo '{
+  "name": "<AGENT_NAME>",
+  "description": "<DESCRIPTION>",
+  "longTermGoals": "<ANSWER_1>",
+  "monthlyPlans":  "<ANSWER_2>",
+  "strategies":    "<ANSWER_3>",
+  "notes":         "<ANSWER_4>"
+}' | aweek exec plan-markdown buildFromInterview --input-json -
+```
+
+The response is a markdown string. Pipe it straight into a write:
+
+```bash
+echo '{
+  "agentsDir": ".aweek/agents",
+  "agentId":   "<SLUG>",
+  "body":      "<BODY_FROM_buildFromInterview>"
+}' | aweek exec plan-markdown write --input-json -
+```
+
+Always echo a short confirmation to the user: the absolute path of the
+written plan (so they know where to edit later) plus a one-line summary
+of what the four sections now contain.
+
+Do **not** spawn an editor and do **not** ask the user to open the file
+— the whole point of the interview is to skip the editor round-trip.
+If the user wants to polish prose, point them at `/aweek:plan` Branch A
+as a follow-up.
+
 ## Validation Rules
 
 - **Name** — 1-100 chars, non-empty, must contain at least one alphanumeric
@@ -197,13 +257,15 @@ All artifacts are validated against JSON schemas before save.
 
 ## Next Steps
 
-After a successful hire, tell the user:
+After a successful hire + interview, tell the user:
 
-- Add long-term goals, a monthly objective, and an initial weekly plan
-  with `/aweek:plan` — goals and plans are **not** collected during
-  hiring.
-- View the full agent roster with `/aweek:summary`.
+- Goals, monthly plans, and strategies are already in
+  `.aweek/agents/<slug>/plan.md`. Revisit them anytime with
+  `/aweek:plan` Branch A.
+- Create the first **weekly plan** with `/aweek:plan` Branch B. That's
+  the only remaining step before the heartbeat can start firing tasks.
 - The heartbeat system activates after the first weekly plan approval.
+- View the full agent roster with `/aweek:summary`.
 
 ## Data Directory
 

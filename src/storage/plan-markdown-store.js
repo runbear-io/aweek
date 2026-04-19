@@ -193,7 +193,10 @@ export function parsePlanMarkdownSections(markdown) {
     if (currentTitle == null) return;
     sections.push({
       title: currentTitle,
-      body: currentBody.join('\n').replace(/\n+$/, ''),
+      // Strip leading and trailing blank lines so downstream consumers
+      // see clean bodies regardless of whether the author left a blank
+      // line under the heading (which the canonical template does).
+      body: currentBody.join('\n').replace(/^\n+|\n+$/g, ''),
     });
     currentTitle = null;
     currentBody = [];
@@ -316,6 +319,74 @@ export function buildPlanFromLegacy({
     '',
     '<!-- Freeform context the weekly-plan generator should know about. -->',
     '',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Render a plan.md body from answers collected during `/aweek:hire`'s
+ * interview flow. Every section is a free-form string that the user
+ * types in response to a short prompt — we stitch them into the
+ * canonical H2 layout without any cleverness. Empty answers fall back
+ * to a placeholder comment so the skeleton stays visible and editable.
+ *
+ * The caller (the hire skill) is responsible for asking the questions;
+ * this helper only handles the assembly so the rendering logic stays in
+ * one place and is easy to unit-test.
+ *
+ * @param {object} opts
+ * @param {string} [opts.name='Agent'] - Agent display name for the H1.
+ * @param {string} [opts.description] - Optional preamble (usually the subagent description).
+ * @param {string} [opts.longTermGoals] - Body for the `## Long-term goals` section.
+ * @param {string} [opts.monthlyPlans] - Body for `## Monthly plans`.
+ * @param {string} [opts.strategies] - Body for `## Strategies`.
+ * @param {string} [opts.notes] - Body for `## Notes`.
+ * @returns {string}
+ */
+export function buildPlanFromInterview({
+  name = 'Agent',
+  description,
+  longTermGoals,
+  monthlyPlans,
+  strategies,
+  notes,
+} = {}) {
+  const section = (title, body, placeholder) => {
+    const trimmed = typeof body === 'string' ? body.trim() : '';
+    return [
+      `## ${title}`,
+      '',
+      trimmed.length > 0 ? trimmed : `<!-- ${placeholder} -->`,
+      '',
+    ];
+  };
+
+  const lines = [`# ${name}`];
+  if (description && typeof description === 'string' && description.trim()) {
+    lines.push('', description.trim());
+  }
+  lines.push('');
+  lines.push(
+    ...section(
+      'Long-term goals',
+      longTermGoals,
+      'What should this agent achieve over the next year / quarter / month?',
+    ),
+    ...section(
+      'Monthly plans',
+      monthlyPlans,
+      'One subsection per month, e.g. "### 2026-04" with 2–5 objectives.',
+    ),
+    ...section(
+      'Strategies',
+      strategies,
+      'How does the agent prefer to work? Tone, tools, rituals, guardrails.',
+    ),
+    ...section(
+      'Notes',
+      notes,
+      'Freeform context the weekly-plan generator should know about.',
+    ),
   );
   return lines.join('\n');
 }
