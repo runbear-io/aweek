@@ -483,3 +483,65 @@ describe('hire-all — constants', () => {
     assert.equal(DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT, 500_000);
   });
 });
+
+describe('hire-all — plan.md seeding', () => {
+  let tmpProject;
+  let dataDir;
+
+  beforeEach(async () => {
+    tmpProject = await mkdtemp(join(tmpdir(), 'aweek-hire-plan-'));
+    dataDir = join(tmpProject, '.aweek', 'agents');
+    await writeSubagentFile({
+      slug: 'writer',
+      description: 'Writes blog posts',
+      systemPrompt: 'Write things.',
+      projectDir: tmpProject,
+    });
+  });
+
+  afterEach(async () => {
+    await rm(tmpProject, { recursive: true, force: true });
+  });
+
+  it('seeds .aweek/agents/<slug>/plan.md with the initial template', async () => {
+    const store = new AgentStore(dataDir);
+    await hireAllSubagents({
+      slugs: ['writer'],
+      projectDir: tmpProject,
+      dataDir,
+      agentStore: store,
+    });
+    const planBody = await readFile(
+      join(dataDir, 'writer', 'plan.md'),
+      'utf8',
+    );
+    assert.match(planBody, /^# /);
+    for (const section of ['Long-term goals', 'Monthly plans', 'Strategies', 'Notes']) {
+      assert.ok(planBody.includes(`## ${section}`), `missing ${section}`);
+    }
+    // Preamble should reflect the subagent .md description.
+    assert.ok(planBody.includes('Writes blog posts'), planBody);
+  });
+
+  it('leaves an existing plan.md untouched on idempotent re-hire', async () => {
+    const store = new AgentStore(dataDir);
+    await hireAllSubagents({
+      slugs: ['writer'],
+      projectDir: tmpProject,
+      dataDir,
+      agentStore: store,
+    });
+    // Overwrite with a user-edited body.
+    const edited = '# Writer (edited)\n\nCustom content.\n';
+    await writeFile(join(dataDir, 'writer', 'plan.md'), edited, 'utf8');
+    // Re-hire — should skip without touching plan.md (idempotency).
+    await hireAllSubagents({
+      slugs: ['writer'],
+      projectDir: tmpProject,
+      dataDir,
+      agentStore: store,
+    });
+    const body = await readFile(join(dataDir, 'writer', 'plan.md'), 'utf8');
+    assert.equal(body, edited);
+  });
+});

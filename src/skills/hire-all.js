@@ -58,7 +58,16 @@
  */
 import { createAgentConfig } from '../models/agent.js';
 import { createAgentStore } from '../storage/agent-helpers.js';
-import { subagentFileExists, validateSubagentSlug } from '../subagents/subagent-file.js';
+import {
+  buildInitialPlan,
+  exists as planExists,
+  writePlan,
+} from '../storage/plan-markdown-store.js';
+import {
+  readSubagentIdentity,
+  subagentFileExists,
+  validateSubagentSlug,
+} from '../subagents/subagent-file.js';
 import { isPluginSubagent } from './hire-route.js';
 
 /**
@@ -252,6 +261,25 @@ export async function hireAllSubagents({
     // aborting the batch.
     try {
       await store.save(config);
+      // Seed the free-form plan.md when missing. Non-fatal: a hire that
+      // succeeds but fails to seed plan.md still counts as `created` — the
+      // user can write the file by hand on first `/aweek:plan`.
+      try {
+        if (!(await planExists(store.baseDir, slug))) {
+          let name = slug;
+          let description;
+          try {
+            const identity = await readSubagentIdentity(slug, projectDir);
+            if (identity?.name) name = identity.name;
+            if (identity?.description) description = identity.description;
+          } catch {
+            // Fall back to the slug alone.
+          }
+          await writePlan(store.baseDir, slug, buildInitialPlan({ name, description }));
+        }
+      } catch {
+        // Ignore — plan.md is secondary to the JSON wrapper.
+      }
       created.push(slug);
     } catch (err) {
       failed.push({
