@@ -33,9 +33,9 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ssowonny/aweek.git"
+    "url": "git+https://github.com/runbear-io/aweek.git"
   },
-  "homepage": "https://github.com/ssowonny/aweek#readme",
+  "homepage": "https://github.com/runbear-io/aweek#readme",
   "publishConfig": {
     "access": "public"
   },
