@@ -443,7 +443,10 @@ describe('Idempotent execution — HeartbeatTaskRunner + ExecutionStore layer', 
     await rm(lockDir, { recursive: true, force: true });
   });
 
-  it('tickAgent twice in same window — second is skipped', async () => {
+  it('tickAgent — repeated ticks pick the single task once, then report no_pending_tasks', async () => {
+    // Window dedup is gone. The first tick picks and marks the task
+    // `in-progress`; the second tick sees no remaining `pending` task and
+    // reports `no_pending_tasks` instead of `skipped`.
     const agentId = `agent-${uid()}`;
     const task = makeTask({ priority: 'high' });
 
@@ -457,12 +460,10 @@ describe('Idempotent execution — HeartbeatTaskRunner + ExecutionStore layer', 
     const r2 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
 
     assert.equal(r1.outcome, 'task_selected');
-    assert.equal(r2.outcome, 'skipped');
-    assert.ok(r2.reason.includes('Duplicate heartbeat'));
-    assert.ok(r2.idempotencyKey);
+    assert.equal(r2.outcome, 'no_pending_tasks');
   });
 
-  it('tickAgent N times in same window — exactly 1 task selected', async () => {
+  it('tickAgent N times — selects every pending task exactly once, then reports no_pending_tasks', async () => {
     const agentId = `agent-${uid()}`;
     const tasks = Array.from({ length: 5 }, (_, i) =>
       makeTask({ priority: 'high', description: `task-${i}` })
@@ -475,19 +476,18 @@ describe('Idempotent execution — HeartbeatTaskRunner + ExecutionStore layer', 
     }));
 
     const results = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       results.push(await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore }));
     }
 
     const selected = results.filter((r) => r.outcome === 'task_selected');
-    const skipped = results.filter((r) => r.outcome === 'skipped');
+    const exhausted = results.filter((r) => r.outcome === 'no_pending_tasks');
+    assert.equal(selected.length, 5, 'All five tasks should be selected across ticks');
+    assert.equal(exhausted.length, 1, 'The trailing tick should report no_pending_tasks');
 
-    assert.equal(selected.length, 1, 'Exactly one task should be selected');
-    assert.equal(skipped.length, 4, 'Four should be skipped as duplicates');
-
-    // Only 1 execution record
+    // One audit row per tick — no dedup collapse.
     const records = await execStore.load(agentId);
-    assert.equal(records.length, 1);
+    assert.equal(records.length, 6);
   });
 
   it('tickAgent in different time windows — each selects a task', async () => {
@@ -519,7 +519,10 @@ describe('Idempotent execution — HeartbeatTaskRunner + ExecutionStore layer', 
     assert.notEqual(r1.task.id, r2.task.id, 'Different tasks should be selected');
   });
 
-  it('runHeartbeatTick with scheduler — same window produces exactly one execution', async () => {
+  it('runHeartbeatTick with scheduler — consecutive ticks advance through tasks', async () => {
+    // Window dedup removed: each tick picks the next `pending` task; the
+    // trailing tick (after all tasks moved to `in-progress`) reports
+    // `no_pending_tasks` instead of `skipped`.
     const agentId = `agent-${uid()}`;
     const task1 = makeTask({ priority: 'critical', description: 'only-task' });
     const task2 = makeTask({ priority: 'high', description: 'second-task' });
@@ -530,94 +533,80 @@ describe('Idempotent execution — HeartbeatTaskRunner + ExecutionStore layer', 
       tasks: [task1, task2],
     }));
 
-    // Three sequential heartbeat ticks in same window
     const r1 = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: wpStore, executionStore: execStore });
     const r2 = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: wpStore, executionStore: execStore });
     const r3 = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: wpStore, executionStore: execStore });
 
-    assert.equal(r1.status, 'completed');
     assert.equal(r1.result.outcome, 'task_selected');
     assert.equal(r1.result.task.id, task1.id);
+    assert.equal(r2.result.outcome, 'task_selected');
+    assert.equal(r2.result.task.id, task2.id);
+    assert.equal(r3.result.outcome, 'no_pending_tasks');
 
-    assert.equal(r2.status, 'completed');
-    assert.equal(r2.result.outcome, 'skipped');
-
-    assert.equal(r3.status, 'completed');
-    assert.equal(r3.result.outcome, 'skipped');
-
-    // Only 1 execution record written
+    // One audit row per tick.
     const records = await execStore.load(agentId);
-    assert.equal(records.length, 1, 'Exactly one execution record');
-    assert.equal(records[0].taskId, task1.id);
+    assert.equal(records.length, 3);
   });
 
-  it('runHeartbeatTickAll — multi-agent deduplication is per-agent', async () => {
+  it('runHeartbeatTickAll — each agent advances independently on every round', async () => {
     const agent1 = `agent-${uid()}`;
     const agent2 = `agent-${uid()}`;
 
     await wpStore.save(agent1, makePlan({
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ description: 'a1-task' })],
+      tasks: [makeTask({ description: 'a1-task-1' }), makeTask({ description: 'a1-task-2' })],
     }));
     await wpStore.save(agent2, makePlan({
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ description: 'a2-task' })],
+      tasks: [makeTask({ description: 'a2-task-1' }), makeTask({ description: 'a2-task-2' })],
     }));
 
-    // Round 1: both execute
+    // Round 1: both agents pick their first pending task.
     const round1 = await runHeartbeatTickAll([agent1, agent2], {
       scheduler, weeklyPlanStore: wpStore, executionStore: execStore,
     });
     assert.equal(round1.length, 2);
     assert.ok(round1.every((r) => r.result.outcome === 'task_selected'));
 
-    // Round 2: both skipped (same window)
+    // Round 2: both agents pick their second pending task (NOT skipped).
     const round2 = await runHeartbeatTickAll([agent1, agent2], {
       scheduler, weeklyPlanStore: wpStore, executionStore: execStore,
     });
     assert.equal(round2.length, 2);
-    assert.ok(round2.every((r) => r.result.outcome === 'skipped'));
-
-    // Each agent has exactly 1 execution record
-    const rec1 = await execStore.load(agent1);
-    const rec2 = await execStore.load(agent2);
-    assert.equal(rec1.length, 1);
-    assert.equal(rec2.length, 1);
+    assert.ok(round2.every((r) => r.result.outcome === 'task_selected'));
   });
 
-  it('failed heartbeat in window still prevents duplicate in same window', async () => {
+  it('failed heartbeat does not block follow-up ticks — every tick is retried', async () => {
     const agentId = `agent-${uid()}`;
     const brokenStore = {
       loadLatestApproved: async () => { throw new Error('disk error'); },
     };
 
-    // First tick fails
     const r1 = await tickAgent(agentId, {
       weeklyPlanStore: brokenStore,
       executionStore: execStore,
     });
     assert.equal(r1.outcome, 'error');
 
-    // Second tick in same window is skipped (not retried)
+    // Window dedup is gone — the second tick retries the failing path.
     const r2 = await tickAgent(agentId, {
       weeklyPlanStore: brokenStore,
       executionStore: execStore,
     });
-    assert.equal(r2.outcome, 'skipped');
-    assert.ok(r2.reason.includes('Duplicate heartbeat'));
+    assert.equal(r2.outcome, 'error');
 
-    // Only 1 execution record (the failed one)
+    // Both failures are audited.
     const records = await execStore.load(agentId);
-    assert.equal(records.length, 1);
-    assert.equal(records[0].status, 'failed');
+    assert.equal(records.length, 2);
+    assert.ok(records.every((r) => r.status === 'failed'));
   });
 
-  it('shell-agent outcome (no_weekly_plans) prevents duplicate check in same window', async () => {
-    // Post-AC 11 Sub-AC 2: an agent initialised with no weekly plan files on
-    // disk surfaces as a shell (no_weekly_plans), and the skipped execution
-    // record still deduplicates the next tick in the same window.
+  it('shell-agent outcome (no_weekly_plans) — every tick audits a fresh skipped row', async () => {
+    // Post-AC 11 Sub-AC 2: an agent initialised with no weekly plan files
+    // surfaces as a shell (no_weekly_plans). With window dedup removed,
+    // every tick records its own `skipped` audit row.
     const agentId = `agent-${uid()}`;
     await wpStore.init(agentId);
 
@@ -625,11 +614,12 @@ describe('Idempotent execution — HeartbeatTaskRunner + ExecutionStore layer', 
     const r2 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
 
     assert.equal(r1.outcome, 'no_weekly_plans');
-    assert.equal(r2.outcome, 'skipped');
+    assert.equal(r2.outcome, 'no_weekly_plans');
 
     const records = await execStore.load(agentId);
-    assert.equal(records.length, 1);
-    assert.equal(records[0].status, 'skipped');
+    assert.equal(records.length, 2);
+    assert.ok(records.every((r) => r.status === 'skipped'));
+    assert.notEqual(records[0].idempotencyKey, records[1].idempotencyKey);
   });
 
   it('without executionStore — no deduplication, tasks advance normally', async () => {
@@ -678,7 +668,11 @@ describe('Idempotent execution — combined lock + dedup integration', () => {
     await rm(lockDir, { recursive: true, force: true });
   });
 
-  it('sequential heartbeat ticks — lock allows first, dedup rejects second in same window', async () => {
+  it('sequential heartbeat ticks — lock serializes them, task-state dedup drives progression', async () => {
+    // The scheduler lock prevents overlap within a single tick. The
+    // pending → in-progress transition (atomic inside the lock) is what
+    // keeps two ticks from picking the same task — no time-window
+    // rate-limiter is in the picture any more.
     const agentId = `agent-${uid()}`;
     const tasks = Array.from({ length: 3 }, (_, i) =>
       makeTask({ priority: ['critical', 'high', 'medium'][i], description: `task-${i}` })
@@ -690,25 +684,16 @@ describe('Idempotent execution — combined lock + dedup integration', () => {
       tasks,
     }));
 
-    // First tick — succeeds, selects task
     const r1 = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: wpStore, executionStore: execStore });
-    assert.equal(r1.status, 'completed');
-    assert.equal(r1.result.outcome, 'task_selected');
-
-    // Second tick — lock is free but dedup kicks in (same time window)
     const r2 = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: wpStore, executionStore: execStore });
-    assert.equal(r2.status, 'completed'); // scheduler completes
-    assert.equal(r2.result.outcome, 'skipped'); // but tickAgent deduplicates
-    assert.ok(r2.result.reason.includes('Duplicate heartbeat'));
-
-    // Third tick — still same window, still skipped
     const r3 = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: wpStore, executionStore: execStore });
-    assert.equal(r3.status, 'completed');
-    assert.equal(r3.result.outcome, 'skipped');
-    assert.ok(r3.result.reason.includes('Duplicate heartbeat'));
+
+    assert.ok([r1, r2, r3].every((r) => r.result.outcome === 'task_selected'));
+    const pickedIds = new Set([r1.result.task.id, r2.result.task.id, r3.result.task.id]);
+    assert.equal(pickedIds.size, 3, 'Every tick should pick a distinct pending task');
   });
 
-  it('mixed agent scenario — each agent independently idempotent', async () => {
+  it('mixed agent scenario — each agent advances through its own tasks independently', async () => {
     const agentA = `agent-a-${uid()}`;
     const agentB = `agent-b-${uid()}`;
 
@@ -723,47 +708,38 @@ describe('Idempotent execution — combined lock + dedup integration', () => {
       tasks: [makeTask({ description: 'B-task-1' })],
     }));
 
-    // First round — both agents execute
     const round1 = await runHeartbeatTickAll([agentA, agentB], {
       scheduler, weeklyPlanStore: wpStore, executionStore: execStore,
     });
-    assert.equal(round1.length, 2);
     assert.ok(round1.every((r) => r.result.outcome === 'task_selected'));
 
-    // Second round — both agents deduplicated
     const round2 = await runHeartbeatTickAll([agentA, agentB], {
       scheduler, weeklyPlanStore: wpStore, executionStore: execStore,
     });
-    assert.ok(round2.every((r) => r.result.outcome === 'skipped'));
+    const round2ByAgent = Object.fromEntries(round2.map((r) => [r.agentId, r.result.outcome]));
+    // Agent A still has task 2 pending.
+    assert.equal(round2ByAgent[agentA], 'task_selected');
+    // Agent B had only one task, so round 2 reports no_pending_tasks.
+    assert.equal(round2ByAgent[agentB], 'no_pending_tasks');
 
-    // Agent A: only 1 task moved to in-progress (not 2)
     const planA = await wpStore.load(agentA, '2026-W16');
     const inProgressA = planA.tasks.filter((t) => t.status === 'in-progress');
-    assert.equal(inProgressA.length, 1, 'Only 1 task should be in-progress for agent A');
-
-    // Execution records: 1 per agent
-    const recA = await execStore.load(agentA);
-    const recB = await execStore.load(agentB);
-    assert.equal(recA.length, 1);
-    assert.equal(recB.length, 1);
+    assert.equal(inProgressA.length, 2, 'Both of agent A\'s tasks should now be in-progress');
   });
 
-  it('execution store idempotency keys are deterministic for same agent+window', async () => {
+  it('execution store — every tick gets a unique idempotencyKey (no window collapse)', async () => {
     const agentId = `agent-${uid()}`;
     await wpStore.init(agentId);
 
-    // Two ticks in same window produce same idempotency key
     const r1 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
     const r2 = await tickAgent(agentId, { weeklyPlanStore: wpStore, executionStore: execStore });
 
-    // Post-AC 11 Sub-AC 2: an agent with no weekly plan files on disk
-    // surfaces as a shell (no_weekly_plans) rather than no_approved_plan.
+    // Post-AC 11 Sub-AC 2: shell agents surface as no_weekly_plans.
     assert.equal(r1.outcome, 'no_weekly_plans');
-    assert.equal(r2.outcome, 'skipped');
+    assert.equal(r2.outcome, 'no_weekly_plans');
 
-    // The key returned in the skipped result matches the recorded key
     const records = await execStore.load(agentId);
-    assert.equal(records.length, 1);
-    assert.equal(r2.idempotencyKey, records[0].idempotencyKey);
+    assert.equal(records.length, 2);
+    assert.notEqual(records[0].idempotencyKey, records[1].idempotencyKey);
   });
 });
