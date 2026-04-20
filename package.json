@@ -12,7 +12,8 @@
     "src",
     "skills",
     ".claude-plugin",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test src/**/*.test.js",
@@ -28,8 +29,8 @@
     "scheduling",
     "weekly-planning"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "Runbear, Inc.",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ssowonny/aweek.git"
