@@ -451,8 +451,8 @@ function makeFakeCrontab(initialContent = '') {
 }
 
 describe('init — heartbeat constants', () => {
-  it('DEFAULT_HEARTBEAT_SCHEDULE is hourly on the hour', () => {
-    assert.equal(DEFAULT_HEARTBEAT_SCHEDULE, '0 * * * *');
+  it('DEFAULT_HEARTBEAT_SCHEDULE is every 10 minutes', () => {
+    assert.equal(DEFAULT_HEARTBEAT_SCHEDULE, '*/10 * * * *');
   });
 
   it('PROJECT_HEARTBEAT_MARKER_PREFIX is distinct from per-agent prefix', () => {
@@ -495,7 +495,7 @@ describe('init — buildHeartbeatEntry', () => {
     const entry = buildHeartbeatEntry({ projectDir: '/tmp/p' });
     assert.equal(
       entry,
-      '# aweek:project-heartbeat:/tmp/p\n0 * * * * aweek heartbeat --all --project-dir /tmp/p',
+      '# aweek:project-heartbeat:/tmp/p\n*/10 * * * * aweek heartbeat --all --project-dir /tmp/p',
     );
   });
 
@@ -676,7 +676,7 @@ describe('init — installHeartbeat (happy path)', () => {
 
     assert.equal(fake.writeCalls.length, 1);
     assert.ok(fake.content.includes('# aweek:project-heartbeat:/tmp/p'));
-    assert.ok(fake.content.includes('0 * * * *'));
+    assert.ok(fake.content.includes('*/10 * * * *'));
     assert.ok(fake.content.endsWith('\n'));
   });
 
@@ -725,7 +725,7 @@ describe('init — installHeartbeat (happy path)', () => {
 
     assert.equal(result.outcome, 'updated');
     assert.ok(result.previous);
-    assert.equal(result.previous.schedule, '0 * * * *');
+    assert.equal(result.previous.schedule, '*/10 * * * *');
     assert.ok(fake.content.includes('*/30 * * * *'));
     // Only one entry for this project — no duplicates after update.
     const occurrences = fake.content.match(/# aweek:project-heartbeat:\/tmp\/p$/gm) || [];
@@ -862,7 +862,7 @@ describe('init — queryHeartbeat', () => {
     });
 
     assert.equal(a.installed, true);
-    assert.equal(a.schedule, '0 * * * *');
+    assert.equal(a.schedule, '*/10 * * * *');
     assert.equal(b.installed, true);
     assert.equal(b.schedule, '*/10 * * * *');
     assert.equal(c.installed, false);

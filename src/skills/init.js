@@ -395,7 +395,7 @@ export async function installDependencies({
  * ------------------------------------------------------------------ *
  *
  * The aweek heartbeat is a *project-level* cron entry — one per
- * initialized project — that wakes up hourly and runs `aweek heartbeat
+ * initialized project — that wakes up every 10 minutes and runs `aweek heartbeat
  * --all --project-dir <dir>`. This is aweek's ONLY automated scheduling
  * mechanism: the previous per-agent crontab path (formerly in
  * `src/heartbeat/crontab-manager.js`) has been removed, so every
@@ -423,9 +423,9 @@ export async function installDependencies({
  */
 
 /**
- * Default cron schedule for the project heartbeat: hourly on the hour.
+ * Default cron schedule for the project heartbeat: every 10 minutes.
  */
-export const DEFAULT_HEARTBEAT_SCHEDULE = '0 * * * *';
+export const DEFAULT_HEARTBEAT_SCHEDULE = '*/10 * * * *';
 
 /**
  * Comment-marker prefix used to identify the aweek project heartbeat in

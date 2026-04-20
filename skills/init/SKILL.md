@@ -8,7 +8,7 @@ trigger: aweek init, init aweek, initialize aweek, setup aweek, bootstrap aweek,
 
 Bootstrap a project for the aweek agent scheduler. This is the first skill a
 user should run in a fresh repository — it prepares the filesystem layout
-and (optionally) installs the hourly heartbeat crontab entry that drives
+and (optionally) installs the 10-minute heartbeat crontab entry that drives
 agent execution.
 
 Slash-command discovery is handled by the Claude Code plugin system — this
@@ -30,8 +30,8 @@ options for advanced / non-interactive invocation:
 |-------------------|----------|-------------------|-------------|
 | `projectDir`      | string   | `process.cwd()`   | Project root where `.aweek/` will be created |
 | `dataDir`         | string   | `.aweek/agents`   | Path (relative to `projectDir`) for the agent data directory |
-| `installHeartbeat`| boolean  | `false`           | Whether to install the hourly heartbeat crontab entry (destructive — requires confirmation) |
-| `heartbeatSchedule`| string  | `0 * * * *`       | Cron schedule used when `installHeartbeat` is true |
+| `installHeartbeat`| boolean  | `false`           | Whether to install the 10-minute heartbeat crontab entry (destructive — requires confirmation) |
+| `heartbeatSchedule`| string  | `*/10 * * * *`    | Cron schedule used when `installHeartbeat` is true |
 | `confirmed`       | boolean  | `false`           | Must be `true` to allow destructive operations (crontab install, overwriting an existing data dir) |
 
 Never pass `confirmed: true` without collecting explicit confirmation via
@@ -119,8 +119,8 @@ asked for a clean-slate reset AND confirmed via AskUserQuestion.
 
 Ask the user via `AskUserQuestion`:
 
-> **Install the hourly heartbeat crontab entry?**
-> This writes to your user crontab so agents can run automatically every hour.
+> **Install the 10-minute heartbeat crontab entry?**
+> This writes to your user crontab so agents can run automatically every 10 minutes.
 > You can remove it later with `crontab -e`.
 >
 > - `yes` — install now
@@ -129,7 +129,7 @@ Ask the user via `AskUserQuestion`:
 Only if they answer `yes`, run:
 
 ```bash
-echo '{"schedule":"0 * * * *","confirmed":true}' \
+echo '{"schedule":"*/10 * * * *","confirmed":true}' \
   | aweek exec init installHeartbeat --input-json -
 ```
 

@@ -1,7 +1,7 @@
 /**
  * Heartbeat runner — wires stores, scheduler, and task execution for CLI invocation.
  *
- * This is the runtime entry point that crontab (via bin/aweek.js) calls every hour.
+ * This is the runtime entry point that crontab (via bin/aweek.js) calls every 10 minutes.
  * It assembles the full execution pipeline:
  *   1. Initialize stores (agent, weekly-plan, execution, usage) rooted at projectDir
  *   2. Create scheduler with lock isolation
