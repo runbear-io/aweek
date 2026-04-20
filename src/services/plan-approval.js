@@ -8,7 +8,7 @@
  *     accompanying edit operations.
  *   - Applying edit operations to a weekly plan (mutating the tasks array).
  *   - Running the full approval pipeline (`processApproval`) — load agent,
- *     mutate, persist, optionally install the heartbeat crontab.
+ *     mutate, persist.
  *   - Three ergonomic convenience wrappers (`approve`, `reject`, `edit`) that
  *     the consolidated `/aweek:plan` skill calls directly so its surface is
  *     decision-specific instead of passing a `decision` string through a
@@ -22,6 +22,12 @@
  *     re-export shim so the existing test suite and public API keep working
  *     during the transition to the new skill surface.
  *
+ * Scheduling note:
+ *   Approval is scheduling-state only. A single project-level heartbeat
+ *   (`aweek heartbeat --all`, installed via `/aweek:init`) is the sole
+ *   automated scheduling mechanism — there is no per-agent crontab entry
+ *   activated on approval anymore.
+ *
  * Design notes:
  *   - Validators are pure functions. They take the raw input plus the
  *     necessary context (plan / agent config) and return `{ valid, errors }`.
@@ -30,13 +36,9 @@
  *   - `processApproval` is the single "do everything" entry point used by the
  *     legacy skill. The new skill uses the `approve` / `reject` / `edit`
  *     wrappers which delegate to `processApproval` with the correct decision.
- *   - Heartbeat activation is idempotent — installing an existing crontab
- *     entry simply replaces it — and failures are treated as non-fatal so
- *     approval never rolls back because `crontab` is missing.
  */
 import { createTask } from '../models/agent.js';
 import { validateWeeklyPlan } from '../schemas/validator.js';
-import { install as installCrontab } from '../heartbeat/crontab-manager.js';
 import { createAgentStore, resolveDataDir } from '../storage/agent-helpers.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 
@@ -328,65 +330,19 @@ export function applyEdits(plan, edits) {
 }
 
 // ---------------------------------------------------------------------------
-// Heartbeat activation
-// ---------------------------------------------------------------------------
-
-/**
- * Build the default heartbeat command for an agent.
- * This is the shell command that crontab will execute on each heartbeat cycle.
- *
- * @param {string} agentId - The agent identifier
- * @param {string} [projectDir] - Project root directory (defaults to cwd)
- * @returns {string} The shell command to run
- */
-export function buildHeartbeatCommand(agentId, projectDir) {
-  const dir = projectDir || process.cwd();
-  return `npx aweek heartbeat ${agentId} --project-dir ${dir}`;
-}
-
-/**
- * Activate the heartbeat schedule for an agent by installing a crontab entry.
- * Idempotent: safe to call multiple times (existing entry is replaced).
- *
- * @param {object} params
- * @param {string} params.agentId - Agent identifier
- * @param {string} [params.schedule='0 * * * *'] - Cron schedule (default: every hour)
- * @param {string} [params.command] - Override heartbeat command (default: auto-built)
- * @param {string} [params.projectDir] - Project root directory
- * @param {Function} [params.installFn] - Override install function (for testing)
- * @returns {Promise<{activated: boolean, entry: string, schedule: string}>}
- */
-export async function activateHeartbeat({
-  agentId,
-  schedule = '0 * * * *',
-  command,
-  projectDir,
-  installFn,
-}) {
-  if (!agentId) throw new Error('agentId is required');
-
-  const heartbeatCommand = command || buildHeartbeatCommand(agentId, projectDir);
-  const installer = installFn || installCrontab;
-
-  const result = await installer({ agentId, command: heartbeatCommand, schedule });
-
-  return {
-    activated: result.installed,
-    entry: result.entry,
-    schedule,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Core approval flow
 // ---------------------------------------------------------------------------
 
 /**
  * Process a weekly plan approval decision.
  *
- * - **approve**: Marks the plan as approved with timestamp. First approval triggers heartbeat.
+ * - **approve**: Marks the plan as approved with timestamp.
  * - **reject**: Deletes the plan from the WeeklyPlanStore. Agent can regenerate.
  * - **edit**: Applies edits, then optionally auto-approves if autoApprove is set.
+ *
+ * Approval is scheduling-state only — the project-level heartbeat installed
+ * by `/aweek:init` is the sole automated scheduling mechanism, so approving
+ * a plan no longer installs or refreshes any crontab entry.
  *
  * @param {object} params
  * @param {string} params.agentId - The agent whose plan to process
@@ -395,11 +351,7 @@ export async function activateHeartbeat({
  * @param {boolean} [params.autoApproveAfterEdit=false] - If true, auto-approve after editing
  * @param {string} [params.rejectionReason] - Optional reason for rejection
  * @param {string} [params.dataDir] - Override data directory path
- * @param {string} [params.heartbeatSchedule='0 * * * *'] - Cron schedule for heartbeat
- * @param {string} [params.heartbeatCommand] - Override heartbeat command
- * @param {string} [params.projectDir] - Project root for heartbeat command
- * @param {Function} [params.installFn] - Override crontab install (for testing)
- * @returns {Promise<{ success: boolean, plan?: object, isFirstApproval?: boolean, heartbeatActivated?: boolean, editResults?: object[], errors?: string[] }>}
+ * @returns {Promise<{ success: boolean, plan?: object, isFirstApproval?: boolean, editResults?: object[], errors?: string[] }>}
  */
 export async function processApproval({
   agentId,
@@ -408,10 +360,6 @@ export async function processApproval({
   autoApproveAfterEdit = false,
   rejectionReason,
   dataDir,
-  heartbeatSchedule,
-  heartbeatCommand,
-  projectDir,
-  installFn,
 }) {
   // Validate decision
   const decisionResult = validateDecision(decision);
@@ -458,28 +406,10 @@ export async function processApproval({
     config.updatedAt = new Date().toISOString();
     await store.save(config);
 
-    // Activate heartbeat on approval (idempotent — safe for first and subsequent)
-    let heartbeatActivated = false;
-    try {
-      const hbResult = await activateHeartbeat({
-        agentId,
-        schedule: heartbeatSchedule,
-        command: heartbeatCommand,
-        projectDir,
-        installFn,
-      });
-      heartbeatActivated = hbResult.activated;
-    } catch {
-      // Heartbeat activation failure is non-fatal — plan is already approved
-      // The user can manually install via crontab manager
-      heartbeatActivated = false;
-    }
-
     return {
       success: true,
       plan,
       isFirstApproval: !hasAnyApproved,
-      heartbeatActivated,
     };
   }
 
@@ -517,24 +447,9 @@ export async function processApproval({
     }
 
     // Optionally auto-approve after edit
-    let heartbeatActivated = false;
     if (autoApproveAfterEdit) {
       plan.approved = true;
       plan.approvedAt = new Date().toISOString();
-
-      // Activate heartbeat on auto-approve (idempotent)
-      try {
-        const hbResult = await activateHeartbeat({
-          agentId,
-          schedule: heartbeatSchedule,
-          command: heartbeatCommand,
-          projectDir,
-          installFn,
-        });
-        heartbeatActivated = hbResult.activated;
-      } catch {
-        heartbeatActivated = false;
-      }
     }
 
     await weeklyPlanStore.save(agentId, plan);
@@ -546,7 +461,6 @@ export async function processApproval({
       plan,
       editResults: applied,
       isFirstApproval: autoApproveAfterEdit && !hasAnyApproved,
-      heartbeatActivated,
     };
   }
 
@@ -566,16 +480,13 @@ export async function processApproval({
  * Approve an agent's pending weekly plan.
  *
  * Thin wrapper over {@link processApproval} that hard-codes
- * `decision: 'approve'` and forwards the rest of the params. Triggers
- * heartbeat installation on success.
+ * `decision: 'approve'` and forwards the rest of the params. The project-level
+ * heartbeat installed by `/aweek:init` is the sole scheduling mechanism, so
+ * approval is scheduling-state only — no per-agent crontab entry is installed.
  *
  * @param {object} params
  * @param {string} params.agentId - Agent whose plan to approve
  * @param {string} [params.dataDir] - Override data directory path
- * @param {string} [params.heartbeatSchedule='0 * * * *'] - Cron schedule
- * @param {string} [params.heartbeatCommand] - Override heartbeat command
- * @param {string} [params.projectDir] - Project root for heartbeat command
- * @param {Function} [params.installFn] - Override crontab install (for testing)
  * @returns {Promise<ReturnType<typeof processApproval>>}
  */
 export function approve(params = {}) {
@@ -586,8 +497,7 @@ export function approve(params = {}) {
  * Reject an agent's pending weekly plan.
  *
  * Thin wrapper over {@link processApproval} that hard-codes
- * `decision: 'reject'`. Removes the plan so the agent can regenerate a new
- * one. Does NOT activate the heartbeat.
+ * `decision: 'reject'`. Removes the plan so the agent can regenerate a new one.
  *
  * @param {object} params
  * @param {string} params.agentId - Agent whose plan to reject
@@ -604,18 +514,14 @@ export function reject(params = {}) {
  *
  * Thin wrapper over {@link processApproval} that hard-codes
  * `decision: 'edit'`. By default leaves the plan in pending state so the
- * user can review again — pass `autoApproveAfterEdit: true` to approve and
- * activate the heartbeat in a single call.
+ * user can review again — pass `autoApproveAfterEdit: true` to approve in a
+ * single call.
  *
  * @param {object} params
  * @param {string} params.agentId - Agent whose plan to edit
  * @param {object[]} params.edits - Array of edit operations
  * @param {boolean} [params.autoApproveAfterEdit=false] - Approve after edits
  * @param {string} [params.dataDir] - Override data directory path
- * @param {string} [params.heartbeatSchedule='0 * * * *'] - Cron schedule
- * @param {string} [params.heartbeatCommand] - Override heartbeat command
- * @param {string} [params.projectDir] - Project root for heartbeat command
- * @param {Function} [params.installFn] - Override crontab install (for testing)
  * @returns {Promise<ReturnType<typeof processApproval>>}
  */
 export function edit(params = {}) {
@@ -643,13 +549,8 @@ export function formatApprovalResult(result, decision) {
     lines.push('Weekly plan approved!');
     if (result.isFirstApproval) {
       lines.push('');
-      lines.push('*** FIRST APPROVAL — Heartbeat system is now active! ***');
+      lines.push('*** FIRST APPROVAL — the project heartbeat will pick this plan up on its next tick. ***');
       lines.push('The agent will begin executing tasks on the next heartbeat cycle.');
-    }
-    if (result.heartbeatActivated) {
-      lines.push('Heartbeat crontab installed successfully.');
-    } else if (result.heartbeatActivated === false && result.success) {
-      lines.push('Note: Heartbeat crontab could not be installed automatically. Install manually if needed.');
     }
     lines.push('');
     lines.push(`  Week: ${result.plan.week}`);
@@ -687,10 +588,7 @@ export function formatApprovalResult(result, decision) {
       lines.push('Plan auto-approved after edits.');
       if (result.isFirstApproval) {
         lines.push('');
-        lines.push('*** FIRST APPROVAL — Heartbeat system is now active! ***');
-      }
-      if (result.heartbeatActivated) {
-        lines.push('Heartbeat crontab installed successfully.');
+        lines.push('*** FIRST APPROVAL — the project heartbeat will pick this plan up on its next tick. ***');
       }
     } else {
       lines.push('');

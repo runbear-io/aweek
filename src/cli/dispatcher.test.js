@@ -113,7 +113,6 @@ describe('argument adapters', () => {
         week: '2026-W16',
         tasks: [{ id: 't1', description: 'demo' }],
       },
-      heartbeatActivated: false,
     };
     const text = REGISTRY.plan.formatApprovalResult({ result, action: 'approve' });
     assert.equal(typeof text, 'string');

@@ -52,8 +52,6 @@ import {
   validateDecision,
   validateEdits,
   applyEdits,
-  buildHeartbeatCommand,
-  activateHeartbeat,
   processApproval,
   formatApprovalResult,
   loadPlanForReview,
@@ -147,8 +145,6 @@ describe('plan skill adapter — re-export identity', () => {
     assert.equal(validateDecision, approvalService.validateDecision);
     assert.equal(validateEdits, approvalService.validateEdits);
     assert.equal(applyEdits, approvalService.applyEdits);
-    assert.equal(buildHeartbeatCommand, approvalService.buildHeartbeatCommand);
-    assert.equal(activateHeartbeat, approvalService.activateHeartbeat);
     assert.equal(processApproval, approvalService.processApproval);
     assert.equal(formatApprovalResult, approvalService.formatApprovalResult);
     assert.equal(loadPlanForReview, approvalService.loadPlanForReview);
@@ -344,15 +340,13 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
     );
   });
 
-  it('approve marks the plan as approved without an `installFn` (heartbeat install is non-fatal)', async () => {
+  it('approve marks the plan as approved (scheduling-state only)', async () => {
     const { config, weeklyPlan } = buildTestAgent();
     await saveFixture({ store, dir: tempDir, config, weeklyPlan });
 
     const result = await approve({
       agentId: config.id,
       dataDir: tempDir,
-      // Stub the heartbeat installer so the test never touches the real crontab.
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -405,7 +399,6 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
         },
       ],
       autoApproveAfterEdit: true,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -671,7 +664,6 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
     const result = await approve({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -687,7 +679,6 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
     await approve({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
@@ -766,7 +757,6 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
         },
       ],
       autoApproveAfterEdit: true,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -961,7 +951,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const result = await autoApprovePlan({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -978,7 +967,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const result = await autoApprovePlan({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -994,7 +982,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const result = await autoApprovePlan({
       agentId: 'non-existent-agent',
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, false);
@@ -1013,7 +1000,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const result = await autoApprovePlan({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, false);
@@ -1033,7 +1019,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const resultPromise = autoApprovePlan({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     }).then((r) => {
       resolved = true;
       return r;
@@ -1051,7 +1036,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const result = await autoApprovePlan({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -1086,7 +1070,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const result = await autoApprovePlan({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
@@ -1111,7 +1094,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const failResult = await autoApprovePlan({
       agentId: 'ghost-agent',
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
     assert.ok(
       'noPendingPlanRemains' in failResult,
@@ -1124,7 +1106,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const okResult = await autoApprovePlan({
       agentId: config.id,
       dataDir: tempDir,
-      installFn: async () => ({ installed: true }),
     });
     assert.ok(
       'noPendingPlanRemains' in okResult,
