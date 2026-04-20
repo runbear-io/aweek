@@ -9,7 +9,13 @@ import {
   distributeTasks,
   mondayFromISOWeek,
   renderGrid,
+  REVIEW_SLOT_ICON,
+  REVIEW_DISPLAY_NAMES,
 } from './weekly-calendar-grid.js';
+import {
+  DAILY_REVIEW_OBJECTIVE_ID,
+  WEEKLY_REVIEW_OBJECTIVE_ID,
+} from '../schemas/weekly-plan.schema.js';
 
 // Monday of ISO 2026-W17 is 2026-04-20 (UTC)
 const WEEK_MONDAY = mondayFromISOWeek('2026-W17');
@@ -452,5 +458,152 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
     assert.ok(joined.length <= 30, `expected ≤30 visible chars, got ${joined.length}: ${JSON.stringify(joined)}`);
     assert.ok(joined.endsWith('…'), joined);
     assert.ok(joined.startsWith('○ 1. '), joined);
+  });
+});
+
+describe('renderGrid — advisor-mode review slot rendering', () => {
+  const agent = { id: 'a', identity: { name: 'Advisor' } };
+
+  // 2026-W17 Monday = 2026-04-20 (UTC). Friday = 2026-04-24.
+  const dailyReviewTask = {
+    id: 'task-daily-mon',
+    description: 'End-of-day reflection',
+    objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+    status: 'pending',
+    runAt: '2026-04-20T17:00:00Z', // Mon 17:00 UTC
+  };
+  const weeklyReviewTask = {
+    id: 'task-weekly-fri',
+    description: 'End-of-week review',
+    objectiveId: WEEKLY_REVIEW_OBJECTIVE_ID,
+    status: 'pending',
+    runAt: '2026-04-24T18:00:00Z', // Fri 18:00 UTC — outside 9-18 window, falls through to pack
+  };
+  const workTask = {
+    id: 'task-work-1',
+    description: 'Write quarterly report',
+    objectiveId: 'obj-abc',
+    status: 'pending',
+    runAt: '2026-04-20T09:00:00Z', // Mon 09:00
+  };
+
+  it('renders daily-review slot with ◆ icon and a selection number, selectable like a work task', () => {
+    // workTask → Mon 09:00 (num 1), dailyReviewTask → Mon 17:00 (num 2).
+    const { text, taskIndex } = renderGrid({
+      agent,
+      plan: { week: '2026-W17', approved: true, tasks: [dailyReviewTask, workTask] },
+      opts: { cellWidth: 20, startHour: 9, endHour: 18 },
+    });
+
+    // The ◆ icon must appear in the grid output.
+    assert.ok(text.includes(REVIEW_SLOT_ICON), 'expected ◆ icon in grid output');
+    // The daily-review task MUST appear in the numbered taskIndex — identical to a work task.
+    assert.ok(
+      taskIndex.some((t) => t.id === dailyReviewTask.id),
+      'daily-review task should appear in numbered taskIndex',
+    );
+    // Work task should also be numbered.
+    assert.ok(
+      taskIndex.some((t) => t.id === workTask.id),
+      'work task should appear in numbered taskIndex',
+    );
+    // Both tasks have numbers: workTask is #1 (Mon 9:00), dailyReview is #2 (Mon 17:00).
+    assert.equal(taskIndex.length, 2, 'taskIndex should contain both work task and review slot');
+    // The daily review entry shows its selection number (◆ 2.) in the grid.
+    const reviewNum = taskIndex.findIndex((t) => t.id === dailyReviewTask.id) + 1;
+    assert.ok(
+      text.includes(`${REVIEW_SLOT_ICON} ${reviewNum}.`),
+      `expected ${REVIEW_SLOT_ICON} ${reviewNum}. in grid output`,
+    );
+    // The display name still appears alongside the number.
+    assert.ok(
+      text.includes(REVIEW_DISPLAY_NAMES[DAILY_REVIEW_OBJECTIVE_ID]),
+      'expected Daily Review display name in grid output',
+    );
+  });
+
+  it('renders weekly-review slot with ◆ icon and a selection number, included in taskIndex', () => {
+    // weeklyReviewTask runAt Fri 18:00 UTC — outside 9-18 window, pack places it at Mon 9:00 → num 1.
+    const { text, taskIndex } = renderGrid({
+      agent,
+      plan: { week: '2026-W17', approved: true, tasks: [weeklyReviewTask] },
+      opts: { cellWidth: 20, startHour: 9, endHour: 18 },
+    });
+
+    assert.ok(text.includes(REVIEW_SLOT_ICON), 'expected ◆ icon in grid output');
+    // Review slot MUST appear in taskIndex with a number.
+    assert.equal(taskIndex.length, 1, 'taskIndex should have exactly one entry (the weekly review task)');
+    assert.equal(taskIndex[0].id, weeklyReviewTask.id, 'taskIndex[0] should be the weekly review task');
+    // The weekly review entry shows its selection number (◆ 1.) in the grid.
+    assert.ok(text.includes(`${REVIEW_SLOT_ICON} 1.`), 'expected ◆ 1. in grid output');
+    // The display name still appears alongside the number.
+    assert.ok(
+      text.includes(REVIEW_DISPLAY_NAMES[WEEKLY_REVIEW_OBJECTIVE_ID]),
+      'expected Weekly Review display name in grid output',
+    );
+  });
+
+  it('shows Tasks and Reviews counts separately in the status line', () => {
+    const { text } = renderGrid({
+      agent,
+      plan: {
+        week: '2026-W17',
+        approved: true,
+        tasks: [workTask, dailyReviewTask, weeklyReviewTask],
+      },
+      opts: { cellWidth: 20 },
+    });
+
+    // 1 work task, 2 review slots.
+    assert.match(text, /Tasks: 1/, 'expected "Tasks: 1" in status line');
+    assert.match(text, /Reviews: 2/, 'expected "Reviews: 2" in status line');
+  });
+
+  it('omits the Reviews counter from the status line when there are no review slots', () => {
+    const { text } = renderGrid({
+      agent,
+      plan: { week: '2026-W17', approved: true, tasks: [workTask] },
+      opts: { cellWidth: 20 },
+    });
+
+    assert.match(text, /Tasks: 1/, 'expected "Tasks: 1" in status line');
+    assert.ok(!text.includes('Reviews:'), 'should not include "Reviews:" when no review tasks');
+  });
+
+  it('includes ◆ review slot in the legend', () => {
+    const { text } = renderGrid({
+      agent,
+      plan: { week: '2026-W17', approved: true, tasks: [] },
+      opts: { cellWidth: 20 },
+    });
+
+    assert.ok(text.includes('◆ review slot'), 'expected "◆ review slot" in legend');
+  });
+
+  it('places daily-review in the correct day column via runAt', () => {
+    // Mon 17:00 UTC → day 0 (mon), hour 17 — outside the 9-18 window so pack picks it up.
+    // Use startHour:9, endHour:18, so hour 17 IS inside the window (9 <= 17 < 18).
+    const t = {
+      id: 'task-dr',
+      description: 'Daily reflection',
+      objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+      status: 'pending',
+      runAt: '2026-04-20T17:00:00Z', // Mon 17:00 UTC
+    };
+    const grid = distributeTasks([t], {
+      startHour: 9,
+      endHour: 18,
+      daysCount: 5,
+      weekMonday: mondayFromISOWeek('2026-W17'),
+    });
+    // Must land in mon column at hour 17.
+    const bucket = grid.get('mon').get(17);
+    assert.ok(bucket && bucket.length > 0, 'expected entry in mon@17');
+    assert.equal(bucket[0].task.id, 'task-dr');
+  });
+
+  it('REVIEW_DISPLAY_NAMES covers both reserved objectiveIds', () => {
+    assert.equal(REVIEW_DISPLAY_NAMES[DAILY_REVIEW_OBJECTIVE_ID], 'Daily Review');
+    assert.equal(REVIEW_DISPLAY_NAMES[WEEKLY_REVIEW_OBJECTIVE_ID], 'Weekly Review');
   });
 });

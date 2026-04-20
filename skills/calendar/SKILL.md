@@ -85,10 +85,11 @@ respond with its details. Do not volunteer that lookup until asked.
 ## How It Works
 
 - Tasks are numbered in column-major order (top-to-bottom per day, then the next day) for selection
+- **Review slots** (daily-review and weekly-review) receive selection numbers identical to regular work tasks — you can select them by number and apply status transitions (`pending`, `in-progress`, `completed`, `failed`, `skipped`) exactly the same way
 - Each hour row is as tall as its fullest cell. Every task gets its own block of wrapped lines inside the cell; empty cells pad with blanks to line up.
 - Each task displays up to **30 visible characters** (`<icon> <num>. <description>`). Anything beyond collapses with a trailing `…`. Those 30 chars wrap across cell lines based on column width — narrow columns just use more rows.
 - Half-hour tasks (e.g. `runAt` at `HH:30`) bucket into the same `HH:00` cell as `HH:00` tasks, so they don't disappear from the view.
-- Status icons show progress: ○ pending, ► in-progress, ✓ completed, ✗ failed
+- Status icons show progress: ○ pending, ► in-progress, ✓ completed, ✗ failed; ◆ marks review slots (also selectable by number)
 - The calendar is displayed as direct text (not bash output) so it's always visible
 - **Time zone:** day columns and hour rows reflect the user's configured time zone in `.aweek/config.json` (`timeZone`). `runAt` is stored as an absolute UTC ISO string, projected into that zone for display. Update the config file to switch zones; no per-agent override yet.
 

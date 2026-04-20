@@ -52,6 +52,22 @@ import {
 } from '../services/plan-adjustments.js';
 
 import {
+  detectDayLayoutWithConfidence,
+  layoutModeLabel,
+} from '../services/day-layout-detector.js';
+
+import {
+  checkInterviewTriggers,
+  generateSkipAssumptions,
+  formatAssumptionsBlock,
+  generateAssumptionForTrigger,
+} from './plan-interview-triggers.js';
+
+import { readPlan } from '../storage/plan-markdown-store.js';
+import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
+import { resolveDataDir } from '../storage/agent-helpers.js';
+
+import {
   // Approval pipeline (approve / reject / edit of a pending weekly plan)
   APPROVAL_DECISIONS,
   findPendingPlan,
@@ -189,6 +205,75 @@ export function edit(params) {
   return editImpl(params);
 }
 
+/**
+ * Autonomously approve a freshly-generated weekly plan without user interaction.
+ *
+ * This is the **exclusive entry point** for the autonomous next-week planner
+ * chain (weekly-review → next-week planner). Unlike the user-invoked `approve`
+ * wrapper, this path:
+ *
+ *   1. Sets `approved: true` immediately — no `AskUserQuestion` is issued and no
+ *      notification is dispatched to the user.
+ *   2. Activates the heartbeat crontab entry (idempotent, non-fatal on failure),
+ *      just as the interactive approval path does.
+ *   3. Verifies no pending-approval state remains after the write by reloading
+ *      the agent's weekly plans via `WeeklyPlanStore` and confirming that
+ *      `findPendingPlan` returns null.
+ *
+ * The `noPendingPlanRemains` flag in the returned object is the formal
+ * post-write verification contract. Callers should assert `noPendingPlanRemains
+ * === true`; a `false` value means the persistence step did not complete
+ * correctly even though `success` was `true`.
+ *
+ * **Do not call this from user-invoked flows.** The interactive `/aweek:plan`
+ * skill must go through the `approve` wrapper (Branch C) so the human-in-the-
+ * loop gate is preserved. `autoApprovePlan` is for the autonomous chain only.
+ *
+ * @param {object} params
+ * @param {string} params.agentId - Agent whose pending plan to auto-approve
+ * @param {string} [params.dataDir] - Override data directory path
+ * @param {string} [params.heartbeatSchedule='0 * * * *'] - Cron schedule
+ * @param {string} [params.heartbeatCommand] - Override heartbeat command
+ * @param {string} [params.projectDir] - Project root for heartbeat command
+ * @param {Function} [params.installFn] - Override crontab install (for testing)
+ * @returns {Promise<{
+ *   success: boolean,
+ *   plan?: object,
+ *   isFirstApproval?: boolean,
+ *   heartbeatActivated?: boolean,
+ *   noPendingPlanRemains: boolean,
+ *   errors?: string[],
+ * }>}
+ */
+export async function autoApprovePlan(params = {}) {
+  // Step 1: Approve immediately — no AskUserQuestion, no notification dispatch.
+  // approveImpl is the same service called by the user-invoked `approve` wrapper;
+  // the distinction is that no upstream AskUserQuestion interaction precedes this
+  // call in the autonomous chain.
+  const approvalResult = await approveImpl(params);
+  if (!approvalResult.success) {
+    return { ...approvalResult, noPendingPlanRemains: false };
+  }
+
+  // Step 2: Verify no pending-approval state remains after the write.
+  // Reload the full plan list directly from WeeklyPlanStore and check with
+  // findPendingPlan. A null result confirms the approved plan is no longer
+  // in the pending set — meaning the write persisted correctly.
+  const weeklyPlanStore = new WeeklyPlanStore(resolveDataDir(params.dataDir));
+  let remainingPlans;
+  try {
+    remainingPlans = await weeklyPlanStore.loadAll(params.agentId);
+  } catch {
+    remainingPlans = [];
+  }
+  const noPendingPlanRemains = findPendingPlan(remainingPlans) === null;
+
+  return {
+    ...approvalResult,
+    noPendingPlanRemains,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Plan review (helper for the interactive skill flow)
 // ---------------------------------------------------------------------------
@@ -224,6 +309,68 @@ export function formatAdjustmentResult(results) {
 }
 
 // ---------------------------------------------------------------------------
+// Layout ambiguity detection
+//
+// Used by the `/aweek:plan` skill to decide whether to ask the user for an
+// explicit layout preference before generating or distributing a weekly plan.
+// ---------------------------------------------------------------------------
+
+/**
+ * Inspect an agent's `plan.md` and determine whether the day-layout mode
+ * can be classified with confidence, or whether the plan contains
+ * conflicting or absent structural signals that require the user to
+ * explicitly state their scheduling preference via `AskUserQuestion`.
+ *
+ * When `confident` is `false`, the `/aweek:plan` skill should present the
+ * user with the three layout choices (Theme Days / Priority Waterfall /
+ * Mixed) before proceeding with weekly-plan generation or task distribution.
+ *
+ * Return shape:
+ * ```
+ * {
+ *   mode:            'theme-days' | 'priority-waterfall' | 'mixed',
+ *   confident:       boolean,
+ *   ambiguityReason: 'conflicting-signals' | 'absent-signals' | null,
+ *   themeScore:      number,
+ *   priorityScore:   number,
+ *   modeLabel:       string,  // human-readable label for the detected mode
+ * }
+ * ```
+ *
+ * Errors are never thrown for a missing `plan.md` — absent content is treated
+ * as `ambiguityReason: 'absent-signals'` so the interview gate fires
+ * correctly for brand-new agents.
+ *
+ * @param {object} params
+ * @param {string} params.agentsDir - `.aweek/agents` root directory
+ * @param {string} params.agentId   - Agent slug / identifier
+ * @returns {Promise<{
+ *   mode: string,
+ *   confident: boolean,
+ *   ambiguityReason: string | null,
+ *   themeScore: number,
+ *   priorityScore: number,
+ *   modeLabel: string,
+ * }>}
+ */
+export async function detectLayoutAmbiguity({ agentsDir, agentId } = {}) {
+  let planBody = null;
+  try {
+    planBody = await readPlan(agentsDir, agentId);
+  } catch {
+    // plan.md is absent or the directory does not exist yet.
+    // detectDayLayoutWithConfidence handles null gracefully by returning
+    // { mode: 'mixed', confident: false, ambiguityReason: 'absent-signals' }.
+  }
+
+  const result = detectDayLayoutWithConfidence(planBody);
+  return {
+    ...result,
+    modeLabel: layoutModeLabel(result.mode),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Re-exports
 //
 // The `/aweek:plan` skill markdown imports everything it needs from this
@@ -231,6 +378,12 @@ export function formatAdjustmentResult(results) {
 // services — this file is intentionally a thin composition layer.
 // ---------------------------------------------------------------------------
 export {
+  // Interview trigger detection
+  checkInterviewTriggers,
+  // Skip-questions escape hatch
+  generateSkipAssumptions,
+  formatAssumptionsBlock,
+  generateAssumptionForTrigger,
   // Adjustment pipeline
   adjustGoals,
   formatAdjustmentSummary,

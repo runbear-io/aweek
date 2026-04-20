@@ -18,6 +18,11 @@ import {
   localParts,
   mondayOfWeek,
 } from '../time/zone.js';
+import {
+  isReviewObjectiveId,
+  DAILY_REVIEW_OBJECTIVE_ID,
+  WEEKLY_REVIEW_OBJECTIVE_ID,
+} from '../schemas/weekly-plan.schema.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,6 +38,18 @@ const STATUS_ICONS = {
   'in-progress': '►',
   skipped: '⊘',
   delegated: '→',
+};
+
+/** Icon used in the grid for advisor-mode review slots. */
+export const REVIEW_SLOT_ICON = '◆';
+
+/**
+ * Human-readable display names for reserved review objectiveIds.
+ * Used by the grid renderer to label review rows distinctly from work tasks.
+ */
+export const REVIEW_DISPLAY_NAMES = {
+  [DAILY_REVIEW_OBJECTIVE_ID]: 'Daily Review',
+  [WEEKLY_REVIEW_OBJECTIVE_ID]: 'Weekly Review',
 };
 
 // ---------------------------------------------------------------------------
@@ -390,13 +407,19 @@ export function renderGrid({ agent, plan, opts = {} }) {
   // Assign numbers in column-major order: walk each day top-to-bottom, then
   // move to the next day. Within each hour bucket, entries are already sorted
   // by runAt so the earliest-scheduled task gets the lowest number.
+  // Review slots (daily-review / weekly-review objectiveIds) receive numbers
+  // identical to regular work tasks so users can select them and apply status
+  // transitions the same way.
   const taskNumMap = new Map(); // task.id → number
   for (const dayKey of dayKeys) {
     for (let h = startHour; h < endHour; h++) {
       const bucket = grid.get(dayKey)?.get(h);
       if (!bucket) continue;
       for (const entry of bucket) {
-        if (entry.isStart && !taskNumMap.has(entry.task.id)) {
+        if (
+          entry.isStart &&
+          !taskNumMap.has(entry.task.id)
+        ) {
           const num = taskIndex.length + 1;
           taskNumMap.set(entry.task.id, num);
           taskIndex.push(entry.task);
@@ -404,7 +427,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
       }
     }
   }
-  // Add ungridded tasks (overflow)
+  // Add any ungridded tasks (overflow), including review slots.
   for (const task of (plan.tasks || [])) {
     if (!taskNumMap.has(task.id)) {
       const num = taskIndex.length + 1;
@@ -425,8 +448,14 @@ export function renderGrid({ agent, plan, opts = {} }) {
   // Surface the effective time zone in the header so the user can tell at
   // a glance which zone the day/hour axes correspond to.
   const displayTz = useLocalTz ? tz : 'UTC';
+  // Separate work task count from advisor-mode review slot count so the
+  // header gives an accurate picture of scheduled work vs. pacing structure.
+  const allPlanTasks = plan.tasks || [];
+  const workTaskCount = allPlanTasks.filter((t) => !isReviewObjectiveId(t.objectiveId)).length;
+  const reviewSlotCount = allPlanTasks.length - workTaskCount;
+  const reviewSuffix = reviewSlotCount > 0 ? ` | Reviews: ${reviewSlotCount}` : '';
   lines.push(
-    `│ ${pad(`Status: ${status} | Tasks: ${(plan.tasks || []).length} | TZ: ${displayTz}`, totalWidth - 4)} │`,
+    `│ ${pad(`Status: ${status} | Tasks: ${workTaskCount}${reviewSuffix} | TZ: ${displayTz}`, totalWidth - 4)} │`,
   );
   lines.push(`├${'─'.repeat(hourWidth)}${'┬' + '─'.repeat(cellWidth)}`.repeat(1).slice(0, 0) +
     `├${'─'.repeat(hourWidth)}${dayKeys.map(() => `┬${'─'.repeat(cellWidth)}`).join('')}┤`);
@@ -444,10 +473,27 @@ export function renderGrid({ agent, plan, opts = {} }) {
   // text is then chunked across lines of `cellWidth` columns so narrow
   // cells simply take more lines. Hour row height = the tallest cell in
   // that row; shorter cells pad with blanks.
+  //
+  // Advisor-mode review slots (daily-review / weekly-review objectiveIds) are
+  // rendered with the distinct `◆` icon and their selection number, identical
+  // to regular work tasks, so users can select them and apply status transitions.
   const wrapTaskBlock = (entry) => {
     const { task } = entry;
-    const icon = STATUS_ICONS[task.status] || '?';
     const num = taskNumMap.get(task.id);
+
+    if (isReviewObjectiveId(task.objectiveId)) {
+      const displayName = REVIEW_DISPLAY_NAMES[task.objectiveId] ?? 'Review';
+      const prefix = num != null ? `${REVIEW_SLOT_ICON} ${num}. ` : `${REVIEW_SLOT_ICON} `;
+      const capped = trunc(`${prefix}${displayName}`, TASK_CONTENT_MAX);
+      const chunks = [];
+      for (let i = 0; i < capped.length; i += cellWidth) {
+        chunks.push(pad(capped.slice(i, i + cellWidth), cellWidth));
+      }
+      if (chunks.length === 0) chunks.push(pad('', cellWidth));
+      return chunks;
+    }
+
+    const icon = STATUS_ICONS[task.status] || '?';
     const prefix = `${icon} ${num}. `;
     const capped = trunc(`${prefix}${task.description}`, TASK_CONTENT_MAX);
     const chunks = [];
@@ -487,7 +533,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
 
   // Legend
   lines.push('');
-  lines.push(`Legend: ○ pending  ► in-progress  ✓ completed  ✗ failed  ⊘ skipped  → delegated`);
+  lines.push(`Legend: ○ pending  ► in-progress  ✓ completed  ✗ failed  ⊘ skipped  → delegated  ◆ review slot`);
   lines.push(`Select a task number (1-${taskIndex.length}) to see details.`);
 
   return { text: lines.join('\n'), taskIndex };

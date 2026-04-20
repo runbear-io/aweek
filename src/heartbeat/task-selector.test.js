@@ -21,7 +21,13 @@ import {
   isAllTasksFinished,
   selectNextTask,
   selectNextTaskForWeek,
+  isDailyReviewTask,
 } from './task-selector.js';
+
+import {
+  DAILY_REVIEW_OBJECTIVE_ID,
+  WEEKLY_REVIEW_OBJECTIVE_ID,
+} from '../schemas/weekly-plan.schema.js';
 
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { assertValid } from '../schemas/validator.js';
@@ -757,5 +763,222 @@ describe('task-selector — runAt filtering', () => {
     const at = selectTasksForTickFromPlan(plan, { nowMs: Date.parse('2026-04-20T12:01:00Z') });
     assert.equal(at.length, 1);
     assert.equal(at[0].task.id, 'task-a');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-selector — daily-review selection (advisor-mode)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a daily-review task stub matching the shape produced by buildReviewTasks.
+ * All daily-review tasks share objectiveId and track = DAILY_REVIEW_OBJECTIVE_ID.
+ */
+function makeDailyReviewTask(runAtIso, overrides = {}) {
+  return {
+    id: `task-dr-${uid()}`,
+    description: 'Daily review',
+    objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+    track: DAILY_REVIEW_OBJECTIVE_ID,
+    priority: 'medium',
+    status: 'pending',
+    runAt: runAtIso,
+    ...overrides,
+  };
+}
+
+/**
+ * Build a weekly-review task stub.
+ */
+function makeWeeklyReviewTask(runAtIso, overrides = {}) {
+  return {
+    id: `task-wr-${uid()}`,
+    description: 'Weekly review',
+    objectiveId: WEEKLY_REVIEW_OBJECTIVE_ID,
+    track: WEEKLY_REVIEW_OBJECTIVE_ID,
+    priority: 'high',
+    status: 'pending',
+    runAt: runAtIso,
+    ...overrides,
+  };
+}
+
+describe('isDailyReviewTask', () => {
+  it('returns true for a task with DAILY_REVIEW_OBJECTIVE_ID', () => {
+    assert.equal(isDailyReviewTask({ objectiveId: DAILY_REVIEW_OBJECTIVE_ID }), true);
+  });
+
+  it('returns false for a regular work task', () => {
+    assert.equal(isDailyReviewTask({ objectiveId: 'obj-work' }), false);
+  });
+
+  it('returns false for a weekly-review task', () => {
+    assert.equal(isDailyReviewTask({ objectiveId: WEEKLY_REVIEW_OBJECTIVE_ID }), false);
+  });
+
+  it('returns false for null', () => {
+    assert.equal(isDailyReviewTask(null), false);
+  });
+
+  it('returns false for undefined', () => {
+    assert.equal(isDailyReviewTask(undefined), false);
+  });
+
+  it('returns false for a task with no objectiveId', () => {
+    assert.equal(isDailyReviewTask({ id: 'task-x', status: 'pending' }), false);
+  });
+});
+
+describe('task-selector — daily-review once-per-day rule (filterEligibleTasks)', () => {
+  // Use a fixed "now" at Wednesday 18:00 UTC so Mon/Tue/Wed reviews
+  // (all at 17:00 UTC) are past-eligible and Thu/Fri are still future.
+  const WED_17 = '2026-04-22T17:00:00Z'; // Wednesday 17:00 UTC
+  const nowMs  = Date.parse('2026-04-22T18:00:00Z'); // Wednesday 18:00 UTC
+
+  const MON_17 = '2026-04-20T17:00:00Z';
+  const TUE_17 = '2026-04-21T17:00:00Z';
+  const THU_17 = '2026-04-23T17:00:00Z';
+
+  it('single eligible daily-review passes through unchanged', () => {
+    const dr = makeDailyReviewTask(WED_17);
+    const eligible = filterEligibleTasks([dr], { nowMs });
+    assert.equal(eligible.length, 1);
+    assert.equal(eligible[0].id, dr.id);
+  });
+
+  it('when multiple daily-reviews are eligible, only the most recent is kept', () => {
+    const drMon = makeDailyReviewTask(MON_17);
+    const drTue = makeDailyReviewTask(TUE_17);
+    const drWed = makeDailyReviewTask(WED_17);
+    // All three runAt values are <= nowMs (Wed 18:00).
+    const eligible = filterEligibleTasks([drMon, drTue, drWed], { nowMs });
+    assert.equal(eligible.length, 1, 'only the most recent daily-review should remain');
+    assert.equal(eligible[0].id, drWed.id, 'Wednesday review wins (largest runAt)');
+  });
+
+  it('future daily-reviews are excluded by runAt regardless', () => {
+    const drWed = makeDailyReviewTask(WED_17);
+    const drThu = makeDailyReviewTask(THU_17); // still in the future at Wed 18:00
+    const eligible = filterEligibleTasks([drWed, drThu], { nowMs });
+    assert.equal(eligible.length, 1);
+    assert.equal(eligible[0].id, drWed.id, 'only Wednesday (past) is eligible');
+  });
+
+  it('non-daily-review tasks are unaffected by the rule', () => {
+    const work = makeTask({ id: 'task-work', objectiveId: 'obj-1', runAt: MON_17 });
+    const drMon = makeDailyReviewTask(MON_17);
+    const drWed = makeDailyReviewTask(WED_17);
+    const eligible = filterEligibleTasks([work, drMon, drWed], { nowMs });
+    // work task + one winning daily-review
+    assert.equal(eligible.length, 2);
+    const ids = eligible.map((t) => t.id).sort();
+    assert.ok(ids.includes(work.id), 'regular work task is preserved');
+    assert.ok(ids.includes(drWed.id), 'Wednesday daily-review wins');
+    assert.ok(!ids.includes(drMon.id), 'Monday daily-review is excluded');
+  });
+
+  it('weekly-review task is not affected by the daily-review rule', () => {
+    const drMon = makeDailyReviewTask(MON_17);
+    const drWed = makeDailyReviewTask(WED_17);
+    const wr    = makeWeeklyReviewTask(WED_17);
+    const eligible = filterEligibleTasks([drMon, drWed, wr], { nowMs });
+    // One daily-review (Wed) + one weekly-review
+    assert.equal(eligible.length, 2);
+    const ids = eligible.map((t) => t.id).sort();
+    assert.ok(ids.includes(drWed.id), 'Wednesday daily-review is present');
+    assert.ok(ids.includes(wr.id), 'weekly-review is present');
+    assert.ok(!ids.includes(drMon.id), 'Monday daily-review is excluded');
+  });
+
+  it('completed daily-review tasks are not eligible (status filter takes precedence)', () => {
+    const drMonDone = makeDailyReviewTask(MON_17, { status: 'completed' });
+    const drTue     = makeDailyReviewTask(TUE_17);
+    const drWed     = makeDailyReviewTask(WED_17);
+    const eligible  = filterEligibleTasks([drMonDone, drTue, drWed], { nowMs });
+    assert.equal(eligible.length, 1);
+    assert.equal(eligible[0].id, drWed.id, 'completed Monday is excluded; Wednesday wins');
+  });
+
+  it('daily-review with no runAt is treated as epoch 0 (lowest precedence)', () => {
+    const drNoRunAt = makeDailyReviewTask(undefined, { runAt: undefined });
+    const drWed     = makeDailyReviewTask(WED_17);
+    // drNoRunAt has no runAt → isRunAtReady treats it as always-eligible
+    // but applyDailyReviewOncePerDayRule gives it epoch 0, so drWed wins.
+    const eligible  = filterEligibleTasks([drNoRunAt, drWed], { nowMs });
+    assert.equal(eligible.length, 1);
+    assert.equal(eligible[0].id, drWed.id, 'timestamped review wins over no-runAt review');
+  });
+});
+
+describe('task-selector — daily-review interleaved with work tasks (selectTasksForTickFromPlan)', () => {
+  const MON_17 = '2026-04-20T17:00:00Z';
+  const TUE_17 = '2026-04-21T17:00:00Z';
+  const WED_17 = '2026-04-22T17:00:00Z';
+  const nowMs  = Date.parse('2026-04-22T18:00:00Z'); // Wednesday 18:00 UTC
+
+  it('daily-review appears as its own track pick alongside regular task picks', () => {
+    const work = makeTask({ id: 'task-work', objectiveId: 'obj-1', track: 'x-com' });
+    const drWed = makeDailyReviewTask(WED_17);
+    const plan = makePlan({ tasks: [work, drWed] });
+
+    const picks = selectTasksForTickFromPlan(plan, { nowMs });
+    assert.equal(picks.length, 2, 'one pick per distinct track (x-com + daily-review)');
+    const trackKeys = picks.map((p) => p.trackKey).sort();
+    assert.ok(trackKeys.includes('x-com'), 'x-com track is selected');
+    assert.ok(trackKeys.includes(DAILY_REVIEW_OBJECTIVE_ID), 'daily-review track is selected');
+  });
+
+  it('when multiple stale daily-reviews exist, only the most recent is selected', () => {
+    const drMon = makeDailyReviewTask(MON_17);
+    const drTue = makeDailyReviewTask(TUE_17);
+    const drWed = makeDailyReviewTask(WED_17);
+    const plan  = makePlan({ tasks: [drMon, drTue, drWed] });
+
+    const picks = selectTasksForTickFromPlan(plan, { nowMs });
+    assert.equal(picks.length, 1, 'exactly one daily-review pick total');
+    assert.equal(picks[0].task.id, drWed.id, 'Wednesday review (most recent) is selected');
+  });
+
+  it('selectNextTaskFromPlan returns the daily-review pick when it is top priority', () => {
+    // daily-review is 'medium'; high-priority work task should win overall
+    const highWork = makeTask({ id: 'task-high', objectiveId: 'obj-h', priority: 'high', track: 'work' });
+    const drWed    = makeDailyReviewTask(WED_17);
+    const plan     = makePlan({ tasks: [drWed, highWork] });
+
+    const single = selectNextTaskFromPlan(plan, { nowMs });
+    assert.ok(single, 'should return a pick');
+    assert.equal(single.task.id, highWork.id, 'high-priority work task wins overall');
+  });
+
+  it('selectNextTaskFromPlan returns daily-review when it is the only eligible task', () => {
+    const drWed = makeDailyReviewTask(WED_17);
+    const plan  = makePlan({ tasks: [drWed] });
+
+    const single = selectNextTaskFromPlan(plan, { nowMs });
+    assert.ok(single, 'should return a pick');
+    assert.equal(single.task.id, drWed.id);
+  });
+
+  it('future daily-review does not appear in picks', () => {
+    const THU_17 = '2026-04-23T17:00:00Z'; // future relative to nowMs
+    const drThu  = makeDailyReviewTask(THU_17);
+    const plan   = makePlan({ tasks: [drThu] });
+
+    const picks = selectTasksForTickFromPlan(plan, { nowMs });
+    assert.equal(picks.length, 0, 'future daily-review is not eligible yet');
+  });
+
+  it('once the day-slot review completes, the next stale slot becomes the pick', () => {
+    // Mon and Tue are both past-eligible. Wed has been marked completed.
+    const drMon = makeDailyReviewTask(MON_17);
+    const drTue = makeDailyReviewTask(TUE_17);
+    const drWed = makeDailyReviewTask(WED_17, { status: 'completed' });
+    const plan  = makePlan({ tasks: [drMon, drTue, drWed] });
+
+    // With Wed completed, among pending eligible reviews Mon+Tue, Tue is the
+    // most recent (larger runAt) and should be selected.
+    const picks = selectTasksForTickFromPlan(plan, { nowMs });
+    assert.equal(picks.length, 1);
+    assert.equal(picks[0].task.id, drTue.id, 'Tuesday (most recent pending) is selected after Wed completes');
   });
 });

@@ -14,6 +14,7 @@ describe('dispatcher registry', () => {
     const expected = [
       'agent-helpers',
       'calendar',
+      'daily-review',
       'delegate-task',
       'hire',
       'hire-all',
@@ -23,6 +24,7 @@ describe('dispatcher registry', () => {
       'init',
       'init-hire-menu',
       'manage',
+      'next-week-context',
       'plan',
       'plan-markdown',
       'summary',

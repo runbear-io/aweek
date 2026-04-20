@@ -27,6 +27,9 @@ import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
 import * as planMarkdown from '../storage/plan-markdown-store.js';
+import * as dailyReview from '../services/daily-review-writer.js';
+import * as dailyReviewAdj from '../services/daily-review-adjustments.js';
+import * as nextWeekContextAssembler from '../services/next-week-context-assembler.js';
 
 export class DispatchError extends Error {
   constructor(code, message) {
@@ -91,12 +94,35 @@ export const REGISTRY = Object.freeze({
     approve: plan.approve,
     reject: plan.reject,
     edit: plan.edit,
+    // Returns { mode, confident, ambiguityReason, themeScore, priorityScore,
+    // modeLabel }. When confident===false the skill triggers an
+    // AskUserQuestion interview to resolve the layout preference.
+    detectLayoutAmbiguity: plan.detectLayoutAmbiguity,
+    // Runs all four interview triggers concurrently and returns the array of
+    // fired reasons. Empty array → no interview needed; non-empty → skill
+    // enters inline-blocking interview mode with one AskUserQuestion per
+    // fired trigger before plan generation proceeds.
+    checkInterviewTriggers: plan.checkInterviewTriggers,
+    // Skip-questions escape hatch: given the fired triggers array from
+    // checkInterviewTriggers, produces a best-guess assumption for each one
+    // so the skill can surface them to the user instead of running the
+    // full inline interview. The user then approves or declines the block.
+    generateSkipAssumptions: (input) =>
+      plan.generateSkipAssumptions(input?.triggers ?? []),
+    // Format the assumptions array returned by generateSkipAssumptions into
+    // a clearly-labelled markdown block for direct display in skill output.
+    formatAssumptionsBlock: (input) =>
+      plan.formatAssumptionsBlock(input?.assumptions ?? []),
     formatAdjustmentResult: (input) =>
       plan.formatAdjustmentResult(input?.results ?? input),
     // formatApprovalResult takes (result, action). Adapter unpacks the
     // JSON object into positional args so the CLI input stays a plain object.
     formatApprovalResult: (input) =>
       plan.formatApprovalResult(input?.result, input?.action),
+    // Autonomous approval — used exclusively by the weekly-review → next-week
+    // planner chain. Immediately sets approved:true, skips AskUserQuestion, and
+    // returns noPendingPlanRemains:true when the write was persisted correctly.
+    autoApprovePlan: plan.autoApprovePlan,
   },
   manage: {
     listPausedAgents: manage.listPausedAgents,
@@ -158,6 +184,71 @@ export const REGISTRY = Object.freeze({
     listAllAgents: agentHelpers.listAllAgents,
     loadAgent: agentHelpers.loadAgent,
     getAgentChoices: agentHelpers.getAgentChoices,
+  },
+  // Daily review writer — generates reviews/daily-YYYY-MM-DD.md for an agent.
+  // All functions accept a single JSON-object input so the CLI surface stays flat.
+  'daily-review': {
+    // Pure helpers exposed for skill-markdown inspection / testing
+    utcToLocalDate: (input) =>
+      dailyReview.utcToLocalDate(input?.isoString, input?.tz),
+    weekdayName: (input) => dailyReview.weekdayName(input?.date ?? ''),
+    tomorrowWeekdayName: (input) => dailyReview.tomorrowWeekdayName(input?.date ?? ''),
+    dateToISOWeek: (input) => dailyReview.dateToISOWeek(input?.date ?? ''),
+    isoWeekToMondayDate: (input) => dailyReview.isoWeekToMondayDate(input?.week ?? ''),
+    // Path helpers
+    dailyReviewDir: (input) => dailyReview.dailyReviewDir(input?.baseDir ?? '', input?.agentId ?? ''),
+    dailyReviewPaths: (input) =>
+      dailyReview.dailyReviewPaths(input?.baseDir ?? '', input?.agentId ?? '', input?.date ?? ''),
+    // Persistence helpers
+    loadDailyReview: (input) =>
+      dailyReview.loadDailyReview(input?.baseDir ?? '', input?.agentId ?? '', input?.date ?? ''),
+    listDailyReviews: (input) =>
+      dailyReview.listDailyReviews(input?.baseDir ?? '', input?.agentId ?? ''),
+    // Main orchestrator — generates and optionally persists the daily review.
+    // When persist=true and adjustments exist, also enqueues a pending
+    // weeklyAdjustment batch for approval through /aweek:plan Branch B.
+    generateDailyReview: dailyReview.generateDailyReview,
+    // ── Pending daily-review adjustment batches ─────────────────────────────
+    // After generateDailyReview runs, a batch of proposed weeklyAdjustments is
+    // saved under .aweek/agents/<slug>/pending-daily-adjustments/<date>.json.
+    // /aweek:plan Branch B checks for these at B1 and presents them in the
+    // same "confirm the batch" gate (B3) used for all weekly task adjustments.
+    // They are applied via adjustGoals only after the user explicitly approves.
+    enqueueDailyReviewAdjustments: dailyReviewAdj.enqueueDailyReviewAdjustments,
+    loadPendingAdjustmentBatch: (input) =>
+      dailyReviewAdj.loadPendingAdjustmentBatch(
+        input?.baseDir ?? '',
+        input?.agentId ?? '',
+        input?.date ?? '',
+      ),
+    listPendingAdjustmentDates: (input) =>
+      dailyReviewAdj.listPendingAdjustmentDates(
+        input?.baseDir ?? '',
+        input?.agentId ?? '',
+      ),
+    clearPendingAdjustmentBatch: (input) =>
+      dailyReviewAdj.clearPendingAdjustmentBatch(
+        input?.baseDir ?? '',
+        input?.agentId ?? '',
+        input?.date ?? '',
+      ),
+  },
+  // Context assembler for the autonomous next-week planner.
+  // Reads plan.md, the just-written weekly retrospective, and the activity log
+  // for the completed week, returning a context object ready to spread into
+  // generateWeeklyPlan's options parameter. Only called from the weekly-review
+  // → next-week-planner autonomous chain, not from user-invoked /aweek:plan.
+  'next-week-context': {
+    // Pure helpers exposed for testing and skill inspection.
+    extractRetrospectiveSummary: (input) =>
+      nextWeekContextAssembler.extractRetrospectiveSummary(input?.reviewMarkdown ?? ''),
+    summariseActivityLog: (input) =>
+      nextWeekContextAssembler.summariseActivityLog(input?.entries ?? []),
+    // Main assembler — requires agentsDir, baseDir, agentId, week, and an
+    // optional activityLogStore instance. The store is not JSON-serialisable so
+    // callers that need the full assembly must import and call the function
+    // directly; this dispatcher entry exposes the pure helpers for skill testing.
+    assembleNextWeekPlannerContext: nextWeekContextAssembler.assembleNextWeekPlannerContext,
   },
 });
 

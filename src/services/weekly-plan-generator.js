@@ -12,12 +12,38 @@
  *  - Idempotent: calling with the same inputs and week produces the same structure
  *    (new IDs each call, but deterministic task count & mapping).
  *  - Validates output against the weekly-plan schema before returning.
+ *
+ * Day-layout detection:
+ *  - When `options.planMarkdown` is supplied, `detectDayLayout` reads the
+ *    agent's plan.md body and classifies the planning style into one of three
+ *    modes: 'theme-days', 'priority-waterfall', or 'mixed'.
+ *  - The detected mode is returned as `meta.layoutMode` and determines the
+ *    `meta.spreadStrategy` hint passed to `distributeTasks` callers:
+ *      theme-days        → 'spread'  (round-robin across weekdays)
+ *      priority-waterfall → 'pack'   (fill days sequentially, high → low)
+ *      mixed             → 'pack'   (default)
+ *  - For 'priority-waterfall', tasks are also pre-sorted by priority
+ *    (critical → high → medium → low) before the plan is assembled so that
+ *    `distributeTasks` places the most important work earliest in the week.
  */
 import {
   createTask,
   createWeeklyPlan,
 } from '../models/agent.js';
 import { assertValid } from '../schemas/validator.js';
+import { detectDayLayout } from './day-layout-detector.js';
+import { composeAdvisorBrief } from './advisor-brief-composer.js';
+import { parsePlanMarkdownSections } from '../storage/plan-markdown-store.js';
+import {
+  DAILY_REVIEW_OBJECTIVE_ID,
+  WEEKLY_REVIEW_OBJECTIVE_ID,
+} from '../schemas/weekly-plan.schema.js';
+import {
+  mondayOfWeek,
+  localParts,
+  localWallClockToUtc,
+  isValidTimeZone,
+} from '../time/zone.js';
 
 const WEEKLY_PLAN_SCHEMA_ID = 'aweek://schemas/weekly-plan';
 
@@ -35,6 +61,134 @@ const STATUS_TO_PRIORITY = {
   'in-progress': 'high',
   planned: 'medium',
 };
+
+/**
+ * Numeric sort key per priority level. Lower = more urgent.
+ * Used to pre-sort tasks when the detected layout is 'priority-waterfall'
+ * so that `distributeTasks` places critical work earliest in the week.
+ */
+const PRIORITY_SORT_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+
+/**
+ * Map from layout mode (returned by `detectDayLayout`) to the `spread`
+ * hint understood by `distributeTasks` in weekly-calendar-grid.js.
+ *
+ *   'theme-days'        → 'spread'  one task per day, round-robin
+ *   'priority-waterfall'→ 'pack'   fill each day before advancing
+ *   'mixed'             → 'pack'   same as pack (safe default)
+ */
+const LAYOUT_TO_SPREAD = {
+  'theme-days': 'spread',
+  'priority-waterfall': 'pack',
+  mixed: 'pack',
+};
+
+// ---------------------------------------------------------------------------
+// Advisor-mode review task injection
+// ---------------------------------------------------------------------------
+
+/**
+ * Local-wall-clock hour at which daily review tasks fire (Mon–Fri).
+ * Agents see these as end-of-day reflection slots in their calendar.
+ */
+const DAILY_REVIEW_HOUR = 17;
+
+/**
+ * Local-wall-clock hour at which the weekly review fires on Friday.
+ * Placed one hour after the daily review so the day-close slot completes
+ * before the week-close slot kicks off the next-week planner.
+ */
+const WEEKLY_REVIEW_HOUR = 18;
+
+/**
+ * Day-specific descriptions for daily review tasks (index 0 = Monday … 4 = Friday).
+ * Written in an advisor / new-hire brief voice: contextual, paced, not flat imperatives.
+ */
+const DAILY_REVIEW_DESCRIPTIONS = [
+  // Monday
+  "Week orientation: open your weekly plan, confirm today's top two priorities, and flag any dependencies you need to unblock before the week gains momentum.",
+  // Tuesday
+  "Day-two check-in: note what moved forward yesterday, update task statuses, and surface anything that is drifting off-plan before it becomes a blocker.",
+  // Wednesday
+  "Mid-week pulse: you are halfway through — assess overall pacing, re-sequence tasks if needed, and lock in a clear plan for the remaining two days.",
+  // Thursday
+  "Pre-close prep: drive open items toward done, escalate any unresolved blockers, and identify what must be finished before Friday's end-of-week review.",
+  // Friday
+  "End-of-day Friday: record today's outcomes, note what carries forward into next week, and update plan.md so the weekly review has accurate data to work from.",
+];
+
+/**
+ * Description for the single weekly review task placed on Friday afternoon.
+ * The weekly review chains automatically into the next-week planner when the
+ * agent runs autonomously.
+ */
+const WEEKLY_REVIEW_DESCRIPTION =
+  'Weekly review: assess outcomes against this week\'s plan, capture wins / misses / learnings, ' +
+  'and hand off to the next-week planner which will auto-draft next week\'s schedule for approval.';
+
+/**
+ * Build the six advisor-mode review tasks for a given ISO week.
+ *
+ * Produces five daily-review tasks (Mon–Fri at DAILY_REVIEW_HOUR local time)
+ * and one weekly-review task (Friday at WEEKLY_REVIEW_HOUR local time).
+ * Each task carries an explicit `track` matching its objectiveId so the
+ * task-selector treats them as independent pacing lanes alongside work tasks.
+ *
+ * DST handling is delegated to `localWallClockToUtc`: spring-forward gaps
+ * resolve to the first valid instant after the gap; fall-back ambiguity
+ * resolves to the first (earlier) occurrence.
+ *
+ * @param {string} week - ISO week string (YYYY-Www)
+ * @param {string} [tz='UTC'] - IANA time zone name (e.g. 'America/Los_Angeles').
+ *   Falls back to 'UTC' when the value is absent or not a valid IANA name.
+ * @returns {object[]} Array of 6 task objects (5 daily-review + 1 weekly-review)
+ */
+export function buildReviewTasks(week, tz = 'UTC') {
+  const resolvedTz = (typeof tz === 'string' && isValidTimeZone(tz)) ? tz : 'UTC';
+
+  // Monday 00:00 local time expressed as a UTC Date.
+  const mondayUtc = mondayOfWeek(week, resolvedTz);
+  // Local Y/M/D components for Monday (used to build each day's wall clock).
+  const { year, month, day: mondayDay } = localParts(mondayUtc, resolvedTz);
+
+  const tasks = [];
+
+  // Five daily review tasks: Monday (offset 0) through Friday (offset 4).
+  // localWallClockToUtc handles month/year roll-over when mondayDay + i
+  // overflows the current month because Date.UTC normalises the components.
+  for (let i = 0; i < 5; i++) {
+    const runAt = localWallClockToUtc(
+      { year, month, day: mondayDay + i, hour: DAILY_REVIEW_HOUR, minute: 0, second: 0 },
+      resolvedTz,
+    ).toISOString();
+
+    tasks.push(
+      createTask(DAILY_REVIEW_DESCRIPTIONS[i], DAILY_REVIEW_OBJECTIVE_ID, {
+        priority: 'medium',
+        estimatedMinutes: 30,
+        runAt,
+        track: DAILY_REVIEW_OBJECTIVE_ID,
+      }),
+    );
+  }
+
+  // One weekly review task on Friday (offset 4), one hour after the daily review.
+  const weeklyRunAt = localWallClockToUtc(
+    { year, month, day: mondayDay + 4, hour: WEEKLY_REVIEW_HOUR, minute: 0, second: 0 },
+    resolvedTz,
+  ).toISOString();
+
+  tasks.push(
+    createTask(WEEKLY_REVIEW_DESCRIPTION, WEEKLY_REVIEW_OBJECTIVE_ID, {
+      priority: 'high',
+      estimatedMinutes: 60,
+      runAt: weeklyRunAt,
+      track: WEEKLY_REVIEW_OBJECTIVE_ID,
+    }),
+  );
+
+  return tasks;
+}
 
 /**
  * Filter objectives to only those eligible for task generation.
@@ -124,7 +278,42 @@ export function generateTasksForObjective(objective, { taskDescriptors } = {}) {
  * @param {boolean} [params.options.requireActiveGoal=true] - Only include objectives whose parent goal is active
  * @param {Object<string, Array<{ description: string, priority?: string, estimatedMinutes?: number }>>} [params.options.taskOverrides]
  *   Map of objectiveId -> custom task descriptors. Overrides default task generation for specific objectives.
- * @returns {{ plan: object, meta: { totalTasks: number, objectivesIncluded: number, objectivesSkipped: number, skippedReasons: object[] } }}
+ * @param {string|null} [params.options.planMarkdown=null]
+ *   Raw content of the agent's plan.md file. When supplied, two things happen:
+ *   1. `detectDayLayout` classifies the planning style (surfaced in `meta.layoutMode`
+ *      and `meta.spreadStrategy` for callers that subsequently call `distributeTasks`).
+ *   2. Each non-review work task without a user override gets an advisor-voiced
+ *      3–6 sentence brief (via `composeAdvisorBrief`) instead of the flat
+ *      objective description. The brief references the plan.md strategy/notes
+ *      and optionally the prior-day outcomes.
+ * @param {string|null} [params.options.priorDayOutcomes=null]
+ *   One-sentence summary of what the agent accomplished in the prior working
+ *   session (e.g. from the previous daily-review file). When supplied alongside
+ *   `planMarkdown`, each advisor brief appends a continuity sentence that
+ *   bridges from yesterday's work into today's task.
+ * @param {string|null} [params.options.retrospectiveContext=null]
+ *   Compact summary extracted from last week's retrospective file (produced by
+ *   `extractRetrospectiveSummary` in `next-week-context-assembler.js`). When
+ *   supplied alongside `planMarkdown`, each advisor brief appends a weekly
+ *   retrospective bridge sentence using week-scoped language ("last week's
+ *   review noted…"). Only set this on the autonomous next-week planner path via
+ *   `assembleNextWeekPlannerContext`; leave null for standard user-invoked or
+ *   daily plan generation so briefs stay focused on the current session.
+ * @param {string} [params.options.tz='UTC']
+ *   IANA time zone name used to compute `runAt` for injected review tasks.
+ *   Falls back to 'UTC' when absent or not a valid IANA name.
+ * @returns {{
+ *   plan: object,
+ *   meta: {
+ *     totalTasks: number,
+ *     objectivesIncluded: number,
+ *     objectivesSkipped: number,
+ *     skippedReasons: object[],
+ *     reviewTasksAdded: number,
+ *     layoutMode: 'theme-days' | 'priority-waterfall' | 'mixed',
+ *     spreadStrategy: 'spread' | 'pack',
+ *   }
+ * }}
  * @throws {Error} If week or month format is invalid, or if output fails schema validation
  */
 export function generateWeeklyPlan({
@@ -148,7 +337,14 @@ export function generateWeeklyPlan({
     throw new Error('goals must be an array.');
   }
 
-  const { requireActiveGoal = true, taskOverrides = {} } = options;
+  const {
+    requireActiveGoal = true,
+    taskOverrides = {},
+    planMarkdown = null,
+    tz = 'UTC',
+    priorDayOutcomes = null,
+    retrospectiveContext = null,
+  } = options;
 
   // --- Filter objectives ---
   const activeGoalIds = buildActiveGoalIdSet(goals);
@@ -177,15 +373,80 @@ export function generateWeeklyPlan({
     eligibleObjectives.push(obj);
   }
 
+  // --- Advisor brief context (populated only when planMarkdown is supplied) ---
+  // Build a goals lookup map so composeAdvisorBrief can reference the parent
+  // goal description for each objective without iterating the goals array on
+  // every iteration.
+  const goalsById = new Map(goals.map((g) => [g.id, g]));
+
+  // Parse plan.md into sections for brief composition context.
+  // When planMarkdown is absent this stays null and advisor brief composition
+  // is skipped — objectives fall back to their raw description (existing behaviour).
+  const parsedPlanSections = planMarkdown ? parsePlanMarkdownSections(planMarkdown) : null;
+
   // --- Generate tasks ---
   const allTasks = [];
   for (const obj of eligibleObjectives) {
     const overrides = taskOverrides[obj.id];
+    const hasUserOverrides = Array.isArray(overrides) && overrides.length > 0;
+
+    // When planMarkdown is available and the user has not supplied custom task
+    // descriptors for this objective, compose an advisor-voiced 3–6 sentence
+    // brief that references the plan.md context and (when supplied) prior-day
+    // outcomes. This replaces the flat objective.description that would
+    // otherwise become the task prompt string.
+    //
+    // taskOverrides take precedence: they represent explicit user intent and
+    // must never be silently replaced by the generated brief.
+    let effectiveDescriptors;
+    if (!hasUserOverrides && parsedPlanSections) {
+      const goalDescription = goalsById.get(obj.goalId)?.description ?? null;
+      const brief = composeAdvisorBrief(obj, {
+        planContext: parsedPlanSections,
+        priorDayOutcomes,
+        goalDescription,
+        retrospectiveContext,
+      });
+      effectiveDescriptors = [{
+        description: brief,
+        priority: defaultPriorityForObjective(obj),
+      }];
+    } else {
+      // No plan.md context, or user supplied explicit overrides — use them as-is.
+      // When overrides is undefined, generateTasksForObjective falls back to the
+      // objective description (one task per objective, existing behaviour).
+      effectiveDescriptors = overrides;
+    }
+
     const tasks = generateTasksForObjective(obj, {
-      taskDescriptors: overrides,
+      taskDescriptors: effectiveDescriptors,
     });
     allTasks.push(...tasks);
   }
+
+  // --- Detect day-layout mode from plan.md content ---
+  // detectDayLayout gracefully handles null / undefined / non-string inputs
+  // by returning 'mixed', so passing planMarkdown directly is safe.
+  const layoutMode = detectDayLayout(planMarkdown);
+  const spreadStrategy = LAYOUT_TO_SPREAD[layoutMode] ?? 'pack';
+
+  // For priority-waterfall mode, pre-sort tasks by priority so that
+  // distributeTasks (called later by calendar/plan callers) places the most
+  // critical work earliest in the week when using 'pack' distribution.
+  if (layoutMode === 'priority-waterfall') {
+    allTasks.sort(
+      (a, b) =>
+        (PRIORITY_SORT_ORDER[a.priority] ?? 99) -
+        (PRIORITY_SORT_ORDER[b.priority] ?? 99),
+    );
+  }
+
+  // --- Inject advisor-mode review tasks ---
+  // Review tasks are always appended after work tasks so the sorted work
+  // order above is preserved and the calendar renderer can distinguish them
+  // via isReviewObjectiveId().
+  const reviewTasks = buildReviewTasks(week, tz);
+  allTasks.push(...reviewTasks);
 
   // --- Build weekly plan ---
   const plan = createWeeklyPlan(week, month, allTasks);
@@ -200,6 +461,9 @@ export function generateWeeklyPlan({
       objectivesIncluded: eligibleObjectives.length,
       objectivesSkipped: skippedReasons.length,
       skippedReasons,
+      reviewTasksAdded: reviewTasks.length,
+      layoutMode,
+      spreadStrategy,
     },
   };
 }

@@ -14,12 +14,13 @@
  */
 
 import { join } from 'node:path';
-import { readdir } from 'node:fs/promises';
+import { readdir, writeFile, mkdir } from 'node:fs/promises';
 import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { ExecutionStore, createExecutionRecord } from '../storage/execution-store.js';
 import { UsageStore } from '../storage/usage-store.js';
 import { ActivityLogStore, createLogEntry } from '../storage/activity-log-store.js';
+import { InboxStore } from '../storage/inbox-store.js';
 import { createScheduler } from './scheduler.js';
 import { tickAgent } from './heartbeat-task-runner.js';
 import {
@@ -29,7 +30,13 @@ import {
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
 import { loadConfig } from '../storage/config-store.js';
-import { detectSystemTimeZone } from '../time/zone.js';
+import { detectSystemTimeZone, mondayOfWeek } from '../time/zone.js';
+import { WEEKLY_REVIEW_OBJECTIVE_ID, DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
+import { generateWeeklyReview, nextISOWeek } from '../services/weekly-review-orchestrator.js';
+import { generateDailyReview, utcToLocalDate } from '../services/daily-review-writer.js';
+import { MonthlyPlanStore } from '../storage/monthly-plan-store.js';
+import { generateWeeklyPlan } from '../services/weekly-plan-generator.js';
+import { readPlan } from '../storage/plan-markdown-store.js';
 
 /**
  * Extract URLs and file paths from session stdout.
@@ -74,6 +81,7 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
   const executionStore = new ExecutionStore(agentsDir);
   const usageStore = new UsageStore(agentsDir);
   const activityLogStore = new ActivityLogStore(agentsDir);
+  const inboxStore = new InboxStore(agentsDir);
   const lockDir = join(dataDir, 'locks');
 
   const scheduler = createScheduler({ lockDir });
@@ -110,10 +118,12 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
     subagentRef,
     projectDir,
     dataDir,
+    agentsDir,
     weeklyPlanStore,
     usageStore,
     activityLogStore,
     agentStore,
+    inboxStore,
   };
 
   const firstResult = await executeOneSelection(
@@ -164,9 +174,296 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
 }
 
 /**
+ * Autonomous post-review chain — generate and auto-approve the next week's plan.
+ *
+ * Triggered after a successful weekly review write. The generated plan is
+ * immediately approved so the heartbeat can resume next week without waiting
+ * for a manual approval step.
+ *
+ * Deterministic: given the same agent state the same plan structure is
+ * produced. If a plan for the target week already exists on disk, the chain
+ * is skipped (idempotent).
+ *
+ * Best-effort: every internal failure is caught and logged. The function
+ * never throws so chain errors do NOT affect the review task's finalStatus.
+ *
+ * @param {string} currentWeek - The week that was just reviewed (e.g. '2026-W16')
+ * @param {object} ctx - Store context captured in runHeartbeatForAgent
+ * @param {string} ctx.agentId
+ * @param {string} ctx.agentsDir
+ * @param {import('../storage/weekly-plan-store.js').WeeklyPlanStore} ctx.weeklyPlanStore
+ * @param {import('../storage/agent-store.js').AgentStore} ctx.agentStore
+ * @returns {Promise<{ nextWeek: string | null, chained: boolean, reason?: string }>}
+ */
+export async function chainNextWeekPlanner(currentWeek, ctx) {
+  const { agentId, agentsDir, weeklyPlanStore, agentStore } = ctx;
+  let nextWeek = null;
+
+  try {
+    nextWeek = nextISOWeek(currentWeek);
+
+    // Idempotency: skip if a plan for next week already exists on disk.
+    // Prevents overwriting a plan the user (or a prior chain run) has already
+    // created and possibly approved.
+    let alreadyExists = false;
+    try {
+      await weeklyPlanStore.load(agentId, nextWeek);
+      alreadyExists = true;
+    } catch {
+      // ENOENT or parse error → plan doesn't exist; proceed with generation.
+    }
+
+    if (alreadyExists) {
+      console.log(`[${agentId}] next-week plan for ${nextWeek} already exists — skipping auto-chain`);
+      return { nextWeek, chained: false, reason: 'plan_already_exists' };
+    }
+
+    // Load agent config for goals.
+    let goals = [];
+    let agentConfig;
+    try {
+      agentConfig = await agentStore.load(agentId);
+      goals = Array.isArray(agentConfig.goals) ? agentConfig.goals : [];
+    } catch {
+      // Graceful: missing goals → plan will have only review tasks.
+    }
+
+    // Resolve the configured IANA time zone from .aweek/config.json.
+    // loadConfig accepts agentsDir and walks up one level to .aweek/config.json.
+    let tz = 'UTC';
+    try {
+      const aweekConfig = await loadConfig(agentsDir);
+      if (aweekConfig?.timeZone) tz = aweekConfig.timeZone;
+    } catch {
+      // Graceful: fall back to UTC.
+    }
+
+    // Derive next week's month from its Monday date so we know which monthly
+    // plan to look up. mondayOfWeek returns a UTC Date; slice gives YYYY-MM.
+    const nextMondayUtc = mondayOfWeek(nextWeek, tz);
+    const nextMonth =
+      `${nextMondayUtc.getUTCFullYear()}-${String(nextMondayUtc.getUTCMonth() + 1).padStart(2, '0')}`;
+
+    // Load the monthly plan. Prefer the exact month for next week; fall back
+    // to the currently active plan; fall back to empty objectives.
+    const monthlyPlanStore = new MonthlyPlanStore(agentsDir);
+    let monthlyPlan = { objectives: [] };
+    try {
+      monthlyPlan = await monthlyPlanStore.load(agentId, nextMonth);
+    } catch {
+      try {
+        const active = await monthlyPlanStore.loadActive(agentId);
+        if (active) monthlyPlan = active;
+      } catch {
+        // Graceful: empty objectives → plan has only review tasks.
+      }
+    }
+
+    // Load plan.md for advisor brief composition.
+    let planMarkdown = null;
+    try {
+      planMarkdown = await readPlan(agentsDir, agentId);
+    } catch {
+      // Graceful: plan.md absence falls back to objective descriptions.
+    }
+
+    // Generate the next week's plan.
+    const { plan, meta } = generateWeeklyPlan({
+      week: nextWeek,
+      month: nextMonth,
+      goals,
+      monthlyPlan,
+      options: { planMarkdown, tz },
+    });
+
+    // Auto-approve: this is the autonomous chain — no human gate is needed.
+    // The review that triggered this chain already confirmed the week is done.
+    plan.approved = true;
+    plan.approvedAt = new Date().toISOString();
+
+    // Persist the auto-approved plan.
+    await weeklyPlanStore.save(agentId, plan);
+
+    console.log(
+      `[${agentId}] auto-chained next-week plan for ${nextWeek}: ` +
+        `${meta.totalTasks} tasks (${meta.reviewTasksAdded} review slots, auto-approved)`,
+    );
+
+    return { nextWeek, chained: true };
+  } catch (err) {
+    console.warn(`[${agentId}] next-week planner chain error: ${err.message}`);
+    return { nextWeek, chained: false, reason: err.message };
+  }
+}
+
+/**
+ * Handle a daily-review heartbeat task: run the daily review pipeline and
+ * write the result to `reviews/daily-YYYY-MM-DD.md` inside the per-agent
+ * data directory.
+ *
+ * No CLI session is launched, no token usage is tracked, and no budget is
+ * enforced for these synthetic tasks — the only side effects are:
+ *   1. Writing the daily review markdown + JSON metadata files to disk.
+ *   2. Marking the plan task as `completed` (or `failed` on error).
+ *
+ * The review date is derived from `task.runAt` converted to the configured
+ * IANA timezone (falls back to UTC). Daily-review tasks always carry a
+ * `runAt` set to the end-of-day wall-clock slot for their calendar day.
+ *
+ * @param {object} selection - { task, week }
+ * @param {object} ctx - Stores + paths from runHeartbeatForAgent.
+ * @returns {Promise<{ execResult: null, error: Error | null, finalStatus: 'completed' | 'failed' }>}
+ */
+async function executeDailyReviewTask(selection, ctx) {
+  const {
+    agentId,
+    agentsDir,
+    weeklyPlanStore,
+    activityLogStore,
+    agentStore,
+  } = ctx;
+  const { task, week } = selection;
+
+  // Resolve the configured IANA timezone so the local date matches the user's
+  // calendar day, not the UTC date. loadConfig walks up from agentsDir.
+  let tz = 'UTC';
+  try {
+    const aweekConfig = await loadConfig(agentsDir);
+    if (aweekConfig?.timeZone) tz = aweekConfig.timeZone;
+  } catch {
+    // Graceful: fall back to UTC.
+  }
+
+  // Derive the local review date from task.runAt (always set on daily-review
+  // tasks by the weekly-plan generator). Falls back to today's UTC date when
+  // runAt is missing so an orphaned task still produces a valid document.
+  const reviewDate = task.runAt
+    ? utcToLocalDate(task.runAt, tz)
+    : new Date().toISOString().slice(0, 10);
+
+  console.log(`[${agentId}] generating daily review for ${reviewDate}`);
+
+  let error = null;
+  let finalStatus = 'completed';
+
+  try {
+    const deps = { agentStore, weeklyPlanStore, activityLogStore };
+
+    // Generate + persist the review document. persist:true writes both the
+    // .md and companion .json to .aweek/agents/<agentId>/reviews/daily-<date>.
+    await generateDailyReview(deps, agentId, reviewDate, {
+      week,
+      tz,
+      persist: true,
+      baseDir: agentsDir,
+    });
+
+    console.log(`[${agentId}] daily review written for ${reviewDate}`);
+  } catch (err) {
+    error = err;
+    finalStatus = 'failed';
+    console.error(`[${agentId}] daily review error: ${err.message}`);
+  }
+
+  // Always update the task status — completed on success, failed on error.
+  await weeklyPlanStore
+    .updateTaskStatus(agentId, week, task.id, finalStatus)
+    .catch((e) =>
+      console.warn(`[${agentId}] daily review status update warning: ${e.message}`),
+    );
+
+  return { execResult: null, error, finalStatus };
+}
+
+/**
+ * Handle a weekly-review heartbeat task: run the review pipeline and write
+ * the result to `reviews/weekly-YYYY-Www.md` inside the per-agent data
+ * directory.
+ *
+ * No CLI session is launched, no token usage is tracked, and no budget is
+ * enforced for these synthetic tasks — the only side effects are:
+ *   1. Writing the review markdown file to disk.
+ *   2. Marking the plan task as `completed` (or `failed` on error).
+ *
+ * @param {object} selection - { task, week }
+ * @param {object} ctx - Stores + paths from runHeartbeatForAgent.
+ * @returns {Promise<{
+ *   execResult: null,
+ *   error: Error | null,
+ *   finalStatus: 'completed' | 'failed',
+ *   chainResult: { nextWeek: string | null, chained: boolean, reason?: string } | null,
+ * }>}
+ */
+async function executeWeeklyReviewTask(selection, ctx) {
+  const {
+    agentId,
+    agentsDir,
+    weeklyPlanStore,
+    usageStore,
+    activityLogStore,
+    agentStore,
+    inboxStore,
+  } = ctx;
+  const { task, week } = selection;
+
+  const reviewDir = join(agentsDir, agentId, 'reviews');
+  const reviewPath = join(reviewDir, `weekly-${week}.md`);
+
+  console.log(`[${agentId}] generating weekly review for ${week}`);
+
+  let error = null;
+  let finalStatus = 'completed';
+  let chainResult = null;
+
+  try {
+    const deps = {
+      agentStore,
+      weeklyPlanStore,
+      activityLogStore,
+      usageStore,
+      inboxStore,
+    };
+
+    // Generate the full review document. persist: false so we control the path
+    // (heartbeat writes to reviews/weekly-YYYY-Www.md, not reviews/YYYY-Www.md).
+    const result = await generateWeeklyReview(deps, agentId, week, { persist: false });
+
+    // Write to reviews/weekly-YYYY-Www.md inside the per-agent data directory.
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(reviewPath, result.markdown, 'utf-8');
+
+    console.log(`[${agentId}] weekly review written: ${reviewPath}`);
+
+    // Autonomous chain: after a successful review write, immediately generate
+    // and auto-approve the next week's plan so the heartbeat can resume without
+    // manual intervention. chainNextWeekPlanner is best-effort — it never
+    // throws, so chain failures do NOT affect finalStatus.
+    chainResult = await chainNextWeekPlanner(week, ctx);
+  } catch (err) {
+    error = err;
+    finalStatus = 'failed';
+    console.error(`[${agentId}] weekly review error: ${err.message}`);
+  }
+
+  // Always update the task status — completed on success, failed on error.
+  await weeklyPlanStore
+    .updateTaskStatus(agentId, week, task.id, finalStatus)
+    .catch((e) =>
+      console.warn(`[${agentId}] weekly review status update warning: ${e.message}`),
+    );
+
+  return { execResult: null, error, finalStatus, chainResult };
+}
+
+/**
  * Run the full per-task pipeline for one selection: execute the CLI
  * session with token tracking, mark the task status, append the rich
  * activity-log entry, and enforce the weekly budget.
+ *
+ * Weekly-review tasks (objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID) are
+ * intercepted before the CLI session and handled by executeWeeklyReviewTask,
+ * which calls the review pipeline directly and writes the result to disk
+ * with no other side effects.
  *
  * Extracted so the heartbeat runner can call it for both the first
  * tickAgent selection AND every subsequent per-track drain pick. Errors
@@ -189,6 +486,18 @@ async function executeOneSelection(selection, ctx) {
     agentStore,
   } = ctx;
   const { task, week } = selection;
+
+  // Daily-review tasks bypass the CLI session — call the daily review
+  // pipeline directly and write the result to reviews/daily-YYYY-MM-DD.md.
+  if (task.objectiveId === DAILY_REVIEW_OBJECTIVE_ID) {
+    return executeDailyReviewTask(selection, ctx);
+  }
+
+  // Weekly-review tasks bypass the CLI session — call the review pipeline
+  // directly and write the result to reviews/weekly-YYYY-Www.md.
+  if (task.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID) {
+    return executeWeeklyReviewTask(selection, ctx);
+  }
 
   console.log(`[${agentId}] executing task: ${task.description}`);
 

@@ -14,9 +14,11 @@ import {
   drainQueuedTasks,
   runAllWithLockAndQueue,
   createLockedSessionRunner,
+  createDispatchingExecutor,
 } from './locked-session-runner.js';
 import { acquireLock, releaseLock, queryLock } from '../lock/lock-manager.js';
 import { enqueue, readQueue, clearQueue } from '../queue/task-queue.js';
+import { DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -945,5 +947,231 @@ describe('runWithLockAndQueue resume guard (paused agents)', () => {
     assert.equal(queue.length, 0);
 
     await releaseLock(agentId, { lockDir });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createDispatchingExecutor — daily-review dispatch
+// ---------------------------------------------------------------------------
+
+describe('createDispatchingExecutor', () => {
+  it('throws if normalExecuteFn is not a function', () => {
+    assert.throws(
+      () => createDispatchingExecutor('not-fn'),
+      /normalExecuteFn must be a function/,
+    );
+  });
+
+  it('routes normal tasks to normalExecuteFn', async () => {
+    const normalCalls = [];
+    const reviewCalls = [];
+
+    const normalFn = async (agentId, taskInfo) => {
+      normalCalls.push({ agentId, taskInfo });
+      return { result: 'normal' };
+    };
+    const reviewFn = async (agentId, taskInfo) => {
+      reviewCalls.push({ agentId, taskInfo });
+      return { result: 'review' };
+    };
+
+    const executor = createDispatchingExecutor(normalFn, { dailyReviewExecuteFn: reviewFn });
+
+    const result = await executor('agent-1', {
+      taskId: 'task-work-01',
+      objectiveId: 'obj-some-work',
+    });
+
+    assert.deepEqual(result, { result: 'normal' });
+    assert.equal(normalCalls.length, 1);
+    assert.equal(reviewCalls.length, 0);
+  });
+
+  it('routes daily-review tasks (top-level objectiveId) to dailyReviewExecuteFn', async () => {
+    const normalCalls = [];
+    const reviewCalls = [];
+
+    const normalFn = async (_a, ti) => { normalCalls.push(ti); return {}; };
+    const reviewFn = async (_a, ti) => { reviewCalls.push(ti); return { result: 'daily-review' }; };
+
+    const executor = createDispatchingExecutor(normalFn, { dailyReviewExecuteFn: reviewFn });
+
+    const taskInfo = {
+      taskId: 'task-dr-01',
+      objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+    };
+    const result = await executor('agent-1', taskInfo);
+
+    assert.deepEqual(result, { result: 'daily-review' });
+    assert.equal(reviewCalls.length, 1);
+    assert.equal(normalCalls.length, 0);
+    assert.equal(reviewCalls[0].taskId, 'task-dr-01');
+  });
+
+  it('routes daily-review tasks (nested payload.objectiveId) to dailyReviewExecuteFn', async () => {
+    const normalCalls = [];
+    const reviewCalls = [];
+
+    const normalFn = async (_a, ti) => { normalCalls.push(ti); return {}; };
+    const reviewFn = async (_a, ti) => { reviewCalls.push(ti); return { result: 'review-via-payload' }; };
+
+    const executor = createDispatchingExecutor(normalFn, { dailyReviewExecuteFn: reviewFn });
+
+    // objectiveId nested in payload (legacy / alternate callers)
+    const taskInfo = {
+      taskId: 'task-dr-02',
+      payload: { objectiveId: DAILY_REVIEW_OBJECTIVE_ID },
+    };
+    const result = await executor('agent-1', taskInfo);
+
+    assert.deepEqual(result, { result: 'review-via-payload' });
+    assert.equal(reviewCalls.length, 1);
+    assert.equal(normalCalls.length, 0);
+  });
+
+  it('falls through to normalExecuteFn when no dailyReviewExecuteFn is provided', async () => {
+    const normalCalls = [];
+    const normalFn = async (_a, ti) => { normalCalls.push(ti); return { result: 'fallthrough' }; };
+
+    const executor = createDispatchingExecutor(normalFn); // no opts
+
+    const result = await executor('agent-1', {
+      taskId: 'task-dr-03',
+      objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+    });
+
+    // No handler registered → falls through to normalFn
+    assert.deepEqual(result, { result: 'fallthrough' });
+    assert.equal(normalCalls.length, 1);
+  });
+
+  it('forwards agentId and taskInfo unchanged to the routed handler', async () => {
+    let capturedAgentId;
+    let capturedTaskInfo;
+
+    const reviewFn = async (agentId, taskInfo) => {
+      capturedAgentId = agentId;
+      capturedTaskInfo = taskInfo;
+      return {};
+    };
+    const executor = createDispatchingExecutor(async () => ({}), { dailyReviewExecuteFn: reviewFn });
+
+    const taskInfo = {
+      taskId: 'task-dr-04',
+      objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+      priority: 3,
+      payload: { runAt: '2026-04-14T17:00:00.000Z' },
+    };
+    await executor('agent-xyz', taskInfo);
+
+    assert.equal(capturedAgentId, 'agent-xyz');
+    assert.deepEqual(capturedTaskInfo, taskInfo);
+  });
+
+  it('top-level objectiveId takes precedence over payload.objectiveId', async () => {
+    const normalCalls = [];
+    const reviewCalls = [];
+
+    const normalFn = async (_a, ti) => { normalCalls.push(ti); return {}; };
+    const reviewFn = async (_a, ti) => { reviewCalls.push(ti); return {}; };
+
+    const executor = createDispatchingExecutor(normalFn, { dailyReviewExecuteFn: reviewFn });
+
+    // top-level objectiveId is a non-review id; payload has the review id — top-level wins
+    await executor('agent-1', {
+      taskId: 'task-conflict-01',
+      objectiveId: 'obj-regular-work',
+      payload: { objectiveId: DAILY_REVIEW_OBJECTIVE_ID },
+    });
+
+    assert.equal(normalCalls.length, 1);
+    assert.equal(reviewCalls.length, 0);
+  });
+
+  it('works as a drop-in executeFn inside runWithLockAndQueue', async () => {
+    const { mkdtemp: mk, rm: rmd } = await import('node:fs/promises');
+    const { join: pj } = await import('node:path');
+    const { tmpdir: td } = await import('node:os');
+    const lockDir2 = await mk(pj(td(), 'lsr-disp-lk-'));
+    const queueDir2 = await mk(pj(td(), 'lsr-disp-q-'));
+
+    try {
+      const reviewCalls = [];
+      const normalCalls = [];
+
+      const normalFn = async (_a, ti) => { normalCalls.push(ti); return { type: 'normal' }; };
+      const reviewFn = async (_a, ti) => { reviewCalls.push(ti); return { type: 'review' }; };
+
+      const executor = createDispatchingExecutor(normalFn, { dailyReviewExecuteFn: reviewFn });
+
+      const agentId = `agent-${uid()}`;
+      const reviewTaskInfo = {
+        taskId: `task-${uid()}`,
+        objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+        type: 'heartbeat',
+        priority: 2,
+      };
+
+      const result = await runWithLockAndQueue(agentId, reviewTaskInfo, executor, {
+        lockDir: lockDir2,
+        queueDir: queueDir2,
+      });
+
+      assert.equal(result.status, 'executed');
+      assert.deepEqual(result.sessionResult, { type: 'review' });
+      assert.equal(reviewCalls.length, 1);
+      assert.equal(normalCalls.length, 0);
+    } finally {
+      await rmd(lockDir2, { recursive: true, force: true });
+      await rmd(queueDir2, { recursive: true, force: true });
+    }
+  });
+
+  it('dispatching executor works correctly inside drainQueuedTasks', async () => {
+    const { mkdtemp: mk, rm: rmd } = await import('node:fs/promises');
+    const { join: pj } = await import('node:path');
+    const { tmpdir: td } = await import('node:os');
+    const queueDir2 = await mk(pj(td(), 'lsr-disp-drain-'));
+
+    try {
+      const reviewCalls = [];
+      const normalCalls = [];
+
+      const normalFn = async (_a, ti) => { normalCalls.push(ti); return { type: 'normal' }; };
+      const reviewFn = async (_a, ti) => { reviewCalls.push(ti); return { type: 'review' }; };
+
+      const executor = createDispatchingExecutor(normalFn, { dailyReviewExecuteFn: reviewFn });
+
+      const agentId = `agent-${uid()}`;
+
+      // Enqueue a mix: one daily-review, one normal.
+      // drainQueuedTasks passes objectiveId via payload (the queue entry's
+      // payload field is the only user-data envelope that survives dequeue).
+      await enqueue({
+        agentId,
+        taskId: `task-dr-${uid()}`,
+        type: 'heartbeat',
+        priority: 2,
+        payload: { objectiveId: DAILY_REVIEW_OBJECTIVE_ID },
+      }, { queueDir: queueDir2 });
+      await enqueue({
+        agentId,
+        taskId: `task-work-${uid()}`,
+        type: 'heartbeat',
+        priority: 1,
+        payload: { objectiveId: 'obj-regular' },
+      }, { queueDir: queueDir2 });
+
+      const results = await drainQueuedTasks(agentId, executor, { queueDir: queueDir2 });
+
+      assert.equal(results.length, 2);
+      assert.ok(results.every((r) => r.status === 'executed'));
+
+      // The daily-review task went to reviewFn, normal to normalFn
+      assert.equal(reviewCalls.length, 1);
+      assert.equal(normalCalls.length, 1);
+    } finally {
+      await rmd(queueDir2, { recursive: true, force: true });
+    }
   });
 });

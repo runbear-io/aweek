@@ -11,6 +11,11 @@ import {
   createWeeklyPlan,
 } from '../models/agent.js';
 import { validateWeeklyPlan } from '../schemas/validator.js';
+import {
+  DAILY_REVIEW_OBJECTIVE_ID,
+  WEEKLY_REVIEW_OBJECTIVE_ID,
+  isReviewObjectiveId,
+} from '../schemas/weekly-plan.schema.js';
 
 describe('WeeklyPlanStore', () => {
   let store;
@@ -398,5 +403,214 @@ describe('WeeklyPlanStore', () => {
     const loaded = await store2.load(freshAgent, '2026-W44');
     assert.equal(loaded.approved, true);
     assert.ok(loaded.approvedAt);
+  });
+});
+
+// =============================================================================
+// Review task round-trips — Sub-AC 6a
+// Prove that the store reads and writes daily-review and weekly-review tasks
+// without stripping, hiding, or corrupting them.
+// =============================================================================
+
+describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
+  let reviewStore;
+  let reviewTmpDir;
+  const AGENT = 'agent-review-roundtrip-abc1';
+
+  before(async () => {
+    reviewTmpDir = await mkdtemp(join(tmpdir(), 'aweek-review-rt-'));
+    reviewStore = new WeeklyPlanStore(reviewTmpDir);
+  });
+
+  after(async () => {
+    await rm(reviewTmpDir, { recursive: true, force: true });
+  });
+
+  // ---------------------------------------------------------------------------
+  // daily-review
+  // ---------------------------------------------------------------------------
+
+  it('saves and loads a daily-review task without modification', async () => {
+    const task = createTask('End-of-day reflection', DAILY_REVIEW_OBJECTIVE_ID, {
+      runAt: '2027-01-20T17:00:00Z',
+      priority: 'high',
+    });
+    const plan = createWeeklyPlan('2027-W04', '2027-01', [task]);
+    await reviewStore.save(AGENT, plan);
+
+    const loaded = await reviewStore.load(AGENT, '2027-W04');
+    assert.deepStrictEqual(loaded, plan);
+    assert.equal(loaded.tasks[0].objectiveId, DAILY_REVIEW_OBJECTIVE_ID);
+    assert.equal(loaded.tasks[0].runAt, '2027-01-20T17:00:00Z');
+  });
+
+  it('validates a plan with a daily-review task on save (assertValid passes)', async () => {
+    const task = createTask('Daily check-in', DAILY_REVIEW_OBJECTIVE_ID, {
+      runAt: '2027-01-21T17:00:00Z',
+    });
+    const plan = createWeeklyPlan('2027-W05', '2027-01', [task]);
+    // save() would throw on schema violation — if it resolves the schema accepts it
+    await assert.doesNotReject(() => reviewStore.save(AGENT, plan));
+    const result = validateWeeklyPlan(plan);
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+  });
+
+  // ---------------------------------------------------------------------------
+  // weekly-review
+  // ---------------------------------------------------------------------------
+
+  it('saves and loads a weekly-review task without modification', async () => {
+    const task = createTask('Week-in-review', WEEKLY_REVIEW_OBJECTIVE_ID, {
+      runAt: '2027-01-24T18:00:00Z',
+      priority: 'high',
+    });
+    const plan = createWeeklyPlan('2027-W04', '2027-01', [task]);
+
+    // Use a distinct agent to avoid collision with the daily-review test above
+    const WAGENT = 'agent-review-weekly-rt-abc1';
+    await reviewStore.save(WAGENT, plan);
+
+    const loaded = await reviewStore.load(WAGENT, '2027-W04');
+    assert.deepStrictEqual(loaded, plan);
+    assert.equal(loaded.tasks[0].objectiveId, WEEKLY_REVIEW_OBJECTIVE_ID);
+    assert.equal(loaded.tasks[0].runAt, '2027-01-24T18:00:00Z');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mixed plans
+  // ---------------------------------------------------------------------------
+
+  it('preserves mixed plans (regular work + daily-review + weekly-review) in round-trip', async () => {
+    const goal = createGoal('Ship something');
+    const obj = createObjective('Build it', goal.id);
+    const regularTask = createTask('Implement feature', obj.id);
+    const daily1 = createTask('Mon review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-18T17:00:00Z' });
+    const daily2 = createTask('Tue review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-19T17:00:00Z' });
+    const daily3 = createTask('Wed review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-20T17:00:00Z' });
+    const daily4 = createTask('Thu review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-21T17:00:00Z' });
+    const weeklyTask = createTask('Week review', WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-22T18:00:00Z' });
+
+    const allTasks = [regularTask, daily1, daily2, daily3, daily4, weeklyTask];
+    const plan = createWeeklyPlan('2027-W04', '2027-01', allTasks);
+    const MAGENT = 'agent-review-mixed-rt-abc1';
+    await reviewStore.save(MAGENT, plan);
+
+    const loaded = await reviewStore.load(MAGENT, '2027-W04');
+    assert.equal(loaded.tasks.length, 6);
+
+    const reviewTasks = loaded.tasks.filter((t) => isReviewObjectiveId(t.objectiveId));
+    const workTasks = loaded.tasks.filter((t) => !isReviewObjectiveId(t.objectiveId));
+    assert.equal(reviewTasks.length, 5, 'five review tasks (4 daily + 1 weekly) should survive round-trip');
+    assert.equal(workTasks.length, 1, 'one regular work task should survive round-trip');
+    assert.ok(
+      reviewTasks.some((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID),
+      'weekly-review task must be present after round-trip',
+    );
+    assert.ok(
+      reviewTasks.filter((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID).length === 4,
+      'all four daily-review tasks must be present after round-trip',
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // updateTaskStatus on review tasks
+  // ---------------------------------------------------------------------------
+
+  it('updateTaskStatus marks a daily-review task completed and sets completedAt', async () => {
+    const task = createTask('Fri daily review', DAILY_REVIEW_OBJECTIVE_ID, {
+      runAt: '2027-01-22T17:00:00Z',
+    });
+    const plan = createWeeklyPlan('2027-W06', '2027-01', [task]);
+    await reviewStore.save(AGENT, plan);
+
+    const updated = await reviewStore.updateTaskStatus(AGENT, '2027-W06', task.id, 'completed');
+    assert.ok(updated, 'updateTaskStatus should return the updated task');
+    assert.equal(updated.status, 'completed');
+    assert.ok(updated.completedAt, 'completedAt should be set');
+    assert.equal(updated.objectiveId, DAILY_REVIEW_OBJECTIVE_ID, 'objectiveId must survive the update');
+
+    // Verify persistence
+    const loaded = await reviewStore.load(AGENT, '2027-W06');
+    const savedTask = loaded.tasks.find((t) => t.id === task.id);
+    assert.equal(savedTask.status, 'completed');
+    assert.ok(savedTask.completedAt);
+    assert.equal(savedTask.objectiveId, DAILY_REVIEW_OBJECTIVE_ID);
+  });
+
+  // ---------------------------------------------------------------------------
+  // approve preserves review tasks
+  // ---------------------------------------------------------------------------
+
+  it('approve does not strip review tasks from the plan', async () => {
+    const daily = createTask('Thu daily review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-21T17:00:00Z' });
+    const weekly = createTask('Week review', WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-22T18:00:00Z' });
+    const plan = createWeeklyPlan('2027-W07', '2027-01', [daily, weekly]);
+    await reviewStore.save(AGENT, plan);
+
+    const approved = await reviewStore.approve(AGENT, '2027-W07');
+    assert.equal(approved.approved, true);
+    assert.equal(approved.tasks.length, 2, 'both review tasks must survive approve()');
+    assert.ok(
+      approved.tasks.some((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID),
+      'daily-review task must be present after approve()',
+    );
+    assert.ok(
+      approved.tasks.some((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID),
+      'weekly-review task must be present after approve()',
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // getTasksForObjective with reserved objectiveIds
+  // ---------------------------------------------------------------------------
+
+  it('getTasksForObjective returns daily-review tasks when queried with DAILY_REVIEW_OBJECTIVE_ID', async () => {
+    const TAGENT = 'agent-review-trace-rt-abc1';
+    const d1 = createTask('Mon review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-02T17:00:00Z' });
+    const d2 = createTask('Tue review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-03T17:00:00Z' });
+    const plan1 = createWeeklyPlan('2027-W06', '2027-02', [d1]);
+    const plan2 = createWeeklyPlan('2027-W07', '2027-02', [d2]);
+    await reviewStore.save(TAGENT, plan1);
+    await reviewStore.save(TAGENT, plan2);
+
+    const tasks = await reviewStore.getTasksForObjective(TAGENT, DAILY_REVIEW_OBJECTIVE_ID);
+    assert.equal(tasks.length, 2, 'should find both daily-review tasks across plans');
+    assert.ok(tasks.every((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID));
+  });
+
+  it('getTasksForObjective returns the weekly-review task when queried with WEEKLY_REVIEW_OBJECTIVE_ID', async () => {
+    const WAGENT = 'agent-review-wktrace-rt-abc1';
+    const wr = createTask('Week-in-review', WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-06T18:00:00Z' });
+    const plan = createWeeklyPlan('2027-W06', '2027-02', [wr]);
+    await reviewStore.save(WAGENT, plan);
+
+    const tasks = await reviewStore.getTasksForObjective(WAGENT, WEEKLY_REVIEW_OBJECTIVE_ID);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].objectiveId, WEEKLY_REVIEW_OBJECTIVE_ID);
+  });
+
+  // ---------------------------------------------------------------------------
+  // isReviewObjectiveId round-trip — tasks loaded from disk classify correctly
+  // ---------------------------------------------------------------------------
+
+  it('isReviewObjectiveId correctly classifies tasks after a load from disk', async () => {
+    const goal = createGoal('Work goal');
+    const obj = createObjective('Work obj', goal.id);
+    const workTask = createTask('Do the work', obj.id);
+    const reviewTask = createTask('Daily reflection', DAILY_REVIEW_OBJECTIVE_ID, {
+      runAt: '2027-02-09T17:00:00Z',
+    });
+    const plan = createWeeklyPlan('2027-W08', '2027-02', [workTask, reviewTask]);
+    await reviewStore.save(AGENT, plan);
+
+    const loaded = await reviewStore.load(AGENT, '2027-W08');
+    const work = loaded.tasks.filter((t) => !isReviewObjectiveId(t.objectiveId));
+    const review = loaded.tasks.filter((t) => isReviewObjectiveId(t.objectiveId));
+
+    assert.equal(work.length, 1, 'one work task');
+    assert.equal(review.length, 1, 'one review task');
+    assert.equal(work[0].id, workTask.id);
+    assert.equal(review[0].id, reviewTask.id);
+    assert.equal(review[0].objectiveId, DAILY_REVIEW_OBJECTIVE_ID);
   });
 });
