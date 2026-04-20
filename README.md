@@ -121,4 +121,4 @@ the module and register the new export in `src/cli/dispatcher.js`.
 
 ## License
 
-ISC
+[Apache License 2.0](LICENSE) — © 2026 Runbear, Inc.
