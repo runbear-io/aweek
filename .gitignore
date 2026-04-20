@@ -4,3 +4,5 @@ node_modules/
 .ouroboros*
 *.log
 .DS_Store
+.claude/settings.local.json
+.claude/*.lock
