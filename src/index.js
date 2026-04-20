@@ -76,6 +76,10 @@ export {
 export {
   TASK_STATUSES,
   TASK_PRIORITIES,
+  DAILY_REVIEW_OBJECTIVE_ID,
+  WEEKLY_REVIEW_OBJECTIVE_ID,
+  REVIEW_OBJECTIVE_IDS,
+  isReviewObjectiveId,
   weeklyTaskSchema,
   weeklyPlanSchema as weeklyPlanSchemaDefinition,
 } from './schemas/weekly-plan.schema.js';
@@ -185,7 +189,29 @@ export {
   filterActiveGoals,
   defaultPriorityForObjective,
   generateTasksForObjective,
+  buildReviewTasks,
 } from './services/weekly-plan-generator.js';
+// Next-week context assembler — reads plan.md, the just-written retrospective
+// file, and the activity log for the completed week, then returns a context
+// object ready to spread into generateWeeklyPlan's options parameter.
+// Used exclusively by the autonomous next-week planner path that fires from
+// the weekly-review chain; user-invoked /aweek:plan does not call it.
+export {
+  extractRetrospectiveSummary,
+  summariseActivityLog,
+  assembleNextWeekPlannerContext,
+} from './services/next-week-context-assembler.js';
+// Day-layout detector — classifies an agent's plan.md into one of three layout
+// modes ('theme-days', 'priority-waterfall', 'mixed') and maps the mode to a
+// distributeTasks spread strategy ('spread' or 'pack'). Used by the weekly plan
+// generator (via options.planMarkdown) and any caller that renders a calendar.
+export {
+  detectDayLayout,
+  layoutModeLabel,
+  LAYOUT_MODES,
+  scoreThemeDays,
+  scorePriorityWaterfall,
+} from './services/day-layout-detector.js';
 export {
   APPROVAL_DECISIONS,
   findPendingPlan,
@@ -352,7 +378,8 @@ export {
   isInboxTask,
   processInboxOnHeartbeat,
 } from './heartbeat/inbox-processor.js';
-// Weekly review generator — completed tasks collection and formatting
+// Weekly review generator — completed tasks collection and formatting,
+// plus the four-section CollectedWeekData → markdown generator
 export {
   collectCompletedTasksFromPlan,
   collectCompletedFromActivityLog,
@@ -361,6 +388,12 @@ export {
   formatCompletedTaskItem,
   formatCompletedTasksSection,
   generateCompletedTasksReview,
+  // Four-section content generator (AC 4a-ii)
+  formatTaskStatusSection,
+  formatCarryOverSection,
+  formatWhatWorkedSection,
+  formatBudgetSummarySection,
+  generateWeeklyReviewContent,
 } from './services/weekly-review-generator.js';
 // Weekly review metrics — task counts, token usage, and delegation stats
 export {
@@ -432,6 +465,14 @@ export {
   buildCompletionReport,
   formatCompletionReport,
 } from './services/completion-rate-calculator.js';
+// Weekly review data collector — I/O layer that snapshots plan tasks, activity
+// log, and budget data for a given agent/week, ready for report generation
+export {
+  splitTasksByType,
+  groupLogEntriesByStatus,
+  computeBudgetUtilization,
+  collectWeeklyReviewData,
+} from './services/weekly-review-collector.js';
 // Weekly review orchestrator — assembles all sections and persists final document
 export {
   nextISOWeek,
@@ -447,6 +488,34 @@ export {
   listReviews,
   generateWeeklyReview,
 } from './services/weekly-review-orchestrator.js';
+// Daily review writer — generates reviews/daily-YYYY-MM-DD.md with exactly three
+// H2 sections (Task Status, Adjustments for Tomorrow, Notes) populated from the
+// agent's current weekly plan execution state. Review tasks are always excluded
+// via isReviewObjectiveId() so only user work items appear in the report.
+export {
+  utcToLocalDate,
+  weekdayName,
+  tomorrowWeekdayName,
+  dateToISOWeek,
+  isoWeekToMondayDate,
+  collectDayTasks,
+  collectDayLogEntries,
+  taskStatusIcon,
+  formatDayTaskItem,
+  formatTaskStatusSection,
+  buildAdjustmentsForTomorrow,
+  formatAdjustmentsSection,
+  formatNotesSection,
+  buildDailyReviewHeader,
+  assembleDailyReview,
+  dailyReviewDir,
+  dailyReviewPaths,
+  persistDailyReview,
+  loadDailyReview,
+  listDailyReviews,
+  buildDailyReviewMetadata,
+  generateDailyReview,
+} from './services/daily-review-writer.js';
 // Token tracker — high-level token usage recording and budget checking
 export {
   recordTokenUsage,

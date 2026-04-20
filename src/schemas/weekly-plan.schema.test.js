@@ -7,6 +7,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateWeeklyPlan } from './validator.js';
 import {
+  DAILY_REVIEW_OBJECTIVE_ID,
+  WEEKLY_REVIEW_OBJECTIVE_ID,
+  REVIEW_OBJECTIVE_IDS,
+  isReviewObjectiveId,
+} from './weekly-plan.schema.js';
+import {
   createWeeklyPlan,
   createTask,
   createObjective,
@@ -407,5 +413,114 @@ describe('weekly task schema — runAt field', () => {
     task.runAt = '2026-04-20T09:00:00Z';
     const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
     assert.equal(validateWeeklyPlan(plan).valid, true);
+  });
+});
+
+describe('weekly task schema — reserved objectiveId values', () => {
+  const makeReviewTask = (objectiveId, runAt = '2026-04-21T17:00:00Z') => ({
+    id: `task-${Math.random().toString(16).slice(2, 10)}`,
+    description: 'Review task',
+    objectiveId,
+    priority: 'high',
+    status: 'pending',
+    runAt,
+  });
+
+  // --- DAILY_REVIEW_OBJECTIVE_ID ---
+
+  it('exports DAILY_REVIEW_OBJECTIVE_ID as "daily-review"', () => {
+    assert.equal(DAILY_REVIEW_OBJECTIVE_ID, 'daily-review');
+  });
+
+  it('schema accepts daily-review objectiveId', () => {
+    const task = makeReviewTask(DAILY_REVIEW_OBJECTIVE_ID);
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    const result = validateWeeklyPlan(plan);
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+  });
+
+  it('createTask accepts DAILY_REVIEW_OBJECTIVE_ID as objectiveId', () => {
+    const task = createTask('End-of-day reflection', DAILY_REVIEW_OBJECTIVE_ID);
+    assert.equal(task.objectiveId, DAILY_REVIEW_OBJECTIVE_ID);
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    assert.equal(validateWeeklyPlan(plan).valid, true);
+  });
+
+  // --- WEEKLY_REVIEW_OBJECTIVE_ID ---
+
+  it('exports WEEKLY_REVIEW_OBJECTIVE_ID as "weekly-review"', () => {
+    assert.equal(WEEKLY_REVIEW_OBJECTIVE_ID, 'weekly-review');
+  });
+
+  it('schema accepts weekly-review objectiveId', () => {
+    const task = makeReviewTask(WEEKLY_REVIEW_OBJECTIVE_ID);
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    const result = validateWeeklyPlan(plan);
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+  });
+
+  it('createTask accepts WEEKLY_REVIEW_OBJECTIVE_ID as objectiveId', () => {
+    const task = createTask('End-of-week review', WEEKLY_REVIEW_OBJECTIVE_ID);
+    assert.equal(task.objectiveId, WEEKLY_REVIEW_OBJECTIVE_ID);
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
+    assert.equal(validateWeeklyPlan(plan).valid, true);
+  });
+
+  // --- REVIEW_OBJECTIVE_IDS array ---
+
+  it('REVIEW_OBJECTIVE_IDS contains both reserved values', () => {
+    assert.ok(Array.isArray(REVIEW_OBJECTIVE_IDS));
+    assert.ok(REVIEW_OBJECTIVE_IDS.includes(DAILY_REVIEW_OBJECTIVE_ID));
+    assert.ok(REVIEW_OBJECTIVE_IDS.includes(WEEKLY_REVIEW_OBJECTIVE_ID));
+    assert.equal(REVIEW_OBJECTIVE_IDS.length, 2);
+  });
+
+  it('schema accepts a plan that mixes regular and review tasks', () => {
+    const goal = createGoal('Ship feature', '1mo');
+    const obj = createGoal('Build API', '1mo');
+    const regularTask = createTask('Implement endpoint', obj.id);
+    const dailyTask = createTask('Daily reflection', DAILY_REVIEW_OBJECTIVE_ID);
+    const weeklyTask = createTask('Week-in-review', WEEKLY_REVIEW_OBJECTIVE_ID);
+    weeklyTask.runAt = '2026-04-24T16:00:00Z';
+
+    const plan = createWeeklyPlan('2026-W17', '2026-04', [regularTask, dailyTask, weeklyTask]);
+    const result = validateWeeklyPlan(plan);
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+  });
+
+  // --- isReviewObjectiveId helper ---
+
+  it('isReviewObjectiveId returns true for DAILY_REVIEW_OBJECTIVE_ID', () => {
+    assert.equal(isReviewObjectiveId(DAILY_REVIEW_OBJECTIVE_ID), true);
+  });
+
+  it('isReviewObjectiveId returns true for WEEKLY_REVIEW_OBJECTIVE_ID', () => {
+    assert.equal(isReviewObjectiveId(WEEKLY_REVIEW_OBJECTIVE_ID), true);
+  });
+
+  it('isReviewObjectiveId returns true for the raw string "daily-review"', () => {
+    assert.equal(isReviewObjectiveId('daily-review'), true);
+  });
+
+  it('isReviewObjectiveId returns true for the raw string "weekly-review"', () => {
+    assert.equal(isReviewObjectiveId('weekly-review'), true);
+  });
+
+  it('isReviewObjectiveId returns false for a regular objectiveId', () => {
+    assert.equal(isReviewObjectiveId('2026-04'), false);
+    assert.equal(isReviewObjectiveId('obj-abc12345'), false);
+  });
+
+  it('isReviewObjectiveId returns false for undefined', () => {
+    assert.equal(isReviewObjectiveId(undefined), false);
+  });
+
+  it('isReviewObjectiveId returns false for empty string', () => {
+    assert.equal(isReviewObjectiveId(''), false);
+  });
+
+  it('isReviewObjectiveId returns false for a non-string value', () => {
+    assert.equal(isReviewObjectiveId(null), false);
+    assert.equal(isReviewObjectiveId(42), false);
   });
 });

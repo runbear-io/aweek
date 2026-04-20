@@ -19,6 +19,7 @@
 
 import { acquireLock, releaseLock, queryLock, createLockManager } from '../lock/lock-manager.js';
 import { enqueue, dequeue, peek, queueLength, createTaskQueue } from '../queue/task-queue.js';
+import { DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
 
 /**
  * @typedef {object} LockedSessionResult
@@ -293,5 +294,48 @@ export function createLockedSessionRunner(opts = {}) {
      */
     peek: (agentId) =>
       peek(agentId, { queueDir: opts.queueDir }),
+  };
+}
+
+/**
+ * Create an executor function that routes daily-review tasks to a dedicated
+ * handler instead of the normal session execution path.
+ *
+ * This is the dispatch layer for the advisor-mode heartbeat pipeline. When
+ * a daily-review task (objectiveId === DAILY_REVIEW_OBJECTIVE_ID) is selected
+ * for execution — either as the primary tick task or pulled from the drain
+ * queue — it must call the review pipeline rather than spawning a CLI session.
+ *
+ * The returned executor is a drop-in replacement for any `executeFn` passed to
+ * `runWithLockAndQueue` or `drainQueuedTasks`. All non-review tasks fall
+ * through to `normalExecuteFn` unchanged.
+ *
+ * The objectiveId is read from `taskInfo.objectiveId` (top-level, the
+ * canonical location when enqueueing advisor-mode tasks). Falls back to
+ * `taskInfo.payload.objectiveId` for callers that nest the field inside the
+ * payload envelope.
+ *
+ * @param {function(string, object): Promise<*>} normalExecuteFn - Executor for all non-review tasks
+ * @param {object} [opts]
+ * @param {function(string, object): Promise<*>} [opts.dailyReviewExecuteFn] - Handler for daily-review tasks;
+ *   when omitted, daily-review tasks fall through to normalExecuteFn
+ * @returns {function(string, object): Promise<*>} Dispatch-aware executor
+ */
+export function createDispatchingExecutor(normalExecuteFn, opts = {}) {
+  if (typeof normalExecuteFn !== 'function') {
+    throw new Error('normalExecuteFn must be a function');
+  }
+  const { dailyReviewExecuteFn } = opts;
+
+  return async function dispatchingExecute(agentId, taskInfo) {
+    // Resolve objectiveId from either the top-level field (canonical) or the
+    // payload envelope (legacy / alternate callers).
+    const objectiveId = taskInfo?.objectiveId ?? taskInfo?.payload?.objectiveId;
+
+    if (objectiveId === DAILY_REVIEW_OBJECTIVE_ID && typeof dailyReviewExecuteFn === 'function') {
+      return dailyReviewExecuteFn(agentId, taskInfo);
+    }
+
+    return normalExecuteFn(agentId, taskInfo);
   };
 }

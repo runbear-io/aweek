@@ -109,6 +109,58 @@ Throughput budget: at `*/15` cron (4 ticks/hour), each track fires up to **4 tas
 
 Load existing weekly plans and show the active week with its tasks: `id · description · track · status · runAt`. If no weekly plans exist, tell the user and route them to the `create` action below — this is the bootstrap path for a freshly-hired agent.
 
+### B1b: Check for pending daily-review adjustment batches
+
+After displaying the current week, check whether any daily-review adjustment batches are waiting for approval:
+
+```bash
+echo '{"baseDir":".aweek/agents","agentId":"<AGENT_ID>"}' \
+  | aweek exec daily-review listPendingAdjustmentDates --input-json -
+```
+
+Returns a sorted array of `YYYY-MM-DD` date strings. If the array is **empty**, skip to B2.
+
+**If one or more dates are returned**, load and present each batch in chronological order. For each date:
+
+```bash
+echo '{"baseDir":".aweek/agents","agentId":"<AGENT_ID>","date":"<DATE>"}' \
+  | aweek exec daily-review loadPendingAdjustmentBatch --input-json -
+```
+
+The batch has shape `{ date, week, source, createdAt, weeklyAdjustments: [...] }`.
+
+Display the batch to the user in a format like:
+
+```
+📋 Pending daily-review adjustments from <date>
+   Source: daily review  |  Week: <week>
+
+   1. UPDATE task-abc1234 → runAt: 2026-04-15T09:00:00.000Z   (carry-over: rescheduled for tomorrow)
+   2. UPDATE task-def5678 → status: pending, runAt: 2026-04-15T09:00:00.000Z  (retry after failure)
+   3. ADD    "Follow up on delegated task: Write docs"  (objectiveId: obj-lead01)
+```
+
+Then ask via `AskUserQuestion`:
+
+> **Apply these N adjustment(s) from the daily review?**
+>
+> 1. **Apply all** — queue these into Branch B3 for immediate confirmation and execution.
+> 2. **Skip this batch** — dismiss without applying (the batch file will be cleared).
+> 3. **Edit before applying** — add these to the B2 queue so you can modify them first.
+
+- **Apply all**: merge the `weeklyAdjustments` array from the batch into the pending B3 queue, clear the batch file, then proceed directly to B3.
+- **Skip this batch**: clear the batch file and continue to B2.
+- **Edit before applying**: pre-populate the B2 queue with the batch ops so the user can modify them before B3 confirmation; clear the batch file.
+
+Clear the batch regardless of the user's decision (apply, skip, or edit) — the batch is consumed at B1b and must not persist beyond this point:
+
+```bash
+echo '{"baseDir":".aweek/agents","agentId":"<AGENT_ID>","date":"<DATE>"}' \
+  | aweek exec daily-review clearPendingAdjustmentBatch --input-json -
+```
+
+Repeat for each pending date before proceeding to B2.
+
 ### B2: Collect one adjustment at a time
 
 Use `AskUserQuestion` to pick the action, then collect required fields. Loop until done.
@@ -116,6 +168,147 @@ Use `AskUserQuestion` to pick the action, then collect required fields. Loop unt
 - **`create`** → week (`YYYY-Www`, must NOT already exist on this agent), optional `month` (`YYYY-MM`, free-form tag linking the week to a monthly section of `plan.md`), optional seed tasks. Each task: description (required), optional `objectiveId` (free-form string, typically the monthly section heading it traces to), priority (`critical` / `high` / `medium` / `low`, default `medium`), `estimatedMinutes` (1-480), `track`, `runAt`. Freshly-created weekly plans start `approved: false` and activate the heartbeat only after Branch C approval.
 - **`add`** → week (must exist), description (required), optional `objectiveId`, optional `track`, optional `runAt`.
 - **`update`** → week, taskId, then at least one of: description, status (`pending` / `in-progress` / `completed` / `failed` / `delegated` / `skipped`), `track` (pass `null` to fall back to objectiveId pacing), `runAt` (pass `null` to clear).
+
+### B2a: Interview gate (create action only)
+
+When the user picks **`create`**, run the four interview-trigger checks **before** the layout check or any task collection:
+
+```bash
+echo '{"agentId":"<AGENT_ID>","dataDir":".aweek/agents"}' \
+  | aweek exec plan checkInterviewTriggers --input-json -
+```
+
+Returns `Array<{ trigger, reason, details }>`. If the array is **empty**, skip directly to B2b.
+
+**If any triggers fire**, offer the user two paths via `AskUserQuestion`:
+
+> {N} concern(s) found before generating this week's plan:
+>
+> {for each trigger: `• {trigger.reason}`}
+>
+> How would you like to proceed?
+>
+> 1. **Answer questions** — I'll ask one question per concern (recommended for the best-fit plan).
+> 2. **Skip questions** — I'll apply best-guess assumptions for each concern, show them to you, and ask for your approval before continuing.
+
+Route based on the choice:
+
+---
+
+#### Path 1 — Full interview (default)
+
+Enter inline-blocking interview mode: emit one `AskUserQuestion` per fired trigger **in array order**, waiting for the answer before asking the next question. Every answer must be collected before continuing to B2b.
+
+Tailor each question using the trigger's `details` object:
+
+##### `first-ever-plan`
+
+> This is **{agentName}**'s first weekly plan. To make it actionable rather than a placeholder, tell me: what are the 2–3 outcomes you most want {agentName} to accomplish this week? Be specific — I'll use these to anchor every task I generate.
+
+##### `conflicting-or-vague-goals`
+
+When `details.vague === true`:
+
+> I looked at {agentName}'s `plan.md` and found: **{details.vagueReason}**. Without concrete goals I'd be guessing at priorities. Describe what you want this agent to accomplish in the next 30 days — 2–3 specific, measurable outcomes. I'll derive this week's tasks directly from those.
+
+When `details.conflicting === true`:
+
+> I found **{details.conflictingPairs.length}** potentially conflicting goal pair(s) in `plan.md`:
+>
+> {for each pair: `• "{lineA}" ↔ "{lineB}"`}
+>
+> Same topic, opposite directions — tasks generated from both would pull against each other. Which direction should take precedence for this week's plan?
+
+##### `prior-week-problems`
+
+> Last week (**{details.priorWeekKey}**), **{details.totalFailed} task(s) failed** — {Math.round(details.failureRate × 100)}% of {details.totalActivities} recorded activities:
+>
+> {bullet list of details.failedDescriptions}
+>
+> Before I plan this week I want to understand what happened. What was the main cause — unclear scope, blocked dependencies, too much load, or something else? Should I reduce the workload, re-scope tasks, or shift to different areas?
+
+##### `deadline-approaching`
+
+> Heads-up: **{details.approachingDeadlines.length} deadline(s)** are approaching within {details.lookaheadDays} days. Nearest: **{details.nearestDeadline.label}** — {details.nearestDeadline.daysRemaining ≤ 0 ? "already passed" : "in N day(s)"}.
+>
+> Should this week's plan prioritise deadline-critical work above everything else, or maintain the current task balance? List any specific deliverables that must land before the deadline.
+
+After all questions are answered, hold the collected answers as **interview context** for the rest of this session. When you are about to ask the user to describe seed tasks, open with a one-sentence recap so the tasks stay grounded in stated priorities:
+
+> "Based on what you've shared: {brief recap}. Here's how I'd approach this week — "
+
+Then suggest appropriate tasks derived from the answers before asking the user to confirm or adjust. Proceed to **B2b** after the interview is complete.
+
+---
+
+#### Path 2 — Skip questions (escape hatch)
+
+No further `AskUserQuestion` interview steps are run. Instead:
+
+**B2a-skip-1: Generate assumptions**
+
+```bash
+echo '{"triggers":<TRIGGERS_JSON>}' \
+  | aweek exec plan generateSkipAssumptions --input-json -
+```
+
+Returns `Array<{ trigger, label, assumption }>` — one best-guess assumption per fired trigger.
+
+**B2a-skip-2: Format and display the assumptions block**
+
+```bash
+echo '{"assumptions":<ASSUMPTIONS_JSON>}' \
+  | aweek exec plan formatAssumptionsBlock --input-json -
+```
+
+Echo the returned markdown string verbatim so the user can read every assumption before deciding.
+
+**B2a-skip-3: Require explicit approval of the assumptions**
+
+Ask via `AskUserQuestion`:
+
+> **Apply these assumptions and continue?**
+>
+> 1. **Yes, apply assumptions** — proceed to layout detection (B2b) using the assumptions above as planning context.
+> 2. **No, run the interview instead** — discard assumptions and fall back to Path 1 (ask one question per trigger).
+> 3. **Cancel** — return to Step 2 (operation picker).
+
+- On **Yes**: treat the assumptions as the collected interview context (no further questions), then proceed directly to **B2b**.
+- On **No**: discard the assumptions and re-enter Path 1 (full interview). Start from the first fired trigger.
+- On **Cancel**: return to Step 2.
+
+> **Important:** This path requires explicit user approval of the assumptions block before proceeding. Never silently skip to B2b — always show the formatted block and wait for the approval `AskUserQuestion`.
+
+---
+
+### B2b: Resolve layout preference (create action only)
+
+After the interview gate (B2a), run the ambiguity detector before collecting week/month/task details:
+
+```bash
+echo '{"agentsDir":".aweek/agents","agentId":"<AGENT_ID>"}' \
+  | aweek exec plan detectLayoutAmbiguity --input-json -
+```
+
+The result is `{ mode, confident, ambiguityReason, themeScore, priorityScore, modeLabel }`.
+
+**If `confident === true`** — the detected `mode` is unambiguous. Display a one-line note (e.g. `"Detected layout: Theme Days — tasks will be spread round-robin across weekdays."`) and continue collecting week/month/tasks.
+
+**If `confident === false`** — the plan.md has conflicting or absent structural signals. Ask the user via `AskUserQuestion` before collecting any task details:
+
+> Choose a scheduling layout for this week's plan:
+>
+> 1. **Theme Days** — tasks spread round-robin across weekdays (Mon: research, Tue: coding, …)
+> 2. **Priority Waterfall** — most critical tasks placed earliest in the week
+> 3. **Mixed / Flexible** — no strong scheduling preference
+
+Tailor the explanation to the `ambiguityReason`:
+- `'absent-signals'` → `"No scheduling pattern found in your plan.md — let's set one for this week."`
+- `'conflicting-signals'` → `"Your plan.md contains both day-theme and priority-stack language (themeScore: N, priorityScore: N) — which style should take precedence this week?"`
+
+Record the chosen layout preference as `layoutPreference` for this session. Continue to collect week, month, and seed tasks. When displaying the B3 confirmation batch, include the layout preference as a header line (e.g. `"Layout: Priority Waterfall"`).
+
+The layout preference is a session-only hint — it does not need to be written to any file.
 
 ### B3: Confirm the batch
 

@@ -10,6 +10,43 @@ export const TASK_STATUSES = ['pending', 'in-progress', 'completed', 'failed', '
 /** Valid priority levels for weekly tasks */
 export const TASK_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 
+/**
+ * Reserved objectiveId for daily review tasks.
+ * Tasks carrying this objectiveId are structured reflection/planning slots
+ * injected by the weekly-plan generator — they are not user work items.
+ * The task-selector skips them from the regular FIFO queue; instead they
+ * are triggered at the start of each working day as a paced onboarding moment.
+ */
+export const DAILY_REVIEW_OBJECTIVE_ID = 'daily-review';
+
+/**
+ * Reserved objectiveId for the end-of-week review task.
+ * The single weekly-review slot is placed on Friday (or the last working day
+ * of the plan) and chains automatically into the next-week planner when the
+ * agent runs autonomously. Its output is auto-approved so the next week's
+ * plan is ready without manual intervention.
+ */
+export const WEEKLY_REVIEW_OBJECTIVE_ID = 'weekly-review';
+
+/**
+ * All reserved objectiveId values used by the advisor-mode planner.
+ * Downstream code should use these constants rather than raw strings so that
+ * refactors and additional review types can be tracked in one place.
+ */
+export const REVIEW_OBJECTIVE_IDS = [DAILY_REVIEW_OBJECTIVE_ID, WEEKLY_REVIEW_OBJECTIVE_ID];
+
+/**
+ * Returns true when the given objectiveId is a reserved review slot.
+ * Use this instead of inline string comparisons to keep a single source
+ * of truth for the reserved set.
+ *
+ * @param {string | undefined} objectiveId
+ * @returns {boolean}
+ */
+export function isReviewObjectiveId(objectiveId) {
+  return typeof objectiveId === 'string' && REVIEW_OBJECTIVE_IDS.includes(objectiveId);
+}
+
 /** Schema for a weekly task */
 export const weeklyTaskSchema = {
   $id: 'aweek://schemas/weekly-task',
@@ -33,7 +70,13 @@ export const weeklyTaskSchema = {
         'Free-form tag linking the task back to a monthly section in ' +
         "plan.md (typically the H3 heading, e.g. \"2026-04\"). Legacy " +
         'agents may still carry structured `obj-xxxxx` IDs here — the ' +
-        'field is now optional and any non-empty string is accepted.',
+        'field is now optional and any non-empty string is accepted. ' +
+        'Two values are reserved for advisor-mode review slots: ' +
+        '"daily-review" (DAILY_REVIEW_OBJECTIVE_ID) marks a structured ' +
+        'end-of-day reflection task, and "weekly-review" ' +
+        '(WEEKLY_REVIEW_OBJECTIVE_ID) marks the end-of-week review that ' +
+        'chains into the next-week planner. Use isReviewObjectiveId() to ' +
+        'test for either reserved value.',
     },
     priority: {
       type: 'string',
