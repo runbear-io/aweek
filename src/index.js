@@ -222,21 +222,7 @@ export {
   processApproval,
   formatApprovalResult,
   loadPlanForReview,
-  buildHeartbeatCommand,
-  activateHeartbeat,
 } from './services/plan-approval.js';
-export {
-  markerFor,
-  buildCronEntry,
-  parseHeartbeatEntries,
-  removeLinesForAgent,
-  readCrontab,
-  writeCrontab,
-  install as installHeartbeat,
-  remove as removeHeartbeat,
-  query as queryHeartbeat,
-  listAll as listAllHeartbeats,
-} from './heartbeat/crontab-manager.js';
 // Heartbeat scheduler — runtime execution with lock-based isolation
 export {
   createScheduler,
@@ -577,15 +563,24 @@ export {
 export {
   AWEEK_SUBDIRS,
   DEFAULT_DATA_DIR as INIT_DEFAULT_DATA_DIR,
+  DEFAULT_HEARTBEAT_SCHEDULE,
   DEFAULT_HIRE_PROMPT_TEXT,
   DEFAULT_PACKAGE_MANAGER,
   HIRE_SKILL_NAME,
+  PROJECT_HEARTBEAT_MARKER_PREFIX,
+  buildHeartbeatCommand,
+  buildHeartbeatEntry,
   buildHireLaunchInstruction,
   ensureDataDir,
   finalizeInit,
   formatHireLaunchPrompt,
   hasExistingAgents,
   installDependencies,
+  installHeartbeat,
+  parseProjectHeartbeat,
+  projectHeartbeatMarker,
+  queryHeartbeat,
+  removeProjectHeartbeat,
   resolveProjectDir as resolveInitProjectDir,
   shouldLaunchHire,
 } from './skills/init.js';

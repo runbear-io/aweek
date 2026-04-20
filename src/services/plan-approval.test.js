@@ -53,8 +53,6 @@ import {
   processApproval,
   formatApprovalResult,
   loadPlanForReview,
-  buildHeartbeatCommand,
-  activateHeartbeat,
   APPROVAL_DECISIONS,
 } from './plan-approval.js';
 import {
@@ -164,9 +162,6 @@ async function scaffoldProjectWithSubagentMd({ subagentRef = TEST_SLUG } = {}) {
     task2,
   };
 }
-
-/** No-op install function to prevent real crontab calls in tests */
-const noopInstallFn = async () => ({ installed: true, entry: 'noop' });
 
 // ---------------------------------------------------------------------------
 // findPendingPlan
@@ -529,7 +524,6 @@ describe('processApproval — approve', () => {
       agentId: config.id,
       decision: 'approve',
       dataDir: tmpDir,
-      installFn: noopInstallFn,
     });
 
     assert.ok(result.success);
@@ -545,7 +539,6 @@ describe('processApproval — approve', () => {
       agentId: config.id,
       decision: 'approve',
       dataDir: tmpDir,
-      installFn: noopInstallFn,
     });
 
     assert.equal(result.isFirstApproval, true);
@@ -565,7 +558,6 @@ describe('processApproval — approve', () => {
       agentId: config.id,
       decision: 'approve',
       dataDir: tmpDir,
-      installFn: noopInstallFn,
     });
 
     assert.ok(result.success);
@@ -580,7 +572,6 @@ describe('processApproval — approve', () => {
       agentId: config.id,
       decision: 'approve',
       dataDir: tmpDir,
-      installFn: noopInstallFn,
     });
 
     // Reload and verify
@@ -600,7 +591,6 @@ describe('processApproval — approve', () => {
       agentId: config.id,
       decision: 'approve',
       dataDir: tmpDir,
-      installFn: noopInstallFn,
     });
 
     assert.equal(result.success, false);
@@ -613,7 +603,6 @@ describe('processApproval — approve', () => {
       agentId: 'agent-nonexistent',
       decision: 'approve',
       dataDir: tmpDir,
-      installFn: noopInstallFn,
     });
 
     assert.equal(result.success, false);
@@ -708,7 +697,6 @@ describe('processApproval — edit', () => {
       ],
       autoApproveAfterEdit: true,
       dataDir: tmpDir,
-      installFn: noopInstallFn,
     });
 
     assert.ok(result.success);
@@ -802,14 +790,14 @@ describe('formatApprovalResult', () => {
     assert.ok(text.includes('Tasks: 2'));
   });
 
-  it('formats first approval with heartbeat notice', () => {
+  it('formats first approval with project-heartbeat notice', () => {
     const text = formatApprovalResult({
       success: true,
       plan: { week: '2026-W16', tasks: [], approvedAt: '2026-04-16T10:00:00Z' },
       isFirstApproval: true,
     }, 'approve');
     assert.ok(text.includes('FIRST APPROVAL'));
-    assert.ok(text.includes('Heartbeat'));
+    assert.ok(text.includes('project heartbeat'));
   });
 
   it('formats reject result', () => {
@@ -920,7 +908,7 @@ describe('processApproval — idempotency', () => {
     await processApproval({ agentId: config.id, decision: 'reject', dataDir: tmpDir });
 
     // Try to approve — should fail since plan was removed
-    const result = await processApproval({ agentId: config.id, decision: 'approve', dataDir: tmpDir, installFn: noopInstallFn });
+    const result = await processApproval({ agentId: config.id, decision: 'approve', dataDir: tmpDir });
     assert.equal(result.success, false);
     assert.ok(result.errors[0].includes('No pending'));
   });
@@ -929,141 +917,47 @@ describe('processApproval — idempotency', () => {
     const { config, weeklyPlans } = buildTestAgent();
     const { tmpDir } = await saveTestAgent(config, weeklyPlans);
 
-    const mockInstall = async ({ agentId, command, schedule }) => ({
-      installed: true,
-      entry: `# aweek:heartbeat:${agentId}\n${schedule} ${command}`,
-    });
-
-    const first = await processApproval({ agentId: config.id, decision: 'approve', dataDir: tmpDir, installFn: mockInstall });
+    const first = await processApproval({ agentId: config.id, decision: 'approve', dataDir: tmpDir });
     assert.ok(first.success);
 
-    const second = await processApproval({ agentId: config.id, decision: 'approve', dataDir: tmpDir, installFn: mockInstall });
+    const second = await processApproval({ agentId: config.id, decision: 'approve', dataDir: tmpDir });
     assert.equal(second.success, false);
     assert.ok(second.errors[0].includes('No pending'));
   });
 });
 
 // ---------------------------------------------------------------------------
-// buildHeartbeatCommand
+// processApproval — no per-agent crontab side-effects
+//
+// Approval is scheduling-state only: the project-level heartbeat installed by
+// `/aweek:init` is the sole automated scheduling mechanism. These tests pin
+// the contract that the approval surface no longer accepts heartbeat-related
+// params and does not report any `heartbeatActivated` flag on the result.
 // ---------------------------------------------------------------------------
 
-describe('buildHeartbeatCommand', () => {
-  it('builds command with provided project dir', () => {
-    const cmd = buildHeartbeatCommand('test-agent', '/home/user/project');
-    assert.equal(cmd, 'npx aweek heartbeat test-agent --project-dir /home/user/project');
-  });
-
-  it('uses cwd when no project dir provided', () => {
-    const cmd = buildHeartbeatCommand('test-agent');
-    assert.ok(cmd.includes(process.cwd()));
-    assert.ok(cmd.includes('test-agent'));
-    assert.ok(cmd.includes('npx aweek heartbeat'));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// activateHeartbeat
-// ---------------------------------------------------------------------------
-
-describe('activateHeartbeat', () => {
-  it('calls installFn with correct params', async () => {
-    let capturedArgs = null;
-    const mockInstall = async (args) => {
-      capturedArgs = args;
-      return { installed: true, entry: 'mock-entry' };
-    };
-
-    const result = await activateHeartbeat({
-      agentId: 'test-agent',
-      schedule: '*/15 * * * *',
-      command: 'node heartbeat.js test-agent',
-      installFn: mockInstall,
-    });
-
-    assert.ok(result.activated);
-    assert.equal(result.schedule, '*/15 * * * *');
-    assert.equal(capturedArgs.agentId, 'test-agent');
-    assert.equal(capturedArgs.command, 'node heartbeat.js test-agent');
-    assert.equal(capturedArgs.schedule, '*/15 * * * *');
-  });
-
-  it('uses default schedule when not provided', async () => {
-    let capturedArgs = null;
-    const mockInstall = async (args) => {
-      capturedArgs = args;
-      return { installed: true, entry: 'mock-entry' };
-    };
-
-    await activateHeartbeat({
-      agentId: 'test-agent',
-      command: 'node heartbeat.js',
-      installFn: mockInstall,
-    });
-
-    assert.equal(capturedArgs.schedule, '0 * * * *');
-  });
-
-  it('builds default command when none provided', async () => {
-    let capturedArgs = null;
-    const mockInstall = async (args) => {
-      capturedArgs = args;
-      return { installed: true, entry: 'mock-entry' };
-    };
-
-    await activateHeartbeat({
-      agentId: 'test-agent',
-      projectDir: '/test/project',
-      installFn: mockInstall,
-    });
-
-    assert.equal(capturedArgs.command, 'npx aweek heartbeat test-agent --project-dir /test/project');
-  });
-
-  it('throws if agentId is missing', async () => {
-    await assert.rejects(
-      () => activateHeartbeat({ installFn: async () => ({ installed: true, entry: '' }) }),
-      { message: 'agentId is required' },
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// processApproval — heartbeat activation on approve
-// ---------------------------------------------------------------------------
-
-describe('processApproval — heartbeat activation', () => {
-  /** Mock install that records calls */
-  function createMockInstall() {
-    const calls = [];
-    const fn = async (args) => {
-      calls.push(args);
-      return { installed: true, entry: `mock-entry-${args.agentId}` };
-    };
-    return { fn, calls };
-  }
-
-  it('activates heartbeat on approve', async () => {
+describe('processApproval — scheduling-state only (no per-agent crontab)', () => {
+  it('approve does not set a heartbeatActivated flag on the result', async () => {
     const { config, weeklyPlans } = buildTestAgent();
     const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const mock = createMockInstall();
 
     const result = await processApproval({
       agentId: config.id,
       decision: 'approve',
       dataDir: tmpDir,
-      installFn: mock.fn,
     });
 
     assert.ok(result.success);
-    assert.equal(result.heartbeatActivated, true);
-    assert.equal(mock.calls.length, 1);
-    assert.equal(mock.calls[0].agentId, config.id);
+    assert.equal(result.plan.approved, true);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(result, 'heartbeatActivated'),
+      false,
+      'approve result must not carry a heartbeatActivated flag',
+    );
   });
 
-  it('activates heartbeat on edit with auto-approve', async () => {
+  it('edit+auto-approve does not set a heartbeatActivated flag on the result', async () => {
     const { config, weeklyPlans, task1 } = buildTestAgent();
     const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const mock = createMockInstall();
 
     const result = await processApproval({
       agentId: config.id,
@@ -1071,151 +965,15 @@ describe('processApproval — heartbeat activation', () => {
       edits: [{ action: 'update', taskId: task1.id, priority: 'critical' }],
       autoApproveAfterEdit: true,
       dataDir: tmpDir,
-      installFn: mock.fn,
-    });
-
-    assert.ok(result.success);
-    assert.equal(result.heartbeatActivated, true);
-    assert.equal(mock.calls.length, 1);
-  });
-
-  it('does NOT activate heartbeat on edit without auto-approve', async () => {
-    const { config, weeklyPlans, task1 } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const mock = createMockInstall();
-
-    const result = await processApproval({
-      agentId: config.id,
-      decision: 'edit',
-      edits: [{ action: 'update', taskId: task1.id, priority: 'critical' }],
-      autoApproveAfterEdit: false,
-      dataDir: tmpDir,
-      installFn: mock.fn,
-    });
-
-    assert.ok(result.success);
-    assert.equal(result.heartbeatActivated, false);
-    assert.equal(mock.calls.length, 0);
-  });
-
-  it('does NOT activate heartbeat on reject', async () => {
-    const { config, weeklyPlans } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const mock = createMockInstall();
-
-    const result = await processApproval({
-      agentId: config.id,
-      decision: 'reject',
-      dataDir: tmpDir,
-      installFn: mock.fn,
-    });
-
-    assert.ok(result.success);
-    // reject path doesn't set heartbeatActivated
-    assert.equal(mock.calls.length, 0);
-  });
-
-  it('uses custom schedule for heartbeat', async () => {
-    const { config, weeklyPlans } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const mock = createMockInstall();
-
-    await processApproval({
-      agentId: config.id,
-      decision: 'approve',
-      dataDir: tmpDir,
-      installFn: mock.fn,
-      heartbeatSchedule: '*/30 * * * *',
-    });
-
-    assert.equal(mock.calls[0].schedule, '*/30 * * * *');
-  });
-
-  it('uses custom heartbeat command', async () => {
-    const { config, weeklyPlans } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const mock = createMockInstall();
-
-    await processApproval({
-      agentId: config.id,
-      decision: 'approve',
-      dataDir: tmpDir,
-      installFn: mock.fn,
-      heartbeatCommand: 'custom-heartbeat-cmd',
-    });
-
-    assert.equal(mock.calls[0].command, 'custom-heartbeat-cmd');
-  });
-
-  it('succeeds even if heartbeat activation fails', async () => {
-    const { config, weeklyPlans } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const failingInstall = async () => { throw new Error('crontab not available'); };
-
-    const result = await processApproval({
-      agentId: config.id,
-      decision: 'approve',
-      dataDir: tmpDir,
-      installFn: failingInstall,
     });
 
     assert.ok(result.success);
     assert.equal(result.plan.approved, true);
-    assert.equal(result.heartbeatActivated, false);
-  });
-
-  it('heartbeat activation is idempotent on repeated approvals', async () => {
-    const { config, weeklyPlans } = buildTestAgent();
-    const { tmpDir } = await saveTestAgent(config, weeklyPlans);
-    const mock = createMockInstall();
-
-    // Approve first plan
-    const first = await processApproval({
-      agentId: config.id,
-      decision: 'approve',
-      dataDir: tmpDir,
-      installFn: mock.fn,
-    });
-    assert.ok(first.success);
-    assert.equal(first.heartbeatActivated, true);
-    assert.equal(mock.calls.length, 1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// formatApprovalResult — heartbeat status
-// ---------------------------------------------------------------------------
-
-describe('formatApprovalResult — heartbeat status', () => {
-  it('shows heartbeat installed message when activated', () => {
-    const text = formatApprovalResult({
-      success: true,
-      plan: { week: '2026-W16', tasks: [], approvedAt: '2026-04-16T10:00:00Z' },
-      isFirstApproval: true,
-      heartbeatActivated: true,
-    }, 'approve');
-    assert.ok(text.includes('Heartbeat crontab installed successfully'));
-  });
-
-  it('shows manual install note when activation failed', () => {
-    const text = formatApprovalResult({
-      success: true,
-      plan: { week: '2026-W16', tasks: [], approvedAt: '2026-04-16T10:00:00Z' },
-      isFirstApproval: false,
-      heartbeatActivated: false,
-    }, 'approve');
-    assert.ok(text.includes('could not be installed automatically'));
-  });
-
-  it('shows heartbeat installed in edit+auto-approve', () => {
-    const text = formatApprovalResult({
-      success: true,
-      plan: { approved: true },
-      editResults: [{ action: 'add', taskId: 'task-new', description: 'T' }],
-      isFirstApproval: true,
-      heartbeatActivated: true,
-    }, 'edit');
-    assert.ok(text.includes('Heartbeat crontab installed successfully'));
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(result, 'heartbeatActivated'),
+      false,
+      'edit+auto-approve result must not carry a heartbeatActivated flag',
+    );
   });
 });
 
@@ -1236,7 +994,6 @@ describe('Subagent-wrapper invariant — subagent .md is untouched', () => {
       agentId: ctx.config.id,
       decision: 'approve',
       dataDir: ctx.dataDir,
-      installFn: noopInstallFn,
     });
     assert.ok(result.success);
     assert.equal(result.plan.approved, true);
@@ -1301,7 +1058,6 @@ describe('Subagent-wrapper invariant — subagent .md is untouched', () => {
       ],
       autoApproveAfterEdit: true,
       dataDir: ctx.dataDir,
-      installFn: noopInstallFn,
     });
     assert.ok(result.success);
     assert.equal(result.plan.approved, true);
@@ -1350,7 +1106,6 @@ describe('Subagent-wrapper invariant — aweek JSON never reintroduces identity'
       agentId: ctx.config.id,
       decision: 'approve',
       dataDir: ctx.dataDir,
-      installFn: noopInstallFn,
     });
     assert.ok(result.success);
 

@@ -25,16 +25,56 @@
  * Slash-command discovery is handled by the Claude Code plugin system
  * (see `.claude-plugin/plugin.json`), not this module.
  */
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { access, mkdir, readdir, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 
-import {
-  readCrontab as defaultReadCrontab,
-  writeCrontab as defaultWriteCrontab,
-} from '../heartbeat/crontab-manager.js';
 import { configPath, loadConfig, saveConfig } from '../storage/config-store.js';
 import { DEFAULT_TZ } from '../time/zone.js';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Read the current user crontab.
+ *
+ * Returns empty string when the user has no crontab yet — `crontab -l` emits
+ * "no crontab for <user>" on stderr and exits non-zero in that state, which
+ * we treat as a normal empty-crontab result rather than an error.
+ *
+ * Inlined here (rather than imported from the former
+ * `src/heartbeat/crontab-manager.js`) because the project-level heartbeat in
+ * this module is now the ONLY automated crontab interaction surface in aweek.
+ *
+ * @returns {Promise<string>}
+ */
+async function defaultReadCrontab() {
+  try {
+    const { stdout } = await execFileAsync('crontab', ['-l']);
+    return stdout;
+  } catch (err) {
+    if (err.stderr && err.stderr.includes('no crontab')) {
+      return '';
+    }
+    throw err;
+  }
+}
+
+/**
+ * Write a full crontab string, replacing the current user crontab.
+ *
+ * Pipes `content` into `crontab -` via stdin. Like {@link defaultReadCrontab},
+ * this is the sole automated write path into the user's crontab.
+ *
+ * @param {string} content
+ * @returns {Promise<void>}
+ */
+async function defaultWriteCrontab(content) {
+  const child = execFileAsync('crontab', ['-'], {});
+  child.child.stdin.write(content);
+  child.child.stdin.end();
+  await child;
+}
 
 /**
  * Canonical subdirectories that live under `.aweek/`.
@@ -356,17 +396,20 @@ export async function installDependencies({
  *
  * The aweek heartbeat is a *project-level* cron entry — one per
  * initialized project — that wakes up hourly and runs `aweek heartbeat
- * --all --project-dir <dir>`. This is distinct from the per-agent
- * markers managed by `src/heartbeat/crontab-manager.js`, which gate
- * individual agent execution after their weekly plan is approved.
+ * --all --project-dir <dir>`. This is aweek's ONLY automated scheduling
+ * mechanism: the previous per-agent crontab path (formerly in
+ * `src/heartbeat/crontab-manager.js`) has been removed, so every
+ * scheduled agent tick is routed through this single project-level
+ * heartbeat. The `aweek heartbeat <agentId>` CLI subcommand is retained
+ * for manual debugging only and is never written to crontab.
  *
  * Marker format: `# aweek:project-heartbeat:<absoluteProjectDir>`
  *
  *   - Scoped by absolute `projectDir` so multiple aweek projects on the
  *     same host can coexist in one user's crontab without collision.
- *   - Distinct prefix (`project-heartbeat` vs. `heartbeat`) so
- *     `parseHeartbeatEntries()` in `crontab-manager.js` — which keys on
- *     the per-agent prefix — cannot accidentally consume project markers.
+ *   - Distinct prefix (`project-heartbeat`) preserved so any legacy
+ *     per-agent `aweek:heartbeat:<agentId>` markers left over from an
+ *     older aweek install are not disturbed by project-level writes.
  *
  * All primitives are:
  *   - **Idempotent.** Re-running with identical options reports `skipped`.
@@ -386,8 +429,10 @@ export const DEFAULT_HEARTBEAT_SCHEDULE = '0 * * * *';
 
 /**
  * Comment-marker prefix used to identify the aweek project heartbeat in
- * the user's crontab. Deliberately distinct from the per-agent
- * `aweek:heartbeat:` prefix used by `src/heartbeat/crontab-manager.js`.
+ * the user's crontab. Deliberately distinct from the legacy per-agent
+ * `aweek:heartbeat:` prefix so any lingering markers from an older
+ * aweek install (before the per-agent crontab path was removed) stay
+ * untouched by project-level writes.
  */
 export const PROJECT_HEARTBEAT_MARKER_PREFIX = 'aweek:project-heartbeat:';
 
@@ -447,8 +492,8 @@ export function buildHeartbeatEntry({
  *     considered. Partial prefix matches (e.g. a longer projectDir that
  *     starts with the target path) are rejected to avoid false positives.
  *   - A marker with no following cron line (last line, or followed by
- *     another comment) is ignored — mirrors the tolerant behavior of
- *     `parseHeartbeatEntries` in `crontab-manager.js`.
+ *     another comment) is ignored — tolerates hand-edited crontabs
+ *     without false positives.
  *
  * @param {string} crontabText
  * @param {string} projectDir
@@ -520,7 +565,7 @@ export function removeProjectHeartbeat(crontabText, projectDir) {
  * @param {object} [opts]
  * @param {string} [opts.projectDir] - Defaults to `process.cwd()`.
  * @param {Function} [opts.readCrontabFn] - Injectable reader; defaults
- *   to `readCrontab` from `src/heartbeat/crontab-manager.js`.
+ *   to the inlined `defaultReadCrontab` helper at the top of this module.
  * @returns {Promise<{
  *   installed: boolean,
  *   schedule: string | null,

@@ -75,8 +75,6 @@ import {
   validateDecision,
   validateEdits,
   applyEdits,
-  buildHeartbeatCommand,
-  activateHeartbeat,
   processApproval,
   formatApprovalResult,
   loadPlanForReview,
@@ -232,15 +230,10 @@ export function edit(params) {
  * @param {object} params
  * @param {string} params.agentId - Agent whose pending plan to auto-approve
  * @param {string} [params.dataDir] - Override data directory path
- * @param {string} [params.heartbeatSchedule='0 * * * *'] - Cron schedule
- * @param {string} [params.heartbeatCommand] - Override heartbeat command
- * @param {string} [params.projectDir] - Project root for heartbeat command
- * @param {Function} [params.installFn] - Override crontab install (for testing)
  * @returns {Promise<{
  *   success: boolean,
  *   plan?: object,
  *   isFirstApproval?: boolean,
- *   heartbeatActivated?: boolean,
  *   noPendingPlanRemains: boolean,
  *   errors?: string[],
  * }>}
@@ -400,8 +393,6 @@ export {
   validateDecision,
   validateEdits,
   applyEdits,
-  buildHeartbeatCommand,
-  activateHeartbeat,
   processApproval,
   formatApprovalResult,
   loadPlanForReview,

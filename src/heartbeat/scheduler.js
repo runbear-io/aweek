@@ -8,8 +8,9 @@
  * - Configurable callback invocation per agent
  * - File-based lock state (source of truth on disk)
  *
- * The crontab-manager handles *scheduling* (installing/removing cron entries).
- * This module handles *execution* (what happens when a heartbeat fires).
+ * The project-level heartbeat installer in `src/skills/init.js` handles
+ * *scheduling* (installing/removing the single project cron entry). This
+ * module handles *execution* (what happens when a heartbeat fires).
  */
 import { writeFile, readFile, rm, mkdir, access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
