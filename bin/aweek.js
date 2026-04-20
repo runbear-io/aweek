@@ -7,6 +7,7 @@
  *   aweek heartbeat <agentId> [--project-dir <dir>]
  *   aweek heartbeat --all [--project-dir <dir>]
  *   aweek exec <module> <fn> [--input-json - | <file>] [--format json|text]
+ *   aweek serve [--port <n>] [--host <addr>] [--no-open] [--project-dir <dir>]
  */
 
 import { readFile } from 'node:fs/promises';
@@ -17,6 +18,14 @@ import {
   listModules,
   listFunctions,
 } from '../src/cli/dispatcher.js';
+import {
+  startServer,
+  openBrowser,
+  formatLanHints,
+  isWildcardHost,
+  formatNoAweekDirMessage,
+  isNoAweekDirError,
+} from '../src/serve/server.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -29,6 +38,7 @@ Usage:
   aweek heartbeat <agentId>     Run heartbeat tick for a single agent
   aweek heartbeat --all         Run heartbeat tick for all agents
   aweek exec <module> <fn>      Invoke a skill export with JSON in/out
+  aweek serve                   Launch local read-only dashboard (HTTP)
   aweek --help                  Show this help
 
 Options:
@@ -38,6 +48,11 @@ exec options:
   --input-json -                Read a JSON input object from stdin
   --input-json <path>           Read a JSON input object from the given file
   --format json|text            Output format (default: json)
+
+serve options:
+  --port <n>                    Port to bind (default: 3000, auto-increments)
+  --host <addr>                 Bind address (default: 0.0.0.0 for LAN access)
+  --no-open                     Do not open the dashboard in a browser
 `.trim());
   process.exit(0);
 }
@@ -53,44 +68,135 @@ if (command === 'exec') {
   }
 }
 
-if (command !== 'heartbeat') {
+if (command === 'serve') {
+  try {
+    await runServe(args.slice(1));
+    // Do not exit — the HTTP server keeps the event loop alive so the
+    // dashboard stays reachable until the user hits Ctrl-C.
+  } catch (err) {
+    // ENOAWEEKDIR is the #1 first-run failure mode: the user typed
+    // `aweek serve` before running `/aweek:init`. Swap the generic
+    // "Serve failed [CODE]: ..." one-liner for the multi-line friendly
+    // block so the next step (init / --project-dir) is obvious.
+    if (isNoAweekDirError(err)) {
+      console.error(
+        formatNoAweekDirMessage({ dataDir: err.dataDir, projectDir: err.projectDir }),
+      );
+    } else {
+      const code = err && err.code ? ` [${err.code}]` : '';
+      console.error(`Serve failed${code}: ${err && err.message ? err.message : err}`);
+    }
+    process.exit(1);
+  }
+} else if (command === 'heartbeat') {
+  await runHeartbeat(args.slice(1));
+} else {
   console.error(`Unknown command: ${command}`);
   console.error('Run "aweek --help" for usage.');
   process.exit(1);
 }
 
-// Parse remaining args for heartbeat
-const rest = args.slice(1);
-let projectDir = process.cwd();
-let agentId = null;
-let runAll = false;
+async function runHeartbeat(heartbeatArgs) {
+  let projectDir = process.cwd();
+  let agentId = null;
+  let runAll = false;
 
-for (let i = 0; i < rest.length; i++) {
-  if (rest[i] === '--project-dir' && rest[i + 1]) {
-    projectDir = resolve(rest[i + 1]);
-    i++;
-  } else if (rest[i] === '--all') {
-    runAll = true;
-  } else if (!rest[i].startsWith('-')) {
-    agentId = rest[i];
+  for (let i = 0; i < heartbeatArgs.length; i++) {
+    if (heartbeatArgs[i] === '--project-dir' && heartbeatArgs[i + 1]) {
+      projectDir = resolve(heartbeatArgs[i + 1]);
+      i++;
+    } else if (heartbeatArgs[i] === '--all') {
+      runAll = true;
+    } else if (!heartbeatArgs[i].startsWith('-')) {
+      agentId = heartbeatArgs[i];
+    }
+  }
+
+  if (!runAll && !agentId) {
+    console.error('Error: provide an <agentId> or use --all');
+    console.error('Run "aweek --help" for usage.');
+    process.exit(1);
+  }
+
+  try {
+    if (runAll) {
+      await runHeartbeatForAll({ projectDir });
+    } else {
+      await runHeartbeatForAgent(agentId, { projectDir });
+    }
+  } catch (err) {
+    console.error(`Heartbeat failed: ${err.message}`);
+    process.exit(1);
   }
 }
 
-if (!runAll && !agentId) {
-  console.error('Error: provide an <agentId> or use --all');
-  console.error('Run "aweek --help" for usage.');
-  process.exit(1);
-}
+async function runServe(serveArgs) {
+  let port;
+  let host;
+  let open = true;
+  let projectDir = process.cwd();
 
-try {
-  if (runAll) {
-    await runHeartbeatForAll({ projectDir });
-  } else {
-    await runHeartbeatForAgent(agentId, { projectDir });
+  for (let i = 0; i < serveArgs.length; i++) {
+    const arg = serveArgs[i];
+    if (arg === '--port' && serveArgs[i + 1]) {
+      port = serveArgs[++i];
+    } else if (arg === '--host' && serveArgs[i + 1]) {
+      host = serveArgs[++i];
+    } else if (arg === '--no-open') {
+      open = false;
+    } else if (arg === '--project-dir' && serveArgs[i + 1]) {
+      projectDir = resolve(serveArgs[++i]);
+    } else if (arg === '--help' || arg === '-h') {
+      console.log(
+        `Usage: aweek serve [--port <n>] [--host <addr>] [--no-open] [--project-dir <dir>]`,
+      );
+      process.exit(0);
+    } else {
+      throw Object.assign(new Error(`Unknown flag: ${arg}`), { code: 'EUSAGE' });
+    }
   }
-} catch (err) {
-  console.error(`Heartbeat failed: ${err.message}`);
-  process.exit(1);
+
+  const { url, port: boundPort, host: boundHost } = await startServer({
+    port,
+    host,
+    open,
+    projectDir,
+  });
+
+  console.log(`aweek dashboard listening on ${url}`);
+  if (isWildcardHost(boundHost)) {
+    // Wildcard bind means the server is accepting connections on every
+    // interface, so phones/tablets on the same Wi-Fi can reach it. Walk
+    // the host's network interfaces and print one URL per LAN address
+    // (IPv4 + routable IPv6) so the user can just tap a link.
+    const lanUrls = formatLanHints({ host: boundHost, port: boundPort });
+    if (lanUrls.length > 0) {
+      console.log('  LAN:');
+      for (const lanUrl of lanUrls) {
+        console.log(`    ${lanUrl}`);
+      }
+    } else {
+      // No external interface detected (air-gapped / container without
+      // a bridge / ...). Surface the bind so the user at least knows
+      // the server is wildcard-bound and ready for LAN clients.
+      console.log(
+        `  LAN: bound to ${boundHost}:${boundPort} (no external IPv4/IPv6 detected)`,
+      );
+    }
+  }
+  console.log('  Press Ctrl-C to stop.');
+
+  // Auto-open the dashboard in the user's default browser unless the
+  // caller passed `--no-open`. Failures fall back silently to the URL
+  // already printed above, with a single diagnostic line so the user
+  // knows why the browser did not appear.
+  if (open) {
+    const result = await openBrowser(url);
+    if (!result.opened) {
+      const reason = result.error && result.error.message ? `: ${result.error.message}` : '';
+      console.log(`  Could not auto-open a browser${reason}. Open ${url} manually.`);
+    }
+  }
 }
 
 async function runExec(execArgs) {
