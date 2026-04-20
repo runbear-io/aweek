@@ -739,7 +739,8 @@ function renderTaskCard(task, num) {
   const status = String(task.status || 'pending');
   const icon = STATUS_ICONS[status] || '?';
   const statusCls = `calendar-task status-${status}`;
-  const priorityCls = task.priority ? ` priority-${escapeAttr(task.priority)}` : '';
+  const priority = task.priority ? String(task.priority) : '';
+  const priorityCls = priority ? ` priority-${escapeAttr(priority)}` : '';
   const timeLabel = task.slot
     ? formatClockLabel(task.slot.hour, task.slot.minute)
     : '';
@@ -751,15 +752,30 @@ function renderTaskCard(task, num) {
       ? `<span class="calendar-task-num">#${num}</span>`
       : '';
   const statusLabel = escapeHtml(status);
+  const dataAttrs = [
+    `data-task-id="${escapeAttr(task.id || '')}"`,
+    `data-task-status="${escapeAttr(status)}"`,
+    `data-task-desc="${escapeAttr(task.description || '')}"`,
+    priority ? `data-task-priority="${escapeAttr(priority)}"` : '',
+    task.runAt ? `data-task-run-at="${escapeAttr(task.runAt)}"` : '',
+    task.objectiveId ? `data-task-objective="${escapeAttr(task.objectiveId)}"` : '',
+    task.track ? `data-task-track="${escapeAttr(task.track)}"` : '',
+    typeof task.estimatedMinutes === 'number'
+      ? `data-task-minutes="${escapeAttr(String(task.estimatedMinutes))}"`
+      : '',
+    task.completedAt ? `data-task-completed-at="${escapeAttr(task.completedAt)}"` : '',
+    task.delegatedTo ? `data-task-delegated-to="${escapeAttr(task.delegatedTo)}"` : '',
+    typeof num === 'number' ? `data-task-num="${escapeAttr(String(num))}"` : '',
+  ].filter(Boolean).join(' ');
   return [
-    `<div class="${statusCls}${priorityCls}" data-task-id="${escapeAttr(task.id || '')}" data-task-status="${escapeAttr(status)}" title="${escapeAttr(task.description || '')}">`,
+    `<button type="button" class="${statusCls}${priorityCls}" ${dataAttrs} title="${escapeAttr(task.description || '')}">`,
     `<div class="calendar-task-head">`,
     `<span class="calendar-task-status" aria-label="status: ${statusLabel}">${icon}</span>`,
     numPart,
     timePart,
     `</div>`,
     `<div class="calendar-task-desc">${escapeHtml(task.description || '')}</div>`,
-    `</div>`,
+    `</button>`,
   ].join('');
 }
 
@@ -1002,7 +1018,14 @@ export function calendarSectionStyles() {
     font-size: 11px;
     line-height: 1.3;
     color: var(--text);
+    font-family: inherit;
+    text-align: left;
+    width: 100%;
+    cursor: pointer;
+    transition: border-color .12s ease, transform .12s ease;
   }
+  .calendar-task:hover { border-color: #3a4056; transform: translateY(-1px); }
+  .calendar-task:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .calendar-task.priority-critical { border-left-color: var(--critical); }
   .calendar-task.priority-high { border-left-color: var(--high); }
   .calendar-task.priority-medium { border-left-color: var(--medium); }

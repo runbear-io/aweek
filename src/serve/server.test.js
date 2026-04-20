@@ -152,6 +152,24 @@ describe('renderDashboardShell()', () => {
     assert.ok(!html.includes('<script>alert(1)</script>'));
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   });
+
+  it('includes a task-detail drawer, scrim, and click-handler script', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x' });
+    // Drawer + scrim markup
+    assert.match(html, /data-drawer\b/);
+    assert.match(html, /data-scrim\b/);
+    assert.match(html, /data-drawer-title/);
+    assert.match(html, /data-drawer-chips/);
+    assert.match(html, /data-drawer-desc/);
+    assert.match(html, /data-drawer-fields/);
+    assert.match(html, /class="drawer-close"/);
+    // Drawer CSS hook
+    assert.match(html, /\.drawer\.open/);
+    // Wiring: click handler reads dataset and toggles .open
+    assert.match(html, /closest\('\.calendar-task'\)/);
+    assert.match(html, /drawer\.classList\.add\('open'\)/);
+    assert.match(html, /key === 'Escape'/);
+  });
 });
 
 // ── resolveOpenCommand ─────────────────────────────────────────────────────

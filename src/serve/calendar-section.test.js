@@ -739,6 +739,12 @@ describe('renderCalendarSection()', () => {
     assert.match(html, /status-in-progress/);
     assert.match(html, /priority-critical/);
 
+    // Task cards are buttons (clickable) with drawer-ready data attributes
+    assert.match(html, /<button type="button" class="calendar-task/);
+    assert.match(html, /data-task-desc=/);
+    assert.match(html, /data-task-priority="critical"/);
+    assert.match(html, /data-task-run-at=/);
+
     // Unscheduled section
     assert.match(html, /calendar-unscheduled/);
     assert.match(html, /Loose thread/);
