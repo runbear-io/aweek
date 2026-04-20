@@ -21,8 +21,10 @@ import {
   computeTaskSlot,
   gatherCalendar,
   gatherCalendarView,
+  gatherTaskActivity,
   renderCalendarSection,
 } from './calendar-section.js';
+import { ActivityLogStore, createLogEntry } from '../storage/activity-log-store.js';
 import { startServer } from './server.js';
 
 // ───────────────────────────────────────────────────────────────────────
@@ -1033,5 +1035,184 @@ describe('GET / → calendar tab renders within agent scope', () => {
       !res.body.includes('class="calendar-picker"'),
       'calendar section must not contain an agent picker in the new tab layout',
     );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Task-activity embed — the calendar section ships per-task activity
+// entries in a JSON <script> tag so the drawer can render them client-side
+// without an extra HTTP round-trip.
+// ───────────────────────────────────────────────────────────────────────
+
+describe('gatherTaskActivity()', () => {
+  let projectDir;
+
+  beforeEach(async () => {
+    projectDir = await makeProject('aweek-taskact-');
+  });
+  afterEach(async () => {
+    if (projectDir) await rm(projectDir, { recursive: true, force: true });
+  });
+
+  it('groups activity-log entries by taskId with only drawer-ready fields', async () => {
+    await writeAgent(projectDir, 'writer');
+    const store = new ActivityLogStore(join(projectDir, '.aweek', 'agents'));
+    await store.append('writer', createLogEntry({
+      agentId: 'writer',
+      taskId: 'task-alpha',
+      status: 'completed',
+      description: 'Ran task alpha',
+      duration: 4200,
+      metadata: {
+        resources: { urls: ['https://example.com/post'], filePaths: ['/tmp/out.md'] },
+        tokenUsage: { inputTokens: 100, outputTokens: 50 },
+        execution: { exitCode: 0, timedOut: false },
+      },
+    }));
+    await store.append('writer', createLogEntry({
+      agentId: 'writer',
+      taskId: 'task-beta',
+      status: 'failed',
+      description: 'Other task',
+      duration: 500,
+      metadata: { error: { message: 'explode' } },
+    }));
+
+    const byTask = await gatherTaskActivity({ projectDir, agentId: 'writer' });
+
+    assert.ok(byTask['task-alpha']);
+    assert.equal(byTask['task-alpha'].length, 1);
+    const alpha = byTask['task-alpha'][0];
+    assert.equal(alpha.status, 'completed');
+    assert.equal(alpha.duration, 4200);
+    assert.deepEqual(alpha.urls, ['https://example.com/post']);
+    assert.deepEqual(alpha.files, ['/tmp/out.md']);
+    assert.equal(alpha.tokens, 150);
+    // Drawer-only projection — raw stdout / stderr should not leak through.
+    assert.ok(!('metadata' in alpha));
+
+    assert.ok(byTask['task-beta']);
+    assert.equal(byTask['task-beta'][0].errorMessage, 'explode');
+  });
+
+  it('returns an empty object when the agent has no activity', async () => {
+    await writeAgent(projectDir, 'writer');
+    const byTask = await gatherTaskActivity({ projectDir, agentId: 'writer' });
+    assert.deepEqual(byTask, {});
+  });
+
+  it('drops entries without a taskId (they are not task-scoped)', async () => {
+    await writeAgent(projectDir, 'writer');
+    const store = new ActivityLogStore(join(projectDir, '.aweek', 'agents'));
+    await store.append('writer', createLogEntry({
+      agentId: 'writer',
+      status: 'skipped',
+      description: 'Heartbeat tick with nothing to do',
+    }));
+    const byTask = await gatherTaskActivity({ projectDir, agentId: 'writer' });
+    assert.deepEqual(byTask, {});
+  });
+});
+
+describe('renderCalendarSection() — task activity embed', () => {
+  it('emits a JSON <script> tag with the per-task activity map', () => {
+    const html = renderCalendarSection({
+      agents: [{ slug: 'writer', name: 'Writer' }],
+      selected: {
+        slug: 'writer',
+        name: 'Writer',
+        calendar: {
+          agentId: 'writer',
+          week: '2026-W16',
+          month: '2026-04',
+          approved: true,
+          timeZone: 'UTC',
+          weekMonday: '2026-04-13T00:00:00.000Z',
+          noPlan: false,
+          tasks: [],
+          counts: { total: 0, pending: 0 },
+        },
+        taskActivity: {
+          'task-alpha': [
+            {
+              id: 'log-1',
+              timestamp: '2026-04-20T10:00:00.000Z',
+              status: 'completed',
+              duration: 1200,
+              urls: ['https://example.com/p'],
+            },
+          ],
+        },
+      },
+    });
+
+    assert.match(html, /<script type="application\/json" id="aweek-task-activity"/);
+    // Payload actually contains the task we seeded.
+    const match = html.match(/id="aweek-task-activity"[^>]*>([^<]*)<\/script>/);
+    assert.ok(match, 'embed script should be present');
+    const parsed = JSON.parse(match[1]);
+    assert.ok(parsed['task-alpha']);
+    assert.equal(parsed['task-alpha'][0].urls[0], 'https://example.com/p');
+  });
+
+  it('emits an empty-object embed when the view carries no taskActivity', () => {
+    const html = renderCalendarSection({
+      agents: [{ slug: 'writer', name: 'Writer' }],
+      selected: {
+        slug: 'writer',
+        name: 'Writer',
+        calendar: {
+          agentId: 'writer',
+          week: '2026-W16',
+          month: '2026-04',
+          approved: true,
+          timeZone: 'UTC',
+          weekMonday: '2026-04-13T00:00:00.000Z',
+          noPlan: false,
+          tasks: [],
+          counts: { total: 0, pending: 0 },
+        },
+      },
+    });
+    const match = html.match(/id="aweek-task-activity"[^>]*>([^<]*)<\/script>/);
+    assert.ok(match);
+    assert.equal(match[1], '{}');
+  });
+
+  it('escapes </script> sequences inside the embedded JSON to prevent tag breakout', () => {
+    // A description containing a literal "</script" must not close the embed.
+    const html = renderCalendarSection({
+      agents: [{ slug: 'writer', name: 'Writer' }],
+      selected: {
+        slug: 'writer',
+        name: 'Writer',
+        calendar: {
+          agentId: 'writer',
+          week: '2026-W16',
+          month: '2026-04',
+          approved: true,
+          timeZone: 'UTC',
+          weekMonday: '2026-04-13T00:00:00.000Z',
+          noPlan: false,
+          tasks: [],
+          counts: { total: 0, pending: 0 },
+        },
+        taskActivity: {
+          'task-evil': [
+            {
+              id: 'log-evil',
+              timestamp: '2026-04-20T10:00:00.000Z',
+              status: 'completed',
+              description: '</script><script>alert(1)</script>',
+            },
+          ],
+        },
+      },
+    });
+    // Only the server-emitted <script> should appear, and it must still be
+    // followed by the closing </script>. The embedded payload should have
+    // the evil sequence rewritten.
+    assert.ok(!html.includes('</script><script>alert(1)</script>'));
+    assert.match(html, /<\\\/script/);
   });
 });

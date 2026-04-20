@@ -168,6 +168,18 @@ describe('renderDashboardShell()', () => {
     assert.match(html, /key === 'Escape'/);
   });
 
+  it('includes the drawer-activity slot and reads aweek-task-activity JSON', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x' });
+    // Drawer activity section markup
+    assert.match(html, /data-drawer-activity\b/);
+    assert.match(html, /data-drawer-activity-list\b/);
+    assert.match(html, /class="drawer-activity"/);
+    // Drawer JS reads the embedded JSON payload.
+    assert.match(html, /getElementById\('aweek-task-activity'\)/);
+    assert.match(html, /JSON\.parse/);
+    assert.match(html, /renderActivity/);
+  });
+
   it('includes a URL-routing script that preserves the active tab when switching agents', () => {
     const html = renderDashboardShell({ projectDir: '/tmp/x' });
     // Intercepts sidebar agent-link clicks.

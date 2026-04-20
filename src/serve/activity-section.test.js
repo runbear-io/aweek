@@ -1202,6 +1202,116 @@ describe('gatherActivity() — tab-level data contract', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────
+// renderActivitySection() — per-row detail block (urls, tokens, duration, error)
+// ───────────────────────────────────────────────────────────────────────
+
+describe('renderActivitySection() — entry detail block', () => {
+  const baseView = (entries) => ({
+    agents: [{ slug: 'writer', name: 'Writer' }],
+    selected: { slug: 'writer', name: 'Writer', entries },
+    dateRange: 'all',
+  });
+
+  it('wraps each row in an .activity-entry container with a .activity-row child', () => {
+    const html = renderActivitySection(baseView([
+      { id: 'log-1', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'completed', description: 'Done' },
+    ]));
+    assert.match(html, /<div class="activity-entry"/);
+    assert.match(html, /<div class="activity-row">/);
+  });
+
+  it('renders clickable URL chips pulled from metadata.resources.urls', () => {
+    const html = renderActivitySection(baseView([
+      {
+        id: 'log-url',
+        timestamp: '2026-04-20T10:00:00.000Z',
+        agentId: 'writer',
+        status: 'completed',
+        description: 'Publish',
+        metadata: { resources: { urls: ['https://example.com/post', 'https://runbear.io/pricing'] } },
+      },
+    ]));
+    assert.match(html, /class="activity-url"/);
+    assert.match(html, /href="https:\/\/example\.com\/post"/);
+    assert.match(html, /target="_blank"/);
+    assert.match(html, /rel="noopener noreferrer"/);
+    // Compact label strips the protocol for readability.
+    assert.match(html, />example\.com\/post</);
+  });
+
+  it('collapses URL lists longer than 5 into a "+N more" counter', () => {
+    const urls = Array.from({ length: 8 }, (_, i) => `https://example.com/p${i}`);
+    const html = renderActivitySection(baseView([
+      {
+        id: 'log-many-urls',
+        timestamp: '2026-04-20T10:00:00.000Z',
+        agentId: 'writer',
+        status: 'completed',
+        description: 'Lots',
+        metadata: { resources: { urls } },
+      },
+    ]));
+    const urlMatches = html.match(/class="activity-url"/g) || [];
+    assert.equal(urlMatches.length, 5, 'should show at most 5 URL chips');
+    assert.match(html, /\+3 more/);
+  });
+
+  it('renders the token count from metadata.tokenUsage', () => {
+    const html = renderActivitySection(baseView([
+      {
+        id: 'log-tokens',
+        timestamp: '2026-04-20T10:00:00.000Z',
+        agentId: 'writer',
+        status: 'completed',
+        description: 'Ran',
+        metadata: { tokenUsage: { inputTokens: 1234, outputTokens: 567 } },
+      },
+    ]));
+    assert.match(html, /activity-detail-tokens/);
+    assert.match(html, /1,801/);
+  });
+
+  it('renders an error line for failed entries when metadata.error is present', () => {
+    const html = renderActivitySection(baseView([
+      {
+        id: 'log-fail',
+        timestamp: '2026-04-20T10:00:00.000Z',
+        agentId: 'writer',
+        status: 'failed',
+        description: 'Boom',
+        duration: 4200,
+        metadata: { error: { message: 'network timeout after 30s' } },
+      },
+    ]));
+    assert.match(html, /activity-detail-error/);
+    assert.match(html, /network timeout after 30s/);
+  });
+
+  it('does not render a details block when there is nothing to show', () => {
+    const html = renderActivitySection(baseView([
+      { id: 'log-quiet', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'skipped', description: 'No-op' },
+    ]));
+    assert.doesNotMatch(html, /activity-details/);
+  });
+
+  it('escapes URL labels so a script-like URL cannot inject markup', () => {
+    const evil = 'https://example.com/<script>alert(1)</script>';
+    const html = renderActivitySection(baseView([
+      {
+        id: 'log-inject',
+        timestamp: '2026-04-20T10:00:00.000Z',
+        agentId: 'writer',
+        status: 'completed',
+        description: 'Xss probe',
+        metadata: { resources: { urls: [evil] } },
+      },
+    ]));
+    assert.ok(!html.includes('<script>alert(1)</script>'));
+    assert.match(html, /&lt;script&gt;/);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
 // Helper: getMondayIso(date) — replicates getMondayDate for test fixtures
 // ───────────────────────────────────────────────────────────────────────
 function getMondayIso(date) {

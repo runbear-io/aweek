@@ -253,6 +253,10 @@ export function renderActivitySection(view) {
  * Render a single activity log row.
  *
  * Columns: formatted timestamp | agent slug | description | status chip.
+ * A `.activity-details` block below the row surfaces extracted URLs
+ * (clickable), token usage, exit code, and error messages when present,
+ * so operators can see at a glance what artifacts the agent produced
+ * without reading the raw JSON file.
  *
  * @param {object} entry - Raw activity-log entry from the store.
  * @returns {string}
@@ -265,17 +269,238 @@ function renderActivityRow(entry) {
   const statusLabel = STATUS_LABELS[status] || status;
   const statusCls = `activity-chip activity-chip-${escapeAttr(status)}`;
 
+  const details = renderActivityDetails(entry);
+
   return [
-    `<div class="activity-row"`,
+    `<div class="activity-entry"`,
     ` data-entry-id="${escapeAttr(entry.id || '')}"`,
     ` data-entry-status="${escapeAttr(status)}"`,
     ` data-entry-ts="${escapeAttr(entry.timestamp || '')}">`,
+    `<div class="activity-row">`,
     `<span class="activity-ts" title="${escapeAttr(entry.timestamp || '')}">${escapeHtml(timestamp)}</span>`,
     `<span class="activity-agent"><code>${escapeHtml(agentId)}</code></span>`,
     `<span class="activity-desc">${escapeHtml(description)}</span>`,
     `<span class="${statusCls}">${escapeHtml(statusLabel)}</span>`,
     `</div>`,
+    details,
+    `</div>`,
   ].join('');
+}
+
+/**
+ * Render the secondary detail block below an activity row. Pulls URLs and
+ * file paths from `metadata.resources`, token usage from `metadata.tokenUsage`,
+ * and an error message from `metadata.error` when the status is `failed`.
+ * Returns an empty string when there is nothing useful to show so the row
+ * stays compact for trivial entries (e.g. skipped heartbeats).
+ *
+ * @param {object} entry
+ * @returns {string}
+ */
+function renderActivityDetails(entry) {
+  const meta = (entry && entry.metadata) || {};
+  const parts = [];
+
+  const duration = typeof entry.duration === 'number' ? entry.duration : null;
+  if (duration !== null && duration > 0) {
+    parts.push(
+      `<span class="activity-detail-item activity-detail-duration">` +
+        `<span class="activity-detail-label">duration</span>` +
+        `<span class="activity-detail-value">${escapeHtml(formatDuration(duration))}</span>` +
+      `</span>`,
+    );
+  }
+
+  const tokens = _pickTotalTokens(meta.tokenUsage);
+  if (tokens !== null) {
+    parts.push(
+      `<span class="activity-detail-item activity-detail-tokens">` +
+        `<span class="activity-detail-label">tokens</span>` +
+        `<span class="activity-detail-value">${escapeHtml(formatNumber(tokens))}</span>` +
+      `</span>`,
+    );
+  }
+
+  if (meta.execution && typeof meta.execution.exitCode === 'number' && meta.execution.exitCode !== 0) {
+    parts.push(
+      `<span class="activity-detail-item activity-detail-exit">` +
+        `<span class="activity-detail-label">exit</span>` +
+        `<span class="activity-detail-value">${escapeHtml(String(meta.execution.exitCode))}</span>` +
+      `</span>`,
+    );
+  }
+
+  if (meta.execution && meta.execution.timedOut === true) {
+    parts.push(
+      `<span class="activity-detail-item activity-detail-timedout">` +
+        `<span class="activity-detail-label">timed out</span>` +
+      `</span>`,
+    );
+  }
+
+  const urls = Array.isArray(meta.resources?.urls) ? meta.resources.urls : [];
+  const urlHtml = renderUrlList(urls);
+  if (urlHtml) parts.push(urlHtml);
+
+  const files = Array.isArray(meta.resources?.filePaths) ? meta.resources.filePaths : [];
+  const filesHtml = renderFileList(files);
+  if (filesHtml) parts.push(filesHtml);
+
+  if (entry && entry.status === 'failed' && meta.error && typeof meta.error.message === 'string') {
+    parts.push(
+      `<div class="activity-detail-error" title="${escapeAttr(meta.error.message)}">` +
+        `<span class="activity-detail-label">error</span>` +
+        `<span class="activity-detail-value">${escapeHtml(truncate(meta.error.message, 200))}</span>` +
+      `</div>`,
+    );
+  }
+
+  if (parts.length === 0) return '';
+  return `<div class="activity-details">${parts.join('')}</div>`;
+}
+
+/**
+ * Render up to MAX_URLS_SHOWN URL chips as clickable links. Remaining URLs
+ * are collapsed into a "+N more" counter so the row doesn't explode when
+ * an agent drops a long list of references.
+ *
+ * @param {string[]} urls
+ * @returns {string}
+ */
+function renderUrlList(urls) {
+  if (!Array.isArray(urls) || urls.length === 0) return '';
+  const MAX_URLS_SHOWN = 5;
+  const shown = urls.slice(0, MAX_URLS_SHOWN);
+  const overflow = urls.length - shown.length;
+  const chips = shown
+    .map(
+      (u) =>
+        `<a class="activity-url" href="${escapeAttr(u)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(u)}">` +
+        `${escapeHtml(compactUrlLabel(u))}` +
+        `</a>`,
+    )
+    .join('');
+  const more =
+    overflow > 0
+      ? `<span class="activity-url-more">+${overflow} more</span>`
+      : '';
+  return (
+    `<div class="activity-detail-row activity-detail-urls">` +
+      `<span class="activity-detail-label">urls</span>` +
+      `<div class="activity-url-list">${chips}${more}</div>` +
+    `</div>`
+  );
+}
+
+/**
+ * Render up to MAX_FILES_SHOWN file-path chips. No link — paths only
+ * resolve inside the repo — but they're useful context when the agent
+ * creates or edits files during the task.
+ *
+ * @param {string[]} files
+ * @returns {string}
+ */
+function renderFileList(files) {
+  if (!Array.isArray(files) || files.length === 0) return '';
+  const MAX_FILES_SHOWN = 5;
+  const shown = files.slice(0, MAX_FILES_SHOWN);
+  const overflow = files.length - shown.length;
+  const chips = shown
+    .map(
+      (p) =>
+        `<span class="activity-file" title="${escapeAttr(p)}">${escapeHtml(basename(p))}</span>`,
+    )
+    .join('');
+  const more =
+    overflow > 0
+      ? `<span class="activity-url-more">+${overflow} more</span>`
+      : '';
+  return (
+    `<div class="activity-detail-row activity-detail-files">` +
+      `<span class="activity-detail-label">files</span>` +
+      `<div class="activity-url-list">${chips}${more}</div>` +
+    `</div>`
+  );
+}
+
+/**
+ * Best-effort total token count out of an anthropic-style usage payload.
+ * Returns null when the shape doesn't include an interpretable count so
+ * callers can skip the detail line entirely rather than showing "0".
+ *
+ * @param {unknown} tokenUsage
+ * @returns {number | null}
+ */
+function _pickTotalTokens(tokenUsage) {
+  if (!tokenUsage || typeof tokenUsage !== 'object') return null;
+  if (typeof tokenUsage.totalTokens === 'number') return tokenUsage.totalTokens;
+  if (typeof tokenUsage.total === 'number') return tokenUsage.total;
+  const input = typeof tokenUsage.inputTokens === 'number' ? tokenUsage.inputTokens : 0;
+  const output = typeof tokenUsage.outputTokens === 'number' ? tokenUsage.outputTokens : 0;
+  const cacheWrite = typeof tokenUsage.cacheCreationInputTokens === 'number' ? tokenUsage.cacheCreationInputTokens : 0;
+  const cacheRead = typeof tokenUsage.cacheReadInputTokens === 'number' ? tokenUsage.cacheReadInputTokens : 0;
+  const sum = input + output + cacheWrite + cacheRead;
+  return sum > 0 ? sum : null;
+}
+
+/**
+ * Compact label for a URL. Strips the protocol and shortens the path when
+ * the full URL is longer than 50 characters so rows stay scannable.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+function compactUrlLabel(url) {
+  const trimmed = String(url).replace(/^https?:\/\//, '');
+  if (trimmed.length <= 50) return trimmed;
+  return trimmed.slice(0, 47) + '…';
+}
+
+/**
+ * Last segment of a file path.
+ * @param {string} path
+ * @returns {string}
+ */
+function basename(path) {
+  const str = String(path);
+  const idx = str.lastIndexOf('/');
+  if (idx < 0) return str;
+  return str.slice(idx + 1) || str;
+}
+
+/**
+ * Format milliseconds as a human-readable duration.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatDuration(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 100) / 10;
+  if (s < 60) return `${s}s`;
+  const minutes = Math.floor(s / 60);
+  const rem = Math.round(s - minutes * 60);
+  return `${minutes}m ${rem}s`;
+}
+
+/**
+ * Format an integer with thousands separators.
+ * @param {number} n
+ * @returns {string}
+ */
+function formatNumber(n) {
+  return Number(n).toLocaleString('en-US');
+}
+
+/**
+ * Truncate a string to `max` characters (plus an ellipsis when shortened).
+ * @param {string} s
+ * @param {number} max
+ * @returns {string}
+ */
+function truncate(s, max) {
+  const str = String(s);
+  if (str.length <= max) return str;
+  return str.slice(0, max - 1) + '…';
 }
 
 /**
@@ -556,16 +781,104 @@ export function activitySectionStyles() {
     display: flex;
     flex-direction: column;
   }
+  .activity-entry {
+    border-bottom: 1px solid var(--border);
+    padding: 9px 0;
+  }
+  .activity-entry:last-child { border-bottom: none; }
   .activity-row {
     display: grid;
     grid-template-columns: 130px 130px 1fr auto;
     align-items: center;
     gap: 12px;
-    padding: 9px 0;
-    border-bottom: 1px solid var(--border);
     font-size: 12.5px;
   }
-  .activity-row:last-child { border-bottom: none; }
+  .activity-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    align-items: flex-start;
+    margin: 6px 0 0 142px;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  @media (max-width: 720px) {
+    .activity-details { margin-left: 0; }
+  }
+  .activity-detail-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .activity-detail-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .activity-detail-label {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .activity-detail-value {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .activity-detail-error {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    width: 100%;
+    color: var(--status-failed);
+  }
+  .activity-detail-error .activity-detail-value {
+    color: var(--status-failed);
+    word-break: break-word;
+  }
+  .activity-detail-timedout {
+    color: var(--high);
+  }
+  .activity-detail-timedout .activity-detail-label {
+    color: var(--high);
+  }
+  .activity-url-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    min-width: 0;
+    flex: 1;
+  }
+  .activity-url,
+  .activity-file {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    text-decoration: none;
+    max-width: 340px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .activity-url:hover { border-color: var(--accent); }
+  .activity-file {
+    color: var(--text);
+    cursor: default;
+  }
+  .activity-url-more {
+    font-size: 10.5px;
+    color: var(--muted);
+    align-self: center;
+  }
   .activity-ts {
     color: var(--muted);
     font-size: 11.5px;
