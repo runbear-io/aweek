@@ -180,6 +180,31 @@ describe('renderDashboardShell()', () => {
     assert.match(html, /renderActivity/);
   });
 
+  it('emits syntactically valid JS inside each inline <script> block', () => {
+    // Regression guard: template-literal escapes inside the drawer IIFE
+    // (e.g. `\/\/` collapsing to `//` and starting a line comment) have
+    // silently broken the whole drawer at runtime before. Parse each
+    // inline script with the JS parser so any such breakage fails the
+    // build instead of the browser.
+    const html = renderDashboardShell({ projectDir: '/tmp/x' });
+    const scriptRe = /<script(?![^>]*type=)[^>]*>([\s\S]*?)<\/script>/g;
+    let match;
+    let count = 0;
+    while ((match = scriptRe.exec(html)) !== null) {
+      const body = match[1];
+      if (body.trim().length === 0) continue;
+      count++;
+      try {
+        // Function constructor parses the body without executing it.
+        // eslint-disable-next-line no-new-func
+        new Function(body);
+      } catch (err) {
+        assert.fail(`Inline <script> #${count} failed to parse: ${err.message}`);
+      }
+    }
+    assert.ok(count >= 1, 'expected at least one inline <script> in the shell');
+  });
+
   it('includes a URL-routing script that preserves the active tab when switching agents', () => {
     const html = renderDashboardShell({ projectDir: '/tmp/x' });
     // Intercepts sidebar agent-link clicks.

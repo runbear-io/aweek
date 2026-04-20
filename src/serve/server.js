@@ -850,7 +850,9 @@ ${extraStyles}
       var urlsHtml = '';
       if (Array.isArray(e.urls) && e.urls.length) {
         urlsHtml = '<div class="drawer-activity-urls">' + e.urls.slice(0, 6).map(function(u) {
-          var label = String(u).replace(/^https?:\/\//, '');
+          var label = String(u);
+          if (label.indexOf('https://') === 0) label = label.slice(8);
+          else if (label.indexOf('http://') === 0) label = label.slice(7);
           if (label.length > 46) label = label.slice(0, 43) + '…';
           return '<a class="drawer-activity-url" href="' + esc(u) + '" target="_blank" rel="noopener noreferrer" title="' + esc(u) + '">' + esc(label) + '</a>';
         }).join('') + '</div>';
