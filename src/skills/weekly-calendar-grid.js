@@ -349,7 +349,7 @@ export function distributeTasks(tasks, opts = {}) {
  * @param {boolean} [params.opts.showWeekend=false]
  * @returns {string} Rendered grid
  */
-export const TASK_CONTENT_MAX = 30;
+export const TASK_CONTENT_MAX = 40;
 
 export function renderGrid({ agent, plan, opts = {} }) {
   const {

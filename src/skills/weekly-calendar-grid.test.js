@@ -437,7 +437,7 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
     assert.match(selectLine, /1-5/);
   });
 
-  it('caps a task at the TASK_CONTENT_MAX (30) visible chars and wraps across cell lines', () => {
+  it('caps a task at the TASK_CONTENT_MAX (40) visible chars and wraps across cell lines', () => {
     const veryLong = 'A'.repeat(200);
     const { text } = renderGrid({
       agent: { id: 'a', identity: { name: 'A' } },
@@ -452,10 +452,10 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
     const hourLines = text
       .split('\n')
       .filter((l) => l.startsWith('│09:00') || l.startsWith('│       '))
-      .slice(0, 3);
+      .slice(0, 4);
     const monCells = hourLines.map((l) => l.split('│')[2] ?? '');
     const joined = monCells.map((c) => c.trimEnd()).join('');
-    assert.ok(joined.length <= 30, `expected ≤30 visible chars, got ${joined.length}: ${JSON.stringify(joined)}`);
+    assert.ok(joined.length <= 40, `expected ≤40 visible chars, got ${joined.length}: ${JSON.stringify(joined)}`);
     assert.ok(joined.endsWith('…'), joined);
     assert.ok(joined.startsWith('○ 1. '), joined);
   });
