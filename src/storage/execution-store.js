@@ -109,6 +109,51 @@ export function createExecutionRecord({ agentId, date, windowMs, status, taskId,
   return record;
 }
 
+/**
+ * Create a new execution record with a unique-per-tick idempotency key.
+ *
+ * Unlike {@link createExecutionRecord}, which hashes the agent id with a
+ * time-window bucket (originally used to enforce hourly dedup), this helper
+ * generates a random idempotency key so every tick appends a fresh audit row
+ * regardless of how close together the ticks are. The store still dedups on
+ * `idempotencyKey`, so uniqueness here guarantees every tick is persisted.
+ *
+ * Real duplicate-run prevention is now enforced by the heartbeat runner via
+ * per-agent locks plus the atomic `pending → in-progress` task-state
+ * transition — the window-based key has become an append-only audit trail.
+ *
+ * `windowStart`/`windowEnd` are required by the stored schema, so we set
+ * them to the tick timestamp (zero-width window) to satisfy validation.
+ *
+ * @param {object} opts
+ * @param {string} opts.agentId
+ * @param {Date}   [opts.date]
+ * @param {string} opts.status
+ * @param {string} [opts.taskId]
+ * @param {number} [opts.duration]
+ * @param {object} [opts.metadata]
+ * @returns {object} A valid execution record with a unique idempotencyKey.
+ */
+export function createTickExecutionRecord({ agentId, date, status, taskId, duration, metadata }) {
+  const now = date || new Date();
+  const timestamp = now.toISOString();
+  const idempotencyKey = `idem-${randomBytes(6).toString('hex')}`;
+
+  const record = {
+    id: `exec-${shortId()}`,
+    idempotencyKey,
+    agentId,
+    timestamp,
+    windowStart: timestamp,
+    windowEnd: timestamp,
+    status,
+  };
+  if (taskId !== undefined) record.taskId = taskId;
+  if (duration !== undefined) record.duration = duration;
+  if (metadata !== undefined) record.metadata = metadata;
+  return record;
+}
+
 export class ExecutionStore {
   /**
    * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)

@@ -623,7 +623,12 @@ describe('tickAgent with executionStore (deduplication)', () => {
     assert.match(records[0].idempotencyKey, /^idem-/);
   });
 
-  it('skips duplicate heartbeat in same time window', async () => {
+  it('consecutive ticks advance through pending tasks without time-window dedup', async () => {
+    // Window-based idempotency has been removed in favor of task-state
+    // dedup: each tick picks the next `pending` task and atomically marks
+    // it `in-progress`. Two back-to-back ticks (same "window") therefore
+    // both succeed, picking different tasks, and produce two distinct
+    // audit rows in the execution store.
     const agentId = `agent-${uid()}`;
     const task1 = makeTask({ priority: 'critical', description: 'first' });
     const task2 = makeTask({ priority: 'high', description: 'second' });
@@ -634,54 +639,20 @@ describe('tickAgent with executionStore (deduplication)', () => {
       tasks: [task1, task2],
     }));
 
-    // First tick succeeds
     const r1 = await tickAgent(agentId, { weeklyPlanStore: store, executionStore: execStore });
     assert.equal(r1.outcome, 'task_selected');
     assert.equal(r1.task.id, task1.id);
 
-    // Second tick in same window is skipped (deduplication)
+    // No "Duplicate heartbeat" skip: the second tick picks the next pending.
     const r2 = await tickAgent(agentId, { weeklyPlanStore: store, executionStore: execStore });
-    assert.equal(r2.outcome, 'skipped');
-    assert.ok(r2.reason.includes('Duplicate heartbeat'));
-    assert.ok(r2.idempotencyKey);
-
-    // Only one execution record was stored
-    const records = await execStore.load(agentId);
-    assert.equal(records.length, 1);
-  });
-
-  it('allows execution in different time windows', async () => {
-    const agentId = `agent-${uid()}`;
-    const task1 = makeTask({ priority: 'critical', description: 'first' });
-    const task2 = makeTask({ priority: 'high', description: 'second' });
-
-    await store.save(agentId, makePlan({
-      approved: true,
-      approvedAt: new Date().toISOString(),
-      tasks: [task1, task2],
-    }));
-
-    // Use a very small window (1ms) so consecutive ticks fall into different windows
-    const r1 = await tickAgent(agentId, {
-      weeklyPlanStore: store,
-      executionStore: execStore,
-      windowMs: 1,
-    });
-    assert.equal(r1.outcome, 'task_selected');
-
-    // Wait a tiny bit to ensure different window
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    const r2 = await tickAgent(agentId, {
-      weeklyPlanStore: store,
-      executionStore: execStore,
-      windowMs: 1,
-    });
     assert.equal(r2.outcome, 'task_selected');
+    assert.equal(r2.task.id, task2.id);
 
-    // Two execution records
+    // Every tick writes its own audit row — the idempotency keys are
+    // unique per tick so the store never collapses them.
     const records = await execStore.load(agentId);
     assert.equal(records.length, 2);
+    assert.notEqual(records[0].idempotencyKey, records[1].idempotencyKey);
   });
 
   it('records skipped execution when agent has no weekly plan entries (shell)', async () => {
@@ -754,26 +725,31 @@ describe('tickAgent with executionStore (deduplication)', () => {
     assert.equal(records[0].status, 'failed');
   });
 
-  it('duplicate heartbeat after error is still skipped', async () => {
+  it('retries after error — window dedup no longer blocks follow-up ticks', async () => {
+    // Prior behavior skipped a second-tick-in-window with "Duplicate
+    // heartbeat". With window dedup gone, the runner simply retries the
+    // failing path and records a second `failed` audit row.
     const agentId = `agent-${uid()}`;
     const brokenStore = {
       loadLatestApproved: async () => { throw new Error('boom'); },
     };
 
-    // First tick errors and records failed
     const r1 = await tickAgent(agentId, {
       weeklyPlanStore: brokenStore,
       executionStore: execStore,
     });
     assert.equal(r1.outcome, 'error');
 
-    // Second tick in same window is skipped
     const r2 = await tickAgent(agentId, {
       weeklyPlanStore: brokenStore,
       executionStore: execStore,
     });
-    assert.equal(r2.outcome, 'skipped');
-    assert.ok(r2.reason.includes('Duplicate heartbeat'));
+    assert.equal(r2.outcome, 'error');
+
+    const records = await execStore.load(agentId);
+    assert.equal(records.length, 2);
+    assert.equal(records[0].status, 'failed');
+    assert.equal(records[1].status, 'failed');
   });
 
   it('gracefully degrades when executionStore is not provided', async () => {
@@ -865,7 +841,10 @@ describe('runHeartbeatTick with executionStore', () => {
     await rm(lockDir, { recursive: true, force: true });
   });
 
-  it('deduplicates through the full scheduler+tick path', async () => {
+  it('consecutive scheduler+tick ticks advance through tasks without window dedup', async () => {
+    // Window-based idempotency is gone: two runHeartbeatTick calls in
+    // quick succession each pick the next pending task. The scheduler's
+    // per-agent lock still prevents parallelism within a single tick.
     const agentId = `agent-${uid()}`;
     const task1 = makeTask({ priority: 'critical', description: 'sched-task-1' });
     const task2 = makeTask({ priority: 'high', description: 'sched-task-2' });
@@ -876,7 +855,6 @@ describe('runHeartbeatTick with executionStore', () => {
       tasks: [task1, task2],
     }));
 
-    // First tick through scheduler selects task
     const r1 = await runHeartbeatTick(agentId, {
       scheduler,
       weeklyPlanStore: store,
@@ -886,33 +864,32 @@ describe('runHeartbeatTick with executionStore', () => {
     assert.equal(r1.result.outcome, 'task_selected');
     assert.equal(r1.result.task.id, task1.id);
 
-    // Second tick in same window is skipped (dedup)
     const r2 = await runHeartbeatTick(agentId, {
       scheduler,
       weeklyPlanStore: store,
       executionStore: execStore,
     });
     assert.equal(r2.status, 'completed');
-    assert.equal(r2.result.outcome, 'skipped');
-    assert.ok(r2.result.reason.includes('Duplicate heartbeat'));
+    assert.equal(r2.result.outcome, 'task_selected');
+    assert.equal(r2.result.task.id, task2.id);
   });
 
-  it('runHeartbeatTickAll deduplicates per-agent independently', async () => {
+  it('runHeartbeatTickAll advances each agent on every round', async () => {
     const agent1 = `agent-${uid()}`;
     const agent2 = `agent-${uid()}`;
 
     await store.save(agent1, makePlan({
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ description: 'a1-task' })],
+      tasks: [makeTask({ description: 'a1-task-1' }), makeTask({ description: 'a1-task-2' })],
     }));
     await store.save(agent2, makePlan({
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ description: 'a2-task' })],
+      tasks: [makeTask({ description: 'a2-task-1' }), makeTask({ description: 'a2-task-2' })],
     }));
 
-    // First round — both agents execute
+    // First round — both agents pick their first pending task.
     const r1 = await runHeartbeatTickAll([agent1, agent2], {
       scheduler,
       weeklyPlanStore: store,
@@ -920,13 +897,14 @@ describe('runHeartbeatTick with executionStore', () => {
     });
     assert.ok(r1.every((r) => r.result.outcome === 'task_selected'));
 
-    // Second round — both agents deduplicated
+    // Second round — both agents pick their next pending task instead of
+    // being skipped by a window-dedup.
     const r2 = await runHeartbeatTickAll([agent1, agent2], {
       scheduler,
       weeklyPlanStore: store,
       executionStore: execStore,
     });
-    assert.ok(r2.every((r) => r.result.outcome === 'skipped'));
+    assert.ok(r2.every((r) => r.result.outcome === 'task_selected'));
   });
 });
 
@@ -1577,7 +1555,10 @@ describe('tickAgent shell-agent guard (AC 11 Sub-AC 2)', () => {
     assert.equal(result.task.id, task.id);
   });
 
-  it('records a skipped execution so the same shell is not re-checked in the same window', async () => {
+  it('records a skipped audit row on every shell tick (no window dedup)', async () => {
+    // Each tick writes its own `skipped` row so the Activity view can show
+    // "the heartbeat fired, but there was nothing to do." Window dedup is
+    // gone, so consecutive ticks both hit the shell-guard branch.
     const agentId = `agent-${uid()}`;
     await store.init(agentId);
 
@@ -1589,18 +1570,16 @@ describe('tickAgent shell-agent guard (AC 11 Sub-AC 2)', () => {
     });
     assert.equal(r1.outcome, 'no_weekly_plans');
 
-    // Second tick in the same window is deduplicated.
     const r2 = await tickAgent(agentId, {
       weeklyPlanStore: store,
       executionStore: execStore,
     });
-    assert.equal(r2.outcome, 'skipped');
-    assert.ok(r2.reason.includes('Duplicate heartbeat'));
+    assert.equal(r2.outcome, 'no_weekly_plans');
 
-    // Only one execution record was stored (the shell-guard skip).
     const records = await execStore.load(agentId);
-    assert.equal(records.length, 1);
-    assert.equal(records[0].status, 'skipped');
+    assert.equal(records.length, 2);
+    assert.ok(records.every((r) => r.status === 'skipped'));
+    assert.notEqual(records[0].idempotencyKey, records[1].idempotencyKey);
   });
 
   it('gracefully degrades when store.list throws — falls through to no_approved_plan', async () => {

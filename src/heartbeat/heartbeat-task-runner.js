@@ -19,11 +19,7 @@
  */
 
 import { selectNextTask, getTaskStatusSummary, isAllTasksFinished } from './task-selector.js';
-import {
-  computeTimeWindow,
-  generateIdempotencyKey,
-  createExecutionRecord,
-} from '../storage/execution-store.js';
+import { createTickExecutionRecord } from '../storage/execution-store.js';
 import { resolveSubagentFile } from '../subagents/subagent-file.js';
 
 /**
@@ -123,7 +119,7 @@ export async function tickAgent(agentId, opts = {}) {
     if (agentStore) {
       const pausedInfo = await _readAgentPauseStateSafe(agentStore, agentId);
       if (pausedInfo.paused) {
-        await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+        await _recordExecution(executionStore, agentId, now, 'skipped');
         const reason =
           pausedInfo.pausedReason === 'subagent_missing'
             ? `Agent "${agentId}" is paused (subagent file missing). Restore .claude/agents/${agentId}.md before executing tasks.`
@@ -169,23 +165,6 @@ export async function tickAgent(agentId, opts = {}) {
       if (missingResult) return missingResult;
     }
 
-    // Step 0b: Deduplication check — skip if this agent+window was already executed
-    if (executionStore) {
-      const { windowStart } = computeTimeWindow(now, windowMs);
-      const idempotencyKey = generateIdempotencyKey(agentId, windowStart);
-      const alreadyExecuted = await executionStore.exists(agentId, idempotencyKey);
-
-      if (alreadyExecuted) {
-        return {
-          outcome: 'skipped',
-          agentId,
-          reason: `Duplicate heartbeat in time window (key: ${idempotencyKey})`,
-          idempotencyKey,
-          tickedAt,
-        };
-      }
-    }
-
     // Step 0c: Shell-agent guard — skip agents with no weekly plan entries.
     //
     // Agents created via `hireAllSubagents` (or the `select-some` variant of
@@ -204,7 +183,7 @@ export async function tickAgent(agentId, opts = {}) {
     // execution for dedup parity with the other skipped branches.
     const weeklyPlanListing = await _listWeeklyPlanWeeksSafe(weeklyPlanStore, agentId);
     if (weeklyPlanListing.ok && weeklyPlanListing.weeks.length === 0) {
-      await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+      await _recordExecution(executionStore, agentId, now, 'skipped');
       return {
         outcome: 'no_weekly_plans',
         agentId,
@@ -227,7 +206,7 @@ export async function tickAgent(agentId, opts = {}) {
 
       if (!plan) {
         // Record even no-plan executions to prevent repeated checks in same window
-        await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+        await _recordExecution(executionStore, agentId, now, 'skipped');
         return {
           outcome: 'no_approved_plan',
           agentId,
@@ -240,7 +219,7 @@ export async function tickAgent(agentId, opts = {}) {
       const summary = getTaskStatusSummary(plan);
       const allFinished = isAllTasksFinished(plan);
 
-      await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+      await _recordExecution(executionStore, agentId, now, 'skipped');
       return {
         outcome: allFinished ? 'all_tasks_finished' : 'no_pending_tasks',
         agentId,
@@ -267,7 +246,7 @@ export async function tickAgent(agentId, opts = {}) {
     const summary = getTaskStatusSummary(updatedPlan);
 
     // Step 4: Record successful execution for deduplication
-    await _recordExecution(executionStore, agentId, now, windowMs, 'started', selection.task.id);
+    await _recordExecution(executionStore, agentId, now, 'started', selection.task.id);
 
     return {
       outcome: 'task_selected',
@@ -280,7 +259,7 @@ export async function tickAgent(agentId, opts = {}) {
     };
   } catch (error) {
     // Record failed execution so we don't retry in the same window
-    await _recordExecution(executionStore, agentId, now, windowMs, 'failed');
+    await _recordExecution(executionStore, agentId, now, 'failed');
     return {
       outcome: 'error',
       agentId,
@@ -293,21 +272,27 @@ export async function tickAgent(agentId, opts = {}) {
 
 /**
  * Record an execution in the execution store (if provided).
+ *
+ * Each call produces a unique `idempotencyKey` so the store's internal
+ * dedup never collapses two ticks into one row — the audit trail needs
+ * one row per tick regardless of cadence. True duplicate-run prevention
+ * is handled upstream by the per-agent file lock + the atomic
+ * `pending → in-progress` task transition.
+ *
  * Gracefully degrades: if the store is not provided or recording fails,
  * execution proceeds unaffected.
  *
  * @param {import('../storage/execution-store.js').ExecutionStore|undefined} executionStore
  * @param {string} agentId
  * @param {Date} date
- * @param {number} [windowMs]
  * @param {string} status
  * @param {string} [taskId]
  * @returns {Promise<void>}
  */
-async function _recordExecution(executionStore, agentId, date, windowMs, status, taskId) {
+async function _recordExecution(executionStore, agentId, date, status, taskId) {
   if (!executionStore) return;
   try {
-    const record = createExecutionRecord({ agentId, date, windowMs, status, taskId });
+    const record = createTickExecutionRecord({ agentId, date, status, taskId });
     await executionStore.record(agentId, record);
   } catch {
     // Graceful degradation: execution tracking failure must not break the heartbeat
@@ -520,7 +505,7 @@ async function _autoPauseIfSubagentMissing(params) {
     // outcome. The next tick will retry the persist.
   }
 
-  await _recordExecution(executionStore, agentId, now, windowMs, 'skipped');
+  await _recordExecution(executionStore, agentId, now, 'skipped');
 
   return {
     outcome: 'skipped',
