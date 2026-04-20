@@ -477,9 +477,50 @@ describe('init — projectHeartbeatMarker', () => {
 });
 
 describe('init — buildHeartbeatCommand', () => {
-  it('emits the canonical aweek heartbeat --all CLI', () => {
-    const cmd = buildHeartbeatCommand({ projectDir: '/tmp/p' });
-    assert.equal(cmd, 'aweek heartbeat --all --project-dir /tmp/p');
+  it('wraps the aweek heartbeat CLI in the user login shell', () => {
+    const cmd = buildHeartbeatCommand({
+      projectDir: '/tmp/p',
+      shell: '/bin/zsh',
+      loginFlag: '-lc',
+    });
+    assert.equal(
+      cmd,
+      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
+    );
+  });
+
+  it('honors the detected shell from env.SHELL', () => {
+    const cmd = buildHeartbeatCommand({
+      projectDir: '/tmp/p',
+      env: { SHELL: '/bin/bash' },
+    });
+    assert.equal(
+      cmd,
+      `/bin/bash -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
+    );
+  });
+
+  it('falls back to /bin/sh -c when SHELL is unset', () => {
+    const cmd = buildHeartbeatCommand({
+      projectDir: '/tmp/p',
+      env: {},
+    });
+    assert.equal(
+      cmd,
+      `/bin/sh -c 'aweek heartbeat --all --project-dir /tmp/p'`,
+    );
+  });
+
+  it(`escapes single quotes in projectDir`, () => {
+    const cmd = buildHeartbeatCommand({
+      projectDir: `/tmp/foo's proj`,
+      shell: '/bin/zsh',
+      loginFlag: '-lc',
+    });
+    assert.equal(
+      cmd,
+      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/foo'\\''s proj'`,
+    );
   });
 
   it('throws when projectDir is missing', () => {
@@ -492,10 +533,14 @@ describe('init — buildHeartbeatCommand', () => {
 
 describe('init — buildHeartbeatEntry', () => {
   it('builds a two-line entry with default schedule and default command', () => {
-    const entry = buildHeartbeatEntry({ projectDir: '/tmp/p' });
+    const entry = buildHeartbeatEntry({
+      projectDir: '/tmp/p',
+      shell: '/bin/zsh',
+      loginFlag: '-lc',
+    });
     assert.equal(
       entry,
-      '# aweek:project-heartbeat:/tmp/p\n*/10 * * * * aweek heartbeat --all --project-dir /tmp/p',
+      `# aweek:project-heartbeat:/tmp/p\n*/10 * * * * /bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
     );
   });
 
@@ -659,6 +704,8 @@ describe('init — installHeartbeat (happy path)', () => {
 
     const result = await installHeartbeat({
       projectDir: '/tmp/p',
+      shell: '/bin/zsh',
+      loginFlag: '-lc',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
       writeCrontabFn: fake.writeCrontabFn,
@@ -669,7 +716,7 @@ describe('init — installHeartbeat (happy path)', () => {
     assert.equal(result.schedule, DEFAULT_HEARTBEAT_SCHEDULE);
     assert.equal(
       result.command,
-      'aweek heartbeat --all --project-dir /tmp/p',
+      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
     );
     assert.equal(result.marker, 'aweek:project-heartbeat:/tmp/p');
     assert.equal(result.previous, null);
@@ -813,6 +860,8 @@ describe('init — queryHeartbeat', () => {
     await installHeartbeat({
       projectDir: '/tmp/p',
       schedule: '*/15 * * * *',
+      shell: '/bin/zsh',
+      loginFlag: '-lc',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
       writeCrontabFn: fake.writeCrontabFn,
@@ -827,7 +876,7 @@ describe('init — queryHeartbeat', () => {
     assert.equal(result.schedule, '*/15 * * * *');
     assert.equal(
       result.command,
-      'aweek heartbeat --all --project-dir /tmp/p',
+      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
     );
   });
 

@@ -428,6 +428,47 @@ export async function installDependencies({
 export const DEFAULT_HEARTBEAT_SCHEDULE = '*/10 * * * *';
 
 /**
+ * Detect the user's login shell for the cron wrap.
+ *
+ * Cron starts each tick with a minimal PATH (often just `/usr/bin:/bin`)
+ * that does not see version-manager-managed node binaries (nvm, volta,
+ * fnm) or globally-linked pnpm bins. Wrapping the heartbeat in
+ * `$SHELL -lc '…'` forces the user's login profile to load before
+ * `aweek` is invoked, so PATH resolves the same way a fresh terminal
+ * would.
+ *
+ * `-l` (login) is preferred over `-i` (interactive): login files
+ * (`.zprofile`, `.bash_profile`, `.profile`) are where version managers
+ * export PATH, and they avoid the interactive-only hooks in
+ * `.zshrc`/`.bashrc` that can hang cron silently.
+ *
+ * Falls back to `/bin/sh -c` (no login flag) when `$SHELL` is unset —
+ * POSIX `sh` has no meaningful login-file convention for this purpose.
+ *
+ * @param {object} [opts]
+ * @param {NodeJS.ProcessEnv} [opts.env=process.env] - Environment source.
+ * @returns {{ shell: string, loginFlag: '-lc' | '-c' }}
+ */
+export function detectUserShell({ env = process.env } = {}) {
+  const shell = env && env.SHELL ? env.SHELL : null;
+  if (!shell) return { shell: '/bin/sh', loginFlag: '-c' };
+  return { shell, loginFlag: '-lc' };
+}
+
+/**
+ * Escape a string for safe inclusion inside a POSIX single-quoted shell
+ * word. Only the `'` terminator needs special handling — everything
+ * else is literal inside `'…'`.
+ *
+ * @param {string} arg
+ * @returns {string} The input wrapped in single-quotes, with embedded
+ *   single-quotes replaced by `'\''`.
+ */
+function shellSingleQuote(arg) {
+  return `'${String(arg).replaceAll("'", `'\\''`)}'`;
+}
+
+/**
  * Comment-marker prefix used to identify the aweek project heartbeat in
  * the user's crontab. Deliberately distinct from the legacy per-agent
  * `aweek:heartbeat:` prefix so any lingering markers from an older
@@ -451,16 +492,39 @@ export function projectHeartbeatMarker(projectDir) {
  * Build the default shell command for a project heartbeat.
  *
  * Uses the `aweek` binary installed by `pnpm install` (see
- * `package.json#bin.aweek`). Keeping the command here means callers
- * don't have to reconstruct the CLI invocation manually.
+ * `package.json#bin.aweek`). The command is wrapped in the user's
+ * login shell (detected via {@link detectUserShell}) so cron's minimal
+ * PATH is supplemented by the user's login profile — otherwise
+ * version-manager-managed `node`/`aweek` binaries (nvm, volta, fnm,
+ * pnpm-linked globals) never resolve inside a cron tick.
+ *
+ * Resulting form:
+ *   `<shell> <loginFlag> 'aweek heartbeat --all --project-dir <projectDir>'`
  *
  * @param {object} opts
  * @param {string} opts.projectDir - Absolute path to the project root.
+ * @param {string} [opts.shell] - Override the detected login shell
+ *   (e.g. `/bin/zsh`). Defaults to `$SHELL`.
+ * @param {string} [opts.loginFlag] - Override the shell flag. Defaults
+ *   to `-lc` when a shell is detected, `-c` when falling back to `/bin/sh`.
+ * @param {NodeJS.ProcessEnv} [opts.env] - Environment source forwarded
+ *   to {@link detectUserShell} for tests. Ignored when `shell` +
+ *   `loginFlag` are both explicitly supplied.
  * @returns {string} Shell command that the cron entry should invoke.
  */
-export function buildHeartbeatCommand({ projectDir }) {
+export function buildHeartbeatCommand({
+  projectDir,
+  shell,
+  loginFlag,
+  env,
+} = {}) {
   if (!projectDir) throw new Error('projectDir is required');
-  return `aweek heartbeat --all --project-dir ${projectDir}`;
+  const detected =
+    shell && loginFlag ? { shell, loginFlag } : detectUserShell({ env });
+  const resolvedShell = shell || detected.shell;
+  const resolvedFlag = loginFlag || detected.loginFlag;
+  const inner = `aweek heartbeat --all --project-dir ${projectDir}`;
+  return `${resolvedShell} ${resolvedFlag} ${shellSingleQuote(inner)}`;
 }
 
 /**
@@ -476,10 +540,14 @@ export function buildHeartbeatEntry({
   projectDir,
   schedule = DEFAULT_HEARTBEAT_SCHEDULE,
   command,
+  shell,
+  loginFlag,
+  env,
 } = {}) {
   if (!projectDir) throw new Error('projectDir is required');
   const marker = projectHeartbeatMarker(projectDir);
-  const cmd = command || buildHeartbeatCommand({ projectDir });
+  const cmd =
+    command || buildHeartbeatCommand({ projectDir, shell, loginFlag, env });
   return `# ${marker}\n${schedule} ${cmd}`;
 }
 
@@ -632,6 +700,9 @@ export async function installHeartbeat({
   projectDir,
   schedule = DEFAULT_HEARTBEAT_SCHEDULE,
   command,
+  shell,
+  loginFlag,
+  env,
   confirmed = false,
   readCrontabFn,
   writeCrontabFn,
@@ -647,7 +718,13 @@ export async function installHeartbeat({
 
   const resolvedProject = resolveProjectDir(projectDir);
   const resolvedCommand =
-    command || buildHeartbeatCommand({ projectDir: resolvedProject });
+    command ||
+    buildHeartbeatCommand({
+      projectDir: resolvedProject,
+      shell,
+      loginFlag,
+      env,
+    });
   const reader = readCrontabFn || defaultReadCrontab;
   const writer = writeCrontabFn || defaultWriteCrontab;
 
