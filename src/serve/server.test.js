@@ -180,6 +180,17 @@ describe('renderDashboardShell()', () => {
     assert.match(html, /renderActivity/);
   });
 
+  it('drawer activity items link into the activity tab and show a short description', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x' });
+    // Overlay anchor and description line wiring.
+    assert.match(html, /class="drawer-activity-link"/);
+    assert.match(html, /drawer-activity-desc/);
+    // activityEntryHref() builds a ?agent=…&tab=activity&entry=… URL.
+    assert.match(html, /function activityEntryHref/);
+    assert.match(html, /params\.set\('tab', 'activity'\)/);
+    assert.match(html, /params\.set\('entry', entry\.id\)/);
+  });
+
   it('emits syntactically valid JS inside each inline <script> block', () => {
     // Regression guard: template-literal escapes inside the drawer IIFE
     // (e.g. `\/\/` collapsing to `//` and starting a line comment) have
