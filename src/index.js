@@ -502,7 +502,7 @@ export {
   collectDayLogEntries,
   taskStatusIcon,
   formatDayTaskItem,
-  formatTaskStatusSection,
+  formatTaskStatusSection as formatDailyTaskStatusSection,
   buildAdjustmentsForTomorrow,
   formatAdjustmentsSection,
   formatNotesSection,
