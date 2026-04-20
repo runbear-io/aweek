@@ -317,7 +317,11 @@ describe('gatherPlans()', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────
-// End-to-end: GET / renders the plan card
+// End-to-end: GET /?tab=strategy renders plan.md in the Strategy tab
+//
+// In the new sidebar-plus-tabs layout, plan.md content is served via the
+// Strategy tab rather than a standalone "Plan" card. These tests confirm
+// the integration path: gatherPlans → renderStrategySection → tab context.
 // ───────────────────────────────────────────────────────────────────────
 
 function httpGet(url) {
@@ -347,7 +351,7 @@ function httpGet(url) {
   });
 }
 
-describe('GET / plan card end-to-end', () => {
+describe('GET /?tab=strategy — plan.md content in per-agent strategy tab', () => {
   let projectDir;
   let handle;
 
@@ -360,7 +364,7 @@ describe('GET / plan card end-to-end', () => {
     if (projectDir) await rm(projectDir, { recursive: true, force: true });
   });
 
-  it('renders the default agent plan as formatted markdown', async () => {
+  it('renders plan.md as formatted markdown in the strategy tab', async () => {
     await writeAgent(projectDir, 'writer');
     await writeSubagent(projectDir, 'writer', { name: 'Writer' });
     await writePlanMd(
@@ -383,14 +387,19 @@ describe('GET / plan card end-to-end', () => {
     );
 
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
-    const res = await httpGet(handle.url);
+    // Use ?agent=writer&tab=strategy — the canonical per-agent tab URL
+    const res = await httpGet(`${handle.url}?agent=writer&tab=strategy`);
     assert.equal(res.statusCode, 200);
     const body = res.body;
 
-    // Plan card is server-rendered inside the shell
-    assert.match(body, /data-section="plan"/);
-    // Agent picker is present
-    assert.match(body, /plan-picker/);
+    // Strategy card is server-rendered inside the shell
+    assert.match(body, /data-section="strategy"/);
+
+    // Tab bar is rendered with the selected agent slug so the tab context is clear
+    assert.match(body, /data-agent-tabs="writer"/);
+    // Strategy tab is marked as active (aria-current="page" on a <span>)
+    assert.match(body, /aria-current="page"/);
+
     // H1 from the plan.md becomes an h1 in the card
     assert.match(body, /<h1 class="plan-h1">Writer<\/h1>/);
     // Canonical H2s render
@@ -401,6 +410,27 @@ describe('GET / plan card end-to-end', () => {
     // Inline emphasis renders
     assert.match(body, /<strong>short<\/strong>/);
     assert.match(body, /<em>focused<\/em>/);
+
+    // No agent picker nav — the sidebar handles agent switching in the new layout
+    assert.ok(!body.includes('class="plan-picker"'), 'plan-picker must not appear in strategy tab');
+  });
+
+  it('tab bar is absent when no ?agent= param is supplied', async () => {
+    await writeAgent(projectDir, 'writer');
+    await writeSubagent(projectDir, 'writer', { name: 'Writer' });
+    await writePlanMd(projectDir, 'writer', '# Fallback plan');
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    // Without ?agent= the server still renders strategy content (fallback to first agent)
+    // but the tab bar is suppressed — agent must be explicitly selected first
+    const res = await httpGet(`${handle.url}?tab=strategy`);
+    assert.equal(res.statusCode, 200);
+    assert.ok(
+      !res.body.includes('data-agent-tabs='),
+      'tab bar must be absent when no agent is explicitly selected',
+    );
+    // Strategy section still renders via fallback
+    assert.match(res.body, /data-section="strategy"/);
   });
 
   it('switches to the agent named in ?agent=<slug>', async () => {
@@ -413,15 +443,19 @@ describe('GET / plan card end-to-end', () => {
 
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
 
-    // Default → Alpha
-    let res = await httpGet(handle.url);
+    // ?agent=aaa&tab=strategy → Alpha content + tab bar scoped to aaa
+    let res = await httpGet(`${handle.url}?agent=aaa&tab=strategy`);
     assert.match(res.body, /alpha body/);
+    assert.match(res.body, /data-agent-tabs="aaa"/);
     assert.ok(!res.body.includes('bravo body'));
+    assert.ok(!res.body.includes('data-agent-tabs="bbb"'));
 
-    // ?agent=bbb → Bravo
-    res = await httpGet(`${handle.url}?agent=bbb`);
+    // ?agent=bbb&tab=strategy → Bravo content + tab bar scoped to bbb
+    res = await httpGet(`${handle.url}?agent=bbb&tab=strategy`);
     assert.match(res.body, /bravo body/);
+    assert.match(res.body, /data-agent-tabs="bbb"/);
     assert.ok(!res.body.includes('alpha body'));
+    assert.ok(!res.body.includes('data-agent-tabs="aaa"'));
   });
 
   it('re-reads plan.md on every request (live data)', async () => {
@@ -431,25 +465,30 @@ describe('GET / plan card end-to-end', () => {
 
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
 
-    let res = await httpGet(handle.url);
+    let res = await httpGet(`${handle.url}?agent=writer&tab=strategy`);
     assert.match(res.body, /v1 body/);
 
     // Update plan.md without restarting the server
     await writePlanMd(projectDir, 'writer', '# v2 body');
 
-    res = await httpGet(handle.url);
+    res = await httpGet(`${handle.url}?agent=writer&tab=strategy`);
     assert.match(res.body, /v2 body/);
     assert.ok(!res.body.includes('v1 body'));
   });
 
-  it('renders an empty state when the selected agent has no plan.md', async () => {
+  it('renders an empty state inside the strategy tab when the agent has no plan.md', async () => {
     await writeAgent(projectDir, 'orphan');
     await writeSubagent(projectDir, 'orphan', { name: 'Orphan' });
     // no plan.md
 
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
-    const res = await httpGet(handle.url);
-    assert.match(res.body, /No <code>plan\.md<\/code> yet/);
+    const res = await httpGet(`${handle.url}?agent=orphan&tab=strategy`);
+    // Empty state is inside the strategy section card
+    assert.match(res.body, /data-section="strategy"/);
+    assert.match(res.body, /No strategy yet/);
     assert.match(res.body, /Orphan/);
+    assert.match(res.body, /\/aweek:plan/);
+    // Tab bar is present since agent is explicitly selected
+    assert.match(res.body, /data-agent-tabs="orphan"/);
   });
 });

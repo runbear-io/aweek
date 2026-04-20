@@ -134,17 +134,14 @@ describe('formatDashboardUrl()', () => {
 // ── renderDashboardShell ───────────────────────────────────────────────────
 
 describe('renderDashboardShell()', () => {
-  it('renders a full HTML document with the four dashboard sections', () => {
+  it('renders a full HTML document with the sidebar and active-tab section', () => {
     const html = renderDashboardShell({ projectDir: '/tmp/x' });
     assert.ok(html.startsWith('<!doctype html>'));
     assert.match(html, /<title>aweek dashboard<\/title>/);
-    for (const section of ['agents', 'calendar', 'plan', 'budget']) {
-      assert.match(
-        html,
-        new RegExp(`data-section="${section}"`),
-        `shell should include data-section="${section}"`,
-      );
-    }
+    // Agents sidebar is always present regardless of tab.
+    assert.match(html, /data-section="agents"/, 'shell should include agents sidebar');
+    // Calendar is the default active tab — its section must render.
+    assert.match(html, /data-section="calendar"/, 'calendar section should render for default tab');
   });
 
   it('escapes the projectDir so HTML injection is not possible', () => {
@@ -169,6 +166,85 @@ describe('renderDashboardShell()', () => {
     assert.match(html, /closest\('\.calendar-task'\)/);
     assert.match(html, /drawer\.classList\.add\('open'\)/);
     assert.match(html, /key === 'Escape'/);
+  });
+
+  it('includes a URL-routing script that preserves the active tab when switching agents', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x' });
+    // Intercepts sidebar agent-link clicks.
+    assert.match(html, /sidebar-item-link/,
+      'JS should reference .sidebar-item-link for agent-switch interception');
+    // Reads the current active tab from the query string.
+    assert.match(html, /getQueryParam|URLSearchParams/,
+      'JS should read the current tab from the URL query params');
+    // Updates URL via pushState so the browser history entry is correct.
+    assert.match(html, /history\.pushState/,
+      'JS should use history.pushState to update the URL on agent switch');
+    // Reloads to get server-rendered content for the new URL.
+    assert.match(html, /location\.reload/,
+      'JS should reload after pushState to re-render with updated params');
+    // Handles back/forward navigation.
+    assert.match(html, /popstate/,
+      'JS should handle popstate so back/forward reloads the correct content');
+  });
+});
+
+// ── renderDashboardShell — zero-agents empty state ────────────────────────
+
+describe('renderDashboardShell() — zero-agents empty state', () => {
+  it('renders a zero-agents empty state when zeroAgents=true', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', zeroAgents: true });
+    assert.match(html, /zero-agents-empty/);
+    assert.match(html, /\/aweek:hire/);
+  });
+
+  it('empty state includes a helpful message about hiring agents', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', zeroAgents: true });
+    assert.match(html, /No agents yet/);
+    assert.match(html, /zero-agents-title/);
+  });
+
+  it('empty state has data-section="zero-agents" for test targeting', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', zeroAgents: true });
+    assert.match(html, /data-section="zero-agents"/);
+  });
+
+  it('does NOT render section cards when zeroAgents=true', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', zeroAgents: true });
+    assert.ok(!html.includes('card-calendar'), 'calendar card should be absent');
+    assert.ok(!html.includes('card-plan'), 'plan card should be absent');
+    assert.ok(!html.includes('card-budget'), 'budget card should be absent');
+  });
+
+  it('renders the calendar card when zeroAgents=false and activeTab defaults to calendar', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x' });
+    assert.match(html, /card-calendar/, 'calendar card should render for default calendar tab');
+    assert.ok(!html.includes('card-plan'), 'plan card should not render on calendar tab');
+    assert.ok(!html.includes('card-budget'), 'budget card should not render on calendar tab');
+    assert.ok(!html.includes('zero-agents-empty'), 'empty state should be absent with agents');
+  });
+
+  it('renders the strategy card when activeTab=strategy', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', activeTab: 'strategy' });
+    assert.match(html, /card-strategy/, 'strategy card should render for strategy tab');
+    assert.ok(!html.includes('card-calendar'), 'calendar card should not render on strategy tab');
+  });
+
+  it('renders the profile card when activeTab=profile', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', activeTab: 'profile' });
+    assert.match(html, /card-profile/, 'profile card should render for profile tab');
+    assert.ok(!html.includes('card-calendar'), 'calendar card should not render on profile tab');
+  });
+
+  it('renders the activity card when activeTab=activity', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', activeTab: 'activity' });
+    assert.match(html, /card-activity/, 'activity card should render for activity tab');
+    assert.ok(!html.includes('card-calendar'), 'calendar card should not render on activity tab');
+  });
+
+  it('sidebar section still renders when zeroAgents=true', () => {
+    const html = renderDashboardShell({ projectDir: '/tmp/x', zeroAgents: true });
+    // The sidebar nav with data-section="agents" must always be present
+    assert.match(html, /data-section="agents"/);
   });
 });
 
@@ -304,10 +380,11 @@ describe('startServer()', () => {
     assert.match(res.headers['content-type'] || '', /text\/html/);
     assert.ok(res.body.startsWith('<!doctype html>'));
     assert.match(res.body, /aweek dashboard/);
+    // Sidebar nav is always present.
     assert.match(res.body, /data-section="agents"/);
-    assert.match(res.body, /data-section="calendar"/);
-    assert.match(res.body, /data-section="plan"/);
-    assert.match(res.body, /data-section="budget"/);
+    // No agents in this project → zero-agents empty state instead of cards.
+    assert.match(res.body, /data-section="zero-agents"/);
+    assert.match(res.body, /\/aweek:hire/);
   });
 
   it('answers GET /healthz with { ok: true }', async () => {
@@ -839,5 +916,252 @@ describe('GET /api/agents/:slug/calendar — server routing', () => {
     assert.equal(payload.tasks[0].slot.dayKey, 'mon');
     assert.equal(payload.tasks[0].slot.hour, 10);
     assert.equal(payload.tasks[0].slot.minute, 0);
+  });
+});
+
+// ── Deep-linking: GET /?agent=&tab= — server routing ──────────────────────
+//
+// AC 8: Opening with ?agent=foo and ?tab=activity must land directly on
+// that agent (highlighted in the sidebar) and that tab (active in the tab
+// bar) — all server-rendered, no client-side JS required.
+
+describe('Deep-linking — GET /?agent=&tab=', () => {
+  let projectDir;
+  let handle;
+
+  async function writeAgent(slug) {
+    const agentsDir = join(projectDir, '.aweek', 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    const now = '2026-04-13T00:00:00.000Z';
+    await writeFile(
+      join(agentsDir, `${slug}.json`),
+      JSON.stringify({
+        id: slug,
+        subagentRef: slug,
+        goals: [],
+        monthlyPlans: [],
+        weeklyTokenBudget: 100_000,
+        budget: {
+          weeklyTokenLimit: 100_000,
+          currentUsage: 0,
+          periodStart: now,
+          paused: false,
+          sessions: [],
+        },
+        inbox: [],
+        createdAt: now,
+        updatedAt: now,
+      }, null, 2) + '\n',
+      'utf8',
+    );
+  }
+
+  beforeEach(async () => {
+    projectDir = await makeProject('aweek-deeplink-');
+    handle = null;
+  });
+
+  afterEach(async () => {
+    if (handle && handle.close) await handle.close();
+    if (projectDir) await rm(projectDir, { recursive: true, force: true });
+  });
+
+  it('?agent=writer highlights the agent in the sidebar with aria-current', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    // The writer sidebar item must be marked as selected.
+    assert.match(res.body, /sidebar-item-selected/);
+    assert.match(res.body, /data-agent-slug="writer"/);
+    assert.match(res.body, /aria-current="page"/);
+  });
+
+  it('?agent=writer&tab=activity renders with activity tab active', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=activity`);
+    assert.equal(res.statusCode, 200);
+    // Tab bar must be present for the selected agent.
+    assert.match(res.body, /data-agent-tabs="writer"/);
+    // Activity tab must be the active one (span with aria-current, no href).
+    assert.match(res.body, /aria-current="page"[^>]*>Activity|data-tab="activity"[^>]*aria-current="page"/);
+    // Activity content section must be rendered, not calendar.
+    assert.match(res.body, /card-activity/);
+    assert.ok(!res.body.includes('card-calendar'), 'calendar card must not appear on activity tab');
+  });
+
+  it('?agent=writer&tab=calendar renders with calendar tab active (default)', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=calendar`);
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /data-agent-tabs="writer"/);
+    assert.match(res.body, /card-calendar/);
+    assert.ok(!res.body.includes('card-activity'), 'activity card must not appear on calendar tab');
+    assert.ok(!res.body.includes('card-strategy'), 'strategy card must not appear on calendar tab');
+  });
+
+  it('?agent=writer&tab=strategy renders with strategy tab active', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=strategy`);
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /data-agent-tabs="writer"/);
+    assert.match(res.body, /card-strategy/);
+    assert.ok(!res.body.includes('card-calendar'), 'calendar card must not appear on strategy tab');
+  });
+
+  it('?agent=writer&tab=profile renders with profile tab active', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=profile`);
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /data-agent-tabs="writer"/);
+    // Profile tab renders the profile card (identity + scheduling + budget).
+    assert.match(res.body, /card-profile/);
+    assert.ok(!res.body.includes('card-calendar'), 'calendar card must not appear on profile tab');
+  });
+
+  it('?agent=writer&tab=unknown falls back to calendar tab without crashing', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=unknown`);
+    assert.equal(res.statusCode, 200);
+    // Unknown tab → falls back to calendar.
+    assert.match(res.body, /card-calendar/);
+    assert.ok(!res.body.includes('card-activity'), 'activity card must not appear for unknown tab');
+  });
+
+  it('no ?agent= param means no tab bar is rendered', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?tab=activity`);
+    assert.equal(res.statusCode, 200);
+    // Tab bar requires an agent to be selected; without one it is absent.
+    assert.ok(!res.body.includes('data-agent-tabs='), 'tab bar must not render without a selected agent');
+    // No sidebar item should be selected — in HTML the class ends with sidebar-item-selected" (closing
+    // quote); the CSS definition uses .sidebar-item-selected{ so the two patterns are distinct.
+    assert.ok(!res.body.includes('sidebar-item-selected"'), 'no sidebar item should be selected');
+  });
+
+  it('?agent= with a non-existent slug renders gracefully without crashing', async () => {
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=ghost&tab=activity`);
+    // Server must not crash — 200 with a valid HTML document.
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.body.startsWith('<!doctype html>'));
+    // No sidebar item highlighted since the agent is not in the list — sidebar-item-selected" (with
+    // closing quote) is the HTML element marker; the CSS definition uses .sidebar-item-selected{.
+    assert.ok(!res.body.includes('sidebar-item-selected"'), 'no sidebar item highlighted for missing agent');
+  });
+
+  it('?agent=writer sidebar link for non-selected agents preserves no tab (plain ?agent= links)', async () => {
+    await writeAgent('writer');
+    await writeAgent('planner');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=activity`);
+    assert.equal(res.statusCode, 200);
+    // writer is selected — planner should render as a plain ?agent=planner link.
+    assert.match(res.body, /href="\?agent=planner"/);
+    // writer sidebar item is the selected one.
+    assert.match(
+      res.body,
+      /sidebar-item-selected[^>]*data-agent-slug="writer"|data-agent-slug="writer"[^>]*sidebar-item-selected/,
+    );
+  });
+
+  // ── Tab bar HTML shape ─────────────────────────────────────────────────────
+  //
+  // The following tests verify the HTML structure of the tab bar as rendered
+  // inside real HTTP responses — complementing the unit tests in
+  // tabs-section.test.js with end-to-end assertions that cover the full
+  // server-render pipeline (gatherAgents → renderSidebar → renderTabBar →
+  // renderDashboardShell → HTTP response).
+
+  it('tab bar renders inactive tab hrefs with both agent and tab query params', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=activity`);
+    assert.equal(res.statusCode, 200);
+    // Each inactive tab must link to ?agent=<slug>&tab=<id> so the agent
+    // selection is preserved when the user switches tabs.
+    assert.match(res.body, /href="\?agent=writer&amp;tab=calendar"/,
+      'calendar tab link must carry agent + tab params');
+    assert.match(res.body, /href="\?agent=writer&amp;tab=strategy"/,
+      'strategy tab link must carry agent + tab params');
+    assert.match(res.body, /href="\?agent=writer&amp;tab=profile"/,
+      'profile tab link must carry agent + tab params');
+    // The active tab (activity) is a <span> — it must not appear as an <a href>.
+    assert.ok(
+      !res.body.includes('href="?agent=writer&amp;tab=activity"'),
+      'active tab must not appear as a navigation link',
+    );
+  });
+
+  it('active tab renders as <span> with aria-current="page", not an <a>', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    // Use strategy tab so the assertion is independent of the default calendar tab.
+    const res = await httpGet(`${handle.url}?agent=writer&tab=strategy`);
+    assert.equal(res.statusCode, 200);
+    // The active tab element must carry both data-tab and aria-current.
+    assert.match(
+      res.body,
+      /data-tab="strategy"[^>]*aria-current="page"|aria-current="page"[^>]*data-tab="strategy"/,
+      'active strategy tab element must carry aria-current="page"',
+    );
+    // A link to the active tab must never be rendered — clicking it would be a no-op.
+    assert.ok(
+      !res.body.includes('href="?agent=writer&amp;tab=strategy"'),
+      'active tab must not have a href — it should be a non-interactive span',
+    );
+  });
+
+  it('selected sidebar item renders without an anchor wrapper', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    // Non-selected agents are linked via ?agent=<slug>; the selected agent must
+    // not appear as a bare ?agent=writer href (tab links use ?agent=writer&tab=X,
+    // not the plain form, so this check is unambiguous).
+    assert.ok(
+      !res.body.includes('href="?agent=writer"'),
+      'selected agent must not render as a clickable sidebar link',
+    );
+    // The selected <li> must carry aria-current="page" co-located with
+    // data-agent-slug so assistive technology announces it as the current page.
+    assert.match(
+      res.body,
+      /data-agent-slug="writer"[^>]*aria-current="page"|aria-current="page"[^>]*data-agent-slug="writer"/,
+      'selected sidebar item must carry aria-current="page"',
+    );
+  });
+
+  it('tab bar carries data-tab attributes for all four named tabs', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    // Every tab must expose a data-tab attribute so JS/CSS can target individual
+    // tabs without relying on text content or positional selectors.
+    assert.match(res.body, /data-tab="calendar"/, 'calendar tab must have data-tab attribute');
+    assert.match(res.body, /data-tab="activity"/, 'activity tab must have data-tab attribute');
+    assert.match(res.body, /data-tab="strategy"/, 'strategy tab must have data-tab attribute');
+    assert.match(res.body, /data-tab="profile"/, 'profile tab must have data-tab attribute');
+  });
+
+  it('tab bar has aria-label and role="tablist" for screen-reader accessibility', async () => {
+    await writeAgent('writer');
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    // The tab <nav> must label itself so screen readers announce it distinctly
+    // from the sidebar <nav aria-label="Agents">.
+    assert.match(res.body, /aria-label="Agent sections"/, 'tab nav must have aria-label');
+    // The tab <ul> must declare role="tablist" so ARIA tab-panel semantics are
+    // complete without a JS framework.
+    assert.match(res.body, /role="tablist"/, 'tab list must have role="tablist"');
   });
 });

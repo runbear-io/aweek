@@ -619,7 +619,10 @@ describe('renderCalendarSection()', () => {
     assert.match(html, /\/aweek:hire/);
   });
 
-  it('renders the picker and a "no plan" message for an agent without a plan', () => {
+  it('renders a no-plan message for the selected agent within tab scope', () => {
+    // In the sidebar + tab layout the agent picker lives in the sidebar;
+    // renderCalendarSection renders only the calendar content for the agent
+    // that was already selected via the ?agent= query param.
     const html = renderCalendarSection({
       agents: [{ slug: 'writer', name: 'Writer' }],
       selected: {
@@ -638,8 +641,9 @@ describe('renderCalendarSection()', () => {
         },
       },
     });
-    assert.match(html, /calendar-picker/);
-    assert.match(html, /calendar-pill selected/);
+    // No per-section agent picker — agent selection is handled by the sidebar.
+    assert.ok(!html.includes('calendar-picker'), 'calendar section must not render its own agent picker');
+    assert.ok(!html.includes('calendar-pill'), 'calendar section must not render agent pills');
     assert.match(html, /Writer/);
     assert.match(html, /No weekly plan yet/);
     assert.match(html, /\/aweek:plan/);
@@ -713,10 +717,9 @@ describe('renderCalendarSection()', () => {
       },
     });
 
-    // Picker
-    assert.match(html, /calendar-picker/);
-    assert.match(html, /href="\?agent=analyst"/);
-    assert.match(html, /calendar-pill selected/);
+    // No per-section agent picker in the sidebar + tab layout.
+    assert.ok(!html.includes('calendar-picker'), 'calendar section must not render its own agent picker');
+    assert.ok(!html.includes('calendar-pill'), 'calendar section must not render agent pills');
 
     // Header: week + approval + tz
     assert.match(html, /2026-W16/);
@@ -797,10 +800,95 @@ describe('renderCalendarSection()', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────
-// Full-page integration — calendar card renders inside the dashboard shell
+// AC 12: Empty weekly plan shows analogous message plus CTA
 // ───────────────────────────────────────────────────────────────────────
 
-describe('GET / → dashboard shell includes the calendar card', () => {
+describe('empty state — no weekly plan (AC 12)', () => {
+  it('shows agent name in strong and /aweek:plan CTA in code when noPlan is true', () => {
+    const html = renderCalendarSection({
+      agents: [{ slug: 'writer', name: 'The Writer' }],
+      selected: {
+        slug: 'writer',
+        name: 'The Writer',
+        calendar: {
+          agentId: 'writer',
+          week: null,
+          month: null,
+          approved: false,
+          timeZone: 'UTC',
+          weekMonday: null,
+          noPlan: true,
+          tasks: [],
+          counts: { total: 0 },
+        },
+      },
+    });
+    assert.match(html, /calendar-empty/);
+    // Agent name is highlighted so the operator sees which agent has no plan
+    assert.match(html, /<strong>The Writer<\/strong>/);
+    // Plain-language description of what is missing
+    assert.match(html, /No weekly plan yet/);
+    // CTA is in a <code> element so the user knows the exact command to run
+    assert.match(html, /<code>\/aweek:plan<\/code>/);
+  });
+
+  it('HTML-escapes the agent name in the no-plan empty state', () => {
+    const html = renderCalendarSection({
+      agents: [{ slug: 'evil', name: '<script>xss</script>' }],
+      selected: {
+        slug: 'evil',
+        name: '<script>xss</script>',
+        calendar: {
+          agentId: 'evil',
+          week: null,
+          month: null,
+          approved: false,
+          timeZone: 'UTC',
+          weekMonday: null,
+          noPlan: true,
+          tasks: [],
+          counts: { total: 0 },
+        },
+      },
+    });
+    assert.ok(!html.includes('<script>xss</script>'), 'raw script tag must not appear');
+    assert.match(html, /&lt;script&gt;xss&lt;\/script&gt;/);
+  });
+
+  it('no-plan message is structurally analogous to the strategy empty state', () => {
+    // Both empty states follow the pattern:
+    //   "No [X] yet for <strong>Name</strong>. Run <code>/aweek:plan</code> to [action]."
+    // This test verifies the calendar half of that contract.
+    const html = renderCalendarSection({
+      agents: [{ slug: 'coder', name: 'Coder' }],
+      selected: {
+        slug: 'coder',
+        name: 'Coder',
+        calendar: {
+          agentId: 'coder',
+          week: null,
+          month: null,
+          approved: false,
+          timeZone: 'UTC',
+          weekMonday: null,
+          noPlan: true,
+          tasks: [],
+          counts: { total: 0 },
+        },
+      },
+    });
+    // Pattern: "No ... yet for <strong>..."
+    assert.match(html, /No .+ yet for <strong>/);
+    // Pattern: "Run <code>/aweek:plan</code> to ..."
+    assert.match(html, /Run <code>\/aweek:plan<\/code> to /);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Full-page integration — calendar tab renders within sidebar + tab layout
+// ───────────────────────────────────────────────────────────────────────
+
+describe('GET / → calendar tab renders within agent scope', () => {
   let projectDir;
   let handle;
 
@@ -813,7 +901,7 @@ describe('GET / → dashboard shell includes the calendar card', () => {
     if (projectDir) await rm(projectDir, { recursive: true, force: true });
   });
 
-  it('renders task cards and grid markup in the GET / response', async () => {
+  async function seedWriter() {
     await writeAgent(projectDir, 'writer');
     await writeSubagentMd(projectDir, 'writer', {
       name: 'Writer',
@@ -833,17 +921,117 @@ describe('GET / → dashboard shell includes the calendar card', () => {
         },
       ],
     });
+  }
 
+  it('renders task cards and grid markup when ?tab=calendar (explicit)', async () => {
+    await seedWriter();
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
     const res = await httpGet(
-      `${handle.url}?agent=writer&week=2026-W16`,
+      `${handle.url}?agent=writer&tab=calendar&week=2026-W16`,
     );
     assert.equal(res.statusCode, 200);
     assert.match(res.body, /data-section="calendar"/);
     assert.match(res.body, /class="calendar-grid"/);
     assert.match(res.body, /Mon 9am draft/);
-    // The shell's extraStyles should include the calendar styles so the
-    // grid is legible on first paint (no client hydration required).
+    // The shell's extraStyles must include calendar styles for first-paint.
     assert.match(res.body, /\.calendar-grid/);
+  });
+
+  it('renders calendar section for the default tab (no ?tab param)', async () => {
+    await seedWriter();
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    // When ?tab is absent the server defaults to the calendar tab.
+    const res = await httpGet(
+      `${handle.url}?agent=writer&week=2026-W16`,
+    );
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /data-section="calendar"/);
+    assert.match(res.body, /Mon 9am draft/);
+  });
+
+  it('renders sidebar with the selected agent highlighted', async () => {
+    await seedWriter();
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    // Sidebar section is always present — it lists agents for navigation.
+    assert.match(res.body, /data-section="agents"/);
+    // The selected agent link should carry data-agent-slug for JS routing.
+    assert.match(res.body, /data-agent-slug="writer"/);
+    // Agent display name appears in the sidebar.
+    assert.match(res.body, /Writer/);
+  });
+
+  it('renders tab bar with Calendar tab active when agent is selected', async () => {
+    await seedWriter();
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=calendar`);
+    assert.equal(res.statusCode, 200);
+    // Tab bar container keyed to the selected agent.
+    assert.match(res.body, /data-agent-tabs="writer"/);
+    // Calendar tab is the active item (rendered as a span with aria-current).
+    assert.match(res.body, /aria-current="page"[^>]*>Calendar</);
+    // Other tabs are present as links.
+    assert.match(res.body, /tab=activity/);
+    assert.match(res.body, /tab=strategy/);
+    assert.match(res.body, /tab=profile/);
+  });
+
+  it('shows activity section and hides calendar section when ?tab=activity', async () => {
+    await seedWriter();
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=activity`);
+    assert.equal(res.statusCode, 200);
+    // Activity card must be present.
+    assert.match(res.body, /data-section="activity"/);
+    // Calendar card must NOT be rendered for this tab.
+    assert.ok(
+      !res.body.includes('data-section="calendar"'),
+      'calendar section must not render when ?tab=activity',
+    );
+  });
+
+  it('shows strategy section and hides calendar section when ?tab=strategy', async () => {
+    await seedWriter();
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=strategy`);
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /data-section="strategy"/);
+    assert.ok(
+      !res.body.includes('data-section="calendar"'),
+      'calendar section must not render when ?tab=strategy',
+    );
+  });
+
+  it('shows profile section and hides calendar section when ?tab=profile', async () => {
+    await seedWriter();
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=profile`);
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /data-section="profile"/);
+    assert.ok(
+      !res.body.includes('data-section="calendar"'),
+      'calendar section must not render when ?tab=profile',
+    );
+  });
+
+  it('renders the no-plan state within the calendar tab without a per-section picker', async () => {
+    // Agent exists but has no weekly plan — calendar tab should show the
+    // no-plan CTA without rendering an agent picker inside the section.
+    await writeAgent(projectDir, 'writer');
+    await writeSubagentMd(projectDir, 'writer', {
+      name: 'Writer',
+      description: 'Writes things.',
+    });
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=calendar`);
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /data-section="calendar"/);
+    assert.match(res.body, /aweek:plan/);
+    // No per-section picker — agent selection lives in the sidebar.
+    assert.ok(
+      !res.body.includes('class="calendar-picker"'),
+      'calendar section must not contain an agent picker in the new tab layout',
+    );
   });
 });
