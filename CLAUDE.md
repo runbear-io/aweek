@@ -67,7 +67,7 @@ The underlying adapters refuse to run without `confirmed: true` — do not bypas
 
 ### Heartbeat execution loop
 
-`/aweek:init` installs a cron entry (default `0 * * * *`) that invokes `bin/aweek.js heartbeat`, which:
+`/aweek:init` installs a cron entry (default `*/10 * * * *`) that invokes `bin/aweek.js heartbeat`, which:
 
 1. Acquires a heartbeat-level lock (`src/heartbeat/heartbeat-lock.js`) to prevent overlapping ticks.
 2. For each agent, acquires a per-agent lock (`src/lock/lock-manager.js`), then drains delegated inbox tasks and the per-agent FIFO queue (`src/heartbeat/locked-session-runner.js`, `src/queue/task-queue.js`, `src/heartbeat/inbox-processor.js`).

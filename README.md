@@ -3,7 +3,7 @@
 Claude Code plugin for running multiple AI agents on scheduled weekly plans.
 Each aweek agent is a 1-to-1 wrapper around a Claude Code **subagent**
 (`.claude/agents/<slug>.md`) with its own long-term goals, monthly
-objectives, weekly tasks, and token budget. An hourly heartbeat triggers
+objectives, weekly tasks, and token budget. An 10-minute heartbeat triggers
 Claude Code CLI sessions that execute the next pending task per agent,
 tracks token usage against a weekly budget, and pauses agents that
 exhaust their budget.
@@ -46,7 +46,7 @@ claude --plugin-dir .  # loads the plugin from this directory
 
 | Command | What it does |
 |---------|--------------|
-| `/aweek:init` | Bootstrap a project — create the `.aweek/` data dir and (optionally) install the hourly heartbeat crontab entry |
+| `/aweek:init` | Bootstrap a project — create the `.aweek/` data dir and (optionally) install the 10-minute heartbeat crontab entry |
 | `/aweek:hire` | Create an aweek agent — identity only (name, description, system prompt); goals and plans come later |
 | `/aweek:plan` | Manage an agent's long-term goals, monthly objectives, weekly tasks, and approve pending weekly plans |
 | `/aweek:manage` | Lifecycle ops — resume a budget-paused agent, top up its budget, pause, or delete |
@@ -68,7 +68,7 @@ User: /aweek:plan
 The first approved plan activates the heartbeat.
 ```
 
-After that, the cron entry wakes up hourly and runs the next pending task
+After that, the cron entry wakes up every 10 minutes and runs the next pending task
 per agent inside a fresh Claude Code CLI session.
 
 ## Architecture
