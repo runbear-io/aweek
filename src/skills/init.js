@@ -26,6 +26,7 @@
  * (see `.claude-plugin/plugin.json`), not this module.
  */
 import { execFile, spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { access, mkdir, readdir, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -428,37 +429,44 @@ export async function installDependencies({
 export const DEFAULT_HEARTBEAT_SCHEDULE = '*/10 * * * *';
 
 /**
- * Detect the user's login shell for the cron wrap.
+ * Resolve the absolute path to the currently-running aweek entry
+ * script. Used to bake a path-free invocation into the crontab so the
+ * cron tick does not depend on the user's shell profile resolving
+ * `aweek` / `node` via PATH. Critical for installs under pnpm, nvm,
+ * volta, and fnm — each of those adds PATH mutations to `~/.zshrc`
+ * (interactive), which login-shell cron wrappers (`zsh -lc`) never
+ * source.
  *
- * Cron starts each tick with a minimal PATH (often just `/usr/bin:/bin`)
- * that does not see version-manager-managed node binaries (nvm, volta,
- * fnm) or globally-linked pnpm bins. Wrapping the heartbeat in
- * `$SHELL -lc '…'` forces the user's login profile to load before
- * `aweek` is invoked, so PATH resolves the same way a fresh terminal
- * would.
+ * Resolution strategy:
+ *   1. Take `process.argv[1]` — whatever executable the user invoked.
+ *   2. `realpath` it so pnpm/npm shim symlinks collapse to the real
+ *      `bin/aweek.js` file node can run directly.
+ *   3. Fall back to the `resolve()`d non-real path if `realpath` fails
+ *      (tmpfs, CI sandboxes without symlink support).
  *
- * `-l` (login) is preferred over `-i` (interactive): login files
- * (`.zprofile`, `.bash_profile`, `.profile`) are where version managers
- * export PATH, and they avoid the interactive-only hooks in
- * `.zshrc`/`.bashrc` that can hang cron silently.
+ * Returns `null` when no entry is detectable (embedded tests, direct
+ * library imports) so callers can surface a clear error instead of
+ * emitting a broken cron line.
  *
- * Falls back to `/bin/sh -c` (no login flag) when `$SHELL` is unset —
- * POSIX `sh` has no meaningful login-file convention for this purpose.
- *
- * @param {object} [opts]
- * @param {NodeJS.ProcessEnv} [opts.env=process.env] - Environment source.
- * @returns {{ shell: string, loginFlag: '-lc' | '-c' }}
+ * @returns {string | null}
  */
-export function detectUserShell({ env = process.env } = {}) {
-  const shell = env && env.SHELL ? env.SHELL : null;
-  if (!shell) return { shell: '/bin/sh', loginFlag: '-c' };
-  return { shell, loginFlag: '-lc' };
+function defaultAweekEntry() {
+  const raw = process.argv[1];
+  if (!raw) return null;
+  const abs = resolve(raw);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
 }
 
 /**
  * Escape a string for safe inclusion inside a POSIX single-quoted shell
  * word. Only the `'` terminator needs special handling — everything
- * else is literal inside `'…'`.
+ * else is literal inside `'…'`. Cron runs each line through `/bin/sh
+ * -c`, so quoting is required for absolute paths that may contain
+ * spaces or other shell metacharacters.
  *
  * @param {string} arg
  * @returns {string} The input wrapped in single-quotes, with embedded
@@ -491,40 +499,51 @@ export function projectHeartbeatMarker(projectDir) {
 /**
  * Build the default shell command for a project heartbeat.
  *
- * Uses the `aweek` binary installed by `pnpm install` (see
- * `package.json#bin.aweek`). The command is wrapped in the user's
- * login shell (detected via {@link detectUserShell}) so cron's minimal
- * PATH is supplemented by the user's login profile — otherwise
- * version-manager-managed `node`/`aweek` binaries (nvm, volta, fnm,
- * pnpm-linked globals) never resolve inside a cron tick.
+ * Emits an absolute-path invocation that bypasses PATH entirely:
  *
- * Resulting form:
- *   `<shell> <loginFlag> 'aweek heartbeat --all --project-dir <projectDir>'`
+ *   `'<node>' '<aweekEntry>' heartbeat --all --project-dir '<projectDir>'`
+ *
+ * Cron runs each line through `/bin/sh -c` with a minimal environment
+ * that almost never sees `aweek` on PATH — pnpm, nvm, volta, and fnm
+ * all export their PATH mutations from `~/.zshrc` (interactive shell),
+ * which login-shell wrappers never load. Instead we capture the node
+ * binary the user is currently running under (`process.execPath`) and
+ * the aweek entry script via {@link defaultAweekEntry}, then spell both
+ * out in full so cron can invoke them directly.
  *
  * @param {object} opts
  * @param {string} opts.projectDir - Absolute path to the project root.
- * @param {string} [opts.shell] - Override the detected login shell
- *   (e.g. `/bin/zsh`). Defaults to `$SHELL`.
- * @param {string} [opts.loginFlag] - Override the shell flag. Defaults
- *   to `-lc` when a shell is detected, `-c` when falling back to `/bin/sh`.
- * @param {NodeJS.ProcessEnv} [opts.env] - Environment source forwarded
- *   to {@link detectUserShell} for tests. Ignored when `shell` +
- *   `loginFlag` are both explicitly supplied.
+ * @param {string} [opts.nodePath] - Absolute path to the node binary
+ *   that should run the heartbeat. Defaults to `process.execPath`.
+ * @param {string} [opts.aweekEntry] - Absolute path to the aweek entry
+ *   script (`bin/aweek.js`). Defaults to the realpath of
+ *   `process.argv[1]`.
  * @returns {string} Shell command that the cron entry should invoke.
  */
 export function buildHeartbeatCommand({
   projectDir,
-  shell,
-  loginFlag,
-  env,
+  nodePath,
+  aweekEntry,
 } = {}) {
   if (!projectDir) throw new Error('projectDir is required');
-  const detected =
-    shell && loginFlag ? { shell, loginFlag } : detectUserShell({ env });
-  const resolvedShell = shell || detected.shell;
-  const resolvedFlag = loginFlag || detected.loginFlag;
-  const inner = `aweek heartbeat --all --project-dir ${projectDir}`;
-  return `${resolvedShell} ${resolvedFlag} ${shellSingleQuote(inner)}`;
+  const node = nodePath || process.execPath;
+  const entry = aweekEntry || defaultAweekEntry();
+  if (!entry) {
+    const err = new Error(
+      'Could not resolve the aweek entry script for the heartbeat command. ' +
+        'Pass `aweekEntry` explicitly.',
+    );
+    err.code = 'EHB_ENTRY_UNRESOLVED';
+    throw err;
+  }
+  return [
+    shellSingleQuote(node),
+    shellSingleQuote(entry),
+    'heartbeat',
+    '--all',
+    '--project-dir',
+    shellSingleQuote(projectDir),
+  ].join(' ');
 }
 
 /**
@@ -540,14 +559,13 @@ export function buildHeartbeatEntry({
   projectDir,
   schedule = DEFAULT_HEARTBEAT_SCHEDULE,
   command,
-  shell,
-  loginFlag,
-  env,
+  nodePath,
+  aweekEntry,
 } = {}) {
   if (!projectDir) throw new Error('projectDir is required');
   const marker = projectHeartbeatMarker(projectDir);
   const cmd =
-    command || buildHeartbeatCommand({ projectDir, shell, loginFlag, env });
+    command || buildHeartbeatCommand({ projectDir, nodePath, aweekEntry });
   return `# ${marker}\n${schedule} ${cmd}`;
 }
 
@@ -700,9 +718,8 @@ export async function installHeartbeat({
   projectDir,
   schedule = DEFAULT_HEARTBEAT_SCHEDULE,
   command,
-  shell,
-  loginFlag,
-  env,
+  nodePath,
+  aweekEntry,
   confirmed = false,
   readCrontabFn,
   writeCrontabFn,
@@ -721,9 +738,8 @@ export async function installHeartbeat({
     command ||
     buildHeartbeatCommand({
       projectDir: resolvedProject,
-      shell,
-      loginFlag,
-      env,
+      nodePath,
+      aweekEntry,
     });
   const reader = readCrontabFn || defaultReadCrontab;
   const writer = writeCrontabFn || defaultWriteCrontab;
