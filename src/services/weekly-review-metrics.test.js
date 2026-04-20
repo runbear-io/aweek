@@ -15,7 +15,7 @@ import {
   aggregateWeeklyMetrics,
 } from './weekly-review-metrics.js';
 
-import { ActivityLogStore, createLogEntry } from '../storage/activity-log-store.js';
+import { ActivityLogStore, createLogEntry, getMondayDate } from '../storage/activity-log-store.js';
 import { UsageStore, createUsageRecord } from '../storage/usage-store.js';
 import { InboxStore } from '../storage/inbox-store.js';
 
@@ -356,7 +356,10 @@ describe('aggregateWeeklyMetrics', () => {
   let inboxStore;
 
   const agentId = 'agent-metrics-test12';
-  const weekMonday = '2026-04-13';
+  // Compute the current week's Monday so createLogEntry's Date.now()-stamped
+  // entries and the aggregator's week-keyed reads line up. A hardcoded date
+  // falls out of range whenever UTC crosses the week boundary during a run.
+  const weekMonday = getMondayDate();
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'aweek-metrics-'));
