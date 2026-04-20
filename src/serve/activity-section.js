@@ -246,7 +246,66 @@ export function renderActivitySection(view) {
     `</div>`,
     `</div>`,
     activityFilterScript(),
+    activityExpandScript(),
   ].join('');
+}
+
+/**
+ * Inline client-side script that wires up the per-row expand / collapse
+ * affordance plus `?entry=<id>` deep-linking from the calendar drawer.
+ *
+ * Behavior:
+ *   - A click on `.activity-row-toggle` flips `.expanded` on the
+ *     surrounding `.activity-entry` and toggles the details wrapper's
+ *     `hidden` attribute + `aria-expanded` on the button.
+ *   - Rows whose toggle is `.is-disabled` (no details to show) are
+ *     non-interactive.
+ *   - On load, if the URL carries `?entry=<id>`, that entry is expanded
+ *     automatically and scrolled into view so deep links from the
+ *     calendar-task drawer land the user on the right row.
+ *
+ * @returns {string}
+ */
+function activityExpandScript() {
+  return `<script>
+(function() {
+  function setExpanded(entry, expanded) {
+    if (!entry) return;
+    var btn = entry.querySelector('.activity-row-toggle');
+    var wrap = entry.querySelector('.activity-details-wrap');
+    if (!btn || !wrap || btn.classList.contains('is-disabled')) return;
+    entry.classList.toggle('expanded', expanded);
+    wrap.hidden = !expanded;
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
+
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    if (!target || !target.closest) return;
+    var btn = target.closest('.activity-row-toggle');
+    if (!btn || btn.classList.contains('is-disabled')) return;
+    var entry = btn.closest('.activity-entry');
+    if (!entry) return;
+    e.preventDefault();
+    var isExpanded = entry.classList.contains('expanded');
+    setExpanded(entry, !isExpanded);
+  });
+
+  // Deep-link from the calendar drawer: ?entry=<id> auto-expands and
+  // scrolls the targeted row into view.
+  try {
+    var params = new URLSearchParams(location.search);
+    var target = params.get('entry');
+    if (target) {
+      var match = document.querySelector('.activity-entry[data-entry-id="' + CSS.escape(target) + '"]');
+      if (match) {
+        setExpanded(match, true);
+        match.scrollIntoView({ behavior: 'auto', block: 'center' });
+      }
+    }
+  } catch (err) { /* ignore deep-link errors */ }
+})();
+</script>`;
 }
 
 /**
@@ -270,19 +329,35 @@ function renderActivityRow(entry) {
   const statusCls = `activity-chip activity-chip-${escapeAttr(status)}`;
 
   const details = renderActivityDetails(entry);
+  const hasDetails = details.length > 0;
+  // Entries with no details still render, but the caret / toggle is hidden
+  // so users can't chase an empty expanded view.
+  const toggleCls = hasDetails ? 'activity-row-toggle' : 'activity-row-toggle is-disabled';
+  const entryId = String(entry.id || '');
 
   return [
     `<div class="activity-entry"`,
-    ` data-entry-id="${escapeAttr(entry.id || '')}"`,
+    ` data-entry-id="${escapeAttr(entryId)}"`,
     ` data-entry-status="${escapeAttr(status)}"`,
-    ` data-entry-ts="${escapeAttr(entry.timestamp || '')}">`,
-    `<div class="activity-row">`,
+    ` data-entry-ts="${escapeAttr(entry.timestamp || '')}"`,
+    ` data-has-details="${hasDetails ? '1' : '0'}">`,
+    `<button type="button" class="${toggleCls}" aria-expanded="false"`,
+    hasDetails ? ` aria-controls="activity-details-${escapeAttr(entryId)}"` : '',
+    hasDetails ? '' : ' tabindex="-1" aria-disabled="true"',
+    `>`,
+    `<span class="activity-row">`,
     `<span class="activity-ts" title="${escapeAttr(entry.timestamp || '')}">${escapeHtml(timestamp)}</span>`,
     `<span class="activity-agent"><code>${escapeHtml(agentId)}</code></span>`,
     `<span class="activity-desc">${escapeHtml(description)}</span>`,
     `<span class="${statusCls}">${escapeHtml(statusLabel)}</span>`,
-    `</div>`,
-    details,
+    hasDetails
+      ? `<span class="activity-caret" aria-hidden="true">▸</span>`
+      : `<span class="activity-caret activity-caret-placeholder" aria-hidden="true"></span>`,
+    `</span>`,
+    `</button>`,
+    hasDetails
+      ? `<div class="activity-details-wrap" id="activity-details-${escapeAttr(entryId)}" hidden>${details}</div>`
+      : '',
     `</div>`,
   ].join('');
 }
@@ -783,15 +858,59 @@ export function activitySectionStyles() {
   }
   .activity-entry {
     border-bottom: 1px solid var(--border);
-    padding: 9px 0;
   }
   .activity-entry:last-child { border-bottom: none; }
+  /* The row toggle is a full-width button so the whole row is
+     clickable. Reset the native <button> styles so it visually reads
+     as a list row, not a button. */
+  .activity-row-toggle {
+    display: block;
+    width: 100%;
+    padding: 9px 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.12s;
+  }
+  .activity-row-toggle:hover:not(.is-disabled) {
+    background: rgba(138,180,255,.04);
+  }
+  .activity-row-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .activity-row-toggle.is-disabled {
+    cursor: default;
+  }
   .activity-row {
     display: grid;
-    grid-template-columns: 130px 130px 1fr auto;
+    grid-template-columns: 130px 130px 1fr auto 18px;
     align-items: center;
     gap: 12px;
     font-size: 12.5px;
+  }
+  .activity-caret {
+    color: var(--muted);
+    font-size: 11px;
+    transition: transform 0.15s, color 0.15s;
+    display: inline-block;
+    width: 12px;
+    text-align: center;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .activity-caret-placeholder { visibility: hidden; }
+  .activity-entry.expanded .activity-caret {
+    transform: rotate(90deg);
+    color: var(--accent);
+  }
+  .activity-details-wrap[hidden] { display: none; }
+  .activity-details-wrap {
+    padding: 4px 0 10px;
   }
   .activity-details {
     display: flex;

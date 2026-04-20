@@ -678,11 +678,34 @@ export function renderDashboardShell({
     gap: 10px;
   }
   .drawer-activity-item {
+    position: relative;
     padding: 8px 10px;
     border-radius: 6px;
     background: var(--panel-2);
     border: 1px solid var(--border);
     font-size: 12px;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .drawer-activity-item:hover {
+    border-color: var(--accent);
+    background: rgba(138,180,255,.06);
+  }
+  .drawer-activity-link {
+    position: absolute;
+    inset: 0;
+    border-radius: 6px;
+    z-index: 0;
+  }
+  .drawer-activity-item > :not(.drawer-activity-link) {
+    position: relative;
+    z-index: 1;
+  }
+  .drawer-activity-desc {
+    margin: 4px 0 6px;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.45;
+    word-break: break-word;
   }
   .drawer-activity-head {
     display: flex;
@@ -829,6 +852,23 @@ ${extraStyles}
     if (value === undefined || value === null || value === '') return '';
     return '<dt>' + esc(label) + '</dt><dd>' + esc(value) + '</dd>';
   }
+  function truncate(s, max) {
+    var str = String(s == null ? '' : s);
+    if (str.length <= max) return str;
+    return str.slice(0, max - 1) + '…';
+  }
+  function activityEntryHref(entry) {
+    // Deep-link into the activity tab with the selected agent + entry id.
+    // Read the agent slug from the current URL so switching to activity
+    // keeps the same agent context; drop the agent param when the
+    // current URL does not carry one.
+    var agent = new URLSearchParams(location.search).get('agent') || '';
+    var params = new URLSearchParams();
+    if (agent) params.set('agent', agent);
+    params.set('tab', 'activity');
+    if (entry && entry.id) params.set('entry', entry.id);
+    return '?' + params.toString();
+  }
   function renderActivity(entries) {
     if (!Array.isArray(entries) || entries.length === 0) {
       return '<div class="drawer-activity-empty">No activity logged for this task yet.</div>';
@@ -839,6 +879,9 @@ ${extraStyles}
         + chip('chip-status chip-status-' + status, status.replace(/-/g, ' '))
         + '<span class="drawer-activity-ts">' + esc(fmtDate(e.timestamp)) + '</span>'
         + '</div>';
+      var descHtml = e.description
+        ? '<div class="drawer-activity-desc">' + esc(truncate(e.description, 140)) + '</div>'
+        : '';
       var meta = [];
       if (e.duration) meta.push('<span>duration<strong>' + esc(fmtDuration(e.duration)) + '</strong></span>');
       if (typeof e.tokens === 'number') meta.push('<span>tokens<strong>' + esc(fmtNum(e.tokens)) + '</strong></span>');
@@ -861,7 +904,17 @@ ${extraStyles}
       if (status === 'failed' && e.errorMessage) {
         errHtml = '<div class="drawer-activity-error">' + esc(e.errorMessage) + '</div>';
       }
-      return '<div class="drawer-activity-item">' + head + metaHtml + urlsHtml + errHtml + '</div>';
+      var body = head + descHtml + metaHtml + urlsHtml + errHtml;
+      var href = esc(activityEntryHref(e));
+      // The whole item is a link into the activity tab. Nested <a> (the
+      // URL chips) are still allowed by most browsers in practice even
+      // though the HTML spec disallows them — to stay conformant we keep
+      // the outer wrapper clickable via an overlay pseudo-link instead.
+      return ''
+        + '<div class="drawer-activity-item">'
+        +   '<a class="drawer-activity-link" href="' + href + '" aria-label="Open activity entry in Activity tab"></a>'
+        +   body
+        + '</div>';
     }).join('');
   }
   function open(t) {

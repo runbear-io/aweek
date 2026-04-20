@@ -1212,12 +1212,15 @@ describe('renderActivitySection() — entry detail block', () => {
     dateRange: 'all',
   });
 
-  it('wraps each row in an .activity-entry container with a .activity-row child', () => {
+  it('wraps each row in an .activity-entry container with a clickable toggle', () => {
     const html = renderActivitySection(baseView([
       { id: 'log-1', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'completed', description: 'Done' },
     ]));
     assert.match(html, /<div class="activity-entry"/);
-    assert.match(html, /<div class="activity-row">/);
+    // Row is wrapped in a <button> toggle so the whole row is clickable
+    // and the collapsed-by-default details can be revealed on click.
+    assert.match(html, /<button type="button" class="activity-row-toggle(?:\s+is-disabled)?"/);
+    assert.match(html, /<span class="activity-row">/);
   });
 
   it('renders clickable URL chips pulled from metadata.resources.urls', () => {
@@ -1291,7 +1294,14 @@ describe('renderActivitySection() — entry detail block', () => {
     const html = renderActivitySection(baseView([
       { id: 'log-quiet', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'skipped', description: 'No-op' },
     ]));
-    assert.doesNotMatch(html, /activity-details/);
+    // No visible details wrapper for a no-op entry — we keep the
+    // assertion to the rendered DOM element and ignore the inline
+    // script's string references to `.activity-details-wrap`.
+    assert.doesNotMatch(html, /<div class="activity-details-wrap"/);
+    assert.doesNotMatch(html, /<div class="activity-details">/);
+    // Toggle is rendered but flagged non-interactive.
+    assert.match(html, /activity-row-toggle is-disabled/);
+    assert.match(html, /aria-disabled="true"/);
   });
 
   it('escapes URL labels so a script-like URL cannot inject markup', () => {
@@ -1308,6 +1318,40 @@ describe('renderActivitySection() — entry detail block', () => {
     ]));
     assert.ok(!html.includes('<script>alert(1)</script>'));
     assert.match(html, /&lt;script&gt;/);
+  });
+
+  it('collapses the details wrapper by default (hidden attribute)', () => {
+    const html = renderActivitySection(baseView([
+      {
+        id: 'log-collapsed',
+        timestamp: '2026-04-20T10:00:00.000Z',
+        agentId: 'writer',
+        status: 'completed',
+        description: 'Ran',
+        duration: 1200,
+      },
+    ]));
+    assert.match(html, /<div class="activity-details-wrap" id="activity-details-log-collapsed" hidden>/);
+    // Toggle starts un-pressed.
+    assert.match(html, /aria-expanded="false"/);
+  });
+
+  it('emits an expand toggle script with deep-link support for ?entry=<id>', () => {
+    const html = renderActivitySection(baseView([
+      {
+        id: 'log-target',
+        timestamp: '2026-04-20T10:00:00.000Z',
+        agentId: 'writer',
+        status: 'completed',
+        description: 'Ran',
+        duration: 1200,
+      },
+    ]));
+    // Toggle script wires up click → expand and reads the query param.
+    assert.match(html, /activity-row-toggle/);
+    assert.match(html, /URLSearchParams\(location\.search\)/);
+    assert.match(html, /params\.get\('entry'\)/);
+    assert.match(html, /scrollIntoView/);
   });
 });
 
