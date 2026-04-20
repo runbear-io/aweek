@@ -481,6 +481,102 @@ export function renderDashboardShell({ projectDir, sections = {}, extraStyles = 
     color: var(--over-budget);
     font-weight: 600;
   }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s ease;
+    z-index: 40;
+  }
+  .scrim.show { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: min(460px, 94vw);
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    transform: translateX(102%);
+    transition: transform .18s ease;
+    display: flex;
+    flex-direction: column;
+    z-index: 50;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .drawer-head h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .drawer-close {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .drawer-close:hover { color: var(--text); }
+  .drawer-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+  .drawer-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .drawer-desc {
+    font-size: 13.5px;
+    line-height: 1.55;
+    padding: 0 0 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .drawer-desc:empty { display: none; }
+  .drawer-fields {
+    margin: 0;
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 8px 14px;
+    font-size: 12.5px;
+  }
+  .drawer-fields dt { color: var(--muted); font-weight: 500; }
+  .drawer-fields dd { margin: 0; color: var(--text); word-break: break-word; }
+  .chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .chip-status-pending { background: rgba(139,147,167,.18); color: var(--status-pending); }
+  .chip-status-in-progress { background: rgba(107,209,255,.18); color: var(--status-in-progress); }
+  .chip-status-completed { background: rgba(114,226,164,.18); color: var(--status-completed); }
+  .chip-status-failed { background: rgba(255,107,107,.18); color: var(--status-failed); }
+  .chip-status-delegated { background: rgba(138,180,255,.18); color: var(--accent); }
+  .chip-status-skipped { background: rgba(139,147,167,.18); color: var(--muted); }
+  .chip-priority-critical { background: rgba(255,107,107,.18); color: var(--critical); }
+  .chip-priority-high { background: rgba(255,184,107,.18); color: var(--high); }
+  .chip-priority-medium { background: rgba(107,209,255,.18); color: var(--medium); }
+  .chip-priority-low { background: rgba(162,168,184,.18); color: var(--low); }
+  .chip-track {
+    background: rgba(138,180,255,.14);
+    color: var(--accent);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    text-transform: none;
+    letter-spacing: 0;
+  }
 ${extraStyles}
 </style>
 </head>
@@ -508,9 +604,113 @@ ${extraStyles}
     ${renderSection('budget', 'Budget and usage (with over-budget highlighting) will appear here.')}
   </section>
 </main>
+<div class="scrim" data-scrim hidden></div>
+<aside class="drawer" data-drawer aria-hidden="true" aria-labelledby="drawer-title" role="dialog">
+  <div class="drawer-head">
+    <h2 id="drawer-title" data-drawer-title>Task</h2>
+    <button type="button" class="drawer-close" data-drawer-close aria-label="Close">Close</button>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-chips" data-drawer-chips></div>
+    <div class="drawer-desc" data-drawer-desc></div>
+    <dl class="drawer-fields" data-drawer-fields></dl>
+  </div>
+</aside>
 <footer>
   Serving live data from <code>${projectLabel}/.aweek/</code>. Refresh to re-read state.
 </footer>
+<script>
+(function() {
+  var drawer = document.querySelector('[data-drawer]');
+  var scrim = document.querySelector('[data-scrim]');
+  if (!drawer || !scrim) return;
+  var titleEl = drawer.querySelector('[data-drawer-title]');
+  var chipsEl = drawer.querySelector('[data-drawer-chips]');
+  var descEl = drawer.querySelector('[data-drawer-desc]');
+  var fieldsEl = drawer.querySelector('[data-drawer-fields]');
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+  function fmtDate(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  }
+  function chip(cls, label) {
+    if (!label) return '';
+    return '<span class="chip ' + esc(cls) + '">' + esc(label) + '</span>';
+  }
+  function row(label, value) {
+    if (value === undefined || value === null || value === '') return '';
+    return '<dt>' + esc(label) + '</dt><dd>' + esc(value) + '</dd>';
+  }
+  function open(t) {
+    var status = t.status || 'pending';
+    var priority = t.priority || '';
+    var track = t.track || '';
+    titleEl.textContent = t.num ? ('Task #' + t.num) : 'Task';
+    var chips = '';
+    chips += chip('chip-status chip-status-' + status, status.replace(/-/g, ' '));
+    if (priority) chips += chip('chip-priority chip-priority-' + priority, priority);
+    if (track) chips += chip('chip-track', track);
+    chipsEl.innerHTML = chips;
+    descEl.textContent = t.desc || '';
+    var rows = '';
+    rows += row('Status', status);
+    if (priority) rows += row('Priority', priority);
+    if (track) rows += row('Track', track);
+    if (t.objective) rows += row('Objective', t.objective);
+    if (t.runAt) rows += row('Run at', fmtDate(t.runAt));
+    if (t.minutes) rows += row('Estimated', t.minutes + ' min');
+    if (t.completedAt) rows += row('Completed', fmtDate(t.completedAt));
+    if (t.delegatedTo) rows += row('Delegated to', t.delegatedTo);
+    if (t.id) rows += row('Task ID', t.id);
+    fieldsEl.innerHTML = rows;
+    drawer.classList.add('open');
+    drawer.setAttribute('aria-hidden', 'false');
+    scrim.classList.add('show');
+    scrim.hidden = false;
+  }
+  function close() {
+    drawer.classList.remove('open');
+    drawer.setAttribute('aria-hidden', 'true');
+    scrim.classList.remove('show');
+    scrim.hidden = true;
+  }
+
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    if (!target || !target.closest) return;
+    var card = target.closest('.calendar-task');
+    if (card) {
+      var d = card.dataset || {};
+      open({
+        id: d.taskId,
+        num: d.taskNum,
+        desc: d.taskDesc,
+        status: d.taskStatus,
+        priority: d.taskPriority,
+        track: d.taskTrack,
+        runAt: d.taskRunAt,
+        objective: d.taskObjective,
+        minutes: d.taskMinutes,
+        completedAt: d.taskCompletedAt,
+        delegatedTo: d.taskDelegatedTo,
+      });
+      return;
+    }
+    if (target.closest('[data-drawer-close]')) { close(); return; }
+    if (target.matches && target.matches('[data-scrim]')) { close(); return; }
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && drawer.classList.contains('open')) close();
+  });
+})();
+</script>
 </body>
 </html>
 `;
