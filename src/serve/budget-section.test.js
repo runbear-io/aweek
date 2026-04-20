@@ -443,7 +443,13 @@ describe('gatherBudget()', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────
-// End-to-end: GET / renders budget rows
+// End-to-end: GET /?tab=profile renders budget card within Profile tab
+//
+// In the sidebar-layout refactor the budget card is only rendered when
+// ?tab=profile is active — it appears alongside the profile card in the
+// content area. Other tabs (calendar, activity, strategy) do NOT include
+// a budget card in the HTML, so tests must use ?tab=profile to exercise
+// budget rendering.
 // ───────────────────────────────────────────────────────────────────────
 
 function httpGet(url) {
@@ -486,17 +492,19 @@ describe('GET / with budget data', () => {
     if (projectDir) await rm(projectDir, { recursive: true, force: true });
   });
 
-  it('renders an empty budget state when no agents are hired', async () => {
+  it('renders zero-agents empty state when no agents are hired', async () => {
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
     const res = await httpGet(handle.url);
     assert.equal(res.statusCode, 200);
-    assert.match(res.body, /data-section="budget"/);
-    // Empty state should appear in the budget card (agents card also has one,
-    // so just verify both are reachable and the CSS made it in).
+    // With no agents the dashboard shows the zero-agents empty state instead
+    // of the per-section cards; the budget card is only visible once at least
+    // one agent is present. The budget CSS is still embedded in the shell.
+    assert.match(res.body, /data-section="zero-agents"/);
+    assert.match(res.body, /\/aweek:hire/);
     assert.match(res.body, /\.budget-bar/);
   });
 
-  it('renders budget rows with over-budget highlighting end-to-end', async () => {
+  it('renders budget card within the Profile tab with over-budget highlighting end-to-end', async () => {
     await writeAgent(projectDir, 'writer', { weeklyTokenLimit: 100_000 });
     await writeAgent(projectDir, 'scribe', { weeklyTokenLimit: 1_000 });
     await writeSubagent(projectDir, 'writer', { name: 'Writer' });
@@ -513,34 +521,45 @@ describe('GET / with budget data', () => {
     });
 
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
-    const res = await httpGet(handle.url);
+    // Profile tab for the over-budget agent (scribe: 2500 tokens / 1000 limit)
+    const res = await httpGet(`${handle.url}?agent=scribe&tab=profile`);
     assert.equal(res.statusCode, 200);
     const body = res.body;
 
-    // Budget section is populated (not the fallback placeholder)
+    // ── Profile card ────────────────────────────────────────────────────
+    // Profile section is populated (not the fallback placeholder)
+    assert.match(body, /data-section="profile"/);
+    assert.ok(!/data-section="profile">[\s\S]*will appear here/.test(body));
+
+    // Scribe's slug appears in the profile root element
+    assert.match(body, /data-agent-slug="scribe"/);
+
+    // Profile section's own budget rendering shows over-budget for scribe
+    assert.match(body, /profile-budget-over/);
+
+    // ── Budget card (Profile-tab sibling) ───────────────────────────────
+    // The budget card is rendered alongside the profile card in the profile
+    // tab and must be populated — not a placeholder.
     assert.match(body, /data-section="budget"/);
     assert.ok(!/data-section="budget">[\s\S]*will appear here/.test(body));
 
-    // Both agents surfaced by slug
-    assert.match(body, /budget-slug">writer<\/code>/);
-    assert.match(body, /budget-slug">scribe<\/code>/);
-
-    // Over-budget highlight kicks in for scribe (2500 / 1000)
-    assert.match(body, /data-agent-slug="scribe"[^>]*data-over-budget="1"/);
+    // budget-section's own over-budget row class and tag appear for scribe
+    assert.match(body, /class="budget-row over-budget"/);
     assert.match(body, /OVER BUDGET/);
-    // Writer is under budget — no over-budget row class on its row
-    assert.match(body, /data-agent-slug="writer"[^>]*data-over-budget="0"/);
 
-    // The budget CSS is embedded in the shell
+    // ── Shared CSS ──────────────────────────────────────────────────────
+    // The budget CSS is still embedded in the shell (from budgetSectionStyles)
     assert.match(body, /\.budget-bar\.over-budget/);
   });
 
   it('re-reads .aweek/ on every request (live data)', async () => {
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
 
-    // First request — no agents yet
+    // First request — no agents yet → zero-agents empty state, no budget card
     let res = await httpGet(handle.url);
-    assert.match(res.body, /data-section="budget"/);
+    assert.match(res.body, /data-section="zero-agents"/);
+    // Budget card is absent from zero-agents view
+    assert.ok(!res.body.includes('data-section="budget"'), 'budget card must not appear in zero-agents view');
 
     // Add an agent with usage; no restart
     await writeAgent(projectDir, 'late', { weeklyTokenLimit: 100 });
@@ -550,9 +569,42 @@ describe('GET / with budget data', () => {
       totalTokens: 500, // over budget
     });
 
-    // Second request — data appears
-    res = await httpGet(handle.url);
-    assert.match(res.body, /budget-slug">late<\/code>/);
+    // Second request — profile tab shows both profile card and budget card for 'late'
+    res = await httpGet(`${handle.url}?agent=late&tab=profile`);
+    assert.match(res.body, /data-agent-slug="late"/);
     assert.match(res.body, /OVER BUDGET/);
+    // Budget card is present in the profile tab and populated with live data
+    assert.match(res.body, /data-section="budget"/);
+    assert.ok(!/data-section="budget">[\s\S]*will appear here/.test(res.body), 'budget card must be populated, not a placeholder');
+  });
+
+  it('budget card is absent from the calendar tab (only shown in Profile tab)', async () => {
+    await writeAgent(projectDir, 'scribe', { weeklyTokenLimit: 1_000 });
+    await writeSubagent(projectDir, 'scribe', { name: 'Scribe' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+
+    // Default tab (calendar) — no ?tab= param
+    const calRes = await httpGet(`${handle.url}?agent=scribe`);
+    assert.equal(calRes.statusCode, 200);
+    assert.ok(!calRes.body.includes('data-section="budget"'), 'budget card must not be present on the calendar tab');
+    // Calendar section is rendered instead
+    assert.match(calRes.body, /data-section="calendar"/);
+
+    // Activity tab — also no budget card
+    const actRes = await httpGet(`${handle.url}?agent=scribe&tab=activity`);
+    assert.equal(actRes.statusCode, 200);
+    assert.ok(!actRes.body.includes('data-section="budget"'), 'budget card must not be present on the activity tab');
+
+    // Strategy tab — also no budget card
+    const stratRes = await httpGet(`${handle.url}?agent=scribe&tab=strategy`);
+    assert.equal(stratRes.statusCode, 200);
+    assert.ok(!stratRes.body.includes('data-section="budget"'), 'budget card must not be present on the strategy tab');
+
+    // Profile tab — budget card appears
+    const profRes = await httpGet(`${handle.url}?agent=scribe&tab=profile`);
+    assert.equal(profRes.statusCode, 200);
+    assert.match(profRes.body, /data-section="budget"/, 'budget card must appear on the profile tab');
+    assert.match(profRes.body, /data-section="profile"/, 'profile card must also appear on the profile tab');
   });
 });

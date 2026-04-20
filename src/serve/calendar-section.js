@@ -456,37 +456,31 @@ export function renderCalendarSection(view) {
   const agents = view?.agents || [];
   const selected = view?.selected || null;
 
-  if (agents.length === 0) {
-    return `<div class="calendar-empty">No agents yet. Run <code>/aweek:hire</code> to create one.</div>`;
-  }
-
-  const picker = renderCalendarPicker(agents, selected);
+  // In the sidebar + tab layout the agent is selected via the sidebar; the
+  // calendar section is responsible only for rendering the selected agent's
+  // calendar content. The per-section agent picker is no longer rendered here.
 
   if (!selected) {
-    return `${picker}<div class="calendar-empty">Select an agent to view its calendar.</div>`;
+    if (agents.length === 0) {
+      return `<div class="calendar-empty">No agents yet. Run <code>/aweek:hire</code> to create one.</div>`;
+    }
+    return `<div class="calendar-empty">Select an agent from the sidebar to view its calendar.</div>`;
   }
 
   const cal = selected.calendar;
 
   // An unknown slug should never reach here (gatherCalendarView resolves
-  // a real agent for the picker before calling gatherCalendar), but guard
-  // anyway so a filesystem race does not render a broken card.
+  // a real agent before calling gatherCalendar), but guard anyway so a
+  // filesystem race does not render a broken card.
   if (cal && cal.notFound) {
-    return [
-      picker,
-      `<div class="calendar-empty">Agent <code>${escapeHtml(selected.slug)}</code> not found on disk.</div>`,
-    ].join('');
+    return `<div class="calendar-empty">Agent <code>${escapeHtml(selected.slug)}</code> not found on disk.</div>`;
   }
 
   if (cal && cal.noPlan) {
-    return [
-      picker,
-      `<div class="calendar-empty">No weekly plan yet for <strong>${escapeHtml(selected.name)}</strong>. Run <code>/aweek:plan</code> to draft this week's tasks.</div>`,
-    ].join('');
+    return `<div class="calendar-empty">No weekly plan yet for <strong>${escapeHtml(selected.name)}</strong>. Run <code>/aweek:plan</code> to draft this week's tasks.</div>`;
   }
 
   return [
-    picker,
     renderCalendarHeader(selected, cal),
     renderCalendarCounts(cal.counts),
     renderCalendarGrid(cal),

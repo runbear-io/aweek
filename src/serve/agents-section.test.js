@@ -1,9 +1,24 @@
 /**
  * Tests for `src/serve/agents-section.js`.
  *
- * Scope (AC 2): derive tri-state status (active / paused / budget-exhausted)
- * from live `.aweek/` data and render an HTML fragment the dashboard shell
- * can drop straight into the Agents card.
+ * Scope: this module is the **data layer** for the agents sidebar.  The
+ * refactored dashboard uses an agent-picker sidebar (rendered by
+ * `sidebar-section.js`) with per-agent horizontal tab navigation
+ * (Calendar / Activity / Strategy / Profile).  `agents-section.js` provides
+ * the shared infrastructure that both old and new surfaces depend on:
+ *
+ *   - `deriveAgentStatus()`     — pure tri-state derivation from live config
+ *   - `agentStatusLabel()`      — human-readable badge text
+ *   - `formatTokens()`          — compact token formatter
+ *   - `agentsSectionStyles()`   — CSS fragment (status-* classes used globally)
+ *   - `gatherAgents()`          — data gatherer consumed by the sidebar renderer
+ *   - `renderAgentsSection()`   — LEGACY card-based renderer (no longer mounted
+ *                                 in the dashboard shell; replaced by
+ *                                 `renderSidebar` from sidebar-section.js).
+ *                                 Tests are kept for API-stability documentation.
+ *
+ * HTTP integration tests cover the full request → render pipeline and assert on
+ * the new sidebar + tab bar structure rather than the old 2×2 card grid.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -212,10 +227,18 @@ describe('agentsSectionStyles()', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────
-// renderAgentsSection — HTML fragment shape
+// renderAgentsSection — HTML fragment shape (LEGACY card-based renderer)
+//
+// NOTE: `renderAgentsSection` is no longer mounted in the live dashboard
+// shell.  The sidebar-section.js `renderSidebar` function replaced it in
+// the agent-picker sidebar layout.  These tests are kept as regression
+// coverage for the function's API contract — the function still ships in
+// agents-section.js and callers (e.g. email reports, custom scripts) may
+// consume it outside the dashboard.  The sidebar-section.test.js file
+// covers the new rendering path.
 // ───────────────────────────────────────────────────────────────────────
 
-describe('renderAgentsSection()', () => {
+describe('renderAgentsSection() [legacy renderer]', () => {
   it('renders an empty state when no agents exist', () => {
     const html = renderAgentsSection([]);
     assert.match(html, /empty-state/);
@@ -457,11 +480,11 @@ describe('GET / with agents data', () => {
     assert.match(body, /Writer/);
     assert.match(body, /Analyst/);
     assert.match(body, /Scribe/);
-    // Status badges — each distinct label appears once
-    assert.match(body, /status-active[\s\S]*ACTIVE/);
-    assert.match(body, /status-paused[\s\S]*PAUSED/);
-    assert.match(body, /status-budget-exhausted[\s\S]*BUDGET EXHAUSTED/);
-    // The dashboard shell wraps the payload in the Agents card
+    // Status chips — sidebar uses sidebar-chip-* classes with lowercase labels
+    assert.match(body, /sidebar-chip-active[\s\S]*active/i);
+    assert.match(body, /sidebar-chip-paused[\s\S]*paused/i);
+    assert.match(body, /sidebar-chip-budget-exhausted[\s\S]*exhausted/i);
+    // The sidebar nav carries data-section="agents" for test-locatability
     assert.match(body, /data-section="agents"/);
   });
 
@@ -476,9 +499,127 @@ describe('GET / with agents data', () => {
     await writeAgent(projectDir, 'late-arrival', {});
     await writeSubagent(projectDir, 'late-arrival', { name: 'Late Arrival' });
 
-    // Second request: agent appears
+    // Second request: agent appears in sidebar
     res = await httpGet(handle.url);
     assert.match(res.body, /<code>late-arrival<\/code>/);
     assert.match(res.body, /Late Arrival/);
+  });
+
+  // ─── Tab bar integration ───────────────────────────────────────────
+  // These tests cover the per-agent horizontal tab bar introduced with
+  // the agent-picker sidebar refactor.  The tab bar (Calendar / Activity /
+  // Strategy / Profile) only renders when a specific agent is selected via
+  // the `?agent=<slug>` query param; the root URL with no selection should
+  // produce no tab bar at all.
+
+  it('renders no tab bar when no agent is selected', async () => {
+    await writeAgent(projectDir, 'writer', { paused: false });
+    await writeSubagent(projectDir, 'writer', { name: 'Writer' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(handle.url); // no ?agent= param
+    assert.equal(res.statusCode, 200);
+    // The tab-bar element must not be present when no agent is selected
+    assert.ok(!res.body.includes('data-agent-tabs'), 'tab bar must be absent when no agent selected');
+    assert.ok(!res.body.includes('class="tab-bar"'), 'tab-bar class must be absent');
+  });
+
+  it('renders the tab bar with all four tabs when ?agent=<slug> is set', async () => {
+    await writeAgent(projectDir, 'writer', { paused: false });
+    await writeSubagent(projectDir, 'writer', { name: 'Writer' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    const body = res.body;
+
+    // Tab bar container present with the selected agent slug
+    assert.match(body, /data-agent-tabs="writer"/);
+    // All four tab IDs present
+    assert.match(body, /data-tab="calendar"/);
+    assert.match(body, /data-tab="activity"/);
+    assert.match(body, /data-tab="strategy"/);
+    assert.match(body, /data-tab="profile"/);
+    // All four tab labels present
+    assert.match(body, /Calendar/);
+    assert.match(body, /Activity/);
+    assert.match(body, /Strategy/);
+    assert.match(body, /Profile/);
+  });
+
+  it('defaults to calendar tab when ?tab= is absent', async () => {
+    await writeAgent(projectDir, 'writer', { paused: false });
+    await writeSubagent(projectDir, 'writer', { name: 'Writer' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    const body = res.body;
+
+    // Calendar tab-link should be active (rendered as <span aria-current="page">)
+    assert.match(body, /tab-link-active[\s\S]*?Calendar/);
+    // Other tabs are links (not spans with aria-current).
+    // Note: & in href attributes is HTML-escaped to &amp; by the renderer.
+    assert.match(body, /href="[^"]*tab=activity"/);
+    assert.match(body, /href="[^"]*tab=strategy"/);
+    assert.match(body, /href="[^"]*tab=profile"/);
+  });
+
+  it('activates the tab matching ?tab= query param', async () => {
+    await writeAgent(projectDir, 'writer', { paused: false });
+    await writeSubagent(projectDir, 'writer', { name: 'Writer' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=strategy`);
+    assert.equal(res.statusCode, 200);
+    const body = res.body;
+
+    // Strategy tab should be the active one
+    assert.match(body, /tab-link-active[\s\S]*?Strategy/);
+    // Calendar tab should be a link, not active
+    assert.match(body, /href="[^"]*tab=calendar"/);
+  });
+
+  it('falls back to calendar tab for unrecognised ?tab= values', async () => {
+    await writeAgent(projectDir, 'writer', { paused: false });
+    await writeSubagent(projectDir, 'writer', { name: 'Writer' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer&tab=nonexistent`);
+    assert.equal(res.statusCode, 200);
+    // Calendar should still be the active tab
+    assert.match(res.body, /tab-link-active[\s\S]*?Calendar/);
+  });
+
+  it('highlights the selected agent in the sidebar with sidebar-item-selected', async () => {
+    await writeAgent(projectDir, 'writer', { paused: false });
+    await writeAgent(projectDir, 'analyst', { paused: false });
+    await writeSubagent(projectDir, 'writer', { name: 'Writer' });
+    await writeSubagent(projectDir, 'analyst', { name: 'Analyst' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=writer`);
+    assert.equal(res.statusCode, 200);
+    const body = res.body;
+
+    // writer should be selected (sidebar-item-selected carries the agent slug)
+    assert.match(body, /sidebar-item-selected/);
+    assert.match(body, /data-agent-slug="writer"/);
+    // analyst should be a link (not selected)
+    assert.match(body, /href="\?agent=analyst"/);
+  });
+
+  it('tab bar links include the current agent slug', async () => {
+    await writeAgent(projectDir, 'analyst', { paused: false });
+    await writeSubagent(projectDir, 'analyst', { name: 'Analyst' });
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}?agent=analyst`);
+    assert.equal(res.statusCode, 200);
+    // Inactive tab links carry ?agent=analyst&tab=<id>.
+    // The & is HTML-escaped to &amp; in the href attribute value.
+    assert.match(res.body, /href="\?agent=analyst&amp;tab=activity"/);
+    assert.match(res.body, /href="\?agent=analyst&amp;tab=strategy"/);
+    assert.match(res.body, /href="\?agent=analyst&amp;tab=profile"/);
   });
 });

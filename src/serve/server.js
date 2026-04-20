@@ -26,11 +26,14 @@ import {
   formatNoAweekDirMessage,
   isNoAweekDirError,
 } from './errors.js';
+import { gatherAgents, agentsSectionStyles } from './agents-section.js';
+import { renderSidebar, sidebarStyles } from './sidebar-section.js';
+import { renderTabBar, tabBarStyles, resolveActiveTab } from './tabs-section.js';
 import {
-  gatherAgents,
-  renderAgentsSection,
-  agentsSectionStyles,
-} from './agents-section.js';
+  gatherActivity,
+  renderActivitySection,
+  activitySectionStyles,
+} from './activity-section.js';
 import {
   gatherBudget,
   renderBudgetSection,
@@ -41,6 +44,15 @@ import {
   renderPlanSection,
   planSectionStyles,
 } from './plan-section.js';
+import {
+  renderStrategySection,
+  strategySectionStyles,
+} from './strategy-section.js';
+import {
+  gatherProfile,
+  renderProfileSection,
+  profileSectionStyles,
+} from './profile-section.js';
 import {
   gatherCalendar,
   gatherCalendarView,
@@ -273,6 +285,7 @@ async function handleRequest(req, res, ctx) {
     // we give it a dummy one — only `searchParams` is consumed.
     const url = new URL(rawUrl, 'http://localhost');
     const selectedSlug = url.searchParams.get('agent') || undefined;
+    const activeTab = url.searchParams.get('tab') || undefined;
 
     // Re-read `.aweek/` on every request so the dashboard reflects live
     // state without a server restart. Each section gatherer is awaited in
@@ -281,7 +294,9 @@ async function handleRequest(req, res, ctx) {
     // list so a single broken section cannot knock the whole dashboard
     // offline — read-only tooling must prefer "degraded" over "500".
     const calendarWeek = url.searchParams.get('week') || undefined;
-    const [agents, budget, plans, calendarView] = await Promise.all([
+    const dateRange = url.searchParams.get('dateRange') || undefined;
+    const resolvedActiveTab = resolveActiveTab(activeTab);
+    const [agents, budget, plans, calendarView, activityView, profileView] = await Promise.all([
       gatherAgents({ projectDir: ctx.projectDir }).catch(() => []),
       gatherBudget({ projectDir: ctx.projectDir }).catch(() => []),
       gatherPlans({ projectDir: ctx.projectDir, selectedSlug }).catch(() => ({
@@ -293,21 +308,47 @@ async function handleRequest(req, res, ctx) {
         selectedSlug,
         week: calendarWeek,
       }).catch(() => ({ agents: [], selected: null })),
+      // Activity log is only fetched when the activity tab is active to
+      // avoid unnecessary filesystem reads on every request.
+      resolvedActiveTab === 'activity'
+        ? gatherActivity({ projectDir: ctx.projectDir, selectedSlug, dateRange }).catch(() => ({
+            agents: [],
+            selected: null,
+          }))
+        : Promise.resolve(null),
+      // Profile data is only fetched when the profile tab is active.
+      resolvedActiveTab === 'profile'
+        ? gatherProfile({ projectDir: ctx.projectDir, selectedSlug }).catch(() => ({
+            agents: [],
+            selected: null,
+          }))
+        : Promise.resolve(null),
     ]);
 
     const html = renderDashboardShell({
+      zeroAgents: agents.length === 0,
       projectDir: ctx.projectDir,
+      sidebar: renderSidebar(agents, selectedSlug),
+      tabBar: renderTabBar(selectedSlug, activeTab),
+      activeTab: resolvedActiveTab,
       sections: {
-        agents: renderAgentsSection(agents),
         budget: renderBudgetSection(budget),
         plan: renderPlanSection(plans),
         calendar: renderCalendarSection(calendarView),
+        activity: activityView ? renderActivitySection(activityView) : '',
+        strategy: renderStrategySection(plans),
+        profile: profileView ? renderProfileSection(profileView) : '',
       },
       extraStyles:
+        sidebarStyles() +
         agentsSectionStyles() +
         budgetSectionStyles() +
         planSectionStyles() +
-        calendarSectionStyles(),
+        calendarSectionStyles() +
+        tabBarStyles() +
+        activitySectionStyles() +
+        strategySectionStyles() +
+        profileSectionStyles(),
     });
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -347,8 +388,20 @@ async function handleRequest(req, res, ctx) {
  * }} ctx
  * @returns {string}
  */
-export function renderDashboardShell({ projectDir, sections = {}, extraStyles = '' } = {}) {
+export function renderDashboardShell({
+  projectDir,
+  sidebar = '',
+  tabBar = '',
+  sections = {},
+  extraStyles = '',
+  zeroAgents = false,
+  activeTab = 'calendar',
+} = {}) {
   const projectLabel = escapeHtml(projectDir);
+
+  // Render a content section into a card body. `data-section` is kept on
+  // every card so server-level snapshot tests and integration tests can
+  // locate sections by key without depending on surrounding layout structure.
   const renderSection = (key, placeholder) => {
     const body = sections[key];
     if (typeof body === 'string' && body.length > 0) {
@@ -356,6 +409,51 @@ export function renderDashboardShell({ projectDir, sections = {}, extraStyles = 
     }
     return `<div class="card-body placeholder" data-section="${key}">${placeholder}</div>`;
   };
+
+  // Sidebar HTML: if a pre-rendered sidebar was supplied use it, otherwise
+  // fall back to the agents section value so the function stays backward-
+  // compatible with callers that don't provide a sidebar (e.g. unit tests
+  // that call renderDashboardShell directly).
+  const sidebarBody = typeof sidebar === 'string' && sidebar.length > 0
+    ? sidebar
+    : (typeof sections.agents === 'string' && sections.agents.length > 0
+        ? sections.agents
+        : '<div class="sidebar-empty"><p>No agents yet.</p><p>Run <code>/aweek:hire</code> to create one.</p></div>');
+
+  // Compute per-tab content so the template stays readable. Only one tab's
+  // section renders at a time — the active tab drives which card is shown.
+  // Tabs not yet implemented by their respective ACs fall through to the
+  // `calendar` default (sibling ACs will add their own branches).
+  const tabContent = zeroAgents
+    ? `<div class="zero-agents-empty" data-section="zero-agents">
+      <div class="zero-agents-icon" aria-hidden="true">🤖</div>
+      <h2 class="zero-agents-title">No agents yet</h2>
+      <p class="zero-agents-body">Hire your first agent to see their calendar, activity, strategy, and profile here.</p>
+      <p class="zero-agents-cta">Run <code>/aweek:hire</code> in Claude Code to get started.</p>
+    </div>`
+    : activeTab === 'strategy'
+      ? `<section class="card card-strategy" aria-labelledby="strategy-head">
+      <div class="card-head"><h2 id="strategy-head">Strategy</h2></div>
+      ${renderSection('strategy', 'Rendered <code>plan.md</code> will appear here.')}
+    </section>`
+    : activeTab === 'profile'
+      ? `<section class="card card-profile" aria-labelledby="profile-head">
+      <div class="card-head"><h2 id="profile-head">Profile</h2></div>
+      ${renderSection('profile', 'Agent identity, scheduling metadata, and budget breakdown will appear here.')}
+    </section>
+    <section class="card card-budget" aria-labelledby="budget-head">
+      <div class="card-head"><h2 id="budget-head">Budget &amp; usage</h2></div>
+      ${renderSection('budget', 'Budget and usage (with over-budget highlighting) will appear here.')}
+    </section>`
+      : activeTab === 'activity'
+        ? `<section class="card card-activity" aria-labelledby="activity-head">
+      <div class="card-head"><h2 id="activity-head">Activity</h2></div>
+      ${renderSection('activity', 'Activity log will appear here.')}
+    </section>`
+        : `<section class="card card-calendar" aria-labelledby="calendar-head">
+      <div class="card-head"><h2 id="calendar-head">Weekly calendar</h2></div>
+      ${renderSection('calendar', 'Weekly calendar / task list will appear here.')}
+    </section>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -391,6 +489,7 @@ export function renderDashboardShell({ projectDir, sections = {}, extraStyles = 
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
     font-size: 13.5px;
     line-height: 1.45;
+    height: 100%;
   }
   header {
     padding: 18px 24px;
@@ -412,25 +511,6 @@ export function renderDashboardShell({ projectDir, sections = {}, extraStyles = 
     font-weight: 400;
     margin-left: 8px;
   }
-  main {
-    padding: 20px 24px 60px;
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 16px;
-  }
-  @media (min-width: 1100px) {
-    main {
-      grid-template-columns: minmax(260px, 320px) 1fr;
-      grid-template-rows: auto auto;
-      grid-template-areas:
-        "agents calendar"
-        "budget plan";
-    }
-    .card-agents { grid-area: agents; }
-    .card-calendar { grid-area: calendar; }
-    .card-plan { grid-area: plan; }
-    .card-budget { grid-area: budget; }
-  }
   .card {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -438,7 +518,9 @@ export function renderDashboardShell({ projectDir, sections = {}, extraStyles = 
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    margin: 16px;
   }
+  .card:first-child { margin-top: 16px; }
   .card-head {
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
@@ -586,24 +668,16 @@ ${extraStyles}
     <h1>aweek dashboard<span>· read-only · live data from <code>.aweek/</code></span></h1>
   </div>
 </header>
-<main>
-  <section class="card card-agents" aria-labelledby="agents-head">
-    <div class="card-head"><h2 id="agents-head">Agents</h2></div>
-    ${renderSection('agents', 'Agents list will appear here.')}
-  </section>
-  <section class="card card-calendar" aria-labelledby="calendar-head">
-    <div class="card-head"><h2 id="calendar-head">Weekly calendar</h2></div>
-    ${renderSection('calendar', 'Weekly calendar / task list will appear here.')}
-  </section>
-  <section class="card card-plan" aria-labelledby="plan-head">
-    <div class="card-head"><h2 id="plan-head">Plan</h2></div>
-    ${renderSection('plan', 'Rendered <code>plan.md</code> will appear here.')}
-  </section>
-  <section class="card card-budget" aria-labelledby="budget-head">
-    <div class="card-head"><h2 id="budget-head">Budget &amp; usage</h2></div>
-    ${renderSection('budget', 'Budget and usage (with over-budget highlighting) will appear here.')}
-  </section>
-</main>
+<div class="dashboard-layout">
+  <nav class="sidebar" data-section="agents" aria-label="Agents">
+    <div class="sidebar-head">Agents</div>
+    ${sidebarBody}
+  </nav>
+  <div class="content-area">
+    ${tabBar}
+    ${tabContent}
+  </div>
+</div>
 <div class="scrim" data-scrim hidden></div>
 <aside class="drawer" data-drawer aria-hidden="true" aria-labelledby="drawer-title" role="dialog">
   <div class="drawer-head">
@@ -708,6 +782,52 @@ ${extraStyles}
   });
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape' && drawer.classList.contains('open')) close();
+  });
+})();
+(function() {
+  // ── URL routing: preserve active tab when switching agents ─────────────
+  // Sidebar links are rendered as plain ?agent=<slug> by the server so they
+  // work without JS (deep-link / no-JS fallback). When JavaScript is active
+  // we intercept those clicks and append the currently-active tab so the
+  // user's tab context is preserved when they switch to a different agent.
+  //
+  // Tab links already carry both agent + tab params and need no interception.
+
+  function getQueryParam(name) {
+    return new URLSearchParams(location.search).get(name) || '';
+  }
+
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    if (!target || !target.closest) return;
+
+    // Only intercept sidebar agent-picker links (.sidebar-item-link).
+    var agentLink = target.closest('.sidebar-item-link');
+    if (!agentLink) return;
+
+    var li = agentLink.closest('[data-agent-slug]');
+    if (!li) return;
+    var slug = li.getAttribute('data-agent-slug') || '';
+    if (!slug) return;
+
+    var tab = getQueryParam('tab');
+    if (tab) {
+      // A non-default tab is active — rewrite the navigation URL to
+      // include it so the selected tab is preserved after the agent switch.
+      e.preventDefault();
+      var newUrl = '?agent=' + encodeURIComponent(slug) + '&tab=' + encodeURIComponent(tab);
+      history.pushState(null, '', newUrl);
+      location.reload();
+    }
+    // No active tab → the plain ?agent=<slug> href is already correct;
+    // let the default link navigation proceed unchanged.
+  });
+
+  // When the user navigates back or forward (e.g. after an agent switch
+  // that used history.pushState), reload the page so the server renders
+  // the correct agent + tab content for the restored URL.
+  window.addEventListener('popstate', function() {
+    location.reload();
   });
 })();
 </script>
