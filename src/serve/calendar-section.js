@@ -47,6 +47,7 @@
 import { join } from 'node:path';
 import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
+import { ActivityLogStore } from '../storage/activity-log-store.js';
 import { loadConfig } from '../storage/config-store.js';
 import { listAllAgents } from '../storage/agent-helpers.js';
 import { readSubagentIdentity } from '../subagents/subagent-file.js';
@@ -428,14 +429,123 @@ export async function gatherCalendarView({ projectDir, selectedSlug, week, now }
     now,
   });
 
+  // Load recent activity log entries for this agent and group them by
+  // task id so the calendar task-detail drawer can show the per-task
+  // activity history without an extra HTTP round-trip. Errors are
+  // absorbed: the drawer can still show task metadata even if the log
+  // is unreadable.
+  const taskActivity = await gatherTaskActivity({
+    projectDir,
+    agentId: selection.slug,
+  }).catch(() => ({}));
+
   return {
     agents,
     selected: {
       slug: selection.slug,
       name: selection.name,
       calendar,
+      taskActivity,
     },
   };
+}
+
+/**
+ * Load recent activity-log entries for the given agent and group them by
+ * task id, sorted newest-first within each group. Each group is capped so
+ * an agent with years of history does not balloon the rendered HTML. The
+ * resulting map is embedded into the calendar section as JSON for the
+ * drawer's task-detail view.
+ *
+ * Only the fields the drawer actually renders are kept (timestamp,
+ * status, duration, URLs, files, tokens, error, exit). The rest of the
+ * log entry shape is dropped so the JSON stays small.
+ *
+ * @param {object} opts
+ * @param {string} opts.projectDir
+ * @param {string} opts.agentId
+ * @returns {Promise<Record<string, Array<object>>>}
+ */
+export async function gatherTaskActivity({ projectDir, agentId } = {}) {
+  if (!projectDir || !agentId) return {};
+  const agentsDir = join(projectDir, '.aweek', 'agents');
+  const store = new ActivityLogStore(agentsDir);
+
+  let weeks;
+  try {
+    weeks = await store.listWeeks(agentId);
+  } catch {
+    return {};
+  }
+
+  const perWeek = await Promise.all(
+    weeks.map((week) => store.load(agentId, week).catch(() => [])),
+  );
+  const entries = perWeek.flat();
+  if (entries.length === 0) return {};
+
+  entries.sort((a, b) => {
+    const ta = a.timestamp ? Date.parse(a.timestamp) : 0;
+    const tb = b.timestamp ? Date.parse(b.timestamp) : 0;
+    return tb - ta;
+  });
+
+  const MAX_PER_TASK = 10;
+  const byTask = {};
+  for (const entry of entries) {
+    if (!entry || !entry.taskId) continue;
+    const bucket = byTask[entry.taskId] || (byTask[entry.taskId] = []);
+    if (bucket.length >= MAX_PER_TASK) continue;
+    bucket.push(projectActivityEntryForDrawer(entry));
+  }
+  return byTask;
+}
+
+/**
+ * Reduce an activity-log entry to just the fields the drawer renders.
+ * Keeps the embedded JSON blob small and avoids leaking raw stdout into
+ * the HTML surface area.
+ *
+ * @param {object} entry
+ * @returns {object}
+ */
+function projectActivityEntryForDrawer(entry) {
+  const meta = (entry && entry.metadata) || {};
+  const projected = {
+    id: entry.id,
+    timestamp: entry.timestamp,
+    status: entry.status,
+    description: entry.description,
+  };
+  if (typeof entry.duration === 'number') projected.duration = entry.duration;
+  const urls = Array.isArray(meta.resources?.urls) ? meta.resources.urls.slice(0, 10) : [];
+  const files = Array.isArray(meta.resources?.filePaths) ? meta.resources.filePaths.slice(0, 10) : [];
+  if (urls.length > 0) projected.urls = urls;
+  if (files.length > 0) projected.files = files;
+  const tokens = _pickTotalTokens(meta.tokenUsage);
+  if (tokens !== null) projected.tokens = tokens;
+  if (meta.execution && typeof meta.execution.exitCode === 'number') {
+    projected.exitCode = meta.execution.exitCode;
+  }
+  if (meta.execution && meta.execution.timedOut === true) {
+    projected.timedOut = true;
+  }
+  if (entry.status === 'failed' && meta.error && typeof meta.error.message === 'string') {
+    projected.errorMessage = meta.error.message.slice(0, 400);
+  }
+  return projected;
+}
+
+function _pickTotalTokens(tokenUsage) {
+  if (!tokenUsage || typeof tokenUsage !== 'object') return null;
+  if (typeof tokenUsage.totalTokens === 'number') return tokenUsage.totalTokens;
+  if (typeof tokenUsage.total === 'number') return tokenUsage.total;
+  const input = typeof tokenUsage.inputTokens === 'number' ? tokenUsage.inputTokens : 0;
+  const output = typeof tokenUsage.outputTokens === 'number' ? tokenUsage.outputTokens : 0;
+  const cacheWrite = typeof tokenUsage.cacheCreationInputTokens === 'number' ? tokenUsage.cacheCreationInputTokens : 0;
+  const cacheRead = typeof tokenUsage.cacheReadInputTokens === 'number' ? tokenUsage.cacheReadInputTokens : 0;
+  const sum = input + output + cacheWrite + cacheRead;
+  return sum > 0 ? sum : null;
 }
 
 /**
@@ -485,7 +595,23 @@ export function renderCalendarSection(view) {
     renderCalendarCounts(cal.counts),
     renderCalendarGrid(cal),
     renderCalendarUnscheduled(cal.tasks),
+    renderTaskActivityEmbed(selected.taskActivity || {}),
   ].join('');
+}
+
+/**
+ * Embed the per-task activity log as a JSON blob the drawer script can
+ * read client-side. Using `<script type="application/json">` keeps the
+ * payload out of the live DOM and lets the parser skip it — we escape
+ * any `</script` sequence to prevent the blob from closing the tag.
+ *
+ * @param {Record<string, Array<object>>} taskActivity
+ * @returns {string}
+ */
+function renderTaskActivityEmbed(taskActivity) {
+  const safe = taskActivity && typeof taskActivity === 'object' ? taskActivity : {};
+  const json = JSON.stringify(safe).replace(/<\/script/gi, '<\\/script');
+  return `<script type="application/json" id="aweek-task-activity" data-task-activity>${json}</script>`;
 }
 
 /**

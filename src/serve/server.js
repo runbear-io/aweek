@@ -659,6 +659,84 @@ export function renderDashboardShell({
     text-transform: none;
     letter-spacing: 0;
   }
+  .drawer-activity {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .drawer-section-title {
+    margin: 0 0 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .drawer-activity-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .drawer-activity-item {
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .drawer-activity-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .drawer-activity-ts {
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .drawer-activity-meta {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .drawer-activity-meta strong { color: var(--text); font-weight: 500; margin-left: 4px; }
+  .drawer-activity-urls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    margin-top: 6px;
+  }
+  .drawer-activity-url {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    background: rgba(138,180,255,.1);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    text-decoration: none;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .drawer-activity-url:hover { border-color: var(--accent); }
+  .drawer-activity-error {
+    margin-top: 6px;
+    color: var(--status-failed);
+    font-size: 11.5px;
+    word-break: break-word;
+  }
+  .drawer-activity-empty {
+    color: var(--muted);
+    font-size: 12px;
+    font-style: italic;
+  }
 ${extraStyles}
 </style>
 </head>
@@ -688,6 +766,10 @@ ${extraStyles}
     <div class="drawer-chips" data-drawer-chips></div>
     <div class="drawer-desc" data-drawer-desc></div>
     <dl class="drawer-fields" data-drawer-fields></dl>
+    <section class="drawer-activity" data-drawer-activity aria-label="Task activity" hidden>
+      <h3 class="drawer-section-title">Activity</h3>
+      <div class="drawer-activity-list" data-drawer-activity-list></div>
+    </section>
   </div>
 </aside>
 <footer>
@@ -702,6 +784,19 @@ ${extraStyles}
   var chipsEl = drawer.querySelector('[data-drawer-chips]');
   var descEl = drawer.querySelector('[data-drawer-desc]');
   var fieldsEl = drawer.querySelector('[data-drawer-fields]');
+  var activityEl = drawer.querySelector('[data-drawer-activity]');
+  var activityListEl = drawer.querySelector('[data-drawer-activity-list]');
+
+  // Activity log entries embedded server-side and keyed by taskId. Parsed
+  // once on load so per-task drawer opens stay sync.
+  var taskActivity = {};
+  try {
+    var embed = document.getElementById('aweek-task-activity');
+    if (embed && embed.textContent) {
+      var parsed = JSON.parse(embed.textContent);
+      if (parsed && typeof parsed === 'object') taskActivity = parsed;
+    }
+  } catch (err) { /* leave taskActivity empty */ }
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
@@ -714,6 +809,18 @@ ${extraStyles}
     if (isNaN(d.getTime())) return iso;
     return d.toLocaleString();
   }
+  function fmtDuration(ms) {
+    if (!ms || ms < 0) return '';
+    if (ms < 1000) return ms + 'ms';
+    var s = Math.round(ms / 100) / 10;
+    if (s < 60) return s + 's';
+    var mins = Math.floor(s / 60);
+    var rem = Math.round(s - mins * 60);
+    return mins + 'm ' + rem + 's';
+  }
+  function fmtNum(n) {
+    return Number(n).toLocaleString('en-US');
+  }
   function chip(cls, label) {
     if (!label) return '';
     return '<span class="chip ' + esc(cls) + '">' + esc(label) + '</span>';
@@ -721,6 +828,39 @@ ${extraStyles}
   function row(label, value) {
     if (value === undefined || value === null || value === '') return '';
     return '<dt>' + esc(label) + '</dt><dd>' + esc(value) + '</dd>';
+  }
+  function renderActivity(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return '<div class="drawer-activity-empty">No activity logged for this task yet.</div>';
+    }
+    return entries.map(function(e) {
+      var status = e.status || 'unknown';
+      var head = '<div class="drawer-activity-head">'
+        + chip('chip-status chip-status-' + status, status.replace(/-/g, ' '))
+        + '<span class="drawer-activity-ts">' + esc(fmtDate(e.timestamp)) + '</span>'
+        + '</div>';
+      var meta = [];
+      if (e.duration) meta.push('<span>duration<strong>' + esc(fmtDuration(e.duration)) + '</strong></span>');
+      if (typeof e.tokens === 'number') meta.push('<span>tokens<strong>' + esc(fmtNum(e.tokens)) + '</strong></span>');
+      if (typeof e.exitCode === 'number' && e.exitCode !== 0) meta.push('<span>exit<strong>' + esc(e.exitCode) + '</strong></span>');
+      if (e.timedOut) meta.push('<span>timed out</span>');
+      var metaHtml = meta.length
+        ? '<div class="drawer-activity-meta">' + meta.join('') + '</div>'
+        : '';
+      var urlsHtml = '';
+      if (Array.isArray(e.urls) && e.urls.length) {
+        urlsHtml = '<div class="drawer-activity-urls">' + e.urls.slice(0, 6).map(function(u) {
+          var label = String(u).replace(/^https?:\/\//, '');
+          if (label.length > 46) label = label.slice(0, 43) + '…';
+          return '<a class="drawer-activity-url" href="' + esc(u) + '" target="_blank" rel="noopener noreferrer" title="' + esc(u) + '">' + esc(label) + '</a>';
+        }).join('') + '</div>';
+      }
+      var errHtml = '';
+      if (status === 'failed' && e.errorMessage) {
+        errHtml = '<div class="drawer-activity-error">' + esc(e.errorMessage) + '</div>';
+      }
+      return '<div class="drawer-activity-item">' + head + metaHtml + urlsHtml + errHtml + '</div>';
+    }).join('');
   }
   function open(t) {
     var status = t.status || 'pending';
@@ -744,6 +884,14 @@ ${extraStyles}
     if (t.delegatedTo) rows += row('Delegated to', t.delegatedTo);
     if (t.id) rows += row('Task ID', t.id);
     fieldsEl.innerHTML = rows;
+    if (activityEl && activityListEl) {
+      if (t.id) {
+        activityListEl.innerHTML = renderActivity(taskActivity[t.id] || []);
+        activityEl.hidden = false;
+      } else {
+        activityEl.hidden = true;
+      }
+    }
     drawer.classList.add('open');
     drawer.setAttribute('aria-hidden', 'false');
     scrim.classList.add('show');
