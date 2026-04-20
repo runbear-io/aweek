@@ -1,124 +1,101 @@
 # aweek
 
-Claude Code plugin for running multiple AI agents on scheduled weekly plans.
-Each aweek agent is a 1-to-1 wrapper around a Claude Code **subagent**
-(`.claude/agents/<slug>.md`) with its own long-term goals, monthly
-objectives, weekly tasks, and token budget. An 10-minute heartbeat triggers
-Claude Code CLI sessions that execute the next pending task per agent,
-tracks token usage against a weekly budget, and pauses agents that
-exhaust their budget.
+**If Claude Code is the doer, aweek is the planner.**
 
-## Install
+aweek is a Claude Code plugin for building a team of AI agents that handle the work that repeats. Each agent has a role, a weekly plan, and a token budget. The plan evolves every Monday based on what worked last week. You set direction. Claude Code does the work. aweek runs the week.
 
-aweek ships as a Claude Code plugin. Two pieces land on your machine:
+> _[60-second demo: Monday's plan based on last week's results → you approve → Friday's status report + next week's draft plan]_
 
-1. The seven `/aweek:*` slash commands (via the plugin).
-2. The `aweek` CLI binary that those commands shell out to (via npm).
+## Why aweek exists
 
-The plugin's `SessionStart` hook auto-installs the CLI on first run, so
-for most users step 1 is the whole story.
+Most AI tools are great at one-off prompts. They're terrible at the work that repeats — the weekly competitive scan, the Monday newsletter, the customer feedback digest, the recurring research memo. That work doesn't need a smarter model. It needs a team that shows up on schedule, remembers what they did last week, and gets a little better each Monday.
 
-### From a Claude Code marketplace (once published)
+aweek is that team.
 
-```bash
-/plugin install aweek@<marketplace-name>
-```
+## Who it's for
 
-### From a local clone (development)
+- Founders running their own ops who can't keep up with weekly cadence
+- Marketers and creators publishing on a schedule (blog → social → newsletter)
+- Analysts and researchers running weekly digests, briefs, or memos
+- Anyone whose week looks a lot like last week's
 
-```bash
-git clone https://github.com/runbear-io/aweek.git
-cd aweek
-pnpm install
-pnpm link --global     # puts `aweek` on PATH
-claude --plugin-dir .  # loads the plugin from this directory
-```
+## What you can build
 
-`/reload-plugins` inside the session picks up edits without restarting.
-
-### Prerequisites
-
-- Node.js 20+ (ESM support)
-- `crontab` for the optional heartbeat (standard on macOS / Linux)
-- `jq` for a few slash-command snippets that stream JSON between steps
+| Team | Cadence | What it does |
+|---|---|---|
+| **Content team** | Publish weekly, distribute daily | 2 blog posts a week, atomized into ~10 social posts, a thread, and a newsletter. Multi-agent handoff: research → draft → editor → distributor. Each week's plan starts from what worked last week. |
+| **Competitive intel team** | Brief every Monday | Agents scan ~10 competitors' releases, blogs, pricing, changelogs. Hand back a Monday brief — diffs vs. last week visible at a glance. |
+| **Customer feedback team** | Synthesis weekly | Agents read the week's tickets, NPS comments, and call notes. Draft a Friday memo — themes, regressions, top requests, suggested experiments. |
 
 ## What you get
 
-| Command | What it does |
-|---------|--------------|
-| `/aweek:init` | Bootstrap a project — create the `.aweek/` data dir and (optionally) install the 10-minute heartbeat crontab entry |
-| `/aweek:hire` | Create an aweek agent — identity only (name, description, system prompt); goals and plans come later |
-| `/aweek:plan` | Manage an agent's long-term goals, monthly objectives, weekly tasks, and approve pending weekly plans |
-| `/aweek:manage` | Lifecycle ops — resume a budget-paused agent, top up its budget, pause, or delete |
-| `/aweek:summary` | Dashboard of every agent with goal count, task progress, budget usage, and status |
-| `/aweek:calendar` | Render an agent's weekly plan as a calendar grid for interactive task edits |
-| `/aweek:delegate-task` | Place a task in another agent's async inbox queue |
+| You run | Your team does |
+|---|---|
+| `/aweek:hire` | Adds an agent — name, role, system prompt |
+| `/aweek:plan` | Drafts long-term goals → monthly objectives → weekly tasks. You approve. |
+| `/aweek:summary` | Hands in a status report — done, pending, budget left |
+| `/aweek:calendar` | Shows the week as an editable calendar grid |
+| `/aweek:manage` | Lifecycle ops — pause, resume, top up budget, fire |
+| `/aweek:delegate-task` | Drops work into another agent's inbox. Agents hand off to each other. |
+| `/aweek:init` | One-time setup — installs the 10-minute heartbeat that wakes every agent |
 
-## Typical first-run
+## Try it in 60 seconds
 
-```text
-User: /aweek:init
-…creates .aweek/, prompts to install the heartbeat, offers to launch /aweek:hire
-
-User: /aweek:hire
-…collects name/description/system prompt, writes .claude/agents/<slug>.md and the aweek scheduling JSON
-
-User: /aweek:plan
-…walks you through goals → monthly objectives → weekly tasks, then approves the plan.
-The first approved plan activates the heartbeat.
+```bash
+/plugin install aweek@runbear-io   # once published
+/aweek:init                     # installs heartbeat
+/aweek:hire                     # add your first agent
+/aweek:plan                     # draft & approve the week
 ```
 
-After that, the cron entry wakes up every 10 minutes and runs the next pending task
-per agent inside a fresh Claude Code CLI session.
+Walk away. Come back Monday morning to a status report and next week's draft plan.
 
-## Architecture
+## How it works (in 3 lines)
 
-- **Slash commands** live in `skills/<name>/SKILL.md`. They shell out to
-  `aweek exec <module> <fn>` for every stateful operation, so the
-  markdown is location-independent.
-- **`aweek exec`** is a registry-backed dispatcher (`src/cli/dispatcher.js`)
-  that exposes a whitelist of skill exports through a `JSON in → JSON out`
-  CLI surface.
-- **Heartbeat** (`bin/aweek heartbeat`) is a per-project cron entry that
-  drains each agent's inbox + weekly task queue, runs the selected task in
-  a Claude Code CLI session, and records token usage against the agent's
-  weekly budget.
-- **Storage** is file-based: `.aweek/agents/<slug>.json` for scheduling
-  state, `.claude/agents/<slug>.md` for identity (the single source of
-  truth — edit it directly to rename or re-prompt an agent).
-- **Validation** runs every mutation through AJV schemas in `src/schemas/`;
-  batches are atomic.
+1. **Slash commands** (`/aweek:*`) shell out to a tiny `aweek` CLI for every state change.
+2. **Heartbeat** is a 10-minute cron entry per project. It picks the next pending task per agent and runs it in a fresh Claude Code CLI session.
+3. **Storage** is plain files: `.aweek/agents/<slug>.json` for scheduling, `.claude/agents/<slug>.md` for identity. No DB.
+
+Every mutation is schema-validated and atomic. **2,000+ tests** guard the data layer.
+
+## Install
+
+aweek ships as a Claude Code plugin. The plugin's `SessionStart` hook installs the `aweek` CLI on first run.
+
+**From a Claude Code marketplace** (when published):
+```bash
+/plugin install aweek@runbear-io
+```
+
+**From source:**
+```bash
+git clone https://github.com/runbear-io/aweek.git
+cd aweek && pnpm install && pnpm link --global
+claude --plugin-dir .
+```
+`/reload-plugins` picks up edits without restarting.
+
+**Requirements:** macOS or Linux, Node.js 20+, `crontab`, `jq`.
 
 ## Troubleshooting
 
-**`/aweek:*` commands can't find `aweek`.** The SessionStart hook tried
-`npm install -g aweek` and it failed. Options:
-
-- Install it yourself: `npm install -g aweek` (or `pnpm add -g aweek`).
-- From source: `cd <aweek-repo> && pnpm install && pnpm link --global`.
-- Verify it's on PATH: `which aweek`.
-
-**Heartbeat isn't running.** Check `crontab -l` for an entry starting
-with `# aweek:project-heartbeat:`. If missing, re-run `/aweek:init` and
-answer `yes` to the heartbeat prompt.
-
-**Agent paused unexpectedly.** It hit its weekly token budget. Use
-`/aweek:manage` → `resume` to clear the pause (budget resets on the
-next weekly boundary), or `top-up` to reset usage to 0 and optionally
-raise the limit.
+- **Slash commands can't find `aweek`.** SessionStart's `npm install -g aweek` failed. Run it yourself.
+- **Heartbeat isn't running.** Check `crontab -l` for `# aweek:project-heartbeat:`. If missing, re-run `/aweek:init`.
+- **Agent paused.** It hit its weekly budget. `/aweek:manage` → `resume` (resets next week) or `top-up` (resets now).
 
 ## Development
 
 ```bash
-pnpm test            # full suite (2000+ tests)
-pnpm test:verbose    # spec reporter
-pnpm lint            # syntax-check every src file
+pnpm test          # 2,000+ tests
+pnpm lint          # syntax-check src
 ```
 
-Every `/aweek:*` markdown calls into `src/skills/*.js` via the
-dispatcher. Do not duplicate logic in ad-hoc `node -e` snippets — extend
-the module and register the new export in `src/cli/dispatcher.js`.
+Slash commands call into `src/skills/*.js` via `aweek exec <module> <fn>`. Don't duplicate logic in ad-hoc `node -e` snippets — extend the module and register it in `src/cli/dispatcher.js`.
 
 ## License
 
-[Apache License 2.0](LICENSE) — © 2026 Runbear, Inc.
+[Apache 2.0](LICENSE) — © 2026 Runbear, Inc.
+
+---
+
+*Claude Code does the work. aweek runs the week.*
