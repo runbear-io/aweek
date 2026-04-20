@@ -27,7 +27,7 @@ for most users step 1 is the whole story.
 ### From a local clone (development)
 
 ```bash
-git clone https://github.com/ssowonny/aweek.git
+git clone https://github.com/runbear-io/aweek.git
 cd aweek
 pnpm install
 pnpm link --global     # puts `aweek` on PATH
