@@ -477,50 +477,52 @@ describe('init — projectHeartbeatMarker', () => {
 });
 
 describe('init — buildHeartbeatCommand', () => {
-  it('wraps the aweek heartbeat CLI in the user login shell', () => {
+  it('emits an absolute-path invocation with no shell dependency', () => {
     const cmd = buildHeartbeatCommand({
       projectDir: '/tmp/p',
-      shell: '/bin/zsh',
-      loginFlag: '-lc',
+      nodePath: '/usr/local/bin/node',
+      aweekEntry: '/usr/local/lib/node_modules/aweek/bin/aweek.js',
     });
     assert.equal(
       cmd,
-      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
+      `'/usr/local/bin/node' '/usr/local/lib/node_modules/aweek/bin/aweek.js' heartbeat --all --project-dir '/tmp/p'`,
     );
   });
 
-  it('honors the detected shell from env.SHELL', () => {
+  it('defaults nodePath to process.execPath', () => {
     const cmd = buildHeartbeatCommand({
       projectDir: '/tmp/p',
-      env: { SHELL: '/bin/bash' },
+      aweekEntry: '/opt/aweek/bin/aweek.js',
     });
-    assert.equal(
-      cmd,
-      `/bin/bash -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
+    assert.ok(
+      cmd.startsWith(`'${process.execPath}' '/opt/aweek/bin/aweek.js'`),
+      `expected command to start with current node execPath, got: ${cmd}`,
     );
   });
 
-  it('falls back to /bin/sh -c when SHELL is unset', () => {
-    const cmd = buildHeartbeatCommand({
-      projectDir: '/tmp/p',
-      env: {},
-    });
-    assert.equal(
-      cmd,
-      `/bin/sh -c 'aweek heartbeat --all --project-dir /tmp/p'`,
-    );
-  });
-
-  it(`escapes single quotes in projectDir`, () => {
+  it('single-quotes paths that contain spaces or special characters', () => {
     const cmd = buildHeartbeatCommand({
       projectDir: `/tmp/foo's proj`,
-      shell: '/bin/zsh',
-      loginFlag: '-lc',
+      nodePath: '/home/user with space/bin/node',
+      aweekEntry: '/home/user with space/aweek.js',
     });
     assert.equal(
       cmd,
-      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/foo'\\''s proj'`,
+      `'/home/user with space/bin/node' '/home/user with space/aweek.js' heartbeat --all --project-dir '/tmp/foo'\\''s proj'`,
     );
+  });
+
+  it('throws EHB_ENTRY_UNRESOLVED when the aweek entry cannot be resolved', () => {
+    const originalArgv1 = process.argv[1];
+    try {
+      process.argv[1] = '';
+      assert.throws(
+        () => buildHeartbeatCommand({ projectDir: '/tmp/p' }),
+        (err) => err.code === 'EHB_ENTRY_UNRESOLVED',
+      );
+    } finally {
+      process.argv[1] = originalArgv1;
+    }
   });
 
   it('throws when projectDir is missing', () => {
@@ -535,12 +537,12 @@ describe('init — buildHeartbeatEntry', () => {
   it('builds a two-line entry with default schedule and default command', () => {
     const entry = buildHeartbeatEntry({
       projectDir: '/tmp/p',
-      shell: '/bin/zsh',
-      loginFlag: '-lc',
+      nodePath: '/usr/local/bin/node',
+      aweekEntry: '/opt/aweek/bin/aweek.js',
     });
     assert.equal(
       entry,
-      `# aweek:project-heartbeat:/tmp/p\n*/10 * * * * /bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
+      `# aweek:project-heartbeat:/tmp/p\n*/10 * * * * '/usr/local/bin/node' '/opt/aweek/bin/aweek.js' heartbeat --all --project-dir '/tmp/p'`,
     );
   });
 
@@ -704,8 +706,8 @@ describe('init — installHeartbeat (happy path)', () => {
 
     const result = await installHeartbeat({
       projectDir: '/tmp/p',
-      shell: '/bin/zsh',
-      loginFlag: '-lc',
+      nodePath: '/usr/local/bin/node',
+      aweekEntry: '/opt/aweek/bin/aweek.js',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
       writeCrontabFn: fake.writeCrontabFn,
@@ -716,7 +718,7 @@ describe('init — installHeartbeat (happy path)', () => {
     assert.equal(result.schedule, DEFAULT_HEARTBEAT_SCHEDULE);
     assert.equal(
       result.command,
-      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
+      `'/usr/local/bin/node' '/opt/aweek/bin/aweek.js' heartbeat --all --project-dir '/tmp/p'`,
     );
     assert.equal(result.marker, 'aweek:project-heartbeat:/tmp/p');
     assert.equal(result.previous, null);
@@ -860,8 +862,8 @@ describe('init — queryHeartbeat', () => {
     await installHeartbeat({
       projectDir: '/tmp/p',
       schedule: '*/15 * * * *',
-      shell: '/bin/zsh',
-      loginFlag: '-lc',
+      nodePath: '/usr/local/bin/node',
+      aweekEntry: '/opt/aweek/bin/aweek.js',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
       writeCrontabFn: fake.writeCrontabFn,
@@ -876,7 +878,7 @@ describe('init — queryHeartbeat', () => {
     assert.equal(result.schedule, '*/15 * * * *');
     assert.equal(
       result.command,
-      `/bin/zsh -lc 'aweek heartbeat --all --project-dir /tmp/p'`,
+      `'/usr/local/bin/node' '/opt/aweek/bin/aweek.js' heartbeat --all --project-dir '/tmp/p'`,
     );
   });
 
@@ -1288,7 +1290,7 @@ describe('init — detectInitState', () => {
 
       assert.equal(state.heartbeat.installed, true);
       assert.equal(state.heartbeat.schedule, '*/15 * * * *');
-      assert.match(state.heartbeat.command, /aweek heartbeat --all/);
+      assert.match(state.heartbeat.command, /heartbeat --all --project-dir/);
       assert.equal(state.needsWork.heartbeat, false);
     } finally {
       await tmp.cleanup();
