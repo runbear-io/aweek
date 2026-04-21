@@ -451,6 +451,47 @@ describe('startServer()', () => {
     assert.equal(res.statusCode, 404);
   });
 
+  it('serves a transcript as plain text when the file exists', async () => {
+    const execDir = join(projectDir, '.aweek', 'agents', 'writer', 'executions');
+    await mkdir(execDir, { recursive: true });
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      model: 'claude-opus-4-7',
+      session_id: 's1',
+      cwd: '/tmp/proj',
+    });
+    await writeFile(join(execDir, 'task-abc_session-42.jsonl'), line + '\n', 'utf8');
+
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}api/executions/writer/task-abc_session-42`);
+
+    assert.equal(res.statusCode, 200);
+    assert.match(res.headers['content-type'] || '', /text\/plain/);
+    assert.match(res.body, /^\[system:init\]/);
+    assert.match(res.body, /model=claude-opus-4-7/);
+  });
+
+  it('returns 404 for a missing transcript', async () => {
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}api/executions/writer/task-abc_session-42`);
+    assert.equal(res.statusCode, 404);
+    assert.match(res.body, /No transcript/);
+  });
+
+  it('rejects transcript requests with traversal-looking segments', async () => {
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}api/executions/writer/..%2Fetc`);
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('rejects transcript basenames without the `_` separator', async () => {
+    handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
+    const res = await httpGet(`${handle.url}api/executions/writer/no-separator-here`);
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body, /Bad Request/);
+  });
+
   it('returns 405 for non-GET/HEAD requests', async () => {
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
     const res = await httpGet(handle.url, { method: 'POST' });
