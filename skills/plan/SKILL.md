@@ -195,49 +195,122 @@ Route based on the choice:
 
 ---
 
-#### Path 1 — Full interview (default)
+#### Path 1 — Adaptive interview (default)
 
-Enter inline-blocking interview mode: emit one `AskUserQuestion` per fired trigger **in array order**, waiting for the answer before asking the next question. Every answer must be collected before continuing to B2b.
+Run an Ouroboros-style adaptive loop: every answer is scored across four weighted clarity dimensions, and the loop keeps drilling into the weakest one until the completion gate passes (overall ambiguity ≤ 0.20, every per-dimension floor met, two consecutive qualifying turns). Trigger-tailored questions seed the loop; once triggers are exhausted, follow-up questions target the weakest dimension.
 
-Tailor each question using the trigger's `details` object:
+**Dimensions** (matching `src/skills/plan-ambiguity.js`):
 
-##### `first-ever-plan`
+| Key | Weight | Floor | Focuses on |
+|---|---|---|---|
+| `goalClarity` | 35% | 0.75 | Specific, non-aspirational weekly outcomes |
+| `taskSpecificity` | 30% | 0.70 | Tasks concrete enough to dispatch without asking back |
+| `prioritySequencing` | 20% | 0.65 | Ordering / what to do first if the week compresses |
+| `constraintClarity` | 15% | 0.65 | Deadlines, dependencies, budget, availability |
 
-> This is **{agentName}**'s first weekly plan. To make it actionable rather than a placeholder, tell me: what are the 2–3 outcomes you most want {agentName} to accomplish this week? Be specific — I'll use these to anchor every task I generate.
+##### P1-0: Resume or start a fresh interview
 
-##### `conflicting-or-vague-goals`
+```bash
+echo '{"agentsDir":".aweek/agents","agentId":"<AGENT_ID>"}' \
+  | aweek exec plan-interview-store interviewExists --input-json -
+```
 
-When `details.vague === true`:
+- `true` → ask via `AskUserQuestion` whether to **resume** the prior state (`loadInterviewState`) or **discard and restart** (`clearInterviewState`, then `createInterviewState`).
+- `false` → call `createInterviewState` with `initialContext` set to the user's top-level plan intent (capture this from the opening exchange when `create` was chosen).
 
-> I looked at {agentName}'s `plan.md` and found: **{details.vagueReason}**. Without concrete goals I'd be guessing at priorities. Describe what you want this agent to accomplish in the next 30 days — 2–3 specific, measurable outcomes. I'll derive this week's tasks directly from those.
+Hold the returned state in session memory as `STATE`. After every mutation below, write it back with `saveInterviewState`.
 
-When `details.conflicting === true`:
+##### P1-1: Seed with trigger-tailored questions
 
-> I found **{details.conflictingPairs.length}** potentially conflicting goal pair(s) in `plan.md`:
->
-> {for each pair: `• "{lineA}" ↔ "{lineB}"`}
->
-> Same topic, opposite directions — tasks generated from both would pull against each other. Which direction should take precedence for this week's plan?
+Emit one `AskUserQuestion` per fired trigger, in array order. Tailor each question using the trigger's `details` object:
 
-##### `prior-week-problems`
+- **`first-ever-plan`** — *This is **{agentName}**'s first weekly plan. To make it actionable rather than a placeholder, tell me: what are the 2–3 outcomes you most want {agentName} to accomplish this week? Be specific — I'll use these to anchor every task I generate.*
+- **`conflicting-or-vague-goals`** (`details.vague`) — *I looked at **{agentName}**'s `plan.md` and found: **{details.vagueReason}**. Describe what you want this agent to accomplish in the next 30 days — 2–3 specific, measurable outcomes.*
+- **`conflicting-or-vague-goals`** (`details.conflicting`) — *I found **{details.conflictingPairs.length}** conflicting goal pair(s) in `plan.md`: {list pairs}. Which direction should take precedence for this week's plan?*
+- **`prior-week-problems`** — *Last week (**{details.priorWeekKey}**), **{details.totalFailed}** task(s) failed ({failure rate}). {failed descriptions}. What was the main cause, and should I reduce load, re-scope, or shift areas?*
+- **`deadline-approaching`** — *Heads-up: {approaching deadlines summary}. Prioritise deadline-critical work this week, or maintain balance? List any specific deliverables that must land.*
 
-> Last week (**{details.priorWeekKey}**), **{details.totalFailed} task(s) failed** — {Math.round(details.failureRate × 100)}% of {details.totalActivities} recorded activities:
->
-> {bullet list of details.failedDescriptions}
->
-> Before I plan this week I want to understand what happened. What was the main cause — unclear scope, blocked dependencies, too much load, or something else? Should I reduce the workload, re-scope tasks, or shift to different areas?
+**Run the scoring loop (P1-3) between every pair of trigger questions.** Do not ask multiple trigger questions back-to-back without scoring in between — the model needs to know whether a dimension is already satisfied before drilling.
 
-##### `deadline-approaching`
+##### P1-2: Adaptive drill (when triggers are exhausted)
 
-> Heads-up: **{details.approachingDeadlines.length} deadline(s)** are approaching within {details.lookaheadDays} days. Nearest: **{details.nearestDeadline.label}** — {details.nearestDeadline.daysRemaining ≤ 0 ? "already passed" : "in N day(s)"}.
->
-> Should this week's plan prioritise deadline-critical work above everything else, or maintain the current task balance? List any specific deliverables that must land before the deadline.
+Once every fired trigger has been asked AND the gate still says `qualifies: false`, generate the next question adaptively:
 
-After all questions are answered, hold the collected answers as **interview context** for the rest of this session. When you are about to ask the user to describe seed tasks, open with a one-sentence recap so the tasks stay grounded in stated priorities:
+1. Get the snapshot + weakest dimension:
+   ```bash
+   echo '{"breakdown":<STATE.lastBreakdown>,"streak":<STATE.streak>}' \
+     | aweek exec plan-ambiguity buildAmbiguitySnapshot --input-json -
+   echo '{"breakdown":<STATE.lastBreakdown>}' \
+     | aweek exec plan-ambiguity weakestDimension --input-json -
+   ```
+2. Using the snapshot + weakest dimension + the full `STATE.turns` transcript as context, **compose one follow-up question** targeting the weakest area. Rules for the question:
+   - One question only. No preamble, no summary, no meta-commentary.
+   - Aim to move the weakest dimension above its floor in a single round.
+   - Prefer ontological questions ("What IS X?", "Root cause or symptom?", "What are we assuming?") over yes/no.
+   - If the transcript already contains a known fact relevant to the question, frame the question as a decision rather than rediscovery ("Given X, should Y or Z?") — the breadth-keeper pattern from Ouroboros.
+3. Emit via `AskUserQuestion` with options derived from the weakest dimension (e.g. for `constraintClarity`, offer "There is a deadline — let me specify", "No hard deadline", "Unclear / need to check").
 
-> "Based on what you've shared: {brief recap}. Here's how I'd approach this week — "
+##### P1-3: Score the transcript (runs after every answer)
 
-Then suggest appropriate tasks derived from the answers before asking the user to confirm or adjust. Proceed to **B2b** after the interview is complete.
+After each answer lands:
+
+1. Append the just-answered turn to the transcript and persist:
+   ```bash
+   echo '{"state":<STATE>,"turn":{"question":"<Q>","answer":"<A>"}}' \
+     | aweek exec plan-interview-store appendTurn --input-json -
+   # then:
+   echo '{"agentsDir":".aweek/agents","agentId":"<AGENT_ID>","state":<STATE>}' \
+     | aweek exec plan-interview-store saveInterviewState --input-json -
+   ```
+2. Build the scoring prompt:
+   ```bash
+   echo '{"initialContext":"<STATE.initialContext>","transcript":<STATE.turns>}' \
+     | aweek exec plan-ambiguity buildScoringPrompt --input-json -
+   ```
+   Returns `{ system, user }`.
+3. **Inline LLM call (no subagent, no spawn):** read the `system` + `user` text yourself and emit a JSON-only assistant reply in the shape:
+   ```json
+   {
+     "goalClarity":         { "score": 0.00, "justification": "..." },
+     "taskSpecificity":     { "score": 0.00, "justification": "..." },
+     "prioritySequencing":  { "score": 0.00, "justification": "..." },
+     "constraintClarity":   { "score": 0.00, "justification": "..." }
+   }
+   ```
+   No code fences, no prose, just the object. This is a self-scoring step — the same session model that asked the question now scores its own transcript.
+4. Parse the JSON:
+   ```bash
+   echo '{"raw":"<LLM_JSON>"}' \
+     | aweek exec plan-ambiguity parseScoreResponse --input-json -
+   ```
+   If `ok: false`, retry the scoring step once with a reminder to return JSON only. If still bad, skip this turn's scoring (log the failure to the user as a one-line note) and do not advance the streak.
+5. Update the streak and write the scored turn back:
+   ```bash
+   echo '{"prevStreak":<STATE.streak>,"breakdown":<BREAKDOWN>}' \
+     | aweek exec plan-ambiguity updateStreak --input-json -
+   # overwrite the last turn with breakdownAfter + ambiguityAfter + streakAfter
+   # save again
+   ```
+6. Check the gate:
+   ```bash
+   echo '{"breakdown":<BREAKDOWN>,"streak":<NEW_STREAK>}' \
+     | aweek exec plan-ambiguity qualifiesForCompletion --input-json -
+   ```
+   If `qualifies: true` → announce completion (see P1-5), `clearInterviewState`, proceed to B2b.
+
+##### P1-4: Safety rails
+
+- **Question cap = 8 total.** If the loop reaches 8 questions without `qualifies: true`, stop and ask via `AskUserQuestion`: *"Interview hit its question cap. Answer two more questions or continue with a lower-confidence plan?"* If the user chooses "continue", proceed to B2b and record the current breakdown alongside the plan so reviewers see that the plan started from unresolved ambiguity.
+- **Dialectic rhythm check (optional):** if the same dimension has been `weakestDimension` for 3 consecutive turns with no score improvement, rotate to the second-weakest dimension on the next turn to avoid drilling into a dead end.
+- **Scorer degradation:** if the self-scoring step fails to return valid JSON twice in a row, disable scoring for the rest of the interview — continue with trigger-tailored questions only — and flag the breakdown as `partial: true` when the interview closes.
+
+##### P1-5: Closure
+
+When `qualifies: true` OR the cap is reached AND the user chose to continue:
+
+> "Based on what you've shared: {brief recap of `STATE.turns`}. Here's how I'd approach this week — "
+
+Suggest tasks derived from the transcript before asking the user to confirm or adjust. Hold `STATE.lastBreakdown` as the interview context for the rest of this session. `clearInterviewState` once the plan is saved in B3 so the next `create` run starts fresh. Proceed to **B2b**.
 
 ---
 
