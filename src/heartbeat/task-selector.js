@@ -161,22 +161,76 @@ export function trackKeyOf(task) {
 }
 
 /**
- * Check whether a task's `runAt` slot has arrived.
+ * How far in the past a task's `runAt` can be before the heartbeat
+ * stops dispatching it. Tasks whose `runAt` is older than this window
+ * are "stale" — the heartbeat runner marks them `skipped` at the top of
+ * the tick (see `findStaleTasks` + `runHeartbeatForAgent`) rather than
+ * letting them pile up in the FIFO queue and run hours late.
+ *
+ * The window is fixed at 60 minutes regardless of the user's cron
+ * cadence: anything older than an hour is reliably "missed" (laptop was
+ * closed, cron was disabled, cat on the keyboard) and the user doesn't
+ * want a flurry of catch-up dispatches the next time the heartbeat
+ * comes back online.
+ */
+export const STALE_TASK_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Check whether a task's `runAt` slot has arrived AND is still fresh.
  *
  * Missing / malformed `runAt` is treated as always-eligible — we'd
  * rather run a task with a bogus timestamp than block the agent forever
  * on a validator miss. Schema validation already rejects malformed
  * values at write time.
  *
+ * A task is ready iff:
+ *   - it has no `runAt`, OR
+ *   - `runAt <= now` (not scheduled for the future), AND
+ *   - `runAt >= now - maxAgeMs` (not stale past the skip window).
+ *
  * @param {object} task
  * @param {number} nowMs
+ * @param {object} [opts]
+ * @param {number} [opts.maxAgeMs=STALE_TASK_WINDOW_MS] - Skip threshold.
  * @returns {boolean}
  */
-export function isRunAtReady(task, nowMs) {
+export function isRunAtReady(task, nowMs, { maxAgeMs = STALE_TASK_WINDOW_MS } = {}) {
   if (!task || task.runAt == null) return true;
   const scheduledMs = Date.parse(task.runAt);
   if (Number.isNaN(scheduledMs)) return true;
-  return scheduledMs <= nowMs;
+  if (scheduledMs > nowMs) return false;
+  return scheduledMs >= nowMs - maxAgeMs;
+}
+
+/**
+ * Return the pending tasks whose `runAt` is older than `now - maxAgeMs`
+ * — i.e. the ones `runHeartbeatForAgent` should mark `skipped` at the
+ * top of each tick. Tasks without a `runAt`, tasks whose `runAt` is in
+ * the future, and tasks that are not `pending` are all left alone.
+ *
+ * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
+ * @param {object} [opts]
+ * @param {number} [opts.nowMs=Date.now()]
+ * @param {number} [opts.maxAgeMs=STALE_TASK_WINDOW_MS]
+ * @returns {Array<{ taskId: string, runAt: string, ageMs: number }>}
+ */
+export function findStaleTasks(plan, { nowMs = Date.now(), maxAgeMs = STALE_TASK_WINDOW_MS } = {}) {
+  if (!plan || !Array.isArray(plan.tasks)) return [];
+  const cutoffMs = nowMs - maxAgeMs;
+  const stale = [];
+  for (const task of plan.tasks) {
+    if (!task || task.status !== 'pending') continue;
+    if (task.runAt == null) continue;
+    const scheduledMs = Date.parse(task.runAt);
+    if (Number.isNaN(scheduledMs)) continue;
+    if (scheduledMs >= cutoffMs) continue;
+    stale.push({
+      taskId: task.id,
+      runAt: task.runAt,
+      ageMs: nowMs - scheduledMs,
+    });
+  }
+  return stale;
 }
 
 /**
@@ -194,8 +248,9 @@ export function isRunAtReady(task, nowMs) {
  * @param {number} [opts.nowMs=Date.now()]
  * @returns {object[]}
  */
-export function filterEligibleTasks(tasks, { nowMs = Date.now() } = {}) {
-  const pending = filterPendingTasks(tasks).filter((t) => isRunAtReady(t, nowMs));
+export function filterEligibleTasks(tasks, { nowMs = Date.now(), maxAgeMs } = {}) {
+  const readyOpts = maxAgeMs === undefined ? undefined : { maxAgeMs };
+  const pending = filterPendingTasks(tasks).filter((t) => isRunAtReady(t, nowMs, readyOpts));
   return applyDailyReviewOncePerDayRule(pending, nowMs);
 }
 
@@ -215,12 +270,13 @@ export function filterEligibleTasks(tasks, { nowMs = Date.now() } = {}) {
  * @param {number} [opts.nowMs=Date.now()]
  * @returns {Array<{ task: object, index: number, trackKey: string }>}
  */
-export function selectTasksForTickFromPlan(plan, { nowMs = Date.now() } = {}) {
+export function selectTasksForTickFromPlan(plan, { nowMs = Date.now(), maxAgeMs } = {}) {
   if (!plan) return [];
   if (!plan.approved) return [];
   if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return [];
 
-  const eligible = filterEligibleTasks(plan.tasks, { nowMs });
+  const eligibleOpts = maxAgeMs === undefined ? { nowMs } : { nowMs, maxAgeMs };
+  const eligible = filterEligibleTasks(plan.tasks, eligibleOpts);
   if (eligible.length === 0) return [];
 
   // Group eligible tasks by track key (explicit `track` or objectiveId).

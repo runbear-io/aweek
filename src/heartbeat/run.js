@@ -26,6 +26,7 @@ import { tickAgent } from './heartbeat-task-runner.js';
 import {
   selectTasksForTickFromPlan,
   trackKeyOf,
+  findStaleTasks,
 } from './task-selector.js';
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
@@ -86,6 +87,22 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
   const lockDir = join(dataDir, 'locks');
 
   const scheduler = createScheduler({ lockDir });
+
+  // Step 0.9: Sweep stale pending tasks.
+  //
+  // Any pending task whose `runAt` is older than the 60-minute window is
+  // flipped to `skipped` and logged, so the heartbeat doesn't fire an
+  // avalanche of missed tasks after a cron gap (laptop closed, cron
+  // paused, etc.). The rule is a fixed 60-minute window regardless of
+  // the user's cron cadence — see STALE_TASK_WINDOW_MS in
+  // task-selector.js. Best-effort: per-task failures log a warning and
+  // the tick continues.
+  await _sweepStaleTasks({
+    agentId,
+    weeklyPlanStore,
+    activityLogStore,
+    now: new Date(),
+  });
 
   // Step 1: Select next task (first pick goes through tickAgent so the
   // dedup/shell/no-plan guards fire once per cron invocation).
@@ -644,6 +661,75 @@ async function _recordStarted(executionStore, agentId, taskId) {
     await executionStore.record(agentId, record);
   } catch {
     // Graceful degradation — recording failure must not break the drain.
+  }
+}
+
+/**
+ * Flip any pending task whose `runAt` is older than the 60-minute
+ * staleness window to `skipped`, logging each one to the activity log.
+ * Runs once at the top of each heartbeat tick (see {@link runHeartbeatForAgent}).
+ *
+ * Non-fatal by design: a broken store, a missing plan, or a per-task
+ * update failure all degrade to a warning and let the tick continue.
+ * Callers without an activity log (unit tests) still get the skip write
+ * — logging is best-effort on top.
+ *
+ * @param {object} args
+ * @param {string} args.agentId
+ * @param {object} args.weeklyPlanStore
+ * @param {object} [args.activityLogStore]
+ * @param {Date} [args.now]
+ */
+async function _sweepStaleTasks({ agentId, weeklyPlanStore, activityLogStore, now = new Date() }) {
+  let plan;
+  try {
+    plan = await weeklyPlanStore.loadLatestApproved(agentId);
+  } catch (err) {
+    console.warn(`[${agentId}] stale-sweep: load failed: ${err.message}`);
+    return;
+  }
+  if (!plan) return;
+
+  const stale = findStaleTasks(plan, { nowMs: now.getTime() });
+  if (stale.length === 0) return;
+
+  for (const item of stale) {
+    try {
+      await weeklyPlanStore.updateTaskStatus(agentId, plan.week, item.taskId, 'skipped');
+    } catch (err) {
+      console.warn(
+        `[${agentId}] stale-sweep: failed to skip ${item.taskId}: ${err.message}`,
+      );
+      continue;
+    }
+
+    const ageMin = Math.round(item.ageMs / 60000);
+    console.log(
+      `[${agentId}] stale task ${item.taskId} (${ageMin}m past runAt) → skipped`,
+    );
+
+    if (activityLogStore) {
+      const task = plan.tasks.find((t) => t.id === item.taskId);
+      try {
+        await activityLogStore.append(
+          agentId,
+          createLogEntry({
+            agentId,
+            taskId: item.taskId,
+            status: 'skipped',
+            description: task?.description || `(task ${item.taskId})`,
+            metadata: {
+              reason: 'stale_runAt',
+              runAt: item.runAt,
+              ageMs: item.ageMs,
+              tickedAt: now.toISOString(),
+            },
+          }),
+        );
+      } catch (err) {
+        console.warn(`[${agentId}] stale-sweep log warning: ${err.message}`);
+      }
+    }
   }
 }
 

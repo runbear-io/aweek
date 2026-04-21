@@ -13,6 +13,8 @@ import {
   filterPendingTasks,
   filterEligibleTasks,
   isRunAtReady,
+  findStaleTasks,
+  STALE_TASK_WINDOW_MS,
   sortByPriority,
   selectNextTaskFromPlan,
   selectTasksForTickFromPlan,
@@ -718,6 +720,34 @@ describe('task-selector — runAt filtering', () => {
     assert.equal(isRunAtReady({ runAt: 'not-a-date' }, fixed), true);
   });
 
+  it('isRunAtReady returns false for runAt older than the stale window', () => {
+    // fixed = 10:00. Default stale window = 60 min. 08:00 is 2h ago → stale.
+    assert.equal(isRunAtReady({ runAt: '2026-04-20T08:00:00Z' }, fixed), false);
+    // 09:00 is exactly 1h ago — at the boundary, still ready (inclusive).
+    assert.equal(isRunAtReady({ runAt: '2026-04-20T09:00:00Z' }, fixed), true);
+    // 08:59 is > 60 min ago → stale.
+    assert.equal(isRunAtReady({ runAt: '2026-04-20T08:59:00Z' }, fixed), false);
+  });
+
+  it('isRunAtReady honours a custom maxAgeMs override', () => {
+    const oldRunAt = '2026-04-20T08:00:00Z'; // 2h old, normally stale.
+    assert.equal(isRunAtReady({ runAt: oldRunAt }, fixed), false);
+    // Widen the window to 4h — task becomes ready again.
+    assert.equal(
+      isRunAtReady({ runAt: oldRunAt }, fixed, { maxAgeMs: 4 * 60 * 60 * 1000 }),
+      true,
+    );
+    // Infinity disables the sweep entirely.
+    assert.equal(
+      isRunAtReady({ runAt: oldRunAt }, fixed, { maxAgeMs: Infinity }),
+      true,
+    );
+  });
+
+  it('STALE_TASK_WINDOW_MS is 60 minutes', () => {
+    assert.equal(STALE_TASK_WINDOW_MS, 60 * 60 * 1000);
+  });
+
   it('filterEligibleTasks excludes future-scheduled pending tasks', () => {
     const tasks = [
       { id: 'task-a', status: 'pending', runAt: '2026-04-20T09:00:00Z' },
@@ -829,6 +859,72 @@ describe('isDailyReviewTask', () => {
   });
 });
 
+describe('task-selector — findStaleTasks', () => {
+  const nowMs = Date.parse('2026-04-21T10:00:00Z');
+
+  it('returns [] for null / empty plans', () => {
+    assert.deepEqual(findStaleTasks(null, { nowMs }), []);
+    assert.deepEqual(findStaleTasks({}, { nowMs }), []);
+    assert.deepEqual(findStaleTasks({ tasks: [] }, { nowMs }), []);
+  });
+
+  it('returns pending tasks whose runAt is older than 60 min (default)', () => {
+    const plan = {
+      tasks: [
+        { id: 'task-stale-1', status: 'pending', runAt: '2026-04-21T08:00:00Z' }, // 2h old
+        { id: 'task-stale-2', status: 'pending', runAt: '2026-04-20T12:00:00Z' }, // 22h old
+        { id: 'task-fresh', status: 'pending', runAt: '2026-04-21T09:30:00Z' }, // 30m old
+        { id: 'task-future', status: 'pending', runAt: '2026-04-21T11:00:00Z' }, // future
+      ],
+    };
+    const stale = findStaleTasks(plan, { nowMs });
+    assert.deepEqual(stale.map((t) => t.taskId).sort(), ['task-stale-1', 'task-stale-2']);
+    assert.ok(stale.every((t) => t.ageMs > 0));
+  });
+
+  it('ignores non-pending tasks regardless of runAt', () => {
+    const plan = {
+      tasks: [
+        { id: 'task-done', status: 'completed', runAt: '2026-04-20T12:00:00Z' },
+        { id: 'task-failed', status: 'failed', runAt: '2026-04-20T12:00:00Z' },
+        { id: 'task-already-skipped', status: 'skipped', runAt: '2026-04-20T12:00:00Z' },
+        { id: 'task-in-progress', status: 'in-progress', runAt: '2026-04-20T12:00:00Z' },
+      ],
+    };
+    assert.deepEqual(findStaleTasks(plan, { nowMs }), []);
+  });
+
+  it('ignores tasks without runAt', () => {
+    const plan = { tasks: [{ id: 'no-runat', status: 'pending' }] };
+    assert.deepEqual(findStaleTasks(plan, { nowMs }), []);
+  });
+
+  it('ignores malformed runAt values', () => {
+    const plan = { tasks: [{ id: 'bad', status: 'pending', runAt: 'not-a-date' }] };
+    assert.deepEqual(findStaleTasks(plan, { nowMs }), []);
+  });
+
+  it('honours a custom maxAgeMs', () => {
+    const plan = {
+      tasks: [
+        { id: 'task-a', status: 'pending', runAt: '2026-04-21T09:30:00Z' }, // 30m old
+      ],
+    };
+    // Tighten the window to 10 min → the 30-min-old task becomes stale.
+    const stale = findStaleTasks(plan, { nowMs, maxAgeMs: 10 * 60 * 1000 });
+    assert.deepEqual(stale.map((t) => t.taskId), ['task-a']);
+  });
+
+  it('boundary: a task at exactly now - 60min is NOT stale (>= boundary)', () => {
+    const plan = {
+      tasks: [
+        { id: 'edge', status: 'pending', runAt: '2026-04-21T09:00:00Z' }, // exactly 60m ago
+      ],
+    };
+    assert.deepEqual(findStaleTasks(plan, { nowMs }), []);
+  });
+});
+
 describe('task-selector — daily-review once-per-day rule (filterEligibleTasks)', () => {
   // Use a fixed "now" at Wednesday 18:00 UTC so Mon/Tue/Wed reviews
   // (all at 17:00 UTC) are past-eligible and Thu/Fri are still future.
@@ -868,7 +964,10 @@ describe('task-selector — daily-review once-per-day rule (filterEligibleTasks)
     const work = makeTask({ id: 'task-work', objectiveId: 'obj-1', runAt: MON_17 });
     const drMon = makeDailyReviewTask(MON_17);
     const drWed = makeDailyReviewTask(WED_17);
-    const eligible = filterEligibleTasks([work, drMon, drWed], { nowMs });
+    // The once-per-day rule is independent from the 60-min staleness window.
+    // Disable staleness here so the fixture's multi-day runAt values stay
+    // eligible and we actually exercise the daily-review collapse rule.
+    const eligible = filterEligibleTasks([work, drMon, drWed], { nowMs, maxAgeMs: Infinity });
     // work task + one winning daily-review
     assert.equal(eligible.length, 2);
     const ids = eligible.map((t) => t.id).sort();
@@ -976,8 +1075,11 @@ describe('task-selector — daily-review interleaved with work tasks (selectTask
     const plan  = makePlan({ tasks: [drMon, drTue, drWed] });
 
     // With Wed completed, among pending eligible reviews Mon+Tue, Tue is the
-    // most recent (larger runAt) and should be selected.
-    const picks = selectTasksForTickFromPlan(plan, { nowMs });
+    // most recent (larger runAt) and should be selected. The default 60-min
+    // stale sweep would mark Mon/Tue as skipped in real ticks; this test
+    // deliberately disables the stale window to isolate the once-per-day
+    // collapse logic.
+    const picks = selectTasksForTickFromPlan(plan, { nowMs, maxAgeMs: Infinity });
     assert.equal(picks.length, 1);
     assert.equal(picks[0].task.id, drTue.id, 'Tuesday (most recent pending) is selected after Wed completes');
   });
