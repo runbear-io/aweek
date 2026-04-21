@@ -27,6 +27,7 @@
  */
 
 import { spawn as nodeSpawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 
 /** Default CLI binary name */
 const DEFAULT_CLI = 'claude';
@@ -147,13 +148,19 @@ export function buildTaskPrompt(task) {
  * Build CLI arguments array for the `claude` command.
  *
  * Constructs the argument list:
- *   claude --print --output-format json --agent REF --append-system-prompt RUNTIME_CONTEXT TASK
+ *   claude --print --output-format stream-json --verbose --agent REF --append-system-prompt RUNTIME_CONTEXT TASK
  *
- * - `--print` / `--output-format json` run the CLI non-interactively and
- *   emit structured output (used for token-usage parsing downstream).
+ * - `--print` runs the CLI non-interactively.
+ * - `--output-format stream-json --verbose` emits one JSON event per line
+ *   covering system init, the user prompt, every assistant turn (with
+ *   tool_use blocks), every tool_result, and the final result + usage.
+ *   Claude Code requires `--verbose` alongside `stream-json` under
+ *   `--print`. The heartbeat persists the full NDJSON stream per
+ *   execution so the dashboard can render a transcript; token usage is
+ *   pulled from the final `{type:"result"}` event by `parseTokenUsage`.
  * - `--agent REF` selects the Claude Code subagent defined by
- *   `.claude/agents/<REF>.md`. That file provides identity, system prompt,
- *   model, tool allowlist, skills, and MCP servers.
+ *   `.claude/agents/<REF>.md` (owner of identity, model, tools, skills,
+ *   and MCP servers).
  * - `--append-system-prompt` layers per-task scheduling metadata onto the
  *   subagent's own system prompt without mutating the .md file.
  * - The final positional argument is the user-prompt TASK.
@@ -161,7 +168,6 @@ export function buildTaskPrompt(task) {
  * @param {string} subagentRef - Subagent slug (e.g. "marketer")
  * @param {TaskContext} task - Task context
  * @param {object} [opts]
- * @param {boolean} [opts.verbose=false] - Include --verbose flag
  * @param {string} [opts.model] - Override model (e.g. 'opus', 'sonnet')
  * @param {boolean} [opts.dangerouslySkipPermissions=false] - Skip permission prompts
  * @returns {string[]} Array of CLI arguments
@@ -173,17 +179,14 @@ export function buildCliArgs(subagentRef, task, opts = {}) {
 
   const args = [
     '--print',
-    '--output-format', 'json',
+    '--output-format', 'stream-json',
+    '--verbose',
     '--agent', subagentRef,
     '--append-system-prompt', runtimeContext,
   ];
 
   if (opts.model) {
     args.push('--model', opts.model);
-  }
-
-  if (opts.verbose) {
-    args.push('--verbose');
   }
 
   if (opts.dangerouslySkipPermissions) {
@@ -216,11 +219,17 @@ export function buildCliArgs(subagentRef, task, opts = {}) {
  * @param {string} [opts.cli='claude'] - CLI binary path/name
  * @param {string} [opts.cwd] - Working directory for the CLI process
  * @param {number} [opts.timeoutMs=1800000] - Session timeout in milliseconds
- * @param {boolean} [opts.verbose=false] - Pass --verbose to CLI
  * @param {string} [opts.model] - Override model
  * @param {boolean} [opts.dangerouslySkipPermissions=false] - Skip permission prompts
  * @param {function} [opts.spawnFn] - Injectable spawn function (for testing)
  * @param {object} [opts.env] - Additional environment variables
+ * @param {{writeLine: (line: string) => void}} [opts.transcriptWriter]
+ *   Receives each stdout line (one stream-json event per line) as it
+ *   arrives. The heartbeat passes a transcript-store writer so the full
+ *   session is persisted to
+ *   `<agentsDir>/<agent>/executions/<taskId>-<executionId>.jsonl`. The
+ *   writer is responsible for its own close — the launcher never calls
+ *   close(), so the caller controls the file lifetime.
  * @returns {Promise<SessionResult>}
  */
 export async function launchSession(agentId, subagentRef, task, opts = {}) {
@@ -231,9 +240,9 @@ export async function launchSession(agentId, subagentRef, task, opts = {}) {
   const cli = opts.cli || DEFAULT_CLI;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnFn = opts.spawnFn || nodeSpawn;
+  const transcriptWriter = opts.transcriptWriter || null;
 
   const cliArgs = buildCliArgs(subagentRef, task, {
-    verbose: opts.verbose,
     model: opts.model,
     dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
   });
@@ -275,8 +284,20 @@ export async function launchSession(agentId, subagentRef, task, opts = {}) {
         }, timeoutMs)
       : null;
 
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+    // Stream-json emits one event per line. We consume stdout via readline
+    // so the transcript writer sees each event atomically and we still
+    // accumulate the full stdout for parseTokenUsage fallbacks.
+    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    rl.on('line', (line) => {
+      stdout += line + '\n';
+      if (transcriptWriter) {
+        try {
+          transcriptWriter.writeLine(line);
+        } catch {
+          // Writer failures must not kill the session. Persistence is
+          // best-effort — the session's primary job is running the task.
+        }
+      }
     });
 
     child.stderr.on('data', (chunk) => {
@@ -291,7 +312,15 @@ export async function launchSession(agentId, subagentRef, task, opts = {}) {
       }
     });
 
-    child.on('close', (exitCode) => {
+    // Resolve only when both the child has exited AND readline has flushed
+    // any buffered stdout lines. Otherwise we may race past trailing events
+    // (notably the final `{type:"result"}` event that carries token usage).
+    let childExitCode = null;
+    let childExited = false;
+    let rlClosed = false;
+
+    const maybeResolve = () => {
+      if (!childExited || !rlClosed) return;
       if (timer) clearTimeout(timer);
       if (settled) return;
       settled = true;
@@ -305,13 +334,24 @@ export async function launchSession(agentId, subagentRef, task, opts = {}) {
         taskId: task.taskId,
         stdout,
         stderr,
-        exitCode,
+        exitCode: childExitCode,
         timedOut,
         startedAt,
         completedAt,
         durationMs,
         cliArgs,
       });
+    };
+
+    rl.on('close', () => {
+      rlClosed = true;
+      maybeResolve();
+    });
+
+    child.on('close', (exitCode) => {
+      childExitCode = exitCode;
+      childExited = true;
+      maybeResolve();
     });
   });
 }

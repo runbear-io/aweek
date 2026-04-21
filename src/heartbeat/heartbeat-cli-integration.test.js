@@ -4,7 +4,7 @@
  * Post-refactor, every aweek agent is a 1-to-1 wrapper around a Claude Code
  * subagent. The heartbeat task runner picks a task, and the CLI layer spawns:
  *
- *   claude --print --output-format json --agent SUBAGENT_REF \
+ *   claude --print --output-format stream-json --verbose --agent SUBAGENT_REF \
  *          --append-system-prompt RUNTIME_CONTEXT TASK
  *
  * Identity (name, role, system prompt, model, tools, skills, MCP servers)
@@ -151,7 +151,12 @@ function assertSubagentFirstArgs(args, { subagentRef, taskDescription } = {}) {
   assert.ok(args.includes('--print'), 'missing --print');
   assert.ok(args.includes('--output-format'), 'missing --output-format');
   const fmtIdx = args.indexOf('--output-format');
-  assert.equal(args[fmtIdx + 1], 'json', '--output-format should be json');
+  assert.equal(
+    args[fmtIdx + 1],
+    'stream-json',
+    '--output-format should be stream-json',
+  );
+  assert.ok(args.includes('--verbose'), 'missing --verbose (required with stream-json)');
   assert.ok(args.includes('--agent'), 'missing --agent');
   assert.ok(
     args.includes('--append-system-prompt'),

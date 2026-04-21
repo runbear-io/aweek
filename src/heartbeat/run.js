@@ -525,7 +525,7 @@ async function executeOneSelection(selection, ctx) {
         objectiveId: task.objectiveId,
         week,
       },
-      { cwd: projectDir, usageStore, env: agentEnv },
+      { cwd: projectDir, usageStore, env: agentEnv, agentsDir },
     );
   } catch (err) {
     error = err;
@@ -566,6 +566,7 @@ async function executeOneSelection(selection, ctx) {
         durationMs,
         exitCode: session?.exitCode ?? null,
         timedOut: session?.timedOut ?? false,
+        transcriptPath: execResult?.transcriptPath || null,
       },
       result: {
         success: finalStatus === 'completed',

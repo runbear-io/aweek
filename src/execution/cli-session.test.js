@@ -202,12 +202,13 @@ describe('buildTaskPrompt', () => {
 // buildCliArgs
 // ===========================================================================
 describe('buildCliArgs', () => {
-  it('builds base CLI args with --print, --output-format json, --agent REF, --append-system-prompt', () => {
+  it('builds base CLI args with --print, --output-format stream-json --verbose, --agent REF, --append-system-prompt', () => {
     const args = buildCliArgs(SUBAGENT_REF, makeTask());
 
     assert.ok(args.includes('--print'));
     assert.ok(args.includes('--output-format'));
-    assert.ok(args.includes('json'));
+    assert.ok(args.includes('stream-json'));
+    assert.ok(args.includes('--verbose'));
     assert.ok(args.includes('--agent'));
     assert.ok(args.includes('--append-system-prompt'));
   });
@@ -260,8 +261,8 @@ describe('buildCliArgs', () => {
     assert.equal(args[idx + 1], 'opus');
   });
 
-  it('includes --verbose when specified', () => {
-    const args = buildCliArgs(SUBAGENT_REF, makeTask(), { verbose: true });
+  it('always includes --verbose (required by stream-json under --print)', () => {
+    const args = buildCliArgs(SUBAGENT_REF, makeTask());
     assert.ok(args.includes('--verbose'));
   });
 
@@ -273,7 +274,6 @@ describe('buildCliArgs', () => {
   it('omits optional flags by default', () => {
     const args = buildCliArgs(SUBAGENT_REF, makeTask());
     assert.ok(!args.includes('--model'));
-    assert.ok(!args.includes('--verbose'));
     assert.ok(!args.includes('--dangerously-skip-permissions'));
   });
 
@@ -311,7 +311,9 @@ describe('launchSession', () => {
     assert.equal(result.taskId, 'task-abc12345');
     assert.equal(result.exitCode, 0);
     assert.equal(result.timedOut, false);
-    assert.equal(result.stdout, '{"result":"ok"}');
+    // Stream-json emits one event per line; readline re-appends a newline
+    // as it accumulates, so stdout always ends with `\n`.
+    assert.equal(result.stdout, '{"result":"ok"}\n');
     assert.equal(result.stderr, '');
     assert.ok(result.startedAt);
     assert.ok(result.completedAt);
