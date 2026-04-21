@@ -268,16 +268,22 @@ After each answer lands:
      | aweek exec plan-ambiguity buildScoringPrompt --input-json -
    ```
    Returns `{ system, user }`.
-3. **Inline LLM call (no subagent, no spawn):** read the `system` + `user` text yourself and emit a JSON-only assistant reply in the shape:
-   ```json
-   {
-     "goalClarity":         { "score": 0.00, "justification": "..." },
-     "taskSpecificity":     { "score": 0.00, "justification": "..." },
-     "prioritySequencing":  { "score": 0.00, "justification": "..." },
-     "constraintClarity":   { "score": 0.00, "justification": "..." }
-   }
-   ```
-   No code fences, no prose, just the object. This is a self-scoring step — the same session model that asked the question now scores its own transcript.
+3. **Delegate scoring to a fresh subagent** (prevents self-grading bias — the main session tends to inflate scores on its own questions):
+   - Invoke the `Task` tool with:
+     - `subagent_type: "general-purpose"`
+     - `model: "haiku"` — fast, cheap, and isolated from the main session's conversation context. Scoring is pure prompt → JSON, no tools needed.
+     - `description: "Score plan-interview transcript"`
+     - `prompt`: the concatenation of the `system` and `user` strings from step 2, with a trailing line `"Return ONLY the JSON object — no prose, no code fences."`
+   - The subagent's final text response is the `raw` input for `parseScoreResponse` in step 4.
+   - Expected output shape (what the subagent must emit):
+     ```json
+     {
+       "goalClarity":         { "score": 0.00, "justification": "..." },
+       "taskSpecificity":     { "score": 0.00, "justification": "..." },
+       "prioritySequencing":  { "score": 0.00, "justification": "..." },
+       "constraintClarity":   { "score": 0.00, "justification": "..." }
+     }
+     ```
 4. Parse the JSON:
    ```bash
    echo '{"raw":"<LLM_JSON>"}' \
