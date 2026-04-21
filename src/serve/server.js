@@ -15,11 +15,13 @@
  */
 
 import { createServer } from 'node:http';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { platform as nodePlatform } from 'node:process';
 import { networkInterfaces as nodeNetworkInterfaces } from 'node:os';
+import { readTranscriptLines } from '../storage/transcript-store.js';
+import { formatTranscriptLine } from './transcript-formatter.js';
 import {
   MISSING_AWEEK_DIR_CODE,
   createNoAweekDirError,
@@ -255,6 +257,24 @@ async function handleRequest(req, res, ctx) {
   // non-ASCII slugs round-trip correctly. `?week=YYYY-Www` overrides the
   // default "current week" resolution so the dashboard can paginate
   // without a separate endpoint.
+  // Execution transcript endpoint.
+  // Path shape: `/api/executions/<agent-slug>/<basename>` where basename is
+  // `<taskId>-<executionId>` — the filename stem the heartbeat writes under
+  // `.aweek/agents/<slug>/executions/`. Returns a formatted plain-text
+  // transcript (one or more lines per stream-json event) so users can
+  // read, tail, or grep the session from a browser.
+  const transcriptMatch = /^\/api\/executions\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
+  if (transcriptMatch) {
+    const slug = safeDecode(transcriptMatch[1]);
+    const basename = safeDecode(transcriptMatch[2]);
+    await handleTranscriptRequest(req, res, {
+      projectDir: ctx.projectDir,
+      agentId: slug,
+      basename,
+    });
+    return;
+  }
+
   const calendarMatch = /^\/api\/agents\/([^/]+)\/calendar\/?$/.exec(pathname);
   if (calendarMatch) {
     const slug = safeDecode(calendarMatch[1]);
@@ -749,6 +769,19 @@ export function renderDashboardShell({
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
   }
   .drawer-activity-url:hover { border-color: var(--accent); }
+  .drawer-activity-transcript {
+    position: relative;
+    z-index: 1;
+    margin-top: 6px;
+  }
+  .drawer-activity-transcript-link {
+    display: inline-block;
+    font: 11px/1 var(--font-mono);
+    color: var(--muted);
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  .drawer-activity-transcript-link:hover { color: var(--accent); }
   .drawer-activity-error {
     margin-top: 6px;
     color: var(--status-failed);
@@ -904,7 +937,21 @@ ${extraStyles}
       if (status === 'failed' && e.errorMessage) {
         errHtml = '<div class="drawer-activity-error">' + esc(e.errorMessage) + '</div>';
       }
-      var body = head + descHtml + metaHtml + urlsHtml + errHtml;
+      var transcriptHtml = '';
+      if (e.transcriptBasename) {
+        // Link to the full per-execution transcript as plain text, opened
+        // in a new tab so the drawer context is preserved. The outer
+        // overlay link (drawer-activity-link) sits underneath via z-index,
+        // so this inner anchor is the one the click lands on.
+        var agent = new URLSearchParams(location.search).get('agent') || '';
+        var tHref = '/api/executions/'
+          + encodeURIComponent(agent) + '/' + encodeURIComponent(e.transcriptBasename);
+        transcriptHtml = '<div class="drawer-activity-transcript">'
+          + '<a class="drawer-activity-transcript-link" href="' + esc(tHref)
+          + '" target="_blank" rel="noopener noreferrer">view transcript</a>'
+          + '</div>';
+      }
+      var body = head + descHtml + metaHtml + urlsHtml + transcriptHtml + errHtml;
       var href = esc(activityEntryHref(e));
       // The whole item is a link into the activity tab. Nested <a> (the
       // URL chips) are still allowed by most browsers in practice even
@@ -1054,6 +1101,78 @@ function safeDecode(segment) {
   } catch {
     return segment;
   }
+}
+
+/**
+ * Render the NDJSON transcript for a single execution as plain text.
+ *
+ * The `basename` segment is the file stem — `<taskId>-<executionId>` —
+ * that the heartbeat wrote under
+ * `.aweek/agents/<agentId>/executions/<basename>.jsonl`. We reject any
+ * basename containing a path separator or `..` so the URL can never
+ * escape the executions directory. Missing files return 404 with a
+ * friendly plain-text body.
+ *
+ * @param {import('node:http').IncomingMessage} _req
+ * @param {import('node:http').ServerResponse} res
+ * @param {{projectDir: string, agentId: string, basename: string}} ctx
+ */
+async function handleTranscriptRequest(_req, res, ctx) {
+  const { projectDir, agentId, basename } = ctx;
+  const safeAgent = typeof agentId === 'string' && agentId.length > 0
+    && !agentId.includes('/') && !agentId.includes('..');
+  const safeBase = typeof basename === 'string' && basename.length > 0
+    && !basename.includes('/') && !basename.includes('..');
+  if (!safeAgent || !safeBase) {
+    res.statusCode = 400;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end('Bad Request');
+    return;
+  }
+
+  // basename arrives as `<taskId>_<executionId>`. Split on the FIRST `_`
+  // because taskId's schema disallows `_` (it's `task-<a-z0-9-only>`), so
+  // the underscore is an unambiguous separator — executionId may itself
+  // contain dashes without confusing the split.
+  const cutIdx = basename.indexOf('_');
+  if (cutIdx <= 0 || cutIdx === basename.length - 1) {
+    res.statusCode = 400;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end('Bad Request — basename must be <taskId>_<executionId>');
+    return;
+  }
+  const taskId = basename.slice(0, cutIdx);
+  const executionId = basename.slice(cutIdx + 1);
+
+  const agentsDir = join(projectDir, '.aweek', 'agents');
+
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+
+  let wrote = false;
+  for await (const rawLine of readTranscriptLines(agentsDir, agentId, taskId, executionId)) {
+    const formatted = formatTranscriptLine(rawLine);
+    if (formatted.length === 0) continue;
+    wrote = true;
+    res.write(formatted.join('\n') + '\n');
+  }
+
+  if (!wrote) {
+    // readTranscriptLines yields nothing on ENOENT — surface a 404 body so
+    // the dashboard can distinguish "no transcript captured" from "empty
+    // transcript". The 200 status was already committed on the first
+    // write(), so only rewrite when we haven't sent any bytes yet. Node's
+    // response is still mutable because headersSent is false until the
+    // first write.
+    if (!res.headersSent) {
+      res.statusCode = 404;
+    }
+    res.end('No transcript captured for this execution.\n');
+    return;
+  }
+
+  res.end();
 }
 
 /**

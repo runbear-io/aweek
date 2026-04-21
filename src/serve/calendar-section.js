@@ -533,6 +533,15 @@ function projectActivityEntryForDrawer(entry) {
   if (entry.status === 'failed' && meta.error && typeof meta.error.message === 'string') {
     projected.errorMessage = meta.error.message.slice(0, 400);
   }
+  // Emit the transcript URL segment so the drawer's "view transcript"
+  // link can resolve it without rebuilding the path on the client. The
+  // segment is just the filename stem (no `.jsonl` suffix, no directory).
+  const tPath = meta.execution && meta.execution.transcriptPath;
+  if (typeof tPath === 'string' && tPath.endsWith('.jsonl')) {
+    const slash = tPath.lastIndexOf('/');
+    const file = slash >= 0 ? tPath.slice(slash + 1) : tPath;
+    projected.transcriptBasename = file.slice(0, -'.jsonl'.length);
+  }
   return projected;
 }
 
