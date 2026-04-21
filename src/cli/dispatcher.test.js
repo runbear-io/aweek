@@ -27,6 +27,8 @@ describe('dispatcher registry', () => {
       'manage',
       'next-week-context',
       'plan',
+      'plan-ambiguity',
+      'plan-interview-store',
       'plan-markdown',
       'summary',
     ];

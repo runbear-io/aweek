@@ -26,6 +26,8 @@ import * as summary from '../skills/summary.js';
 import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
 import * as execution from '../skills/execution.js';
+import * as planAmbiguity from '../skills/plan-ambiguity.js';
+import * as planInterviewStore from '../storage/plan-interview-store.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
 import * as planMarkdown from '../storage/plan-markdown-store.js';
 import * as dailyReview from '../services/daily-review-writer.js';
@@ -249,6 +251,56 @@ export const REGISTRY = Object.freeze({
         projectDir: input?.projectDir,
         olderThanWeeks: input?.olderThanWeeks,
       }),
+  },
+  // Ouroboros-style adaptive-interview helpers for `/aweek:plan`. The
+  // SKILL.md orchestrates the LLM calls; this registry exposes the pure
+  // math (scoring gate, streak, snapshot rendering) plus the prompt
+  // builder / response parser / state store so the markdown can drive
+  // the whole loop via `aweek exec`.
+  'plan-ambiguity': {
+    buildScoringPrompt: (input) =>
+      planAmbiguity.buildScoringPrompt({
+        initialContext: input?.initialContext,
+        transcript: input?.transcript,
+      }),
+    parseScoreResponse: (input) => planAmbiguity.parseScoreResponse(input?.raw),
+    qualifiesForCompletion: (input) =>
+      planAmbiguity.qualifiesForCompletion({
+        breakdown: input?.breakdown,
+        streak: input?.streak,
+      }),
+    updateStreak: (input) =>
+      planAmbiguity.updateStreak(input?.prevStreak ?? 0, input?.breakdown),
+    buildAmbiguitySnapshot: (input) =>
+      planAmbiguity.buildAmbiguitySnapshot({
+        breakdown: input?.breakdown,
+        streak: input?.streak,
+      }),
+    weakestDimension: (input) => planAmbiguity.weakestDimension(input?.breakdown),
+    isFullBreakdown: (input) => planAmbiguity.isFullBreakdown(input?.breakdown),
+    ambiguityFromBreakdown: (input) =>
+      planAmbiguity.ambiguityFromBreakdown(input?.breakdown),
+    milestoneFromScore: (input) => planAmbiguity.milestoneFromScore(input?.score),
+  },
+  'plan-interview-store': {
+    createInterviewState: (input) =>
+      planInterviewStore.createInterviewState({
+        agentId: input?.agentId,
+        initialContext: input?.initialContext,
+      }),
+    loadInterviewState: (input) =>
+      planInterviewStore.loadInterviewState(input?.agentsDir, input?.agentId),
+    saveInterviewState: (input) =>
+      planInterviewStore.saveInterviewState(
+        input?.agentsDir,
+        input?.agentId,
+        input?.state,
+      ),
+    clearInterviewState: (input) =>
+      planInterviewStore.clearInterviewState(input?.agentsDir, input?.agentId),
+    interviewExists: (input) =>
+      planInterviewStore.interviewExists(input?.agentsDir, input?.agentId),
+    appendTurn: (input) => planInterviewStore.appendTurn(input?.state, input?.turn),
   },
   'next-week-context': {
     // Pure helpers exposed for testing and skill inspection.
