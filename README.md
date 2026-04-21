@@ -77,6 +77,19 @@ claude --plugin-dir .
 
 **Requirements:** macOS or Linux, Node.js 20+, `crontab`, `jq`.
 
+## Per-agent secrets
+
+Drop a `.env` file at `.aweek/agents/<slug>/.env` to give one agent its own environment variables. The heartbeat loads it on every tick and passes the values into that agent's Claude Code session — other agents don't see them.
+
+```bash
+# .aweek/agents/writer/.env
+OPENAI_API_KEY=sk-...
+NOTION_TOKEN=secret_...
+FEATURE_FLAG=enabled
+```
+
+Format is dotenv-style: `KEY=value`, `#` comments, single/double quotes (double-quoted values support `\n \r \t \\ \"`). `.aweek/` is gitignored, so secrets stay out of the repo by default.
+
 ## Troubleshooting
 
 - **Slash commands can't find `aweek`.** SessionStart's `npm install -g aweek` failed. Run it yourself.
