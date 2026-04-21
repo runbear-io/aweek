@@ -33,7 +33,11 @@ import {
   formatHireLaunchPrompt,
   hasExistingAgents,
   installDependencies,
+  installCronHeartbeat,
   installHeartbeat,
+  queryCronHeartbeat,
+  resolveHeartbeatBackend,
+  uninstallHeartbeat,
   parseProjectHeartbeat,
   projectHeartbeatMarker,
   queryHeartbeat,
@@ -705,7 +709,7 @@ describe('init — installHeartbeat (confirmation gate)', () => {
   it('throws EHB_NOT_CONFIRMED when confirmed is not passed', async () => {
     const fake = makeFakeCrontab('');
     await assert.rejects(
-      installHeartbeat({
+      installCronHeartbeat({
         projectDir: '/tmp/p',
         readCrontabFn: fake.readCrontabFn,
         writeCrontabFn: fake.writeCrontabFn,
@@ -723,7 +727,7 @@ describe('init — installHeartbeat (confirmation gate)', () => {
   it('throws EHB_NOT_CONFIRMED when confirmed is a truthy non-boolean', async () => {
     const fake = makeFakeCrontab('');
     await assert.rejects(
-      installHeartbeat({
+      installCronHeartbeat({
         projectDir: '/tmp/p',
         confirmed: 'yes', // only strict `true` is accepted
         readCrontabFn: fake.readCrontabFn,
@@ -739,7 +743,7 @@ describe('init — installHeartbeat (happy path)', () => {
   it('reports `created` on a fresh crontab and writes the entry', async () => {
     const fake = makeFakeCrontab('');
 
-    const result = await installHeartbeat({
+    const result = await installCronHeartbeat({
       projectDir: '/tmp/p',
       shell: '/bin/zsh',
       loginFlag: '-lic',
@@ -771,7 +775,7 @@ describe('init — installHeartbeat (happy path)', () => {
   it('reports `skipped` when an identical entry already exists', async () => {
     const fake = makeFakeCrontab('');
 
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/p',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
@@ -779,7 +783,7 @@ describe('init — installHeartbeat (happy path)', () => {
     });
     const before = fake.writeCalls.length;
 
-    const result = await installHeartbeat({
+    const result = await installCronHeartbeat({
       projectDir: '/tmp/p',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
@@ -796,14 +800,14 @@ describe('init — installHeartbeat (happy path)', () => {
   it('reports `updated` when the schedule changes', async () => {
     const fake = makeFakeCrontab('');
 
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/p',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
       writeCrontabFn: fake.writeCrontabFn,
     });
 
-    const result = await installHeartbeat({
+    const result = await installCronHeartbeat({
       projectDir: '/tmp/p',
       schedule: '*/30 * * * *',
       confirmed: true,
@@ -823,14 +827,14 @@ describe('init — installHeartbeat (happy path)', () => {
   it('reports `updated` when the command changes', async () => {
     const fake = makeFakeCrontab('');
 
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/p',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
       writeCrontabFn: fake.writeCrontabFn,
     });
 
-    const result = await installHeartbeat({
+    const result = await installCronHeartbeat({
       projectDir: '/tmp/p',
       command: '/usr/local/bin/aweek beat',
       confirmed: true,
@@ -845,7 +849,7 @@ describe('init — installHeartbeat (happy path)', () => {
   it('preserves pre-existing non-aweek crontab entries', async () => {
     const fake = makeFakeCrontab('30 2 * * * /usr/bin/backup.sh\n');
 
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/p',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
@@ -865,7 +869,7 @@ describe('init — installHeartbeat (happy path)', () => {
       ].join('\n'),
     );
 
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/p',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
@@ -883,7 +887,7 @@ describe('init — queryHeartbeat', () => {
   it('reports installed=false on an empty crontab', async () => {
     const fake = makeFakeCrontab('');
 
-    const result = await queryHeartbeat({
+    const result = await queryCronHeartbeat({
       projectDir: '/tmp/p',
       readCrontabFn: fake.readCrontabFn,
     });
@@ -898,7 +902,7 @@ describe('init — queryHeartbeat', () => {
   it('round-trips installHeartbeat → queryHeartbeat', async () => {
     const fake = makeFakeCrontab('');
 
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/p',
       schedule: '*/15 * * * *',
       shell: '/bin/zsh',
@@ -908,7 +912,7 @@ describe('init — queryHeartbeat', () => {
       writeCrontabFn: fake.writeCrontabFn,
     });
 
-    const result = await queryHeartbeat({
+    const result = await queryCronHeartbeat({
       projectDir: '/tmp/p',
       readCrontabFn: fake.readCrontabFn,
     });
@@ -928,13 +932,13 @@ describe('init — queryHeartbeat', () => {
   it('only reports the entry for the requested projectDir', async () => {
     const fake = makeFakeCrontab('');
 
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/a',
       confirmed: true,
       readCrontabFn: fake.readCrontabFn,
       writeCrontabFn: fake.writeCrontabFn,
     });
-    await installHeartbeat({
+    await installCronHeartbeat({
       projectDir: '/tmp/b',
       schedule: '*/10 * * * *',
       confirmed: true,
@@ -942,15 +946,15 @@ describe('init — queryHeartbeat', () => {
       writeCrontabFn: fake.writeCrontabFn,
     });
 
-    const a = await queryHeartbeat({
+    const a = await queryCronHeartbeat({
       projectDir: '/tmp/a',
       readCrontabFn: fake.readCrontabFn,
     });
-    const b = await queryHeartbeat({
+    const b = await queryCronHeartbeat({
       projectDir: '/tmp/b',
       readCrontabFn: fake.readCrontabFn,
     });
-    const c = await queryHeartbeat({
+    const c = await queryCronHeartbeat({
       projectDir: '/tmp/c',
       readCrontabFn: fake.readCrontabFn,
     });
@@ -1258,6 +1262,7 @@ describe('init — detectInitState', () => {
     try {
       const fake = makeFakeCrontab('');
       const state = await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         readCrontabFn: fake.readCrontabFn,
       });
@@ -1281,6 +1286,7 @@ describe('init — detectInitState', () => {
       const fake = makeFakeCrontab('');
 
       const state = await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         readCrontabFn: fake.readCrontabFn,
       });
@@ -1304,6 +1310,7 @@ describe('init — detectInitState', () => {
 
       const fake = makeFakeCrontab('');
       const state = await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         readCrontabFn: fake.readCrontabFn,
       });
@@ -1318,7 +1325,7 @@ describe('init — detectInitState', () => {
     const tmp = await makeTmpProject();
     try {
       const fake = makeFakeCrontab('');
-      await installHeartbeat({
+      await installCronHeartbeat({
         projectDir: tmp.dir,
         schedule: '*/15 * * * *',
         confirmed: true,
@@ -1327,6 +1334,7 @@ describe('init — detectInitState', () => {
       });
 
       const state = await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         readCrontabFn: fake.readCrontabFn,
       });
@@ -1346,7 +1354,7 @@ describe('init — detectInitState', () => {
       await ensureDataDir({ projectDir: tmp.dir });
 
       const fake = makeFakeCrontab('');
-      await installHeartbeat({
+      await installCronHeartbeat({
         projectDir: tmp.dir,
         confirmed: true,
         readCrontabFn: fake.readCrontabFn,
@@ -1354,6 +1362,7 @@ describe('init — detectInitState', () => {
       });
 
       const state = await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         readCrontabFn: fake.readCrontabFn,
       });
@@ -1376,6 +1385,7 @@ describe('init — detectInitState', () => {
 
       const fake = makeFakeCrontab('');
       const state = await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         dataDir: '.aweek/agents',
         readCrontabFn: fake.readCrontabFn,
@@ -1397,6 +1407,7 @@ describe('init — detectInitState', () => {
       }
 
       const state = await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         readCrontabFn,
       });
@@ -1416,6 +1427,7 @@ describe('init — detectInitState', () => {
       const before = fake.content;
 
       await detectInitState({
+        backend: 'cron',
         projectDir: tmp.dir,
         readCrontabFn: fake.readCrontabFn,
       });
@@ -1447,5 +1459,249 @@ describe('init — __internals (normalizeAweekRoot)', () => {
       __internals.normalizeAweekRoot('/tmp/x/custom'),
       '/tmp/x/custom',
     );
+  });
+});
+
+describe('init — resolveHeartbeatBackend', () => {
+  it('picks launchd on darwin', () => {
+    assert.equal(resolveHeartbeatBackend('darwin'), 'launchd');
+  });
+
+  it('picks cron on linux / win32 / freebsd', () => {
+    assert.equal(resolveHeartbeatBackend('linux'), 'cron');
+    assert.equal(resolveHeartbeatBackend('win32'), 'cron');
+    assert.equal(resolveHeartbeatBackend('freebsd'), 'cron');
+  });
+});
+
+/**
+ * In-memory fake for ~/Library/LaunchAgents/ + a scriptable launchctl
+ * runner. Keeps the dispatcher tests free of any real filesystem / OS
+ * interaction so they run the same on linux CI as on the author's mac.
+ */
+function makeFakeLaunchd() {
+  const files = new Map();
+  const loadedLabels = new Set();
+  return {
+    files,
+    loadedLabels,
+    home: '/Users/alice',
+    writeFileFn: async (p, content) => {
+      files.set(p, content);
+    },
+    readFileFn: async (p) => {
+      if (!files.has(p)) {
+        const err = new Error(`ENOENT: no such file, open '${p}'`);
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return files.get(p);
+    },
+    unlinkFn: async (p) => {
+      if (!files.has(p)) {
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      }
+      files.delete(p);
+    },
+    statFn: async (p) => {
+      if (!files.has(p)) {
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return { size: files.get(p).length };
+    },
+    mkdirFn: async () => undefined,
+    launchctlFn: async (args) => {
+      const [verb, target, plistPath] = args;
+      if (verb === 'print') {
+        const label = target.split('/').slice(2).join('/');
+        return loadedLabels.has(label)
+          ? { code: 0, stdout: 'loaded', stderr: '' }
+          : { code: 37, stdout: '', stderr: 'not loaded' };
+      }
+      if (verb === 'bootstrap') {
+        const match = /io\.aweek\.heartbeat\.[a-f0-9]+/.exec(plistPath || '');
+        if (match) loadedLabels.add(match[0]);
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (verb === 'bootout') {
+        const label = target.split('/').slice(2).join('/');
+        loadedLabels.delete(label);
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    },
+    getUidFn: () => 501,
+  };
+}
+
+describe('init — installHeartbeat dispatcher', () => {
+  it('routes to the cron backend when platform is linux', async () => {
+    const fake = makeFakeCrontab('');
+    const result = await installHeartbeat({
+      platform: 'linux',
+      projectDir: '/tmp/p',
+      schedule: '*/10 * * * *',
+      shell: '/bin/bash',
+      loginFlag: '-lic',
+      confirmed: true,
+      readCrontabFn: fake.readCrontabFn,
+      writeCrontabFn: fake.writeCrontabFn,
+    });
+    assert.equal(result.backend, 'cron');
+    assert.equal(result.outcome, 'created');
+    assert.match(fake.content, /aweek:project-heartbeat:\/tmp\/p/);
+  });
+
+  it('routes to the launchd backend when platform is darwin', async () => {
+    const lc = makeFakeLaunchd();
+    const cron = makeFakeCrontab('');
+    const result = await installHeartbeat({
+      platform: 'darwin',
+      projectDir: '/tmp/p',
+      confirmed: true,
+      // Launchd deps
+      home: lc.home,
+      writeFileFn: lc.writeFileFn,
+      readFileFn: lc.readFileFn,
+      mkdirFn: lc.mkdirFn,
+      launchctlFn: lc.launchctlFn,
+      getUidFn: lc.getUidFn,
+      // Cron deps (for the migration probe — no entry here, so nothing to migrate)
+      readCrontabFn: cron.readCrontabFn,
+      writeCrontabFn: cron.writeCrontabFn,
+    });
+    assert.equal(result.backend, 'launchd');
+    assert.equal(result.outcome, 'created');
+    assert.equal(result.migratedFromCron, false);
+    assert.equal(lc.files.size, 1);
+  });
+
+  it('migrates a pre-existing cron entry when installing launchd', async () => {
+    const lc = makeFakeLaunchd();
+    // Pre-seed the crontab with a legacy aweek entry for this project.
+    const legacy = `# aweek:project-heartbeat:/tmp/p\n*/10 * * * * /bin/zsh -lic 'aweek heartbeat --all --project-dir /tmp/p'\n`;
+    const cron = makeFakeCrontab(legacy);
+
+    const result = await installHeartbeat({
+      platform: 'darwin',
+      projectDir: '/tmp/p',
+      confirmed: true,
+      home: lc.home,
+      writeFileFn: lc.writeFileFn,
+      readFileFn: lc.readFileFn,
+      mkdirFn: lc.mkdirFn,
+      launchctlFn: lc.launchctlFn,
+      getUidFn: lc.getUidFn,
+      readCrontabFn: cron.readCrontabFn,
+      writeCrontabFn: cron.writeCrontabFn,
+    });
+    assert.equal(result.backend, 'launchd');
+    assert.equal(result.migratedFromCron, true);
+    assert.equal(result.outcome, 'migrated');
+    // Crontab entry for this project must be gone.
+    assert.ok(!/aweek:project-heartbeat:\/tmp\/p/.test(cron.content));
+    // Plist must now exist.
+    assert.equal(lc.files.size, 1);
+  });
+
+  it('refuses to migrate without confirmed=true', async () => {
+    const lc = makeFakeLaunchd();
+    const legacy = `# aweek:project-heartbeat:/tmp/p\n*/10 * * * * cron cmd\n`;
+    const cron = makeFakeCrontab(legacy);
+    await assert.rejects(
+      installHeartbeat({
+        platform: 'darwin',
+        projectDir: '/tmp/p',
+        confirmed: false,
+        home: lc.home,
+        writeFileFn: lc.writeFileFn,
+        readFileFn: lc.readFileFn,
+        mkdirFn: lc.mkdirFn,
+        launchctlFn: lc.launchctlFn,
+        getUidFn: lc.getUidFn,
+        readCrontabFn: cron.readCrontabFn,
+        writeCrontabFn: cron.writeCrontabFn,
+      }),
+      /requires explicit user confirmation/,
+    );
+  });
+});
+
+describe('init — queryHeartbeat dispatcher', () => {
+  it('reports cron backend when routed through linux', async () => {
+    const fake = makeFakeCrontab('');
+    const state = await queryHeartbeat({
+      platform: 'linux',
+      projectDir: '/tmp/p',
+      readCrontabFn: fake.readCrontabFn,
+    });
+    assert.equal(state.backend, 'cron');
+    assert.equal(state.installed, false);
+  });
+
+  it('reports launchd backend when routed through darwin', async () => {
+    const lc = makeFakeLaunchd();
+    const state = await queryHeartbeat({
+      platform: 'darwin',
+      projectDir: '/tmp/p',
+      home: lc.home,
+      readFileFn: lc.readFileFn,
+      launchctlFn: lc.launchctlFn,
+      getUidFn: lc.getUidFn,
+    });
+    assert.equal(state.backend, 'launchd');
+    assert.equal(state.installed, false);
+  });
+});
+
+describe('init — uninstallHeartbeat dispatcher', () => {
+  it('removes the crontab entry via the cron backend', async () => {
+    const legacy = `# aweek:project-heartbeat:/tmp/p\n*/10 * * * * cmd\n`;
+    const fake = makeFakeCrontab(legacy);
+    const result = await uninstallHeartbeat({
+      platform: 'linux',
+      projectDir: '/tmp/p',
+      confirmed: true,
+      readCrontabFn: fake.readCrontabFn,
+      writeCrontabFn: fake.writeCrontabFn,
+    });
+    assert.equal(result.backend, 'cron');
+    assert.equal(result.outcome, 'removed');
+    assert.ok(!/aweek:project-heartbeat/.test(fake.content));
+  });
+
+  it('removes the launchd plist on darwin', async () => {
+    const lc = makeFakeLaunchd();
+    // First install so there's something to remove.
+    await installHeartbeat({
+      platform: 'darwin',
+      projectDir: '/tmp/p',
+      confirmed: true,
+      home: lc.home,
+      writeFileFn: lc.writeFileFn,
+      readFileFn: lc.readFileFn,
+      mkdirFn: lc.mkdirFn,
+      launchctlFn: lc.launchctlFn,
+      getUidFn: lc.getUidFn,
+    });
+    assert.equal(lc.files.size, 1);
+
+    const result = await uninstallHeartbeat({
+      platform: 'darwin',
+      projectDir: '/tmp/p',
+      confirmed: true,
+      home: lc.home,
+      unlinkFn: lc.unlinkFn,
+      statFn: lc.statFn,
+      launchctlFn: lc.launchctlFn,
+      getUidFn: lc.getUidFn,
+    });
+    assert.equal(result.backend, 'launchd');
+    assert.equal(result.outcome, 'removed');
+    assert.equal(lc.files.size, 0);
   });
 });
