@@ -25,6 +25,7 @@ import * as manage from '../skills/manage.js';
 import * as summary from '../skills/summary.js';
 import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
+import * as execution from '../skills/execution.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
 import * as planMarkdown from '../storage/plan-markdown-store.js';
 import * as dailyReview from '../services/daily-review-writer.js';
@@ -238,6 +239,17 @@ export const REGISTRY = Object.freeze({
   // for the completed week, returning a context object ready to spread into
   // generateWeeklyPlan's options parameter. Only called from the weekly-review
   // → next-week-planner autonomous chain, not from user-invoked /aweek:plan.
+  // Maintenance ops for per-execution CLI transcripts. `prune` walks
+  // `.aweek/agents/*/executions/*.jsonl` and deletes entries older than
+  // `olderThanWeeks` (default 4). Invoked directly by users via
+  // `aweek exec execution prune --input-json -`.
+  execution: {
+    prune: (input) =>
+      execution.pruneTranscripts({
+        projectDir: input?.projectDir,
+        olderThanWeeks: input?.olderThanWeeks,
+      }),
+  },
   'next-week-context': {
     // Pure helpers exposed for testing and skill inspection.
     extractRetrospectiveSummary: (input) =>
