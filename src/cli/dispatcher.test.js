@@ -16,6 +16,7 @@ describe('dispatcher registry', () => {
       'calendar',
       'daily-review',
       'delegate-task',
+      'execution',
       'hire',
       'hire-all',
       'hire-create-new-menu',
