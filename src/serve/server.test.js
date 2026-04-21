@@ -468,8 +468,16 @@ describe('startServer()', () => {
 
     assert.equal(res.statusCode, 200);
     assert.match(res.headers['content-type'] || '', /text\/plain/);
-    assert.match(res.body, /^\[system:init\]/);
-    assert.match(res.body, /model=claude-opus-4-7/);
+    // Body is pretty-printed JSON (one event per block, blank-line separated).
+    const firstBlock = res.body.split('\n\n')[0];
+    assert.deepEqual(JSON.parse(firstBlock), {
+      type: 'system',
+      subtype: 'init',
+      model: 'claude-opus-4-7',
+      session_id: 's1',
+      cwd: '/tmp/proj',
+    });
+    assert.match(res.body, /"model": "claude-opus-4-7"/);
   });
 
   it('returns 404 for a missing transcript', async () => {
