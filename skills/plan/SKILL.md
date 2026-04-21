@@ -310,6 +310,15 @@ Record the chosen layout preference as `layoutPreference` for this session. Cont
 
 The layout preference is a session-only hint — it does not need to be written to any file.
 
+### B2c: Space runAt for repeat actions
+
+When an objective needs the same action done multiple times within one day+hour (e.g. "publish 2 X.com posts on Monday morning"), emit a **separate task per repetition** with **distinct `runAt` minutes** instead of packing them into one task or sharing a `runAt`.
+
+- The heartbeat cron runs every 10 minutes by default. Two tasks sharing the same `runAt` — or sitting within 10 minutes of each other — will both be picked up on the same tick and fire back-to-back.
+- Default spacing: at least **10 minutes** between tasks in the same day+hour bucket. Pick `runAt` minutes from `{00, 10, 20, 30, 40, 50}` and assign each task in the bucket a distinct slot.
+- Overflow: if more than 6 tasks share the same day+hour (rare), just spread the `runAt` minutes evenly across the 60-minute window. Tasks stay within the assigned hour — do not push them into adjacent hours. Accept the burst risk.
+- Single-task buckets and tasks in different day+hour buckets are unaffected by this rule.
+
 ### B3: Confirm the batch
 
 Show queued adjustments grouped by action. Ask **"Apply these N adjustments? (yes / no)"** via `AskUserQuestion`. On `yes`, call `plan.adjustPlan(...)` once and display the result. On `no`, discard and return to B2.
