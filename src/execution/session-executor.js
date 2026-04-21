@@ -21,6 +21,10 @@
 
 import { launchSession, parseTokenUsage } from './cli-session.js';
 import { createUsageRecord, UsageStore } from '../storage/usage-store.js';
+import {
+  openTranscriptWriter,
+  transcriptPath,
+} from '../storage/transcript-store.js';
 
 /**
  * @typedef {import('./cli-session.js').SessionResult} SessionResult
@@ -33,6 +37,8 @@ import { createUsageRecord, UsageStore } from '../storage/usage-store.js';
  * @property {{ inputTokens: number, outputTokens: number, totalTokens: number, costUsd: number } | null} tokenUsage - Parsed token usage (null if parsing failed)
  * @property {object | null} usageRecord - Persisted usage record (null if tracking failed or no usage data)
  * @property {boolean} usageTracked - Whether usage was successfully tracked
+ * @property {string | null} transcriptPath - Absolute path of the NDJSON
+ *   transcript file when `agentsDir` was provided; otherwise `null`.
  */
 
 /**
@@ -48,13 +54,17 @@ import { createUsageRecord, UsageStore } from '../storage/usage-store.js';
  * @param {string} [opts.cli] - CLI binary path
  * @param {string} [opts.cwd] - Working directory
  * @param {number} [opts.timeoutMs] - Session timeout
- * @param {boolean} [opts.verbose] - Verbose CLI output
  * @param {string} [opts.model] - Model override
  * @param {boolean} [opts.dangerouslySkipPermissions] - Skip permissions
  * @param {function} [opts.spawnFn] - Injectable spawn (for testing)
  * @param {object} [opts.env] - Extra environment variables
  * @param {UsageStore} [opts.usageStore] - UsageStore instance for persisting usage
  * @param {string} [opts.sessionId] - Optional session identifier for deduplication
+ *   (also used as the execution id when recording a transcript).
+ * @param {string} [opts.agentsDir] - `.aweek/agents` root. When provided
+ *   (and `task.taskId` is set), the session's full NDJSON stream is
+ *   persisted to `<agentsDir>/<agent>/executions/<taskId>-<sessionId>.jsonl`.
+ *   Omit to skip transcript capture.
  * @returns {Promise<ExecutionResult>}
  */
 export async function executeSessionWithTracking(agentId, subagentRef, task, opts = {}) {
@@ -64,10 +74,43 @@ export async function executeSessionWithTracking(agentId, subagentRef, task, opt
   }
   if (!task) throw new Error('task is required');
 
-  const { usageStore, sessionId, ...launchOpts } = opts;
+  const { usageStore, sessionId, agentsDir, ...launchOpts } = opts;
+  const effectiveSessionId = sessionId || `session-${Date.now()}`;
+
+  // Optional transcript capture — only when the caller supplied agentsDir
+  // AND the task has an id we can namespace under.
+  let transcriptWriter = null;
+  let recordedTranscriptPath = null;
+  if (agentsDir && task.taskId) {
+    try {
+      transcriptWriter = await openTranscriptWriter(
+        agentsDir,
+        agentId,
+        task.taskId,
+        effectiveSessionId,
+      );
+      recordedTranscriptPath = transcriptWriter.path;
+    } catch {
+      // Never let transcript setup prevent a tick from running.
+      transcriptWriter = null;
+      recordedTranscriptPath = null;
+    }
+  }
 
   // Step 1: Launch the CLI session (subagent-first)
-  const sessionResult = await launchSession(agentId, subagentRef, task, launchOpts);
+  let sessionResult;
+  try {
+    sessionResult = await launchSession(agentId, subagentRef, task, {
+      ...launchOpts,
+      transcriptWriter,
+    });
+  } finally {
+    if (transcriptWriter) {
+      try {
+        await transcriptWriter.close();
+      } catch { /* best-effort */ }
+    }
+  }
 
   // Step 2: Parse token usage from session output
   const tokenUsage = parseTokenUsage(sessionResult.stdout);
@@ -81,7 +124,7 @@ export async function executeSessionWithTracking(agentId, subagentRef, task, opt
       usageRecord = createUsageRecord({
         agentId,
         taskId: task.taskId,
-        sessionId: sessionId || `session-${Date.now()}`,
+        sessionId: effectiveSessionId,
         inputTokens: tokenUsage.inputTokens,
         outputTokens: tokenUsage.outputTokens,
         costUsd: tokenUsage.costUsd || 0,
@@ -103,8 +146,16 @@ export async function executeSessionWithTracking(agentId, subagentRef, task, opt
     tokenUsage,
     usageRecord,
     usageTracked,
+    transcriptPath: recordedTranscriptPath,
   };
 }
+
+/**
+ * Re-export of the transcript path helper so callers that only import
+ * from the executor module can resolve paths without also importing the
+ * storage module.
+ */
+export { transcriptPath };
 
 /**
  * Convert a plan week string (e.g., "2026-W16") to a Monday date for usage storage.
