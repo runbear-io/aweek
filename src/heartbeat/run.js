@@ -37,6 +37,7 @@ import { generateDailyReview, utcToLocalDate } from '../services/daily-review-wr
 import { MonthlyPlanStore } from '../storage/monthly-plan-store.js';
 import { generateWeeklyPlan } from '../services/weekly-plan-generator.js';
 import { readPlan } from '../storage/plan-markdown-store.js';
+import { loadAgentEnv } from '../storage/agent-env-store.js';
 
 /**
  * Extract URLs and file paths from session stdout.
@@ -480,6 +481,7 @@ async function executeOneSelection(selection, ctx) {
     subagentRef,
     projectDir,
     dataDir,
+    agentsDir,
     weeklyPlanStore,
     usageStore,
     activityLogStore,
@@ -506,6 +508,13 @@ async function executeOneSelection(selection, ctx) {
   let error = null;
   let finalStatus = 'completed';
 
+  let agentEnv = {};
+  try {
+    agentEnv = await loadAgentEnv(agentsDir, agentId);
+  } catch (err) {
+    console.error(`[${agentId}] failed to load agent env: ${err.message}`);
+  }
+
   try {
     execResult = await executeSessionWithTracking(
       agentId,
@@ -516,7 +525,7 @@ async function executeOneSelection(selection, ctx) {
         objectiveId: task.objectiveId,
         week,
       },
-      { cwd: projectDir, usageStore },
+      { cwd: projectDir, usageStore, env: agentEnv },
     );
   } catch (err) {
     error = err;
