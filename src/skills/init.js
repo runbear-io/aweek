@@ -79,15 +79,17 @@ async function defaultWriteCrontab(content) {
 /**
  * Canonical subdirectories that live under `.aweek/`.
  *
- * Every aweek subsystem reads/writes through one of these roots:
- *   - `agents/` — per-agent JSON config files (used by `AgentStore`)
- *   - `logs/`   — activity logs, heartbeat logs, weekly reviews
- *   - `state/`  — transient execution/lock/queue state
+ *   - `agents/` — per-agent JSON config + per-agent `logs/` and other
+ *     subdirs created lazily by each store (activity logs, inbox, usage,
+ *     executions, plans, reviews).
+ *
+ * The `locks/` directory is created lazily by the heartbeat runner on
+ * first tick, not by init.
  *
  * Frozen to discourage ad-hoc mutation; subdir additions should be an explicit
  * code change with a matching test update.
  */
-export const AWEEK_SUBDIRS = Object.freeze(['agents', 'logs', 'state']);
+export const AWEEK_SUBDIRS = Object.freeze(['agents']);
 
 /**
  * Default aweek data-root path (relative to `projectDir`).
@@ -165,17 +167,14 @@ async function pathExists(path) {
  * the whole tree, so we tolerate both forms:
  *
  *   - `.aweek` / `.aweek/` → treat as the aweek root.
- *   - `.aweek/agents`      → step up one level so we manage the siblings too.
- *
- * This keeps the skill markdown's default value valid while letting init
- * still create `logs/` and `state/`.
+ *   - `.aweek/agents`      → step up one level.
  *
  * @param {string} absoluteDataDir
  * @returns {string} Absolute path to the `.aweek/` root.
  */
 function normalizeAweekRoot(absoluteDataDir) {
   const leaf = basename(absoluteDataDir);
-  if (leaf === 'agents' || leaf === 'logs' || leaf === 'state') {
+  if (leaf === 'agents') {
     return dirname(absoluteDataDir);
   }
   return absoluteDataDir;
@@ -184,9 +183,9 @@ function normalizeAweekRoot(absoluteDataDir) {
 /**
  * Ensure the `.aweek/` directory tree exists.
  *
- * Creates (if missing) the aweek data root and each of its canonical
- * subdirectories: `agents/`, `logs/`, `state/`. Safe to call repeatedly — each
- * resource reports its own `created` / `skipped` outcome.
+ * Creates (if missing) the aweek data root and its canonical `agents/`
+ * subdirectory. Safe to call repeatedly — each resource reports its own
+ * `created` / `skipped` outcome.
  *
  * @param {object} [opts]
  * @param {string} [opts.projectDir] - Project root (defaults to `process.cwd()`).
@@ -198,8 +197,6 @@ function normalizeAweekRoot(absoluteDataDir) {
  *   outcome: 'created' | 'skipped',
  *   subdirs: Record<string, { path: string, outcome: 'created' | 'skipped' }>,
  *   agentsPath: string,
- *   logsPath: string,
- *   statePath: string,
  * }>}
  */
 export async function ensureDataDir({
@@ -244,8 +241,6 @@ export async function ensureDataDir({
     outcome: rootExisted ? 'skipped' : 'created',
     subdirs,
     agentsPath: subdirs.agents.path,
-    logsPath: subdirs.logs.path,
-    statePath: subdirs.state.path,
     config: {
       path: configAbsPath,
       outcome: configOutcome,

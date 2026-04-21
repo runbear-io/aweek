@@ -70,7 +70,7 @@ function makeFakeSpawn({ code = 0, stdout = '', stderr = '' } = {}) {
 
 describe('init — module constants', () => {
   it('exposes the canonical aweek subdirectories', () => {
-    assert.deepEqual([...AWEEK_SUBDIRS], ['agents', 'logs', 'state']);
+    assert.deepEqual([...AWEEK_SUBDIRS], ['agents']);
   });
 
   it('AWEEK_SUBDIRS is frozen to prevent ad-hoc mutation', () => {
@@ -129,8 +129,6 @@ describe('init — ensureDataDir (fresh project)', () => {
     }
 
     assert.equal(result.agentsPath, join(proj.dir, '.aweek', 'agents'));
-    assert.equal(result.logsPath, join(proj.dir, '.aweek', 'logs'));
-    assert.equal(result.statePath, join(proj.dir, '.aweek', 'state'));
   });
 });
 
@@ -160,19 +158,15 @@ describe('init — ensureDataDir (idempotent)', () => {
     }
   });
 
-  it('reports partial `created` when only some subdirs exist', async () => {
-    // Manually pre-create just .aweek/ and .aweek/agents/ — init should
-    // report agents as skipped but logs/state as created.
+  it('reports `skipped` when .aweek/ pre-exists with agents/ inside', async () => {
     const tmp = await makeTmpProject();
     try {
       await mkdir(join(tmp.dir, '.aweek', 'agents'), { recursive: true });
 
       const result = await ensureDataDir({ projectDir: tmp.dir });
 
-      assert.equal(result.outcome, 'skipped'); // .aweek/ itself pre-existed
+      assert.equal(result.outcome, 'skipped');
       assert.equal(result.subdirs.agents.outcome, 'skipped');
-      assert.equal(result.subdirs.logs.outcome, 'created');
-      assert.equal(result.subdirs.state.outcome, 'created');
     } finally {
       await tmp.cleanup();
     }
@@ -180,7 +174,7 @@ describe('init — ensureDataDir (idempotent)', () => {
 });
 
 describe('init — ensureDataDir (dataDir normalization)', () => {
-  it('accepts `.aweek/agents` as dataDir and still creates the siblings', async () => {
+  it('accepts `.aweek/agents` as dataDir and normalizes to the root', async () => {
     // Backwards compat with the historical skill-markdown default.
     const tmp = await makeTmpProject();
     try {
@@ -191,10 +185,7 @@ describe('init — ensureDataDir (dataDir normalization)', () => {
 
       assert.equal(result.root, join(tmp.dir, '.aweek'));
       assert.equal(result.subdirs.agents.outcome, 'created');
-      assert.equal(result.subdirs.logs.outcome, 'created');
-      assert.equal(result.subdirs.state.outcome, 'created');
 
-      // All three subdirs actually exist under the resolved root.
       for (const sub of AWEEK_SUBDIRS) {
         const s = await stat(join(tmp.dir, '.aweek', sub));
         assert.ok(s.isDirectory());
@@ -1447,14 +1438,7 @@ describe('init — __internals (normalizeAweekRoot)', () => {
     );
   });
 
-  it('treats a /logs leaf as the aweek root parent', () => {
-    assert.equal(
-      __internals.normalizeAweekRoot('/tmp/x/.aweek/logs'),
-      '/tmp/x/.aweek',
-    );
-  });
-
-  it('leaves a non-subdir path untouched', () => {
+  it('leaves a non-agents leaf untouched', () => {
     assert.equal(
       __internals.normalizeAweekRoot('/tmp/x/.aweek'),
       '/tmp/x/.aweek',
