@@ -47,6 +47,7 @@ export const REGISTRY = Object.freeze({
     ensureDataDir: init.ensureDataDir,
     installHeartbeat: init.installHeartbeat,
     queryHeartbeat: init.queryHeartbeat,
+    uninstallHeartbeat: init.uninstallHeartbeat,
     finalizeInit: init.finalizeInit,
     hasExistingAgents: init.hasExistingAgents,
     shouldLaunchHire: init.shouldLaunchHire,

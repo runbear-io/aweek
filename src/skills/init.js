@@ -32,6 +32,11 @@ import { promisify } from 'node:util';
 
 import { configPath, loadConfig, saveConfig } from '../storage/config-store.js';
 import { DEFAULT_TZ } from '../time/zone.js';
+import {
+  installLaunchdHeartbeat,
+  queryLaunchdHeartbeat,
+  uninstallLaunchdHeartbeat,
+} from './launchd.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -692,7 +697,7 @@ export function removeProjectHeartbeat(crontabText, projectDir) {
  *   entry: object | null,
  * }>}
  */
-export async function queryHeartbeat({
+export async function queryCronHeartbeat({
   projectDir,
   readCrontabFn,
 } = {}) {
@@ -745,7 +750,7 @@ export async function queryHeartbeat({
  *   previous: { schedule: string, command: string } | null,
  * }>}
  */
-export async function installHeartbeat({
+export async function installCronHeartbeat({
   projectDir,
   schedule = DEFAULT_HEARTBEAT_SCHEDULE,
   command,
@@ -759,7 +764,7 @@ export async function installHeartbeat({
 } = {}) {
   if (confirmed !== true) {
     const err = new Error(
-      'installHeartbeat requires explicit user confirmation. ' +
+      'installCronHeartbeat requires explicit user confirmation. ' +
         'Collect consent via AskUserQuestion and pass `confirmed: true`.',
     );
     err.code = 'EHB_NOT_CONFIRMED';
@@ -823,6 +828,191 @@ export async function installHeartbeat({
       ? { schedule: existing.schedule, command: existing.command }
       : null,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Heartbeat platform dispatcher
+ * ------------------------------------------------------------------ *
+ *
+ * Cron can't reach the macOS Keychain, so Claude Code's subscription
+ * OAuth tokens are invisible to cron-spawned `claude` processes on
+ * darwin — users hit a `/login` prompt every tick. Launchd user agents
+ * run inside the user's aqua session and inherit Keychain access,
+ * making the subscription path Just Work.
+ *
+ * On non-macOS platforms the cron backend is retained: Linux cron
+ * inherits the user session adequately, Windows users are served by a
+ * separate follow-up (Task Scheduler).
+ *
+ * The dispatcher is intentionally dumb — it picks a backend based on
+ * `platform` (or an explicit `backend` override), then delegates.
+ * Backends keep their own shape; we add a `backend: 'cron' | 'launchd'`
+ * field so callers can branch on what actually ran without re-detecting.
+ */
+
+/**
+ * Pick the heartbeat backend for a given platform.
+ *
+ * @param {NodeJS.Platform} platform
+ * @returns {'cron' | 'launchd'}
+ */
+export function resolveHeartbeatBackend(platform = process.platform) {
+  return platform === 'darwin' ? 'launchd' : 'cron';
+}
+
+/**
+ * Install (or refresh) the project heartbeat, dispatching to the cron
+ * or launchd backend based on `platform` (or explicit `backend`).
+ *
+ * When installing the launchd backend on a machine that already has a
+ * legacy cron entry for the same project, the cron entry is removed in
+ * the same transaction and `migratedFromCron: true` is set on the
+ * result. That lets users upgrade from the cron path without needing
+ * to remember to clean up the old crontab line.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.backend] - Force a backend: `'cron'` or `'launchd'`.
+ * @param {NodeJS.Platform} [opts.platform=process.platform]
+ * @param {string} [opts.projectDir]
+ * @param {string} [opts.schedule=DEFAULT_HEARTBEAT_SCHEDULE] - Cron-style.
+ * @param {number} [opts.intervalSeconds] - launchd only. Converted from
+ *   `schedule` if omitted.
+ * @param {boolean} [opts.confirmed=false]
+ * @returns {Promise<object>}
+ */
+export async function installHeartbeat(opts = {}) {
+  const backend = opts.backend || resolveHeartbeatBackend(opts.platform);
+
+  if (backend === 'launchd') {
+    const projectDir = resolveProjectDir(opts.projectDir);
+    // Best-effort migration: if a legacy cron entry exists for this
+    // project, drop it now. Failures are non-fatal — the launchd install
+    // is the source of truth going forward.
+    let migratedFromCron = false;
+    try {
+      const reader = opts.readCrontabFn || defaultReadCrontab;
+      const writer = opts.writeCrontabFn || defaultWriteCrontab;
+      const current = await reader();
+      if (current && parseProjectHeartbeat(current, projectDir)) {
+        if (opts.confirmed !== true) {
+          // Mirror the cron gate — never touch the user's crontab
+          // without `confirmed: true`, even for a migration.
+          const err = new Error(
+            'installHeartbeat requires explicit user confirmation. ' +
+              'Collect consent via AskUserQuestion and pass `confirmed: true`.',
+          );
+          err.code = 'EHB_NOT_CONFIRMED';
+          throw err;
+        }
+        const cleaned = removeProjectHeartbeat(current, projectDir);
+        await writer(cleaned);
+        migratedFromCron = true;
+      }
+    } catch (err) {
+      // Only re-throw the confirmation gate; swallow crontab-read
+      // errors so missing `crontab` doesn't block the launchd install.
+      if (err && err.code === 'EHB_NOT_CONFIRMED') throw err;
+    }
+
+    const res = await installLaunchdHeartbeat({
+      projectDir,
+      intervalSeconds: opts.intervalSeconds,
+      schedule: opts.schedule,
+      shell: opts.shell,
+      loginFlag: opts.loginFlag,
+      logsDir: opts.logsDir,
+      confirmed: opts.confirmed,
+      home: opts.home,
+      writeFileFn: opts.writeFileFn,
+      readFileFn: opts.readFileFn,
+      mkdirFn: opts.mkdirFn,
+      launchctlFn: opts.launchctlFn,
+      getUidFn: opts.getUidFn,
+    });
+    return {
+      backend: 'launchd',
+      migratedFromCron,
+      ...(migratedFromCron && res.outcome === 'created'
+        ? { outcome: 'migrated' }
+        : null),
+      ...res,
+      outcome: migratedFromCron && res.outcome === 'created' ? 'migrated' : res.outcome,
+    };
+  }
+
+  const res = await installCronHeartbeat(opts);
+  return { backend: 'cron', ...res };
+}
+
+/**
+ * Query the installed heartbeat, dispatching to the cron or launchd
+ * backend.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.backend] - Force a backend.
+ * @param {NodeJS.Platform} [opts.platform=process.platform]
+ * @returns {Promise<object>}
+ */
+export async function queryHeartbeat(opts = {}) {
+  const backend = opts.backend || resolveHeartbeatBackend(opts.platform);
+  if (backend === 'launchd') {
+    const res = await queryLaunchdHeartbeat({
+      projectDir: resolveProjectDir(opts.projectDir),
+      home: opts.home,
+      readFileFn: opts.readFileFn,
+      launchctlFn: opts.launchctlFn,
+      getUidFn: opts.getUidFn,
+    });
+    return { backend: 'launchd', ...res };
+  }
+  const res = await queryCronHeartbeat(opts);
+  return { backend: 'cron', ...res };
+}
+
+/**
+ * Uninstall the project heartbeat, dispatching to the cron or launchd
+ * backend. Included for symmetry + to give the skill markdown a single
+ * call for teardown; the cron uninstall path simply writes an empty
+ * crontab line for this project via {@link removeProjectHeartbeat}.
+ *
+ * @param {object} [opts]
+ * @returns {Promise<object>}
+ */
+export async function uninstallHeartbeat(opts = {}) {
+  const backend = opts.backend || resolveHeartbeatBackend(opts.platform);
+  if (backend === 'launchd') {
+    const res = await uninstallLaunchdHeartbeat({
+      projectDir: resolveProjectDir(opts.projectDir),
+      confirmed: opts.confirmed,
+      home: opts.home,
+      unlinkFn: opts.unlinkFn,
+      statFn: opts.statFn,
+      launchctlFn: opts.launchctlFn,
+      getUidFn: opts.getUidFn,
+    });
+    return { backend: 'launchd', ...res };
+  }
+
+  // Cron uninstall is a thin wrapper around removeProjectHeartbeat.
+  if (opts.confirmed !== true) {
+    const err = new Error(
+      'uninstallHeartbeat requires explicit user confirmation. ' +
+        'Collect consent via AskUserQuestion and pass `confirmed: true`.',
+    );
+    err.code = 'EHB_NOT_CONFIRMED';
+    throw err;
+  }
+  const projectDir = resolveProjectDir(opts.projectDir);
+  const reader = opts.readCrontabFn || defaultReadCrontab;
+  const writer = opts.writeCrontabFn || defaultWriteCrontab;
+  const current = await reader();
+  const existing = parseProjectHeartbeat(current, projectDir);
+  if (!existing) {
+    return { backend: 'cron', outcome: 'absent', projectDir };
+  }
+  const cleaned = removeProjectHeartbeat(current, projectDir);
+  await writer(cleaned);
+  return { backend: 'cron', outcome: 'removed', projectDir };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1148,6 +1338,12 @@ export async function detectInitState({
   projectDir,
   dataDir = DEFAULT_DATA_DIR,
   readCrontabFn,
+  backend,
+  platform,
+  home,
+  readFileFn,
+  launchctlFn,
+  getUidFn,
 } = {}) {
   const resolvedProject = resolveProjectDir(projectDir);
   const absoluteDataDir = resolve(resolvedProject, dataDir);
@@ -1172,6 +1368,12 @@ export async function detectInitState({
   const heartbeat = await queryHeartbeat({
     projectDir: resolvedProject,
     readCrontabFn,
+    backend,
+    platform,
+    home,
+    readFileFn,
+    launchctlFn,
+    getUidFn,
   });
 
   const needsDataDir = !rootExists;

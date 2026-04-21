@@ -575,15 +575,31 @@ export {
   finalizeInit,
   formatHireLaunchPrompt,
   hasExistingAgents,
+  installCronHeartbeat,
   installDependencies,
   installHeartbeat,
   parseProjectHeartbeat,
   projectHeartbeatMarker,
+  queryCronHeartbeat,
   queryHeartbeat,
   removeProjectHeartbeat,
+  resolveHeartbeatBackend,
   resolveProjectDir as resolveInitProjectDir,
   shouldLaunchHire,
+  uninstallHeartbeat,
 } from './skills/init.js';
+export {
+  LAUNCHD_LABEL_PREFIX,
+  DEFAULT_LAUNCHD_INTERVAL_SECONDS,
+  buildLaunchdPlist,
+  cronScheduleToSeconds,
+  installLaunchdHeartbeat,
+  launchdLabel,
+  launchdPlistPath,
+  parseLaunchdPlist,
+  queryLaunchdHeartbeat,
+  uninstallLaunchdHeartbeat,
+} from './skills/launchd.js';
 // Init hire menu (Sub-AC 2 + 3 of AC 6) — four-option interactive menu
 // (Hire all / Select some / Create new / Skip) that displays unhired
 // subagents and routes the user's choice to the appropriate /aweek:hire

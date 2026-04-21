@@ -1,6 +1,6 @@
 ---
 name: init
-description: Initialize an aweek project — create the data directory and optionally install the heartbeat crontab
+description: Initialize an aweek project — create the data directory and optionally install the scheduled heartbeat (launchd on macOS, crontab elsewhere)
 trigger: aweek init, init aweek, initialize aweek, setup aweek, bootstrap aweek, aweek setup, aweek bootstrap
 ---
 
@@ -8,8 +8,13 @@ trigger: aweek init, init aweek, initialize aweek, setup aweek, bootstrap aweek,
 
 Bootstrap a project for the aweek agent scheduler. This is the first skill a
 user should run in a fresh repository — it prepares the filesystem layout
-and (optionally) installs the 10-minute heartbeat crontab entry that drives
-agent execution.
+and (optionally) installs the 10-minute heartbeat that drives agent
+execution.
+
+The heartbeat is installed via the platform's native scheduler:
+
+- **macOS** → a launchd user agent at `~/Library/LaunchAgents/io.aweek.heartbeat.<hash>.plist`. This is the default on darwin because cron jobs can't access the macOS Keychain, and Claude Code's subscription OAuth tokens live there — the launchd user agent runs inside your aqua session, so Keychain access works exactly like from Terminal.
+- **Linux / other POSIX** → a crontab entry (`*/10 * * * *`). If a legacy crontab entry exists on a macOS machine from an earlier aweek version, it is migrated automatically the next time `/aweek:init` installs the launchd agent.
 
 Slash-command discovery is handled by the Claude Code plugin system — this
 skill does not copy markdown into `.claude/commands/`. Users who installed
@@ -73,7 +78,7 @@ confirmation** *before* the change is applied.
 | Step                          | Destructive | Confirmation required |
 |-------------------------------|-------------|-----------------------|
 | Create `.aweek/agents/` dir   | No          | No |
-| Install heartbeat crontab     | Yes         | **Yes** |
+| Install heartbeat (launchd on macOS / cron elsewhere) | Yes | **Yes** |
 | Overwrite existing data dir   | Yes         | **Yes** |
 
 ## Instructions
@@ -119,9 +124,10 @@ asked for a clean-slate reset AND confirmed via AskUserQuestion.
 
 Ask the user via `AskUserQuestion`:
 
-> **Install the 10-minute heartbeat crontab entry?**
-> This writes to your user crontab so agents can run automatically every 10 minutes.
-> You can remove it later with `crontab -e`.
+> **Install the 10-minute heartbeat?**
+> This registers a scheduled task so agents run automatically every 10 minutes.
+> - On macOS this creates a launchd user agent at `~/Library/LaunchAgents/io.aweek.heartbeat.<hash>.plist`. You can remove it later with `launchctl bootout gui/$UID/<label>`.
+> - On Linux it writes an entry to your user crontab. You can remove it later with `crontab -e`.
 >
 > - `yes` — install now
 > - `no` — skip (you can install it later by re-running `/aweek:init`)
@@ -132,6 +138,11 @@ Only if they answer `yes`, run:
 echo '{"schedule":"*/10 * * * *","confirmed":true}' \
   | aweek exec init installHeartbeat --input-json -
 ```
+
+The response includes a `backend` field (`"launchd"` or `"cron"`) plus an
+`outcome` of `created`, `updated`, `skipped`, or `migrated`. `migrated`
+means a legacy cron entry for this project was also removed — include
+that in the final summary so the user knows the crontab line is gone.
 
 If the user declines, report that the heartbeat was skipped and remind them
 they can install it later.
@@ -148,7 +159,7 @@ Print a final summary table showing each step's outcome:
 Project: /path/to/project
 
   Data directory       : created (.aweek/agents)
-  Heartbeat crontab    : skipped (user declined)
+  Heartbeat (launchd)  : skipped (user declined)
 
 Next steps:
   1. Run /aweek:hire to create your first agent
