@@ -703,6 +703,24 @@ export function renderDashboardShell({
     text-transform: none;
     letter-spacing: 0;
   }
+  .drawer-prompt {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .drawer-prompt-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--panel-2, rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font: 12px/1.55 var(--font-mono, ui-monospace, Menlo, monospace);
+    color: var(--text);
+    max-height: 260px;
+    overflow: auto;
+  }
   .drawer-activity {
     margin-top: 20px;
     padding-top: 16px;
@@ -846,6 +864,10 @@ ${extraStyles}
     <div class="drawer-chips" data-drawer-chips></div>
     <div class="drawer-desc" data-drawer-desc></div>
     <dl class="drawer-fields" data-drawer-fields></dl>
+    <section class="drawer-prompt" data-drawer-prompt aria-label="Task prompt" hidden>
+      <h3 class="drawer-section-title">Prompt</h3>
+      <pre class="drawer-prompt-body" data-drawer-prompt-body></pre>
+    </section>
     <section class="drawer-activity" data-drawer-activity aria-label="Task activity" hidden>
       <h3 class="drawer-section-title">Activity</h3>
       <div class="drawer-activity-list" data-drawer-activity-list></div>
@@ -864,6 +886,8 @@ ${extraStyles}
   var chipsEl = drawer.querySelector('[data-drawer-chips]');
   var descEl = drawer.querySelector('[data-drawer-desc]');
   var fieldsEl = drawer.querySelector('[data-drawer-fields]');
+  var promptEl = drawer.querySelector('[data-drawer-prompt]');
+  var promptBodyEl = drawer.querySelector('[data-drawer-prompt-body]');
   var activityEl = drawer.querySelector('[data-drawer-activity]');
   var activityListEl = drawer.querySelector('[data-drawer-activity-list]');
 
@@ -1010,6 +1034,14 @@ ${extraStyles}
     if (t.delegatedTo) rows += row('Delegated to', t.delegatedTo);
     if (t.id) rows += row('Task ID', t.id);
     fieldsEl.innerHTML = rows;
+    if (promptEl && promptBodyEl) {
+      if (t.prompt && t.prompt !== t.desc) {
+        promptBodyEl.textContent = t.prompt;
+        promptEl.hidden = false;
+      } else {
+        promptEl.hidden = true;
+      }
+    }
     if (activityEl && activityListEl) {
       if (t.id) {
         activityListEl.innerHTML = renderActivity(taskActivity[t.id] || []);
@@ -1040,6 +1072,7 @@ ${extraStyles}
         id: d.taskId,
         num: d.taskNum,
         desc: d.taskTitle,
+        prompt: d.taskPrompt,
         status: d.taskStatus,
         priority: d.taskPriority,
         track: d.taskTrack,
