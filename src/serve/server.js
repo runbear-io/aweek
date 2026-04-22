@@ -23,6 +23,11 @@ import { networkInterfaces as nodeNetworkInterfaces } from 'node:os';
 import { readTranscriptLines } from '../storage/transcript-store.js';
 import { formatTranscriptLine } from './transcript-formatter.js';
 import {
+  buildTranscriptSummary,
+  parseRawTranscript,
+  renderTranscriptSummaryHtml,
+} from './transcript-summary.js';
+import {
   MISSING_AWEEK_DIR_CODE,
   createNoAweekDirError,
   formatNoAweekDirMessage,
@@ -268,6 +273,25 @@ async function handleRequest(req, res, ctx) {
     const slug = safeDecode(transcriptMatch[1]);
     const basename = safeDecode(transcriptMatch[2]);
     await handleTranscriptRequest(req, res, {
+      projectDir: ctx.projectDir,
+      agentId: slug,
+      basename,
+    });
+    return;
+  }
+
+  // Human-readable execution summary page.
+  // Path shape: `/executions/<agent-slug>/<basename>`. Parses the same
+  // JSONL the `/api/executions/...` endpoint streams, but renders a
+  // progressive-disclosure HTML view: headline + final output +
+  // permission denials + per-turn timeline up top, full raw JSON
+  // collapsed at the bottom. The raw endpoint remains available for
+  // curl / grep / tail workflows.
+  const summaryMatch = /^\/executions\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
+  if (summaryMatch) {
+    const slug = safeDecode(summaryMatch[1]);
+    const basename = safeDecode(summaryMatch[2]);
+    await handleTranscriptSummaryRequest(req, res, {
       projectDir: ctx.projectDir,
       agentId: slug,
       basename,
@@ -944,7 +968,7 @@ ${extraStyles}
         // overlay link (drawer-activity-link) sits underneath via z-index,
         // so this inner anchor is the one the click lands on.
         var agent = new URLSearchParams(location.search).get('agent') || '';
-        var tHref = '/api/executions/'
+        var tHref = '/executions/'
           + encodeURIComponent(agent) + '/' + encodeURIComponent(e.transcriptBasename);
         transcriptHtml = '<div class="drawer-activity-transcript">'
           + '<a class="drawer-activity-transcript-link" href="' + esc(tHref)
@@ -1173,6 +1197,65 @@ async function handleTranscriptRequest(_req, res, ctx) {
   }
 
   res.end();
+}
+
+/**
+ * Handle the `GET /executions/<agent>/<basename>` HTML summary page.
+ *
+ * Buffers the entire JSONL before rendering — transcripts are a few
+ * hundred KB at most, and the summary builder needs the terminal
+ * `result` event to produce the headline. The raw-bytes endpoint
+ * (`/api/executions/...`) stays streaming for curl/tail workflows that
+ * want to watch a session tick-by-tick.
+ */
+async function handleTranscriptSummaryRequest(_req, res, ctx) {
+  const { projectDir, agentId, basename } = ctx;
+  const safeAgent = typeof agentId === 'string' && agentId.length > 0
+    && !agentId.includes('/') && !agentId.includes('..');
+  const safeBase = typeof basename === 'string' && basename.length > 0
+    && !basename.includes('/') && !basename.includes('..');
+  if (!safeAgent || !safeBase) {
+    res.statusCode = 400;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end('Bad Request');
+    return;
+  }
+
+  const cutIdx = basename.indexOf('_');
+  if (cutIdx <= 0 || cutIdx === basename.length - 1) {
+    res.statusCode = 400;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end('Bad Request — basename must be <taskId>_<executionId>');
+    return;
+  }
+  const taskId = basename.slice(0, cutIdx);
+  const executionId = basename.slice(cutIdx + 1);
+  const agentsDir = join(projectDir, '.aweek', 'agents');
+
+  const rawLines = [];
+  for await (const line of readTranscriptLines(agentsDir, agentId, taskId, executionId)) {
+    rawLines.push(line);
+  }
+
+  if (rawLines.length === 0) {
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end('No transcript captured for this execution.\n');
+    return;
+  }
+
+  const events = parseRawTranscript(rawLines);
+  const summary = buildTranscriptSummary(events);
+  const html = renderTranscriptSummaryHtml(summary, {
+    agentId,
+    basename,
+    rawHref: `/api/executions/${encodeURIComponent(agentId)}/${encodeURIComponent(basename)}`,
+  });
+
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(html);
 }
 
 /**
