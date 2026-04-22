@@ -31,13 +31,13 @@ import { isReviewObjectiveId } from '../schemas/weekly-plan.schema.js';
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-function makeEntry(status, description, timestamp) {
+function makeEntry(status, title, timestamp) {
   return {
     id: `log-${randomUUID().slice(0, 8)}`,
     timestamp: timestamp || new Date().toISOString(),
     agentId: 'agent-test',
     status,
-    description,
+    title,
   };
 }
 
@@ -416,7 +416,7 @@ describe('assembleNextWeekPlannerContext', () => {
       timestamp: '2026-04-14T10:00:00.000Z', // Monday April 13 week
       agentId: AGENT_ID,
       status: 'completed',
-      description: 'Built the login page',
+      title: 'Built the login page',
     });
 
     const ctx = await assembleNextWeekPlannerContext(
@@ -463,7 +463,7 @@ describe('assembleNextWeekPlannerContext', () => {
       timestamp: '2026-04-15T14:00:00.000Z',
       agentId: AGENT_ID,
       status: 'completed',
-      description: 'Wrote integration tests',
+      title: 'Wrote integration tests',
     });
 
     const ctx = await assembleNextWeekPlannerContext(
@@ -534,7 +534,7 @@ describe('assembleNextWeekPlannerContext', () => {
       timestamp: '2026-04-14T02:00:00.000Z', // UTC Tuesday = Monday in EST
       agentId: AGENT_ID,
       status: 'completed',
-      description: 'TZ-aware task',
+      title: 'TZ-aware task',
     });
 
     // Should not throw when a valid IANA zone is passed
@@ -591,13 +591,13 @@ Focus on quality.
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
     assert.ok(workTask, 'expected at least one work task');
     // The brief should contain last-week framing language
-    const descLc = workTask.description.toLowerCase();
+    const descLc = workTask.prompt.toLowerCase();
     const hasRetroSentence =
       descLc.includes('last week') ||
       descLc.includes('retrospective');
     assert.ok(
       hasRetroSentence,
-      `expected retrospective bridge in brief, got: "${workTask.description}"`,
+      `expected retrospective bridge in brief, got: "${workTask.prompt}"`,
     );
   });
 
@@ -620,8 +620,8 @@ Focus on quality.
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
     assert.ok(workTask);
     assert.ok(
-      !workTask.description.includes("last week's review"),
-      `should not have retro bridge with null ctx: "${workTask.description}"`,
+      !workTask.prompt.includes("last week's review"),
+      `should not have retro bridge with null ctx: "${workTask.prompt}"`,
     );
   });
 
@@ -686,7 +686,7 @@ Focus on quality.
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
     assert.equal(
-      workTask.description,
+      workTask.prompt,
       'Write docs',
       'Without planMarkdown, advisor brief should not be called regardless of retrospectiveContext',
     );

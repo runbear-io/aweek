@@ -54,7 +54,7 @@ const AGENT_ID = 'test-agent';
 
 /** Minimal valid weekly plan for any week. */
 function makeWeeklyPlan(week) {
-  const task = createTask('Test task', 'obj-test', { priority: 'medium' });
+  const task = createTask({ title: 'Test task', prompt: 'Test task' }, 'obj-test', { priority: 'medium' });
   return createWeeklyPlan(week, week.slice(0, 7).replace('-W', '-').replace(/W(\d+)$/, (_m, w) => {
     // Convert "2026-W16" -> "2026-04" approximately — we just need a valid YYYY-MM.
     return '04';
@@ -398,7 +398,7 @@ describe('isFirstEverPlan', () => {
 
   it('returns null when at least one weekly plan exists', async () => {
     const store = new WeeklyPlanStore(dir);
-    const task = createTask('Existing task', 'obj-1', { priority: 'medium' });
+    const task = createTask({ title: 'Existing task', prompt: 'Existing task' }, 'obj-1', { priority: 'medium' });
     const plan = createWeeklyPlan('2026-W10', '2026-03', [task]);
     await store.save(AGENT_ID, plan);
 
@@ -532,14 +532,14 @@ describe('detectPriorWeekProblems', () => {
       timestamp: '2026-04-07T10:00:00Z',
       agentId: AGENT_ID,
       status: 'completed',
-      description: 'Task one completed',
+      title: 'Task one completed',
     };
     const entry2 = {
       id: 'log-aabb0002',
       timestamp: '2026-04-07T11:00:00Z',
       agentId: AGENT_ID,
       status: 'completed',
-      description: 'Task two completed',
+      title: 'Task two completed',
     };
     // Write directly to the log file for that week.
     await writeFile(
@@ -570,7 +570,7 @@ describe('detectPriorWeekProblems', () => {
         timestamp: '2026-04-07T10:00:00Z',
         agentId: AGENT_ID,
         status: 'failed',
-        description: `Failed task ${i}`,
+        title: `Failed task ${i}`,
       });
     }
     await writeFile(
@@ -606,7 +606,7 @@ describe('detectPriorWeekProblems', () => {
         timestamp: '2026-04-07T10:00:00Z',
         agentId: AGENT_ID,
         status: i < failCount ? 'failed' : 'completed',
-        description: `Task ${i}`,
+        title: `Task ${i}`,
       });
     }
     await writeFile(
@@ -784,7 +784,7 @@ describe('checkInterviewTriggers', () => {
     await writePlan(dir, AGENT_ID, GOOD_PLAN_MD);
     // Seed at least one prior weekly plan so isFirstEverPlan stays silent
     const store = new WeeklyPlanStore(dir);
-    const task = createTask('Prior task', 'obj-prior', { priority: 'medium' });
+    const task = createTask({ title: 'Prior task', prompt: 'Prior task' }, 'obj-prior', { priority: 'medium' });
     const plan = createWeeklyPlan('2026-W15', '2026-04', [task]);
     await store.save(AGENT_ID, plan);
 

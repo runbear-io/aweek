@@ -74,8 +74,8 @@ describe('extractBlockersFromPlan', () => {
   it('returns empty array when all tasks are completed', () => {
     const plan = {
       tasks: [
-        { id: 'task-a', description: 'Done', objectiveId: 'obj-a', status: 'completed' },
-        { id: 'task-b', description: 'Also done', objectiveId: 'obj-a', status: 'completed' },
+        { id: 'task-a', title: 'Done', prompt: 'Done', objectiveId: 'obj-a', status: 'completed' },
+        { id: 'task-b', title: 'Also done', prompt: 'Also done', objectiveId: 'obj-a', status: 'completed' },
       ],
     };
     assert.deepEqual(extractBlockersFromPlan(plan), []);
@@ -84,8 +84,8 @@ describe('extractBlockersFromPlan', () => {
   it('extracts failed tasks', () => {
     const plan = {
       tasks: [
-        { id: 'task-a', description: 'Broken', objectiveId: 'obj-a', status: 'failed', priority: 'high' },
-        { id: 'task-b', description: 'Done', objectiveId: 'obj-a', status: 'completed' },
+        { id: 'task-a', title: 'Broken', prompt: 'Broken', objectiveId: 'obj-a', status: 'failed', priority: 'high' },
+        { id: 'task-b', title: 'Done', prompt: 'Done', objectiveId: 'obj-a', status: 'completed' },
       ],
     };
     const result = extractBlockersFromPlan(plan);
@@ -99,7 +99,7 @@ describe('extractBlockersFromPlan', () => {
   it('extracts skipped tasks', () => {
     const plan = {
       tasks: [
-        { id: 'task-a', description: 'Skipped one', objectiveId: 'obj-b', status: 'skipped' },
+        { id: 'task-a', title: 'Skipped one', prompt: 'Skipped one', objectiveId: 'obj-b', status: 'skipped' },
       ],
     };
     const result = extractBlockersFromPlan(plan);
@@ -110,7 +110,7 @@ describe('extractBlockersFromPlan', () => {
   it('extracts in-progress (stuck) tasks', () => {
     const plan = {
       tasks: [
-        { id: 'task-a', description: 'Stuck task', objectiveId: 'obj-a', status: 'in-progress' },
+        { id: 'task-a', title: 'Stuck task', prompt: 'Stuck task', objectiveId: 'obj-a', status: 'in-progress' },
       ],
     };
     const result = extractBlockersFromPlan(plan);
@@ -121,8 +121,8 @@ describe('extractBlockersFromPlan', () => {
   it('does not extract pending or delegated tasks', () => {
     const plan = {
       tasks: [
-        { id: 'task-a', description: 'Pending', objectiveId: 'obj-a', status: 'pending' },
-        { id: 'task-b', description: 'Delegated', objectiveId: 'obj-a', status: 'delegated', delegatedTo: 'agent-b' },
+        { id: 'task-a', title: 'Pending', prompt: 'Pending', objectiveId: 'obj-a', status: 'pending' },
+        { id: 'task-b', title: 'Delegated', prompt: 'Delegated', objectiveId: 'obj-a', status: 'delegated', delegatedTo: 'agent-b' },
       ],
     };
     assert.deepEqual(extractBlockersFromPlan(plan), []);
@@ -131,7 +131,7 @@ describe('extractBlockersFromPlan', () => {
   it('defaults priority to medium', () => {
     const plan = {
       tasks: [
-        { id: 'task-a', description: 'No priority', objectiveId: 'obj-a', status: 'failed' },
+        { id: 'task-a', title: 'No priority', prompt: 'No priority', objectiveId: 'obj-a', status: 'failed' },
       ],
     };
     const result = extractBlockersFromPlan(plan);
@@ -143,7 +143,7 @@ describe('extractBlockersFromPlan', () => {
       tasks: [
         {
           id: 'task-a',
-          description: 'Stuck delegation',
+          title: 'Stuck delegation', prompt: 'Stuck delegation',
           objectiveId: 'obj-a',
           status: 'in-progress',
           delegatedTo: 'agent-b',
@@ -170,7 +170,7 @@ describe('extractBlockersFromActivityLog', () => {
 
   it('returns empty array when no failed entries', () => {
     const entries = [
-      { id: 'log-abc1', status: 'completed', description: 'OK', timestamp: '2026-04-13T10:00:00Z' },
+      { id: 'log-abc1', status: 'completed', title: 'OK', timestamp: '2026-04-13T10:00:00Z' },
     ];
     assert.deepEqual(extractBlockersFromActivityLog(entries), []);
   });
@@ -216,7 +216,7 @@ describe('extractBlockersFromActivityLog', () => {
       {
         id: 'log-abc3',
         status: 'failed',
-        description: 'Unknown failure',
+        title: 'Unknown failure',
         timestamp: '2026-04-13T12:00:00Z',
       },
     ];
@@ -646,7 +646,7 @@ describe('generateBlockersReview', () => {
   it('returns empty blockers when plan has no failures and log is empty', async () => {
     mockWeeklyPlanStore.load.mock.mockImplementation(async () => ({
       tasks: [
-        { id: 'task-a', description: 'Done', objectiveId: 'obj-a', status: 'completed' },
+        { id: 'task-a', title: 'Done', prompt: 'Done', objectiveId: 'obj-a', status: 'completed' },
       ],
     }));
     mockActivityLogStore.load.mock.mockImplementation(async () => []);
@@ -665,8 +665,8 @@ describe('generateBlockersReview', () => {
   it('extracts blockers from plan failures', async () => {
     mockWeeklyPlanStore.load.mock.mockImplementation(async () => ({
       tasks: [
-        { id: 'task-a', description: 'Broken build', objectiveId: 'obj-a', status: 'failed', priority: 'critical' },
-        { id: 'task-b', description: 'Done', objectiveId: 'obj-a', status: 'completed' },
+        { id: 'task-a', title: 'Broken build', prompt: 'Broken build', objectiveId: 'obj-a', status: 'failed', priority: 'critical' },
+        { id: 'task-b', title: 'Done', prompt: 'Done', objectiveId: 'obj-a', status: 'completed' },
       ],
     }));
     mockActivityLogStore.load.mock.mockImplementation(async () => []);
@@ -691,7 +691,7 @@ describe('generateBlockersReview', () => {
       {
         id: 'log-abc1',
         status: 'failed',
-        description: 'API timeout',
+        title: 'API timeout',
         agentId: 'agent-1',
         timestamp: '2026-04-14T09:00:00Z',
         duration: 30000,
@@ -714,7 +714,7 @@ describe('generateBlockersReview', () => {
   it('merges plan and log blockers for matching tasks', async () => {
     mockWeeklyPlanStore.load.mock.mockImplementation(async () => ({
       tasks: [
-        { id: 'task-a', description: 'Deploy service', objectiveId: 'obj-a', status: 'failed', priority: 'high' },
+        { id: 'task-a', title: 'Deploy service', prompt: 'Deploy service', objectiveId: 'obj-a', status: 'failed', priority: 'high' },
       ],
     }));
     mockActivityLogStore.load.mock.mockImplementation(async () => [
@@ -751,7 +751,7 @@ describe('generateBlockersReview', () => {
       {
         id: 'log-abc1',
         status: 'failed',
-        description: 'Orphan failure',
+        title: 'Orphan failure',
         agentId: 'agent-1',
         timestamp: '2026-04-14T10:00:00Z',
       },
@@ -771,7 +771,7 @@ describe('generateBlockersReview', () => {
   it('passes formatting options through', async () => {
     mockWeeklyPlanStore.load.mock.mockImplementation(async () => ({
       tasks: [
-        { id: 'task-a', description: 'Failed X', objectiveId: 'obj-a', status: 'failed' },
+        { id: 'task-a', title: 'Failed X', prompt: 'Failed X', objectiveId: 'obj-a', status: 'failed' },
       ],
     }));
     mockActivityLogStore.load.mock.mockImplementation(async () => []);

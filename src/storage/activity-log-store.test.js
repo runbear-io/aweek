@@ -40,14 +40,14 @@ describe('createLogEntry', () => {
     const entry = createLogEntry({
       agentId: 'agent-test-abc123',
       status: 'completed',
-      description: 'Ran weekly report generation',
+      title: 'Ran weekly report generation',
     });
 
     assert.match(entry.id, /^log-[a-f0-9]+$/);
     assert.ok(entry.timestamp);
     assert.equal(entry.agentId, 'agent-test-abc123');
     assert.equal(entry.status, 'completed');
-    assert.equal(entry.description, 'Ran weekly report generation');
+    assert.equal(entry.title, 'Ran weekly report generation');
     assert.equal(entry.taskId, undefined);
     assert.equal(entry.duration, undefined);
     assert.equal(entry.metadata, undefined);
@@ -58,7 +58,7 @@ describe('createLogEntry', () => {
       agentId: 'agent-test-abc123',
       taskId: 'task-abc12345',
       status: 'completed',
-      description: 'Completed code review',
+      title: 'Completed code review',
       duration: 45000,
       metadata: { tokensUsed: 12500, filesReviewed: 3 },
     });
@@ -73,7 +73,7 @@ describe('createLogEntry', () => {
       agentId: 'agent-test-abc123',
       taskId: 'task-abc12345',
       status: 'started',
-      description: 'Starting task execution',
+      title: 'Starting task execution',
       duration: 0,
     });
 
@@ -94,7 +94,7 @@ describe('activityLogEntry schema validation', () => {
       timestamp: new Date().toISOString(),
       agentId: 'agent-test-abc123',
       status: 'invalid-status',
-      description: 'Test',
+      title: 'Test',
     });
     assert.equal(result.valid, false);
   });
@@ -105,7 +105,7 @@ describe('activityLogEntry schema validation', () => {
       timestamp: new Date().toISOString(),
       agentId: 'agent-test-abc123',
       status: 'completed',
-      description: 'Test',
+      title: 'Test',
     });
     assert.equal(result.valid, false);
   });
@@ -116,7 +116,7 @@ describe('activityLogEntry schema validation', () => {
       timestamp: new Date().toISOString(),
       agentId: 'agent-test-abc123',
       status: 'completed',
-      description: '',
+      title: '',
     });
     assert.equal(result.valid, false);
   });
@@ -127,7 +127,7 @@ describe('activityLogEntry schema validation', () => {
       timestamp: new Date().toISOString(),
       agentId: 'agent-test-abc123',
       status: 'completed',
-      description: 'Test',
+      title: 'Test',
       duration: -1,
     });
     assert.equal(result.valid, false);
@@ -140,7 +140,7 @@ describe('activityLogEntry schema validation', () => {
         timestamp: new Date().toISOString(),
         agentId: 'agent-test-abc123',
         status,
-        description: 'Test',
+        title: 'Test',
       });
       assert.equal(result.valid, true, `Status "${status}" should be valid`);
     }
@@ -152,7 +152,7 @@ describe('activityLogEntry schema validation', () => {
       timestamp: new Date().toISOString(),
       agentId: 'agent-test-abc123',
       status: 'completed',
-      description: 'Test',
+      title: 'Test',
       extraField: 'not allowed',
     });
     assert.equal(result.valid, false);
@@ -167,8 +167,8 @@ describe('activityLog (array) schema validation', () => {
 
   it('validates an array of valid entries', () => {
     const entries = [
-      createLogEntry({ agentId: 'agent-a-1234abcd', status: 'started', description: 'Begin' }),
-      createLogEntry({ agentId: 'agent-a-1234abcd', status: 'completed', description: 'Done', duration: 5000 }),
+      createLogEntry({ agentId: 'agent-a-1234abcd', status: 'started', title: 'Begin' }),
+      createLogEntry({ agentId: 'agent-a-1234abcd', status: 'completed', title: 'Done', duration: 5000 }),
     ];
     const result = validateActivityLog(entries);
     assert.equal(result.valid, true);
@@ -220,7 +220,7 @@ describe('ActivityLogStore', () => {
       const entry = createLogEntry({
         agentId: AGENT_ID,
         status: 'completed',
-        description: 'Test task',
+        title: 'Test task',
         duration: 1000,
       });
       await store.append(AGENT_ID, entry);
@@ -237,7 +237,7 @@ describe('ActivityLogStore', () => {
       const entry = createLogEntry({
         agentId: AGENT_ID,
         status: 'started',
-        description: 'Starting task',
+        title: 'Starting task',
       });
 
       const result = await store.append(AGENT_ID, entry);
@@ -252,12 +252,12 @@ describe('ActivityLogStore', () => {
       const entry1 = createLogEntry({
         agentId: AGENT_ID,
         status: 'started',
-        description: 'Starting task',
+        title: 'Starting task',
       });
       const entry2 = createLogEntry({
         agentId: AGENT_ID,
         status: 'completed',
-        description: 'Task done',
+        title: 'Task done',
         duration: 5000,
       });
 
@@ -273,7 +273,7 @@ describe('ActivityLogStore', () => {
       const entry = createLogEntry({
         agentId: AGENT_ID,
         status: 'completed',
-        description: 'Idempotent test',
+        title: 'Idempotent test',
       });
 
       await store.append(AGENT_ID, entry);
@@ -297,7 +297,7 @@ describe('ActivityLogStore', () => {
         agentId: AGENT_ID,
         taskId: 'task-xyz99887',
         status: 'completed',
-        description: 'Full entry',
+        title: 'Full entry',
         duration: 12345,
         metadata: { tokensUsed: 5000 },
       });
@@ -319,7 +319,7 @@ describe('ActivityLogStore', () => {
       const entry = createLogEntry({
         agentId: AGENT_ID,
         status: 'completed',
-        description: 'Test',
+        title: 'Test',
       });
       await store.append(AGENT_ID, entry);
 
@@ -331,8 +331,8 @@ describe('ActivityLogStore', () => {
 
   describe('query', () => {
     it('returns all entries when no filters provided', async () => {
-      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', description: 'A' });
-      const e2 = createLogEntry({ agentId: AGENT_ID, status: 'completed', description: 'B' });
+      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', title: 'A' });
+      const e2 = createLogEntry({ agentId: AGENT_ID, status: 'completed', title: 'B' });
       await store.append(AGENT_ID, e1);
       await store.append(AGENT_ID, e2);
 
@@ -341,9 +341,9 @@ describe('ActivityLogStore', () => {
     });
 
     it('filters by status', async () => {
-      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', description: 'A' });
-      const e2 = createLogEntry({ agentId: AGENT_ID, status: 'completed', description: 'B' });
-      const e3 = createLogEntry({ agentId: AGENT_ID, status: 'failed', description: 'C' });
+      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', title: 'A' });
+      const e2 = createLogEntry({ agentId: AGENT_ID, status: 'completed', title: 'B' });
+      const e3 = createLogEntry({ agentId: AGENT_ID, status: 'failed', title: 'C' });
       await store.append(AGENT_ID, e1);
       await store.append(AGENT_ID, e2);
       await store.append(AGENT_ID, e3);
@@ -354,8 +354,8 @@ describe('ActivityLogStore', () => {
     });
 
     it('filters by taskId', async () => {
-      const e1 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-aaa', status: 'started', description: 'A' });
-      const e2 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-bbb', status: 'started', description: 'B' });
+      const e1 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-aaa', status: 'started', title: 'A' });
+      const e2 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-bbb', status: 'started', title: 'B' });
       await store.append(AGENT_ID, e1);
       await store.append(AGENT_ID, e2);
 
@@ -365,20 +365,20 @@ describe('ActivityLogStore', () => {
     });
 
     it('combines status and taskId filters', async () => {
-      const e1 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-aaa', status: 'started', description: 'A' });
-      const e2 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-aaa', status: 'completed', description: 'B' });
-      const e3 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-bbb', status: 'completed', description: 'C' });
+      const e1 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-aaa', status: 'started', title: 'A' });
+      const e2 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-aaa', status: 'completed', title: 'B' });
+      const e3 = createLogEntry({ agentId: AGENT_ID, taskId: 'task-bbb', status: 'completed', title: 'C' });
       await store.append(AGENT_ID, e1);
       await store.append(AGENT_ID, e2);
       await store.append(AGENT_ID, e3);
 
       const results = await store.query(AGENT_ID, { taskId: 'task-aaa', status: 'completed' });
       assert.equal(results.length, 1);
-      assert.equal(results[0].description, 'B');
+      assert.equal(results[0].title, 'B');
     });
 
     it('returns empty when no matches', async () => {
-      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', description: 'A' });
+      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', title: 'A' });
       await store.append(AGENT_ID, e1);
 
       const results = await store.query(AGENT_ID, { status: 'failed' });
@@ -395,10 +395,10 @@ describe('ActivityLogStore', () => {
     });
 
     it('computes correct counts and duration', async () => {
-      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', description: 'A', duration: 1000 });
-      const e2 = createLogEntry({ agentId: AGENT_ID, status: 'completed', description: 'B', duration: 2000 });
-      const e3 = createLogEntry({ agentId: AGENT_ID, status: 'completed', description: 'C', duration: 3000 });
-      const e4 = createLogEntry({ agentId: AGENT_ID, status: 'failed', description: 'D' });
+      const e1 = createLogEntry({ agentId: AGENT_ID, status: 'started', title: 'A', duration: 1000 });
+      const e2 = createLogEntry({ agentId: AGENT_ID, status: 'completed', title: 'B', duration: 2000 });
+      const e3 = createLogEntry({ agentId: AGENT_ID, status: 'completed', title: 'C', duration: 3000 });
+      const e4 = createLogEntry({ agentId: AGENT_ID, status: 'failed', title: 'D' });
       await store.append(AGENT_ID, e1);
       await store.append(AGENT_ID, e2);
       await store.append(AGENT_ID, e3);

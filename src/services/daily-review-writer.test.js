@@ -48,21 +48,25 @@ const WEEK_MONDAY = '2026-04-13';
 const GENERATED_AT = '2026-04-14T17:00:00.000Z';
 
 function makeTask(id, status = 'pending', overrides = {}) {
+  const { description, title, prompt, ...rest } = overrides;
+  const label = title || prompt || description || `Task ${id}`;
   return {
     id,
-    description: `Task ${id}`,
+    title: title || label,
+    prompt: prompt || label,
     objectiveId: 'obj-work01',
     status,
     priority: 'medium',
     runAt: `${DATE}T09:00:00.000Z`,
-    ...overrides,
+    ...rest,
   };
 }
 
 function makeReviewTask(id, objectiveId = DAILY_REVIEW_OBJECTIVE_ID) {
   return {
     id,
-    description: 'Daily review task',
+    title: 'Daily review task',
+    prompt: 'Daily review task',
     objectiveId,
     status: 'pending',
     priority: 'medium',
@@ -83,13 +87,14 @@ function makeWeeklyPlan(tasks = [], overrides = {}) {
 }
 
 function makeLogEntry(id, overrides = {}) {
+  const { description, title, ...rest } = overrides;
   return {
     id,
     timestamp: `${DATE}T10:00:00.000Z`,
     agentId: AGENT_ID,
     status: 'completed',
-    description: `Log entry ${id}`,
-    ...overrides,
+    title: title || description || `Log entry ${id}`,
+    ...rest,
   };
 }
 
@@ -335,7 +340,7 @@ describe('collectDayLogEntries', () => {
   });
 
   it('handles entries with no timestamp gracefully', () => {
-    const entry = { id: 'log-ccc33333', status: 'completed', description: 'x' };
+    const entry = { id: 'log-ccc33333', status: 'completed', title: 'x' };
     const result = collectDayLogEntries([entry], DATE);
     assert.deepStrictEqual(result, []);
   });
@@ -597,8 +602,8 @@ describe('formatAdjustmentsSection', () => {
 
   it('renders each adjustment as a list item', () => {
     const adjs = [
-      { type: 'carry-over', taskId: 'task-aaa', description: 'Alpha', text: 'Do alpha.' },
-      { type: 'retry', taskId: 'task-bbb', description: 'Beta', text: 'Retry beta.' },
+      { type: 'carry-over', taskId: 'task-aaa', title: 'Alpha', text: 'Do alpha.' },
+      { type: 'retry', taskId: 'task-bbb', title: 'Beta', text: 'Retry beta.' },
     ];
     const md = formatAdjustmentsSection(adjs, 'Thursday');
     assert.ok(md.includes('- Do alpha.'));
@@ -831,8 +836,8 @@ describe('buildDailyReviewMetadata', () => {
       makeTask('task-ccc33333', 'failed'),
     ];
     const adjustments = [
-      { type: 'carry-over', taskId: 'task-bbb22222', description: 'Task bbb' },
-      { type: 'retry', taskId: 'task-ccc33333', description: 'Task ccc' },
+      { type: 'carry-over', taskId: 'task-bbb22222', title: 'Task bbb' },
+      { type: 'retry', taskId: 'task-ccc33333', title: 'Task ccc' },
     ];
 
     const meta = buildDailyReviewMetadata({

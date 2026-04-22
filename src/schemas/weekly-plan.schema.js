@@ -51,17 +51,27 @@ export function isReviewObjectiveId(objectiveId) {
 export const weeklyTaskSchema = {
   $id: 'aweek://schemas/weekly-task',
   type: 'object',
-  required: ['id', 'description', 'status'],
+  required: ['id', 'title', 'prompt', 'status'],
   properties: {
     id: {
       type: 'string',
       pattern: '^task-[a-z0-9-]+$',
       description: 'Unique task identifier',
     },
-    description: {
+    title: {
       type: 'string',
       minLength: 1,
-      description: 'What this task accomplishes',
+      maxLength: 80,
+      description:
+        'Short single-line label shown in the calendar grid, activity ' +
+        'rows, and dashboard summaries.',
+    },
+    prompt: {
+      type: 'string',
+      minLength: 1,
+      description:
+        'Long-form instruction text sent to Claude when the heartbeat ' +
+        'executes the task.',
     },
     objectiveId: {
       type: 'string',

@@ -41,14 +41,18 @@ import { assertValid } from '../schemas/validator.js';
 const uid = () => randomBytes(4).toString('hex');
 
 function makeTask(overrides = {}) {
-  return {
+  const text =
+    overrides.title || overrides.prompt || overrides.description || 'Do something';
+  const base = {
     id: `task-${uid()}`,
-    description: overrides.description || 'Do something',
+    title: text,
+    prompt: text,
     objectiveId: overrides.objectiveId || `obj-${uid()}`,
     priority: overrides.priority || 'medium',
     status: overrides.status || 'pending',
-    ...overrides,
   };
+  const { description: _ignored, ...rest } = overrides;
+  return { ...base, ...rest };
 }
 
 function makePlan(overrides = {}) {
@@ -155,10 +159,10 @@ describe('sortByPriority', () => {
       makeTask({ priority: 'high', description: 'high' }),
     ];
     const sorted = sortByPriority(tasks);
-    assert.equal(sorted[0].description, 'critical');
-    assert.equal(sorted[1].description, 'high');
-    assert.equal(sorted[2].description, 'medium');
-    assert.equal(sorted[3].description, 'low');
+    assert.equal(sorted[0].title, 'critical');
+    assert.equal(sorted[1].title, 'high');
+    assert.equal(sorted[2].title, 'medium');
+    assert.equal(sorted[3].title, 'low');
   });
 
   it('preserves original order for same priority (stable sort)', () => {
@@ -168,9 +172,9 @@ describe('sortByPriority', () => {
       makeTask({ priority: 'high', description: 'third-high' }),
     ];
     const sorted = sortByPriority(tasks);
-    assert.equal(sorted[0].description, 'first-high');
-    assert.equal(sorted[1].description, 'second-high');
-    assert.equal(sorted[2].description, 'third-high');
+    assert.equal(sorted[0].title, 'first-high');
+    assert.equal(sorted[1].title, 'second-high');
+    assert.equal(sorted[2].title, 'third-high');
   });
 
   it('does not mutate the original array', () => {
@@ -184,16 +188,16 @@ describe('sortByPriority', () => {
   });
 
   it('handles tasks without priority (defaults to medium)', () => {
-    const taskNoPriority = { id: 'task-nopri', description: 'x', objectiveId: 'obj-abc', status: 'pending' };
+    const taskNoPriority = { id: 'task-nopri', title: 'x', prompt: 'x', objectiveId: 'obj-abc', status: 'pending' };
     const tasks = [
       taskNoPriority,
       makeTask({ priority: 'high', description: 'high' }),
       makeTask({ priority: 'low', description: 'low' }),
     ];
     const sorted = sortByPriority(tasks);
-    assert.equal(sorted[0].description, 'high');
-    assert.equal(sorted[1].description, 'x'); // no priority → medium
-    assert.equal(sorted[2].description, 'low');
+    assert.equal(sorted[0].title, 'high');
+    assert.equal(sorted[1].title, 'x'); // no priority → medium
+    assert.equal(sorted[2].title, 'low');
   });
 
   it('returns empty array for empty input', () => {
@@ -216,7 +220,7 @@ describe('selectNextTaskFromPlan', () => {
     });
     const result = selectNextTaskFromPlan(plan);
     assert.ok(result);
-    assert.equal(result.task.description, 'critical-task');
+    assert.equal(result.task.title, 'critical-task');
     assert.equal(result.index, 1); // original index in tasks array
   });
 
@@ -436,7 +440,7 @@ describe('selectNextTask (store integration)', () => {
 
     const result = await selectNextTask(store, agentId);
     assert.ok(result);
-    assert.equal(result.task.description, 'critical-task');
+    assert.equal(result.task.title, 'critical-task');
     assert.equal(result.week, '2026-W16');
     assert.ok(result.plan);
   });
@@ -484,7 +488,7 @@ describe('selectNextTask (store integration)', () => {
 
     const result = await selectNextTask(store, agentId);
     assert.ok(result);
-    assert.equal(result.task.description, 'new-low');
+    assert.equal(result.task.title, 'new-low');
     assert.equal(result.week, '2026-W16');
   });
 
@@ -506,7 +510,7 @@ describe('selectNextTask (store integration)', () => {
 
     const result = await selectNextTask(store, agentId);
     assert.ok(result);
-    assert.equal(result.task.description, 'approved-task');
+    assert.equal(result.task.title, 'approved-task');
     assert.equal(result.week, '2026-W15');
   });
 
@@ -551,7 +555,7 @@ describe('selectNextTaskForWeek', () => {
 
     const result = await selectNextTaskForWeek(store, agentId, '2026-W16');
     assert.ok(result);
-    assert.equal(result.task.description, 'week16-task');
+    assert.equal(result.task.title, 'week16-task');
     assert.equal(result.week, '2026-W16');
   });
 

@@ -228,7 +228,7 @@ export function taskStatusIcon(status) {
  */
 export function formatDayTaskItem(task, logEntry = null) {
   const icon = taskStatusIcon(task.status);
-  let line = `- ${icon} **${task.description}**`;
+  let line = `- ${icon} **${task.title}**`;
 
   const tags = [];
   tags.push(`status:${task.status}`);
@@ -337,7 +337,7 @@ export function formatTaskStatusSection(tasks, logEntries) {
  * @param {object[]} tasks - Day tasks from collectDayTasks
  * @param {object[]} logEntries - Day log entries from collectDayLogEntries
  * @param {string} [tomorrowDayName='tomorrow'] - Name of the next weekday
- * @returns {Array<{ type: string, taskId: string, description: string, text: string }>}
+ * @returns {Array<{ type: string, taskId: string, title: string, text: string }>}
  */
 export function buildAdjustmentsForTomorrow(tasks, logEntries, tomorrowDayName = 'tomorrow') {
   const adjustments = [];
@@ -358,9 +358,9 @@ export function buildAdjustmentsForTomorrow(tasks, logEntries, tomorrowDayName =
         adjustments.push({
           type: 'carry-over',
           taskId: task.id,
-          description: task.description,
+          title: task.title,
           text:
-            `**${task.description}** was not started today — schedule it as a ` +
+            `**${task.title}** was not started today — schedule it as a ` +
             `${isUrgent ? 'top' : 'first available'} priority for ` +
             `${tomorrowDayName}.`,
         });
@@ -375,9 +375,9 @@ export function buildAdjustmentsForTomorrow(tasks, logEntries, tomorrowDayName =
         adjustments.push({
           type: 'continue',
           taskId: task.id,
-          description: task.description,
+          title: task.title,
           text:
-            `**${task.description}** is still in progress${durationNote}. ` +
+            `**${task.title}** is still in progress${durationNote}. ` +
             `Open ${tomorrowDayName} with this task to carry its momentum through to completion.`,
         });
         break;
@@ -392,9 +392,9 @@ export function buildAdjustmentsForTomorrow(tasks, logEntries, tomorrowDayName =
         adjustments.push({
           type: 'retry',
           taskId: task.id,
-          description: task.description,
+          title: task.title,
           text:
-            `**${task.description}** failed today.${errorNote} ` +
+            `**${task.title}** failed today.${errorNote} ` +
             `Before retrying on ${tomorrowDayName}, diagnose what went wrong and ` +
             `${isUrgent ? 'escalate immediately if external help is needed.' : 'confirm whether any unblocking steps are required.'}`,
         });
@@ -405,9 +405,9 @@ export function buildAdjustmentsForTomorrow(tasks, logEntries, tomorrowDayName =
         adjustments.push({
           type: 'reschedule',
           taskId: task.id,
-          description: task.description,
+          title: task.title,
           text:
-            `**${task.description}** was skipped today. ` +
+            `**${task.title}** was skipped today. ` +
             `On ${tomorrowDayName} decide whether to reschedule it or mark it as deferred ` +
             `if priorities have shifted since it was planned.`,
         });
@@ -417,9 +417,9 @@ export function buildAdjustmentsForTomorrow(tasks, logEntries, tomorrowDayName =
         adjustments.push({
           type: 'follow-up',
           taskId: task.id,
-          description: task.description,
+          title: task.title,
           text:
-            `**${task.description}** was delegated today. ` +
+            `**${task.title}** was delegated today. ` +
             `Follow up on ${tomorrowDayName} to confirm the delegate received, ` +
             `acknowledged, and has a clear path forward.`,
         });
@@ -436,7 +436,7 @@ export function buildAdjustmentsForTomorrow(tasks, logEntries, tomorrowDayName =
 /**
  * Format the Adjustments for Tomorrow section of a daily review.
  *
- * @param {Array<{ type: string, taskId: string, description: string, text: string }>} adjustments
+ * @param {Array<{ type: string, taskId: string, title: string, text: string }>} adjustments
  * @param {string} [tomorrowDayName='tomorrow'] - Name of the next weekday
  * @returns {string} Markdown content for the Adjustments for Tomorrow section
  */
@@ -688,7 +688,7 @@ export function buildDailyReviewMetadata({ agentId, date, week, generatedAt, tas
     },
     tasks: tasks.map((t) => ({
       taskId: t.id,
-      description: t.description,
+      title: t.title,
       status: t.status,
       objectiveId: t.objectiveId || null,
       priority: t.priority || 'medium',
@@ -696,7 +696,7 @@ export function buildDailyReviewMetadata({ agentId, date, week, generatedAt, tas
     adjustments: adjustments.map((a) => ({
       type: a.type,
       taskId: a.taskId,
-      description: a.description,
+      title: a.title,
     })),
   };
 }

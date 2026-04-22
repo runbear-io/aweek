@@ -39,25 +39,30 @@ function makePlan(tasks = [], overrides = {}) {
 }
 
 function makeTask(id, status = 'completed', overrides = {}) {
-  return {
+  const text = overrides.title || overrides.prompt || overrides.description || `Task ${id}`;
+  const base = {
     id,
-    description: `Task ${id}`,
+    title: text,
+    prompt: text,
     objectiveId: 'obj-abc12345',
     status,
     priority: 'medium',
-    ...overrides,
   };
+  const { description: _ignored, ...rest } = overrides;
+  return { ...base, ...rest };
 }
 
 function makeLogEntry(id, status = 'completed', overrides = {}) {
-  return {
+  const text = overrides.title || overrides.description || `Log entry ${id}`;
+  const base = {
     id,
     timestamp: '2026-04-14T10:00:00.000Z',
     agentId: 'agent-test-1234abcd',
     status,
-    description: `Log entry ${id}`,
-    ...overrides,
+    title: text,
   };
+  const { description: _ignored, ...rest } = overrides;
+  return { ...base, ...rest };
 }
 
 // ---------------------------------------------------------------------------

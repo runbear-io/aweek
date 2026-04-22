@@ -41,7 +41,8 @@ function makePlan(week, month, tasks, approved = true) {
 function makeTask(id, description, objectiveId, status = 'pending', opts = {}) {
   return {
     id,
-    description,
+    title: description,
+    prompt: description,
     objectiveId,
     status,
     priority: opts.priority || 'medium',
@@ -113,7 +114,7 @@ describe('collectNextWeekPlannedTasks', () => {
   });
 
   it('defaults priority to medium when missing', () => {
-    const tasks = [{ id: 'task-xyz', description: 'No priority', objectiveId: 'obj-a', status: 'pending' }];
+    const tasks = [{ id: 'task-xyz', title: 'No priority', prompt: 'No priority', objectiveId: 'obj-a', status: 'pending' }];
     const plan = makePlan('2026-W17', '2026-04', tasks);
     const result = collectNextWeekPlannedTasks(plan);
     assert.equal(result[0].priority, 'medium');

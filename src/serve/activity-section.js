@@ -322,7 +322,9 @@ function activityExpandScript() {
  */
 function renderActivityRow(entry) {
   const status = String(entry.status || 'unknown');
-  const description = String(entry.description || '');
+  // Activity-log entries store the compact task label under `title` — the
+  // full prompt sent to Claude never leaks into this user-facing row.
+  const title = String(entry.title || '');
   const agentId = String(entry.agentId || '');
   const timestamp = entry.timestamp ? formatTimestamp(entry.timestamp) : '—';
   const statusLabel = STATUS_LABELS[status] || status;
@@ -348,7 +350,7 @@ function renderActivityRow(entry) {
     `<span class="activity-row">`,
     `<span class="activity-ts" title="${escapeAttr(entry.timestamp || '')}">${escapeHtml(timestamp)}</span>`,
     `<span class="activity-agent"><code>${escapeHtml(agentId)}</code></span>`,
-    `<span class="activity-desc">${escapeHtml(description)}</span>`,
+    `<span class="activity-desc">${escapeHtml(title)}</span>`,
     `<span class="${statusCls}">${escapeHtml(statusLabel)}</span>`,
     hasDetails
       ? `<span class="activity-caret" aria-hidden="true">▸</span>`

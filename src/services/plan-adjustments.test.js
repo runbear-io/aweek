@@ -81,8 +81,8 @@ function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const monthlyPlan = createMonthlyPlan('2026-04', [obj1, obj2]);
   config.monthlyPlans.push(monthlyPlan);
 
-  const task1 = createTask('Refactor utils.js', obj1.id);
-  const task2 = createTask('Draft API overview', obj2.id);
+  const task1 = createTask({ title: 'Refactor utils.js', prompt: 'Refactor utils.js' }, obj1.id);
+  const task2 = createTask({ title: 'Draft API overview', prompt: 'Draft API overview' }, obj2.id);
   const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
   const weeklyPlans = [weeklyPlan];
 
@@ -264,7 +264,7 @@ describe('validateWeeklyAdjustment', () => {
   it('validates a valid add task', () => {
     const { config, weeklyPlans, obj1 } = buildTestAgent();
     const result = validateWeeklyAdjustment(
-      { action: 'add', week: '2026-W16', description: 'New task', objectiveId: obj1.id },
+      { action: 'add', week: '2026-W16', title: 'New task', prompt: 'New task', objectiveId: obj1.id },
       config,
       weeklyPlans,
     );
@@ -274,7 +274,7 @@ describe('validateWeeklyAdjustment', () => {
   it('accepts add with a free-form objectiveId (no longer validated against monthlyPlans)', () => {
     const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
-      { action: 'add', week: '2026-W16', description: 'Task', objectiveId: '2026-04' },
+      { action: 'add', week: '2026-W16', title: 'Task', prompt: 'Task', objectiveId: '2026-04' },
       config,
       weeklyPlans,
     );
@@ -284,7 +284,7 @@ describe('validateWeeklyAdjustment', () => {
   it('rejects add with an empty-string objectiveId', () => {
     const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
-      { action: 'add', week: '2026-W16', description: 'Task', objectiveId: '' },
+      { action: 'add', week: '2026-W16', title: 'Task', prompt: 'Task', objectiveId: '' },
       config,
       weeklyPlans,
     );
@@ -295,7 +295,7 @@ describe('validateWeeklyAdjustment', () => {
   it('rejects when weekly plan does not exist', () => {
     const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
-      { action: 'add', week: '2026-W99', description: 'Task', objectiveId: 'obj-x' },
+      { action: 'add', week: '2026-W99', title: 'Task', prompt: 'Task', objectiveId: 'obj-x' },
       config,
       weeklyPlans,
     );
@@ -327,7 +327,7 @@ describe('validateWeeklyAdjustment', () => {
   it('rejects invalid week format', () => {
     const { config, weeklyPlans } = buildTestAgent();
     const result = validateWeeklyAdjustment(
-      { action: 'add', week: 'week16', description: 'Task', objectiveId: 'obj-x' },
+      { action: 'add', week: 'week16', title: 'Task', prompt: 'Task', objectiveId: 'obj-x' },
       config,
       weeklyPlans,
     );
@@ -341,7 +341,7 @@ describe('validateWeeklyAdjustment', () => {
       {
         action: 'add',
         week: '2026-W16',
-        description: 'Publish X post',
+        title: 'Publish X post', prompt: 'Publish X post',
         objectiveId: obj1.id,
         track: 'x-com',
       },
@@ -357,7 +357,7 @@ describe('validateWeeklyAdjustment', () => {
       {
         action: 'add',
         week: '2026-W16',
-        description: 'X',
+        title: 'X', prompt: 'X',
         objectiveId: obj1.id,
         track: '',
       },
@@ -374,7 +374,7 @@ describe('validateWeeklyAdjustment', () => {
       {
         action: 'add',
         week: '2026-W16',
-        description: 'X',
+        title: 'X', prompt: 'X',
         objectiveId: obj1.id,
         track: 'a'.repeat(65),
       },
@@ -424,7 +424,7 @@ describe('validateWeeklyAdjustment', () => {
     assert.equal(result.valid, false);
     assert.ok(
       result.errors.some((e) =>
-        /status, description, track, or runAt/.test(e),
+        /status, title, prompt, track, or runAt/.test(e),
       ),
     );
   });
@@ -437,8 +437,8 @@ describe('validateWeeklyAdjustment', () => {
         week: '2026-W17',
         month: '2026-04',
         tasks: [
-          { description: 'X post 1', objectiveId: obj1.id, track: 'x-com' },
-          { description: 'Reddit 1', objectiveId: obj1.id, track: 'reddit' },
+          { title: 'X post 1', prompt: 'X post 1', objectiveId: obj1.id, track: 'x-com' },
+          { title: 'Reddit 1', prompt: 'Reddit 1', objectiveId: obj1.id, track: 'reddit' },
         ],
       },
       config,
@@ -454,7 +454,7 @@ describe('validateWeeklyAdjustment', () => {
         action: 'create',
         week: '2026-W17',
         month: '2026-04',
-        tasks: [{ description: 'X', objectiveId: obj1.id, track: '' }],
+        tasks: [{ title: 'X', prompt: 'X', objectiveId: obj1.id, track: '' }],
       },
       config,
       weeklyPlans,
@@ -469,7 +469,7 @@ describe('validateWeeklyAdjustment', () => {
       {
         action: 'add',
         week: '2026-W16',
-        description: 'X',
+        title: 'X', prompt: 'X',
         objectiveId: obj1.id,
         runAt: '2026-04-20T09:00:00Z',
       },
@@ -485,7 +485,7 @@ describe('validateWeeklyAdjustment', () => {
       {
         action: 'add',
         week: '2026-W16',
-        description: 'X',
+        title: 'X', prompt: 'X',
         objectiveId: obj1.id,
         runAt: 'tomorrow',
       },
@@ -526,7 +526,7 @@ describe('validateWeeklyAdjustment', () => {
         month: '2026-04',
         tasks: [
           {
-            description: 'Post 1',
+            title: 'Post 1', prompt: 'Post 1',
             objectiveId: obj1.id,
             track: 'x-com',
             runAt: '2026-04-20T09:00:00Z',
@@ -547,7 +547,7 @@ describe('validateWeeklyAdjustment', () => {
         week: '2026-W17',
         month: '2026-04',
         tasks: [
-          { description: 'Post', objectiveId: obj1.id, runAt: '2026-04-20 09:00' },
+          { title: 'Post', prompt: 'Post', objectiveId: obj1.id, runAt: '2026-04-20 09:00' },
         ],
       },
       config,
@@ -703,7 +703,7 @@ describe('applyWeeklyAdjustment', () => {
       {
         action: 'add',
         week: '2026-W16',
-        description: 'New task',
+        title: 'New task', prompt: 'New task',
         objectiveId: obj1.id,
       },
       weeklyPlans,
@@ -730,7 +730,7 @@ describe('applyWeeklyAdjustment', () => {
     assert.ok(r.result.completedAt);
   });
 
-  it('updates a task description', () => {
+  it('updates a task title and prompt', () => {
     const { config, weeklyPlans, task1 } = buildTestAgent();
     const r = applyWeeklyAdjustment(
       config,
@@ -738,12 +738,13 @@ describe('applyWeeklyAdjustment', () => {
         action: 'update',
         week: '2026-W16',
         taskId: task1.id,
-        description: 'Revised task',
+        title: 'Revised task', prompt: 'Revised task',
       },
       weeklyPlans,
     );
     assert.equal(r.applied, true);
-    assert.equal(r.result.description, 'Revised task');
+    assert.equal(r.result.title, 'Revised task');
+    assert.equal(r.result.prompt, 'Revised task');
   });
 
   it('fails for nonexistent week', () => {
@@ -753,7 +754,7 @@ describe('applyWeeklyAdjustment', () => {
       {
         action: 'add',
         week: '2026-W99',
-        description: 'Task',
+        title: 'Task', prompt: 'Task',
         objectiveId: obj1.id,
       },
       weeklyPlans,
@@ -839,7 +840,7 @@ describe('adjustGoals', () => {
     const result = await adjustGoals({
       agentId: config.id,
       weeklyAdjustments: [
-        { action: 'add', week: '2026-W16', description: 'Extra task', objectiveId: obj1.id },
+        { action: 'add', week: '2026-W16', title: 'Extra task', prompt: 'Extra task', objectiveId: obj1.id },
       ],
       dataDir: tmpDir,
     });
@@ -859,7 +860,7 @@ describe('adjustGoals', () => {
         { action: 'update', month: '2026-04', objectiveId: obj1.id, status: 'in-progress' },
       ],
       weeklyAdjustments: [
-        { action: 'add', week: '2026-W16', description: 'Another task', objectiveId: obj1.id },
+        { action: 'add', week: '2026-W16', title: 'Another task', prompt: 'Another task', objectiveId: obj1.id },
       ],
       dataDir: tmpDir,
     });
@@ -1030,7 +1031,7 @@ describe('adjustGoals subagent-wrapper invariants', () => {
     const result = await adjustGoals({
       agentId: TEST_SLUG,
       weeklyAdjustments: [
-        { action: 'add', week: '2026-W16', description: 'Extra task', objectiveId },
+        { action: 'add', week: '2026-W16', title: 'Extra task', prompt: 'Extra task', objectiveId },
       ],
       dataDir,
     });
@@ -1075,7 +1076,7 @@ describe('adjustGoals subagent-wrapper invariants', () => {
         { action: 'update', month: '2026-04', objectiveId, status: 'in-progress' },
       ],
       weeklyAdjustments: [
-        { action: 'add', week: '2026-W16', description: 'Polish docs', objectiveId },
+        { action: 'add', week: '2026-W16', title: 'Polish docs', prompt: 'Polish docs', objectiveId },
       ],
       dataDir,
     });
@@ -1216,7 +1217,7 @@ describe('formatAdjustmentSummary', () => {
     const summary = formatAdjustmentSummary({
       goals: [{ applied: true, result: { id: 'goal-x', description: 'G' } }],
       monthly: [{ applied: true, result: { id: 'obj-y', description: 'O' } }],
-      weekly: [{ applied: true, result: { id: 'task-z', description: 'T' } }],
+      weekly: [{ applied: true, result: { id: 'task-z', title: 'T', prompt: 'T' } }],
     });
     assert.ok(summary.includes('Goals: 1 change'));
     assert.ok(summary.includes('Monthly objectives: 1 change'));

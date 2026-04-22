@@ -46,7 +46,8 @@ export function collectNextWeekPlannedTasks(nextWeekPlan) {
   if (!nextWeekPlan || !Array.isArray(nextWeekPlan.tasks)) return [];
   return nextWeekPlan.tasks.map((t) => ({
     taskId: t.id,
-    description: t.description,
+    // User-facing review surface → show the compact title, not the prompt.
+    description: t.title,
     objectiveId: t.objectiveId,
     priority: t.priority || 'medium',
     status: t.status,
@@ -76,7 +77,9 @@ export function collectCarryOverTasks(currentWeekPlan) {
     .filter((t) => CARRYOVER_STATUSES.has(t.status))
     .map((t) => ({
       taskId: t.id,
-      description: t.description,
+      // Carry-over display uses the compact title; the full prompt is kept
+      // on the source task and never propagated into the review markdown.
+      description: t.title,
       objectiveId: t.objectiveId,
       priority: t.priority || 'medium',
       status: t.status,

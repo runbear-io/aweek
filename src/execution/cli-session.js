@@ -38,7 +38,8 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * @typedef {object} TaskContext
  * @property {string} taskId - Unique task identifier
- * @property {string} description - Human-readable task description
+ * @property {string} [title] - Short calendar label (used in log lines)
+ * @property {string} prompt - Long-form instruction text handed to Claude
  * @property {string} [objectiveId] - Parent objective ID for traceability
  * @property {string} [week] - The plan week (YYYY-Www)
  * @property {string} [additionalContext] - Extra context to append to the prompt
@@ -119,10 +120,13 @@ export function buildRuntimeContext(task) {
 
 /**
  * Build the positional user-prompt (the "TASK") that goes at the end of
- * the claude CLI argv. This is the actionable request: task description
- * plus execution instructions. Scheduling metadata lives in the runtime
- * context; this string is intentionally narrow so the subagent focuses on
- * the work.
+ * the claude CLI argv. This is the actionable request: the task's long-form
+ * `prompt` text plus execution instructions. Scheduling metadata lives in
+ * the runtime context; this string is intentionally narrow so the subagent
+ * focuses on the work.
+ *
+ * The short `title` field is for calendar / dashboard display and is NOT
+ * routed to Claude — only `prompt` enters the model context.
  *
  * @param {TaskContext} task - Task context object
  * @returns {string} Composed user prompt
@@ -130,10 +134,10 @@ export function buildRuntimeContext(task) {
 export function buildTaskPrompt(task) {
   if (!task) throw new Error('task is required');
   if (!task.taskId) throw new Error('task.taskId is required');
-  if (!task.description) throw new Error('task.description is required');
+  if (!task.prompt) throw new Error('task.prompt is required');
 
   return [
-    `## Task: ${task.description}`,
+    `## Task: ${task.prompt}`,
     '',
     `Task ID: ${task.taskId}`,
     '',
@@ -378,14 +382,15 @@ export function buildSessionConfig(agentConfig, selectedTask, opts = {}) {
   if (!agentConfig.subagentRef) throw new Error('agentConfig.subagentRef is required');
   if (!selectedTask) throw new Error('selectedTask is required');
   if (!selectedTask.id) throw new Error('selectedTask.id is required');
-  if (!selectedTask.description) throw new Error('selectedTask.description is required');
+  if (!selectedTask.prompt) throw new Error('selectedTask.prompt is required');
 
   return {
     agentId: agentConfig.id,
     subagentRef: agentConfig.subagentRef,
     task: {
       taskId: selectedTask.id,
-      description: selectedTask.description,
+      title: selectedTask.title,
+      prompt: selectedTask.prompt,
       objectiveId: selectedTask.objectiveId,
       week: opts.week,
       additionalContext: opts.additionalContext,

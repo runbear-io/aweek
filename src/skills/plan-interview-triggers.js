@@ -517,8 +517,8 @@ export async function detectPriorWeekProblems({
   if (!triggeredByAbsolute && !triggeredByRate) return null;
 
   const failedDescriptions = [
-    ...failedLogEntries.map((e) => e.description),
-    ...failedPlanTasks.map((t) => t.description),
+    ...failedLogEntries.map((e) => e.title),
+    ...failedPlanTasks.map((t) => t.title),
   ];
 
   return {

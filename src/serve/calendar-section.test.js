@@ -238,7 +238,7 @@ describe('gatherCalendar()', () => {
       tasks: [
         {
           id: 'task-aaaa',
-          description: 'Monday morning draft',
+          title: 'Monday morning draft', prompt: 'Monday morning draft',
           status: 'pending',
           priority: 'high',
           estimatedMinutes: 60,
@@ -247,7 +247,7 @@ describe('gatherCalendar()', () => {
         },
         {
           id: 'task-bbbb',
-          description: 'Wednesday polish',
+          title: 'Wednesday polish', prompt: 'Wednesday polish',
           status: 'in-progress',
           priority: 'medium',
           estimatedMinutes: 90,
@@ -256,7 +256,7 @@ describe('gatherCalendar()', () => {
         },
         {
           id: 'task-cccc',
-          description: 'Unscheduled follow-up',
+          title: 'Unscheduled follow-up', prompt: 'Unscheduled follow-up',
           status: 'completed',
           priority: 'low',
           objectiveId: '2026-04',
@@ -317,7 +317,7 @@ describe('gatherCalendar()', () => {
       tasks: [
         {
           id: 'task-legacy',
-          description: 'Legacy task',
+          title: 'Legacy task', prompt: 'Legacy task',
           status: 'completed',
         },
       ],
@@ -389,14 +389,14 @@ describe('GET /api/agents/:slug/calendar', () => {
       tasks: [
         {
           id: 'task-aaaa',
-          description: 'Monday morning draft',
+          title: 'Monday morning draft', prompt: 'Monday morning draft',
           status: 'pending',
           estimatedMinutes: 60,
           runAt: '2026-04-13T09:00:00.000Z',
         },
         {
           id: 'task-bbbb',
-          description: 'Unscheduled',
+          title: 'Unscheduled', prompt: 'Unscheduled',
           status: 'completed',
         },
       ],
@@ -452,7 +452,7 @@ describe('GET /api/agents/:slug/calendar', () => {
       tasks: [
         {
           id: 'task-new',
-          description: 'Freshly added',
+          title: 'Freshly added', prompt: 'Freshly added',
           status: 'pending',
         },
       ],
@@ -587,13 +587,13 @@ describe('gatherCalendarView()', () => {
       tasks: [
         {
           id: 'task-aaaa',
-          description: 'Mon',
+          title: 'Mon', prompt: 'Mon',
           status: 'pending',
           runAt: '2026-04-13T09:00:00.000Z',
         },
         {
           id: 'task-bbbb',
-          description: 'Loose',
+          title: 'Loose', prompt: 'Loose',
           status: 'completed',
         },
       ],
@@ -671,7 +671,8 @@ describe('renderCalendarSection()', () => {
           tasks: [
             {
               id: 'task-aaaa',
-              description: 'Monday 9am draft',
+              title: 'Monday 9am draft',
+              prompt: 'Monday 9am draft',
               status: 'pending',
               priority: 'high',
               runAt: '2026-04-13T09:00:00.000Z',
@@ -685,7 +686,8 @@ describe('renderCalendarSection()', () => {
             },
             {
               id: 'task-bbbb',
-              description: 'Wed 2:30pm',
+              title: 'Wed 2:30pm',
+              prompt: 'Wed 2:30pm',
               status: 'in-progress',
               priority: 'critical',
               runAt: '2026-04-15T14:30:00.000Z',
@@ -699,7 +701,7 @@ describe('renderCalendarSection()', () => {
             },
             {
               id: 'task-cccc',
-              description: 'Loose thread',
+              title: 'Loose thread', prompt: 'Loose thread',
               status: 'completed',
               priority: 'low',
               runAt: null,
@@ -746,7 +748,7 @@ describe('renderCalendarSection()', () => {
 
     // Task cards are buttons (clickable) with drawer-ready data attributes
     assert.match(html, /<button type="button" class="calendar-task/);
-    assert.match(html, /data-task-desc=/);
+    assert.match(html, /data-task-title=/);
     assert.match(html, /data-task-priority="critical"/);
     assert.match(html, /data-task-run-at=/);
 
@@ -772,7 +774,8 @@ describe('renderCalendarSection()', () => {
           tasks: [
             {
               id: 'task-evil',
-              description: '<script>alert(1)</script>',
+              title: '<script>alert(1)</script>',
+              prompt: '<script>alert(1)</script>',
               status: 'pending',
               runAt: '2026-04-13T09:00:00.000Z',
               slot: {
@@ -917,7 +920,7 @@ describe('GET / → calendar tab renders within agent scope', () => {
       tasks: [
         {
           id: 'task-visible',
-          description: 'Mon 9am draft',
+          title: 'Mon 9am draft', prompt: 'Mon 9am draft',
           status: 'pending',
           runAt: '2026-04-13T09:00:00.000Z',
         },
@@ -1061,7 +1064,7 @@ describe('gatherTaskActivity()', () => {
       agentId: 'writer',
       taskId: 'task-alpha',
       status: 'completed',
-      description: 'Ran task alpha',
+      title: 'Ran task alpha',
       duration: 4200,
       metadata: {
         resources: { urls: ['https://example.com/post'], filePaths: ['/tmp/out.md'] },
@@ -1073,7 +1076,7 @@ describe('gatherTaskActivity()', () => {
       agentId: 'writer',
       taskId: 'task-beta',
       status: 'failed',
-      description: 'Other task',
+      title: 'Other task',
       duration: 500,
       metadata: { error: { message: 'explode' } },
     }));
@@ -1107,7 +1110,7 @@ describe('gatherTaskActivity()', () => {
     await store.append('writer', createLogEntry({
       agentId: 'writer',
       status: 'skipped',
-      description: 'Heartbeat tick with nothing to do',
+      title: 'Heartbeat tick with nothing to do',
     }));
     const byTask = await gatherTaskActivity({ projectDir, agentId: 'writer' });
     assert.deepEqual(byTask, {});
@@ -1203,7 +1206,7 @@ describe('renderCalendarSection() — task activity embed', () => {
               id: 'log-evil',
               timestamp: '2026-04-20T10:00:00.000Z',
               status: 'completed',
-              description: '</script><script>alert(1)</script>',
+              title: '</script><script>alert(1)</script>',
             },
           ],
         },

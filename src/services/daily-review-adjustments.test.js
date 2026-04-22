@@ -47,14 +47,17 @@ const TOMORROW = '2026-04-15'; // Wednesday
 const WEEK = '2026-W16';
 
 function makeTask(id, status = 'pending', overrides = {}) {
+  const { description, title, prompt, ...rest } = overrides;
+  const label = title || prompt || description || `Task ${id}`;
   return {
     id,
-    description: `Task ${id}`,
+    title: title || label,
+    prompt: prompt || label,
     objectiveId: 'obj-work01',
     status,
     priority: 'medium',
     runAt: `${DATE}T09:00:00.000Z`,
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -69,8 +72,8 @@ function makeWeeklyPlan(tasks = []) {
   };
 }
 
-function makeAdjRecord(type, taskId, description = `Task ${taskId}`) {
-  return { type, taskId, description, text: `Advisory text for ${taskId}.` };
+function makeAdjRecord(type, taskId, title = `Task ${taskId}`) {
+  return { type, taskId, title, text: `Advisory text for ${taskId}.` };
 }
 
 function makeAgentConfig(overrides = {}) {
@@ -246,7 +249,7 @@ describe('extractWeeklyAdjustmentOps', () => {
     assert.equal(ops[0].action, 'add');
     assert.equal(ops[0].week, WEEK);
     assert.equal(ops[0].objectiveId, 'obj-lead01');
-    assert.ok(ops[0].description.includes('Write the report'));
+    assert.ok(ops[0].prompt.includes('Write the report'));
     assert.equal(ops[0].runAt, `${TOMORROW}T09:00:00.000Z`);
   });
 
@@ -579,7 +582,7 @@ describe('enqueueDailyReviewAdjustments', () => {
     const loaded = await loadPendingAdjustmentBatch(tmpDir, AGENT_ID, DATE);
     assert.equal(loaded.weeklyAdjustments[0].action, 'add');
     assert.equal(loaded.weeklyAdjustments[0].objectiveId, 'obj-lead01');
-    assert.ok(loaded.weeklyAdjustments[0].description.includes('Write docs'));
+    assert.ok(loaded.weeklyAdjustments[0].prompt.includes('Write docs'));
   });
 
   it('atomic: returns errors and persists nothing when any op fails validation', async () => {

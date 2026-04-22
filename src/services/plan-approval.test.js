@@ -90,8 +90,8 @@ function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const monthlyPlan = createMonthlyPlan('2026-04', [obj]);
   config.monthlyPlans.push(monthlyPlan);
 
-  const task1 = createTask('Design database schema', obj.id, { priority: 'high', estimatedMinutes: 60 });
-  const task2 = createTask('Write API endpoints', obj.id, { priority: 'medium', estimatedMinutes: 120 });
+  const task1 = createTask({ title: 'Design database schema', prompt: 'Design database schema' }, obj.id, { priority: 'high', estimatedMinutes: 60 });
+  const task2 = createTask({ title: 'Write API endpoints', prompt: 'Write API endpoints' }, obj.id, { priority: 'medium', estimatedMinutes: 120 });
   const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
   const weeklyPlans = [weeklyPlan];
 
@@ -251,8 +251,8 @@ describe('formatPlanForReview', () => {
   it('lists all tasks with priority and description', () => {
     const { config, weeklyPlan, task1, task2 } = buildTestAgent();
     const text = formatPlanForReview(config, weeklyPlan);
-    assert.ok(text.includes(task1.description));
-    assert.ok(text.includes(task2.description));
+    assert.ok(text.includes(task1.title));
+    assert.ok(text.includes(task2.title));
     assert.ok(text.includes('[HIGH]'));
     assert.ok(text.includes('[MEDIUM]'));
   });
@@ -331,7 +331,7 @@ describe('validateDecision', () => {
 describe('validateEdits', () => {
   it('accepts valid add edit', () => {
     const { config, weeklyPlan, obj } = buildTestAgent();
-    const edits = [{ action: 'add', description: 'New task', objectiveId: obj.id }];
+    const edits = [{ action: 'add', title: 'New task', prompt: 'New task', objectiveId: obj.id }];
     const result = validateEdits(edits, weeklyPlan, config);
     assert.ok(result.valid, JSON.stringify(result.errors));
   });
@@ -345,7 +345,7 @@ describe('validateEdits', () => {
 
   it('accepts valid update edit', () => {
     const { config, weeklyPlan, task1 } = buildTestAgent();
-    const edits = [{ action: 'update', taskId: task1.id, description: 'Updated desc' }];
+    const edits = [{ action: 'update', taskId: task1.id, title: 'Updated desc', prompt: 'Updated desc' }];
     const result = validateEdits(edits, weeklyPlan, config);
     assert.ok(result.valid, JSON.stringify(result.errors));
   });
@@ -363,17 +363,17 @@ describe('validateEdits', () => {
     assert.equal(result.valid, false);
   });
 
-  it('rejects add with missing description', () => {
+  it('rejects add with missing title/prompt', () => {
     const { config, weeklyPlan, obj } = buildTestAgent();
     const edits = [{ action: 'add', objectiveId: obj.id }];
     const result = validateEdits(edits, weeklyPlan, config);
     assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes('description')));
+    assert.ok(result.errors.some((e) => e.includes('title') || e.includes('prompt')));
   });
 
   it('rejects add with nonexistent objective', () => {
     const { config, weeklyPlan } = buildTestAgent();
-    const edits = [{ action: 'add', description: 'Task', objectiveId: 'obj-nonexistent' }];
+    const edits = [{ action: 'add', title: 'Task', prompt: 'Task', objectiveId: 'obj-nonexistent' }];
     const result = validateEdits(edits, weeklyPlan, config);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('objective not found')));
@@ -422,7 +422,7 @@ describe('validateEdits', () => {
   it('accepts multiple valid edits', () => {
     const { config, weeklyPlan, task1, task2, obj } = buildTestAgent();
     const edits = [
-      { action: 'add', description: 'New task', objectiveId: obj.id },
+      { action: 'add', title: 'New task', prompt: 'New task', objectiveId: obj.id },
       { action: 'update', taskId: task1.id, priority: 'critical' },
       { action: 'remove', taskId: task2.id },
     ];
@@ -440,7 +440,7 @@ describe('applyEdits', () => {
     const { weeklyPlan, obj } = buildTestAgent();
     const origCount = weeklyPlan.tasks.length;
     const { applied, plan } = applyEdits(weeklyPlan, [
-      { action: 'add', description: 'New task', objectiveId: obj.id, priority: 'high' },
+      { action: 'add', title: 'New task', prompt: 'New task', objectiveId: obj.id, priority: 'high' },
     ]);
     assert.equal(plan.tasks.length, origCount + 1);
     assert.equal(applied.length, 1);
@@ -460,14 +460,14 @@ describe('applyEdits', () => {
     assert.ok(!plan.tasks.find((t) => t.id === task1.id));
   });
 
-  it('updates a task description', () => {
+  it('updates a task title', () => {
     const { weeklyPlan, task1 } = buildTestAgent();
     const { applied, plan } = applyEdits(weeklyPlan, [
-      { action: 'update', taskId: task1.id, description: 'Updated description' },
+      { action: 'update', taskId: task1.id, title: 'Updated description', prompt: 'Updated description' },
     ]);
     const task = plan.tasks.find((t) => t.id === task1.id);
-    assert.equal(task.description, 'Updated description');
-    assert.equal(applied[0].changes.description.to, 'Updated description');
+    assert.equal(task.title, 'Updated description');
+    assert.equal(applied[0].changes.title.to, 'Updated description');
   });
 
   it('updates task priority', () => {
@@ -493,7 +493,7 @@ describe('applyEdits', () => {
     // Force an old timestamp so the update is always different
     weeklyPlan.updatedAt = '2020-01-01T00:00:00.000Z';
     applyEdits(weeklyPlan, [
-      { action: 'update', taskId: task1.id, description: 'Changed' },
+      { action: 'update', taskId: task1.id, title: 'Changed', prompt: 'Changed' },
     ]);
     assert.notEqual(weeklyPlan.updatedAt, '2020-01-01T00:00:00.000Z');
   });
@@ -501,7 +501,7 @@ describe('applyEdits', () => {
   it('applies multiple edits in sequence', () => {
     const { weeklyPlan, task1, task2, obj } = buildTestAgent();
     const { applied } = applyEdits(weeklyPlan, [
-      { action: 'add', description: 'Third task', objectiveId: obj.id },
+      { action: 'add', title: 'Third task', prompt: 'Third task', objectiveId: obj.id },
       { action: 'update', taskId: task1.id, priority: 'low' },
       { action: 'remove', taskId: task2.id },
     ]);
@@ -675,7 +675,7 @@ describe('processApproval — edit', () => {
       agentId: config.id,
       decision: 'edit',
       edits: [
-        { action: 'update', taskId: task1.id, description: 'Revised schema design' },
+        { action: 'update', taskId: task1.id, title: 'Revised schema design', prompt: 'Revised schema design' },
       ],
       dataDir: tmpDir,
     });
@@ -743,7 +743,7 @@ describe('processApproval — edit', () => {
       agentId: config.id,
       decision: 'edit',
       edits: [
-        { action: 'add', description: 'New task added', objectiveId: obj.id },
+        { action: 'add', title: 'New task added', prompt: 'New task added', objectiveId: obj.id },
       ],
       dataDir: tmpDir,
     });
@@ -814,9 +814,9 @@ describe('formatApprovalResult', () => {
       success: true,
       plan: { approved: false },
       editResults: [
-        { action: 'add', taskId: 'task-new', description: 'Added task' },
-        { action: 'remove', taskId: 'task-old', description: 'Removed task' },
-        { action: 'update', taskId: 'task-upd', changes: { description: { from: 'Old', to: 'New' } } },
+        { action: 'add', taskId: 'task-new', title: 'Added task' },
+        { action: 'remove', taskId: 'task-old', title: 'Removed task' },
+        { action: 'update', taskId: 'task-upd', changes: { title: { from: 'Old', to: 'New' } } },
       ],
     }, 'edit');
     assert.ok(text.includes('Added task'));
@@ -829,7 +829,7 @@ describe('formatApprovalResult', () => {
     const text = formatApprovalResult({
       success: true,
       plan: { approved: true },
-      editResults: [{ action: 'add', taskId: 'task-new', description: 'T' }],
+      editResults: [{ action: 'add', taskId: 'task-new', title: 'T' }],
       isFirstApproval: true,
     }, 'edit');
     assert.ok(text.includes('auto-approved'));
@@ -1035,7 +1035,7 @@ describe('Subagent-wrapper invariant — subagent .md is untouched', () => {
       agentId: ctx.config.id,
       decision: 'edit',
       edits: [
-        { action: 'update', taskId: ctx.task1.id, description: 'Revised description' },
+        { action: 'update', taskId: ctx.task1.id, title: 'Revised description', prompt: 'Revised description' },
       ],
       dataDir: ctx.dataDir,
     });
@@ -1154,7 +1154,7 @@ describe('Subagent-wrapper invariant — aweek JSON never reintroduces identity'
       agentId: ctx.config.id,
       decision: 'edit',
       edits: [
-        { action: 'add', description: 'Added by edit', objectiveId: ctx.obj.id },
+        { action: 'add', title: 'Added by edit', prompt: 'Added by edit', objectiveId: ctx.obj.id },
       ],
       dataDir: ctx.dataDir,
     });

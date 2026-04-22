@@ -150,7 +150,7 @@ describe('generateTasksForObjective', () => {
     const obj = createObjective('Build login page', 'goal-abc12345');
     const tasks = generateTasksForObjective(obj);
     assert.equal(tasks.length, 1);
-    assert.equal(tasks[0].description, 'Build login page');
+    assert.equal(tasks[0].prompt, 'Build login page');
     assert.equal(tasks[0].objectiveId, obj.id);
     assert.equal(tasks[0].priority, 'medium'); // planned -> medium
     assert.equal(tasks[0].status, 'pending');
@@ -167,16 +167,16 @@ describe('generateTasksForObjective', () => {
     const obj = createObjective('Build API', 'goal-abc12345');
     const tasks = generateTasksForObjective(obj, {
       taskDescriptors: [
-        { description: 'Design schema', priority: 'critical', estimatedMinutes: 60 },
-        { description: 'Write routes', estimatedMinutes: 120 },
+        { title: 'Design schema', prompt: 'Design schema', priority: 'critical', estimatedMinutes: 60 },
+        { title: 'Write routes', prompt: 'Write routes', estimatedMinutes: 120 },
       ],
     });
     assert.equal(tasks.length, 2);
-    assert.equal(tasks[0].description, 'Design schema');
+    assert.equal(tasks[0].prompt, 'Design schema');
     assert.equal(tasks[0].priority, 'critical');
     assert.equal(tasks[0].estimatedMinutes, 60);
     assert.equal(tasks[0].objectiveId, obj.id);
-    assert.equal(tasks[1].description, 'Write routes');
+    assert.equal(tasks[1].prompt, 'Write routes');
     assert.equal(tasks[1].priority, 'medium'); // defaults from objective
     assert.equal(tasks[1].estimatedMinutes, 120);
   });
@@ -185,13 +185,17 @@ describe('generateTasksForObjective', () => {
     const obj = createObjective('Fallback', 'goal-abc12345');
     const tasks = generateTasksForObjective(obj, { taskDescriptors: [] });
     assert.equal(tasks.length, 1);
-    assert.equal(tasks[0].description, 'Fallback');
+    assert.equal(tasks[0].prompt, 'Fallback');
   });
 
   it('all generated tasks have valid IDs', () => {
     const obj = createObjective('Check IDs', 'goal-abc12345');
     const tasks = generateTasksForObjective(obj, {
-      taskDescriptors: [{ description: 'A' }, { description: 'B' }, { description: 'C' }],
+      taskDescriptors: [
+        { title: 'A', prompt: 'A' },
+        { title: 'B', prompt: 'B' },
+        { title: 'C', prompt: 'C' },
+      ],
     });
     for (const t of tasks) {
       assert.match(t.id, /^task-[a-z0-9]+$/);
@@ -331,8 +335,8 @@ describe('buildReviewTasks', () => {
   it('all tasks have non-empty descriptions', () => {
     const tasks = buildReviewTasks('2026-W16');
     for (const t of tasks) {
-      assert.ok(typeof t.description === 'string' && t.description.length > 0,
-        `task ${t.id} has empty description`);
+      assert.ok(typeof t.prompt === 'string' && t.prompt.length > 0,
+        `task ${t.id} has empty prompt`);
     }
   });
 });
@@ -501,8 +505,8 @@ describe('generateWeeklyPlan — task generation', () => {
       options: {
         taskOverrides: {
           [obj.id]: [
-            { description: 'Step 1', priority: 'critical', estimatedMinutes: 30 },
-            { description: 'Step 2', estimatedMinutes: 60 },
+            { title: 'Step 1', prompt: 'Step 1', priority: 'critical', estimatedMinutes: 30 },
+            { title: 'Step 2', prompt: 'Step 2', estimatedMinutes: 60 },
           ],
         },
       },
@@ -510,10 +514,10 @@ describe('generateWeeklyPlan — task generation', () => {
     // 2 work tasks + REVIEW_TASKS_COUNT review tasks
     assert.equal(plan.tasks.length, 2 + REVIEW_TASKS_COUNT);
     // Work tasks are prepended before review tasks
-    assert.equal(plan.tasks[0].description, 'Step 1');
+    assert.equal(plan.tasks[0].prompt, 'Step 1');
     assert.equal(plan.tasks[0].priority, 'critical');
     assert.equal(plan.tasks[0].estimatedMinutes, 30);
-    assert.equal(plan.tasks[1].description, 'Step 2');
+    assert.equal(plan.tasks[1].prompt, 'Step 2');
   });
 
   it('all generated tasks start with pending status', () => {
@@ -615,7 +619,7 @@ describe('generateWeeklyPlan — schema validation', () => {
       options: {
         taskOverrides: {
           [obj.id]: [
-            { description: 'Custom task', priority: 'low', estimatedMinutes: 120 },
+            { title: 'Custom task', prompt: 'Custom task', priority: 'low', estimatedMinutes: 120 },
           ],
         },
       },
@@ -853,8 +857,8 @@ describe('generateWeeklyPlan — full traceability', () => {
     const t2 = plan.tasks.find((t) => t.objectiveId === obj2.id);
     assert.ok(t1, 'task for obj1 should exist');
     assert.ok(t2, 'task for obj2 should exist');
-    assert.equal(t1.description, 'Build endpoints');
-    assert.equal(t2.description, 'Write guides');
+    assert.equal(t1.prompt, 'Build endpoints');
+    assert.equal(t2.prompt, 'Write guides');
   });
 });
 
@@ -1074,7 +1078,7 @@ Work through foundational material.
       options: {
         planMarkdown: PRIORITY_WATERFALL_PLAN,
         taskOverrides: {
-          [objC.id]: [{ description: 'Ship MVP now', priority: 'critical' }],
+          [objC.id]: [{ title: 'Ship MVP now', prompt: 'Ship MVP now', priority: 'critical' }],
         },
       },
     });
@@ -1176,7 +1180,7 @@ Focus on API quality over breadth.
     });
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
-    assert.equal(workTask.description, 'Implement endpoints',
+    assert.equal(workTask.prompt, 'Implement endpoints',
       'Without planMarkdown, description should be raw objective description');
   });
 
@@ -1194,7 +1198,7 @@ Focus on API quality over breadth.
     });
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
-    assert.equal(workTask.description, 'Write documentation',
+    assert.equal(workTask.prompt, 'Write documentation',
       'planMarkdown: null should preserve raw objective description');
   });
 
@@ -1213,8 +1217,8 @@ Focus on API quality over breadth.
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
     assert.ok(
-      workTask.description.length > 'Implement endpoints'.length,
-      `Expected advisor brief (longer than objective description), got: "${workTask.description}"`,
+      workTask.prompt.length > 'Implement endpoints'.length,
+      `Expected advisor brief (longer than objective description), got: "${workTask.prompt}"`,
     );
   });
 
@@ -1233,8 +1237,8 @@ Focus on API quality over breadth.
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
     assert.ok(
-      workTask.description.includes('Build rate limiter'),
-      `Advisor brief should contain the objective description: "${workTask.description}"`,
+      workTask.prompt.includes('Build rate limiter'),
+      `Advisor brief should contain the objective description: "${workTask.prompt}"`,
     );
   });
 
@@ -1253,10 +1257,10 @@ Focus on API quality over breadth.
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
     assert.ok(
-      workTask.description.includes('plan.md') ||
-        workTask.description.toLowerCase().includes('deep work') ||
-        workTask.description.toLowerCase().includes('test-first'),
-      `Advisor brief should reference plan.md strategy: "${workTask.description}"`,
+      workTask.prompt.includes('plan.md') ||
+        workTask.prompt.toLowerCase().includes('deep work') ||
+        workTask.prompt.toLowerCase().includes('test-first'),
+      `Advisor brief should reference plan.md strategy: "${workTask.prompt}"`,
     );
   });
 
@@ -1277,8 +1281,8 @@ Focus on API quality over breadth.
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
     assert.ok(
-      workTask.description.toLowerCase().includes('yesterday'),
-      `Advisor brief should reference prior day outcomes: "${workTask.description}"`,
+      workTask.prompt.toLowerCase().includes('yesterday'),
+      `Advisor brief should reference prior day outcomes: "${workTask.prompt}"`,
     );
   });
 
@@ -1297,13 +1301,13 @@ Focus on API quality over breadth.
       options: {
         planMarkdown: PLAN_MD_WITH_STRATEGY,
         taskOverrides: {
-          [obj.id]: [{ description: customDescription, priority: 'high' }],
+          [obj.id]: [{ title: customDescription, prompt: customDescription, priority: 'high' }],
         },
       },
     });
 
     const workTask = plan.tasks.find((t) => !isReviewObjectiveId(t.objectiveId));
-    assert.equal(workTask.description, customDescription,
+    assert.equal(workTask.prompt, customDescription,
       'taskOverrides must take precedence over advisor brief composer');
   });
 
@@ -1363,12 +1367,12 @@ Focus on API quality over breadth.
     assert.equal(workTasks.length, 2);
     // Both briefs should be longer than the raw objective descriptions
     assert.ok(
-      workTasks[0].description.length > 'Build auth'.length,
-      `First task brief should be expanded: "${workTasks[0].description}"`,
+      workTasks[0].prompt.length > 'Build auth'.length,
+      `First task brief should be expanded: "${workTasks[0].prompt}"`,
     );
     assert.ok(
-      workTasks[1].description.length > 'Write docs'.length,
-      `Second task brief should be expanded: "${workTasks[1].description}"`,
+      workTasks[1].prompt.length > 'Write docs'.length,
+      `Second task brief should be expanded: "${workTasks[1].prompt}"`,
     );
   });
 
@@ -1410,7 +1414,7 @@ Focus on API quality over breadth.
     // Review tasks should have their fixed descriptions (not advisor briefs)
     for (const t of reviewTasks) {
       assert.ok(
-        typeof t.description === 'string' && t.description.length > 0,
+        typeof t.prompt === 'string' && t.prompt.length > 0,
         `Review task ${t.id} should have non-empty description`,
       );
     }

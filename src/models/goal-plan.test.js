@@ -259,15 +259,15 @@ describe('createMonthlyPlan — serialization', () => {
 
 describe('createTask — construction', () => {
   it('populates description and objectiveId from arguments', () => {
-    const task = createTask('Implement login', 'obj-abc12345');
-    assert.equal(task.description, 'Implement login');
+    const task = createTask({ title: 'Implement login', prompt: 'Implement login' }, 'obj-abc12345');
+    assert.equal(task.title, 'Implement login');
     assert.equal(task.objectiveId, 'obj-abc12345');
     assert.ok(task.id.startsWith('task-'));
   });
 
   it('generates unique IDs across multiple calls', () => {
     const ids = new Set(
-      Array.from({ length: 20 }, () => createTask('T', 'obj-x').id),
+      Array.from({ length: 20 }, () => createTask({ title: 'T', prompt: 'T' }, 'obj-x').id),
     );
     assert.equal(ids.size, 20);
   });
@@ -275,12 +275,12 @@ describe('createTask — construction', () => {
 
 describe('createTask — defaults', () => {
   it('defaults status to pending', () => {
-    const task = createTask('Pending task', 'obj-abc12345');
+    const task = createTask({ title: 'Pending task', prompt: 'Pending task' }, 'obj-abc12345');
     assert.equal(task.status, 'pending');
   });
 
   it('does not include optional fields (completedAt, delegatedTo) by default', () => {
-    const task = createTask('Simple task', 'obj-abc12345');
+    const task = createTask({ title: 'Simple task', prompt: 'Simple task' }, 'obj-abc12345');
     assert.equal(task.completedAt, undefined);
     assert.equal(task.delegatedTo, undefined);
   });
@@ -288,13 +288,13 @@ describe('createTask — defaults', () => {
 
 describe('createTask — serialization', () => {
   it('survives JSON round-trip', () => {
-    const original = createTask('RT task', 'obj-abc12345');
+    const original = createTask({ title: 'RT task', prompt: 'RT task' }, 'obj-abc12345');
     const restored = JSON.parse(JSON.stringify(original));
     assert.deepStrictEqual(restored, original);
   });
 
   it('task within a weekly plan remains valid after round-trip', () => {
-    const task = createTask('Nested task', 'obj-abc12345');
+    const task = createTask({ title: 'Nested task', prompt: 'Nested task' }, 'obj-abc12345');
     const plan = createWeeklyPlan('2026-W16', '2026-04', [task]);
     const restored = JSON.parse(JSON.stringify(plan));
     const result = validateWeeklyPlan(restored);
@@ -308,7 +308,7 @@ describe('createTask — serialization', () => {
 
 describe('createWeeklyPlan — construction', () => {
   it('populates week, month, and tasks from arguments', () => {
-    const task = createTask('T', 'obj-abc12345');
+    const task = createTask({ title: 'T', prompt: 'T' }, 'obj-abc12345');
     const plan = createWeeklyPlan('2026-W16', '2026-04', [task]);
     assert.equal(plan.week, '2026-W16');
     assert.equal(plan.month, '2026-04');
@@ -330,9 +330,9 @@ describe('createWeeklyPlan — construction', () => {
 
   it('accepts multiple tasks', () => {
     const tasks = [
-      createTask('A', 'obj-aaa11111'),
-      createTask('B', 'obj-bbb22222'),
-      createTask('C', 'obj-aaa11111'),
+      createTask({ title: 'A', prompt: 'A' }, 'obj-aaa11111'),
+      createTask({ title: 'B', prompt: 'B' }, 'obj-bbb22222'),
+      createTask({ title: 'C', prompt: 'C' }, 'obj-aaa11111'),
     ];
     const plan = createWeeklyPlan('2026-W16', '2026-04', tasks);
     assert.equal(plan.tasks.length, 3);
@@ -353,14 +353,14 @@ describe('createWeeklyPlan — defaults', () => {
 
 describe('createWeeklyPlan — serialization', () => {
   it('survives JSON round-trip', () => {
-    const task = createTask('T', 'obj-abc12345');
+    const task = createTask({ title: 'T', prompt: 'T' }, 'obj-abc12345');
     const original = createWeeklyPlan('2026-W16', '2026-04', [task]);
     const restored = JSON.parse(JSON.stringify(original));
     assert.deepStrictEqual(restored, original);
   });
 
   it('remains schema-valid after JSON round-trip', () => {
-    const task = createTask('Validated', 'obj-abc12345');
+    const task = createTask({ title: 'Validated', prompt: 'Validated' }, 'obj-abc12345');
     const original = createWeeklyPlan('2026-W16', '2026-04', [task]);
     const restored = JSON.parse(JSON.stringify(original));
     const result = validateWeeklyPlan(restored);
@@ -368,12 +368,12 @@ describe('createWeeklyPlan — serialization', () => {
   });
 
   it('preserves nested task structure through round-trip', () => {
-    const t1 = createTask('First', 'obj-aaa11111');
-    const t2 = createTask('Second', 'obj-bbb22222');
+    const t1 = createTask({ title: 'First', prompt: 'First' }, 'obj-aaa11111');
+    const t2 = createTask({ title: 'Second', prompt: 'Second' }, 'obj-bbb22222');
     const original = createWeeklyPlan('2026-W17', '2026-04', [t1, t2]);
     const restored = JSON.parse(JSON.stringify(original));
     assert.equal(restored.tasks.length, 2);
-    assert.equal(restored.tasks[0].description, 'First');
+    assert.equal(restored.tasks[0].title, 'First');
     assert.equal(restored.tasks[1].objectiveId, 'obj-bbb22222');
   });
 });
@@ -486,7 +486,7 @@ describe('full plan hierarchy — serialization', () => {
   it('goal -> objective -> task -> weekly plan round-trips correctly', () => {
     const goal = createGoal('Quarterly OKR', '3mo');
     const obj = createObjective('Sprint deliverable', goal.id);
-    const task = createTask('Write tests', obj.id);
+    const task = createTask({ title: 'Write tests', prompt: 'Write tests' }, obj.id);
     const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
     const monthlyPlan = createMonthlyPlan('2026-04', [obj]);
 
@@ -511,8 +511,8 @@ describe('full plan hierarchy — serialization', () => {
     const obj3 = createObjective('Another for g1', g1.id);
     const mp1 = createMonthlyPlan('2026-04', [obj1, obj2]);
     const mp2 = createMonthlyPlan('2026-05', [obj3], { summary: 'Follow-up month' });
-    const t1 = createTask('Task A', obj1.id);
-    const t2 = createTask('Task B', obj2.id);
+    const t1 = createTask({ title: 'Task A', prompt: 'Task A' }, obj1.id);
+    const t2 = createTask({ title: 'Task B', prompt: 'Task B' }, obj2.id);
     const wp = createWeeklyPlan('2026-W16', '2026-04', [t1, t2]);
 
     // This is a pure serialisation test — the hierarchy is kept as a

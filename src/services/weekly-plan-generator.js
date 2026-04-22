@@ -104,7 +104,7 @@ const WEEKLY_REVIEW_HOUR = 18;
  * Day-specific descriptions for daily review tasks (index 0 = Monday … 4 = Friday).
  * Written in an advisor / new-hire brief voice: contextual, paced, not flat imperatives.
  */
-const DAILY_REVIEW_DESCRIPTIONS = [
+const DAILY_REVIEW_PROMPTS = [
   // Monday
   "Week orientation: open your weekly plan, confirm today's top two priorities, and flag any dependencies you need to unblock before the week gains momentum.",
   // Tuesday
@@ -118,13 +118,29 @@ const DAILY_REVIEW_DESCRIPTIONS = [
 ];
 
 /**
- * Description for the single weekly review task placed on Friday afternoon.
+ * Short calendar labels for each weekday's daily-review slot — mirrors
+ * DAILY_REVIEW_PROMPTS index-for-index. The grid and activity log show
+ * these; the full `prompt` text above is what gets fed to Claude.
+ */
+const DAILY_REVIEW_TITLES = [
+  'Mon review: week orientation',
+  'Tue review: day-two check-in',
+  'Wed review: mid-week pulse',
+  'Thu review: pre-close prep',
+  'Fri review: end-of-day wrap-up',
+];
+
+/**
+ * Prompt text for the single weekly review task placed on Friday afternoon.
  * The weekly review chains automatically into the next-week planner when the
  * agent runs autonomously.
  */
-const WEEKLY_REVIEW_DESCRIPTION =
+const WEEKLY_REVIEW_PROMPT =
   'Weekly review: assess outcomes against this week\'s plan, capture wins / misses / learnings, ' +
   'and hand off to the next-week planner which will auto-draft next week\'s schedule for approval.';
+
+/** Short calendar label for the weekly review slot. */
+const WEEKLY_REVIEW_TITLE = 'Weekly review';
 
 /**
  * Build the six advisor-mode review tasks for a given ISO week.
@@ -163,12 +179,16 @@ export function buildReviewTasks(week, tz = 'UTC') {
     ).toISOString();
 
     tasks.push(
-      createTask(DAILY_REVIEW_DESCRIPTIONS[i], DAILY_REVIEW_OBJECTIVE_ID, {
-        priority: 'medium',
-        estimatedMinutes: 30,
-        runAt,
-        track: DAILY_REVIEW_OBJECTIVE_ID,
-      }),
+      createTask(
+        { title: DAILY_REVIEW_TITLES[i], prompt: DAILY_REVIEW_PROMPTS[i] },
+        DAILY_REVIEW_OBJECTIVE_ID,
+        {
+          priority: 'medium',
+          estimatedMinutes: 30,
+          runAt,
+          track: DAILY_REVIEW_OBJECTIVE_ID,
+        },
+      ),
     );
   }
 
@@ -179,12 +199,16 @@ export function buildReviewTasks(week, tz = 'UTC') {
   ).toISOString();
 
   tasks.push(
-    createTask(WEEKLY_REVIEW_DESCRIPTION, WEEKLY_REVIEW_OBJECTIVE_ID, {
-      priority: 'high',
-      estimatedMinutes: 60,
-      runAt: weeklyRunAt,
-      track: WEEKLY_REVIEW_OBJECTIVE_ID,
-    }),
+    createTask(
+      { title: WEEKLY_REVIEW_TITLE, prompt: WEEKLY_REVIEW_PROMPT },
+      WEEKLY_REVIEW_OBJECTIVE_ID,
+      {
+        priority: 'high',
+        estimatedMinutes: 60,
+        runAt: weeklyRunAt,
+        track: WEEKLY_REVIEW_OBJECTIVE_ID,
+      },
+    ),
   );
 
   return tasks;
@@ -235,24 +259,34 @@ export function defaultPriorityForObjective(objective) {
  *
  * @param {object} objective - Monthly objective
  * @param {object} [opts]
- * @param {Array<{ description: string, priority?: string, estimatedMinutes?: number }>} [opts.taskDescriptors]
- *   Custom task descriptors. If omitted, one task is generated from the objective description.
+ * @param {Array<{ title: string, prompt: string, priority?: string, estimatedMinutes?: number }>} [opts.taskDescriptors]
+ *   Custom task descriptors. When omitted, one task is generated from the
+ *   objective description (used both as `title` — truncated to 80 chars —
+ *   and as `prompt`).
  * @returns {object[]} Array of task objects conforming to weekly-task schema
  */
 export function generateTasksForObjective(objective, { taskDescriptors } = {}) {
   if (taskDescriptors && taskDescriptors.length > 0) {
     return taskDescriptors.map((desc) =>
-      createTask(desc.description, objective.id, {
-        priority: desc.priority || defaultPriorityForObjective(objective),
-        estimatedMinutes: desc.estimatedMinutes,
-      }),
+      createTask(
+        { title: desc.title, prompt: desc.prompt },
+        objective.id,
+        {
+          priority: desc.priority || defaultPriorityForObjective(objective),
+          estimatedMinutes: desc.estimatedMinutes,
+        },
+      ),
     );
   }
 
-  // Default: one task derived from the objective description
+  // Default: one task using the objective description as both the short
+  // calendar label (truncated to fit the 80-char schema cap) and the
+  // prompt fed to Claude.
+  const base = objective.description ?? '';
+  const title = base.length > 80 ? `${base.slice(0, 77)}...` : base;
   return [
     createTask(
-      objective.description,
+      { title, prompt: base },
       objective.id,
       { priority: defaultPriorityForObjective(objective) },
     ),
@@ -396,6 +430,10 @@ export function generateWeeklyPlan({
     // outcomes. This replaces the flat objective.description that would
     // otherwise become the task prompt string.
     //
+    // The short objective description is reused as the `title` so the
+    // calendar grid stays scannable while the brief (which is too long for
+    // a cell label) populates the `prompt` sent to Claude.
+    //
     // taskOverrides take precedence: they represent explicit user intent and
     // must never be silently replaced by the generated brief.
     let effectiveDescriptors;
@@ -407,8 +445,12 @@ export function generateWeeklyPlan({
         goalDescription,
         retrospectiveContext,
       });
+      const baseTitle = obj.description ?? '';
+      const title =
+        baseTitle.length > 80 ? `${baseTitle.slice(0, 77)}...` : baseTitle;
       effectiveDescriptors = [{
-        description: brief,
+        title,
+        prompt: brief,
         priority: defaultPriorityForObjective(obj),
       }];
     } else {

@@ -44,13 +44,16 @@ async function makeTempDir(prefix = 'aweek-idempotent-') {
 }
 
 function makeTask(overrides = {}) {
+  const { description, title, prompt, ...rest } = overrides;
+  const label = title || prompt || description || 'Test task';
   return {
-    id: overrides.id || `task-${uid()}`,
-    description: overrides.description || 'Test task',
-    objectiveId: overrides.objectiveId || `obj-${uid()}`,
-    priority: overrides.priority || 'medium',
-    status: overrides.status || 'pending',
-    ...overrides,
+    id: rest.id || `task-${uid()}`,
+    title: title || label,
+    prompt: prompt || label,
+    objectiveId: rest.objectiveId || `obj-${uid()}`,
+    priority: rest.priority || 'medium',
+    status: rest.status || 'pending',
+    ...rest,
   };
 }
 

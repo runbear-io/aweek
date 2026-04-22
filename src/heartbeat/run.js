@@ -518,7 +518,7 @@ async function executeOneSelection(selection, ctx) {
     return executeWeeklyReviewTask(selection, ctx);
   }
 
-  console.log(`[${agentId}] executing task: ${task.description}`);
+  console.log(`[${agentId}] executing task: ${task.title}`);
 
   const startedAt = new Date();
   let execResult = null;
@@ -538,7 +538,8 @@ async function executeOneSelection(selection, ctx) {
       subagentRef,
       {
         taskId: task.id,
-        description: task.description,
+        title: task.title,
+        prompt: task.prompt,
         objectiveId: task.objectiveId,
         week,
       },
@@ -581,7 +582,7 @@ async function executeOneSelection(selection, ctx) {
     const metadata = {
       task: {
         id: task.id,
-        description: task.description,
+        title: task.title,
         objectiveId: task.objectiveId,
         priority: task.priority,
         estimatedMinutes: task.estimatedMinutes,
@@ -619,7 +620,7 @@ async function executeOneSelection(selection, ctx) {
         agentId,
         taskId: task.id,
         status: finalStatus,
-        description: task.description,
+        title: task.title,
         duration: durationMs,
         metadata,
       }),
@@ -728,7 +729,7 @@ async function _sweepStaleTasks({ agentId, weeklyPlanStore, activityLogStore, no
             agentId,
             taskId: item.taskId,
             status: 'skipped',
-            description: task?.description || `(task ${item.taskId})`,
+            title: task?.title || `(task ${item.taskId})`,
             metadata: {
               reason: 'stale_runAt',
               runAt: item.runAt,

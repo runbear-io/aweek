@@ -17,7 +17,7 @@ import {
 function makeTask(overrides = {}) {
   return {
     id: 'task-test-001',
-    description: 'Test task',
+    title: 'Test task', prompt: 'Test task',
     objectiveId: 'obj-test-001',
     status: 'pending',
     ...overrides,
@@ -30,7 +30,7 @@ function makeLogEntry(overrides = {}) {
     timestamp: '2026-04-13T10:00:00.000Z',
     agentId: 'agent-test',
     status: 'completed',
-    description: 'Did something',
+    title: 'Did something',
     ...overrides,
   };
 }

@@ -130,7 +130,7 @@ export function formatPlanForReview(agentConfig, plan, opts = {}) {
     for (const [i, task] of plan.tasks.entries()) {
       const priority = task.priority ? `[${task.priority.toUpperCase()}]` : '[MEDIUM]';
       const est = task.estimatedMinutes ? ` (~${task.estimatedMinutes}min)` : '';
-      lines.push(`  ${i + 1}. ${priority} ${task.description}${est}`);
+      lines.push(`  ${i + 1}. ${priority} ${task.title}${est}`);
       lines.push(`     ID: ${task.id} | Objective: ${task.objectiveId} | Status: ${task.status}`);
     }
   }
@@ -213,8 +213,13 @@ export function validateEdits(edits, plan, agentConfig) {
     }
 
     if (edit.action === 'add') {
-      if (!edit.description || typeof edit.description !== 'string' || edit.description.trim().length === 0) {
-        errors.push(`edit[${i}]: description is required for adding a task`);
+      if (!edit.title || typeof edit.title !== 'string' || edit.title.trim().length === 0) {
+        errors.push(`edit[${i}]: title is required for adding a task`);
+      } else if (edit.title.length > 80) {
+        errors.push(`edit[${i}]: title must be at most 80 characters`);
+      }
+      if (!edit.prompt || typeof edit.prompt !== 'string' || edit.prompt.trim().length === 0) {
+        errors.push(`edit[${i}]: prompt is required for adding a task`);
       }
       if (!edit.objectiveId || typeof edit.objectiveId !== 'string') {
         errors.push(`edit[${i}]: objectiveId is required for adding a task`);
@@ -247,8 +252,15 @@ export function validateEdits(edits, plan, agentConfig) {
       } else if (!plan.tasks.find((t) => t.id === edit.taskId)) {
         errors.push(`edit[${i}]: task not found: ${edit.taskId}`);
       }
-      if (edit.description !== undefined && (typeof edit.description !== 'string' || edit.description.trim().length === 0)) {
-        errors.push(`edit[${i}]: description must be a non-empty string`);
+      if (edit.title !== undefined) {
+        if (typeof edit.title !== 'string' || edit.title.trim().length === 0) {
+          errors.push(`edit[${i}]: title must be a non-empty string`);
+        } else if (edit.title.length > 80) {
+          errors.push(`edit[${i}]: title must be at most 80 characters`);
+        }
+      }
+      if (edit.prompt !== undefined && (typeof edit.prompt !== 'string' || edit.prompt.trim().length === 0)) {
+        errors.push(`edit[${i}]: prompt must be a non-empty string`);
       }
       if (edit.priority !== undefined) {
         const validPriorities = ['critical', 'high', 'medium', 'low'];
@@ -262,8 +274,13 @@ export function validateEdits(edits, plan, agentConfig) {
         }
       }
       // Must provide at least one field to update
-      if (edit.description === undefined && edit.priority === undefined && edit.estimatedMinutes === undefined) {
-        errors.push(`edit[${i}]: at least one field to update is required (description, priority, or estimatedMinutes)`);
+      if (
+        edit.title === undefined &&
+        edit.prompt === undefined &&
+        edit.priority === undefined &&
+        edit.estimatedMinutes === undefined
+      ) {
+        errors.push(`edit[${i}]: at least one field to update is required (title, prompt, priority, or estimatedMinutes)`);
       }
     }
   }
@@ -288,19 +305,23 @@ export function applyEdits(plan, edits) {
 
   for (const edit of edits) {
     if (edit.action === 'add') {
-      const task = createTask(edit.description, edit.objectiveId, {
-        priority: edit.priority || 'medium',
-        estimatedMinutes: edit.estimatedMinutes,
-      });
+      const task = createTask(
+        { title: edit.title, prompt: edit.prompt },
+        edit.objectiveId,
+        {
+          priority: edit.priority || 'medium',
+          estimatedMinutes: edit.estimatedMinutes,
+        },
+      );
       plan.tasks.push(task);
-      applied.push({ action: 'add', taskId: task.id, description: task.description });
+      applied.push({ action: 'add', taskId: task.id, title: task.title });
     }
 
     if (edit.action === 'remove') {
       const idx = plan.tasks.findIndex((t) => t.id === edit.taskId);
       if (idx !== -1) {
         const removed = plan.tasks.splice(idx, 1)[0];
-        applied.push({ action: 'remove', taskId: edit.taskId, description: removed.description });
+        applied.push({ action: 'remove', taskId: edit.taskId, title: removed.title });
       }
     }
 
@@ -308,9 +329,13 @@ export function applyEdits(plan, edits) {
       const task = plan.tasks.find((t) => t.id === edit.taskId);
       if (task) {
         const changes = {};
-        if (edit.description !== undefined) {
-          changes.description = { from: task.description, to: edit.description };
-          task.description = edit.description;
+        if (edit.title !== undefined) {
+          changes.title = { from: task.title, to: edit.title };
+          task.title = edit.title;
+        }
+        if (edit.prompt !== undefined) {
+          changes.prompt = { from: task.prompt, to: edit.prompt };
+          task.prompt = edit.prompt;
         }
         if (edit.priority !== undefined) {
           changes.priority = { from: task.priority, to: edit.priority };
@@ -572,9 +597,9 @@ export function formatApprovalResult(result, decision) {
     lines.push('');
     for (const edit of result.editResults) {
       if (edit.action === 'add') {
-        lines.push(`  + Added: ${edit.description} (${edit.taskId})`);
+        lines.push(`  + Added: ${edit.title} (${edit.taskId})`);
       } else if (edit.action === 'remove') {
-        lines.push(`  - Removed: ${edit.description} (${edit.taskId})`);
+        lines.push(`  - Removed: ${edit.title} (${edit.taskId})`);
       } else if (edit.action === 'update') {
         const changes = Object.entries(edit.changes)
           .map(([k, v]) => `${k}: "${v.from}" -> "${v.to}"`)

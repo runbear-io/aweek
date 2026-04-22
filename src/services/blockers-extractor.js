@@ -54,7 +54,9 @@ export function extractBlockersFromPlan(weeklyPlan) {
     .filter((t) => blockerStatuses.has(t.status))
     .map((t) => ({
       taskId: t.id,
-      description: t.description,
+      // Blocker lists render in review markdown — show the compact title
+      // rather than the long prompt the heartbeat fed to Claude.
+      description: t.title,
       objectiveId: t.objectiveId,
       priority: t.priority || 'medium',
       status: t.status,
@@ -83,7 +85,10 @@ export function extractBlockersFromActivityLog(logEntries) {
     .map((e) => ({
       logId: e.id,
       taskId: e.taskId || null,
-      description: e.description,
+      // Activity-log entries store `title` — re-key as `description` on the
+      // internal blocker record so downstream formatters (which share a
+      // shape with plan-sourced blockers) keep working.
+      description: e.title,
       timestamp: e.timestamp,
       durationMs: e.duration || null,
       metadata: e.metadata || null,

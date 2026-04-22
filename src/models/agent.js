@@ -105,8 +105,18 @@ export function createMonthlyPlan(month, objectives, { status = 'active', summar
 
 /**
  * Create a weekly task.
- * @param {string} description
- * @param {string} objectiveId - The parent objective ID
+ *
+ * Weekly tasks carry TWO text fields: a short `title` shown in calendar
+ * cells / activity rows / dashboards, and a long-form `prompt` that the
+ * heartbeat passes to Claude Code as the per-task instruction. They are
+ * intentionally decoupled so the UI surface stays compact while the model
+ * gets all the context it needs.
+ *
+ * @param {object} params
+ * @param {string} params.title - Short single-line calendar label (≤ 80 chars)
+ * @param {string} params.prompt - Full instruction text fed to Claude
+ * @param {string} [objectiveId] - Free-form tag linking the task back to a
+ *   monthly section heading in plan.md (or a reserved review value).
  * @param {object} [opts]
  * @param {'critical' | 'high' | 'medium' | 'low'} [opts.priority='medium'] - Task priority
  * @param {number} [opts.estimatedMinutes] - Estimated time in minutes (1–480)
@@ -115,13 +125,14 @@ export function createMonthlyPlan(month, objectives, { status = 'active', summar
  * @returns {object}
  */
 export function createTask(
-  description,
+  { title, prompt },
   objectiveId,
   { priority = 'medium', estimatedMinutes, track, runAt } = {},
 ) {
   const task = {
     id: `task-${shortId()}`,
-    description,
+    title,
+    prompt,
     priority,
     status: 'pending',
   };

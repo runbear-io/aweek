@@ -243,8 +243,8 @@ describe('renderDayCell', () => {
     const day = makeDayComparison({
       planned: {
         tasks: [
-          { id: 'task-1', description: 'Write tests', status: 'completed' },
-          { id: 'task-2', description: 'Fix bug', status: 'failed' },
+          { id: 'task-1', title: 'Write tests', prompt: 'Write tests', status: 'completed' },
+          { id: 'task-2', title: 'Fix bug', prompt: 'Fix bug', status: 'failed' },
         ],
         count: 2,
         statusCounts: { completed: 1, failed: 1 },
@@ -268,7 +268,7 @@ describe('renderDayCell', () => {
   it('limits displayed tasks with maxTasks option', () => {
     const tasks = Array.from({ length: 5 }, (_, i) => ({
       id: `task-${i}`,
-      description: `Task ${i}`,
+      title: `Task ${i}`,
       status: 'completed',
     }));
     const day = makeDayComparison({
@@ -284,7 +284,7 @@ describe('renderDayCell', () => {
     const day = makeDayComparison({
       actual: {
         entries: [
-          { status: 'completed', description: 'Auto task done', taskId: 'inbox-1' },
+          { status: 'completed', title: 'Auto task done', taskId: 'inbox-1' },
         ],
         count: 1,
         statusCounts: { completed: 1 },
@@ -318,7 +318,7 @@ describe('renderDayCell', () => {
     const day = makeDayComparison({
       planned: {
         tasks: [
-          { id: 't-1', description: 'A very long description that exceeds the cell width limit', status: 'pending' },
+          { id: 't-1', title: 'A very long description that exceeds the cell width limit', prompt: 'A very long description that exceeds the cell width limit', status: 'pending' },
         ],
         count: 1,
         statusCounts: { pending: 1 },
@@ -448,8 +448,8 @@ describe('renderWeeklySummary', () => {
   it('shows unscheduled tasks', () => {
     const data = makeWeeklyData({
       unscheduledTasks: [
-        { id: 'task-a', description: 'Pending task', status: 'pending' },
-        { id: 'task-b', description: 'In progress', status: 'in-progress' },
+        { id: 'task-a', title: 'Pending task', prompt: 'Pending task', status: 'pending' },
+        { id: 'task-b', title: 'In progress', prompt: 'In progress', status: 'in-progress' },
       ],
     });
     const lines = renderWeeklySummary(data);
@@ -462,7 +462,7 @@ describe('renderWeeklySummary', () => {
   it('truncates unscheduled tasks beyond 5', () => {
     const tasks = Array.from({ length: 8 }, (_, i) => ({
       id: `task-${i}`,
-      description: `Task number ${i}`,
+      title: `Task number ${i}`,
       status: 'pending',
     }));
     const data = makeWeeklyData({ unscheduledTasks: tasks });
@@ -578,7 +578,7 @@ describe('renderWeeklyCalendar', () => {
   it('respects maxTasksPerDay option', () => {
     const data = makeWeeklyData();
     const tasks = Array.from({ length: 5 }, (_, i) => ({
-      id: `t-${i}`, description: `Task ${i}`, status: 'completed',
+      id: `t-${i}`, title: `Task ${i}`, status: 'completed',
     }));
     data.days[0] = makeDayComparison({
       date: '2026-04-13',
@@ -603,7 +603,7 @@ describe('renderWeeklyCalendar', () => {
   it('shows unscheduled tasks in summary', () => {
     const data = makeWeeklyData({
       unscheduledTasks: [
-        { id: 'u1', description: 'Backlog item', status: 'pending' },
+        { id: 'u1', title: 'Backlog item', prompt: 'Backlog item', status: 'pending' },
       ],
     });
     const output = renderWeeklyCalendar(data);
@@ -624,16 +624,16 @@ describe('renderWeeklyCalendar', () => {
       day: 'mon',
       planned: {
         tasks: [
-          { id: 't-1', description: 'Setup CI', status: 'completed' },
-          { id: 't-2', description: 'Write docs', status: 'completed' },
+          { id: 't-1', title: 'Setup CI', prompt: 'Setup CI', status: 'completed' },
+          { id: 't-2', title: 'Write docs', prompt: 'Write docs', status: 'completed' },
         ],
         count: 2,
         statusCounts: { completed: 2 },
       },
       actual: {
         entries: [
-          { status: 'completed', description: 'Setup CI' },
-          { status: 'completed', description: 'Write docs' },
+          { status: 'completed', title: 'Setup CI' },
+          { status: 'completed', title: 'Write docs' },
         ],
         count: 2,
         statusCounts: { completed: 2 },
@@ -648,14 +648,14 @@ describe('renderWeeklyCalendar', () => {
       day: 'tue',
       planned: {
         tasks: [
-          { id: 't-3', description: 'Deploy staging', status: 'failed' },
+          { id: 't-3', title: 'Deploy staging', prompt: 'Deploy staging', status: 'failed' },
         ],
         count: 1,
         statusCounts: { failed: 1 },
       },
       actual: {
         entries: [
-          { status: 'failed', description: 'Deploy staging' },
+          { status: 'failed', title: 'Deploy staging' },
         ],
         count: 1,
         statusCounts: { failed: 1 },

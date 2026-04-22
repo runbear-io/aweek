@@ -21,13 +21,16 @@ import {
 const WEEK_MONDAY = mondayFromISOWeek('2026-W17');
 
 function task(id, overrides = {}) {
+  const { description, title, prompt, ...rest } = overrides;
+  const label = title || prompt || description || `Task ${id}`;
   return {
     id: `task-${id}`,
-    description: overrides.description || `Task ${id}`,
+    title: title || label,
+    prompt: prompt || label,
     objectiveId: 'obj-xyz',
-    priority: overrides.priority || 'medium',
-    status: overrides.status || 'pending',
-    ...overrides,
+    priority: rest.priority || 'medium',
+    status: rest.status || 'pending',
+    ...rest,
   };
 }
 
@@ -201,7 +204,7 @@ describe('renderGrid — terminal-width autofit', () => {
     week: '2026-W17',
     approved: true,
     tasks: [
-      { id: 't1', description: 'Task one', status: 'pending' },
+      { id: 't1', title: 'Task one', prompt: 'Task one', status: 'pending' },
     ],
   };
 
@@ -236,11 +239,11 @@ describe('renderGrid — column-major numbering', () => {
   it('numbers Monday 9..N first, then continues on Tuesday', () => {
     // Mon 9 + Mon 10 in pack mode, then tue 9 via runAt
     const tasks = [
-      { id: 'mon-09', description: 'Mon morning', status: 'pending' },
-      { id: 'mon-10', description: 'Mon late-morning', status: 'pending' },
+      { id: 'mon-09', title: 'Mon morning', prompt: 'Mon morning', status: 'pending' },
+      { id: 'mon-10', title: 'Mon late-morning', prompt: 'Mon late-morning', status: 'pending' },
       {
         id: 'tue-09',
-        description: 'Tue morning',
+        title: 'Tue morning', prompt: 'Tue morning',
         status: 'pending',
         runAt: '2026-04-21T09:00:00Z',
       },
@@ -264,7 +267,7 @@ describe('renderGrid — variable-height hourly summary', () => {
       plan: {
         week: '2026-W17',
         approved: true,
-        tasks: [{ id: 't1', description: longDesc, status: 'pending' }],
+        tasks: [{ id: 't1', title: longDesc, prompt: longDesc, status: 'pending' }],
       },
       opts: { cellWidth: 20 },
     });
@@ -284,7 +287,7 @@ describe('renderGrid — variable-height hourly summary', () => {
         tasks: [
           {
             id: 't1',
-            description: 'Deep work block',
+            title: 'Deep work block', prompt: 'Deep work block',
             status: 'pending',
             estimatedMinutes: 180,
           },
@@ -327,7 +330,7 @@ describe('distributeTasks — DST-week placement stays correct in local tz', () 
     const tasks = [
       {
         id: 't1',
-        description: 'Post-DST Sunday',
+        title: 'Post-DST Sunday', prompt: 'Post-DST Sunday',
         status: 'pending',
         runAt: '2026-03-08T23:00:00Z',
       },
@@ -350,7 +353,7 @@ describe('distributeTasks / renderGrid — time-zone-aware placement', () => {
     const tasks = [
       {
         id: 't1',
-        description: 'LA 10am',
+        title: 'LA 10am', prompt: 'LA 10am',
         status: 'pending',
         runAt: '2026-04-20T17:00:00Z',
       },
@@ -403,8 +406,8 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
         week: '2026-W17',
         approved: true,
         tasks: [
-          { id: 't-00', description: 'Reply A', status: 'pending', runAt: '2026-04-20T13:00:00Z' },
-          { id: 't-30', description: 'Reply B', status: 'pending', runAt: '2026-04-20T13:30:00Z' },
+          { id: 't-00', title: 'Reply A', prompt: 'Reply A', status: 'pending', runAt: '2026-04-20T13:00:00Z' },
+          { id: 't-30', title: 'Reply B', prompt: 'Reply B', status: 'pending', runAt: '2026-04-20T13:30:00Z' },
         ],
       },
       opts: { cellWidth: 20 },
@@ -417,7 +420,8 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
   it('renders every task on its own line when many share the same hour', () => {
     const tasks = Array.from({ length: 5 }, (_, i) => ({
       id: `t${i}`,
-      description: `Reply ${i}`,
+      title: `Reply ${i}`,
+      prompt: `Reply ${i}`,
       status: 'pending',
       runAt: `2026-04-20T13:${String(i * 10).padStart(2, '0')}:00Z`,
     }));
@@ -444,7 +448,7 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
       plan: {
         week: '2026-W17',
         approved: true,
-        tasks: [{ id: 't1', description: veryLong, status: 'pending' }],
+        tasks: [{ id: 't1', title: veryLong, prompt: veryLong, status: 'pending' }],
       },
       opts: { cellWidth: 10, terminalWidth: 120 },
     });
@@ -467,21 +471,21 @@ describe('renderGrid — advisor-mode review slot rendering', () => {
   // 2026-W17 Monday = 2026-04-20 (UTC). Friday = 2026-04-24.
   const dailyReviewTask = {
     id: 'task-daily-mon',
-    description: 'End-of-day reflection',
+    title: 'End-of-day reflection', prompt: 'End-of-day reflection',
     objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
     status: 'pending',
     runAt: '2026-04-20T17:00:00Z', // Mon 17:00 UTC
   };
   const weeklyReviewTask = {
     id: 'task-weekly-fri',
-    description: 'End-of-week review',
+    title: 'End-of-week review', prompt: 'End-of-week review',
     objectiveId: WEEKLY_REVIEW_OBJECTIVE_ID,
     status: 'pending',
     runAt: '2026-04-24T18:00:00Z', // Fri 18:00 UTC — outside 9-18 window, falls through to pack
   };
   const workTask = {
     id: 'task-work-1',
-    description: 'Write quarterly report',
+    title: 'Write quarterly report', prompt: 'Write quarterly report',
     objectiveId: 'obj-abc',
     status: 'pending',
     runAt: '2026-04-20T09:00:00Z', // Mon 09:00
@@ -585,7 +589,7 @@ describe('renderGrid — advisor-mode review slot rendering', () => {
     // Use startHour:9, endHour:18, so hour 17 IS inside the window (9 <= 17 < 18).
     const t = {
       id: 'task-dr',
-      description: 'Daily reflection',
+      title: 'Daily reflection', prompt: 'Daily reflection',
       objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
       status: 'pending',
       runAt: '2026-04-20T17:00:00Z', // Mon 17:00 UTC

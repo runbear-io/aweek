@@ -498,8 +498,8 @@ describe('agent model — plan traceability', () => {
     // Weekly plans live in their own file store — assert traceability
     // on the in-memory task/objective/goal references without mutating
     // the agent config.
-    const task1 = createTask('Task for obj1', objectives[0].id);
-    const task2 = createTask('Task for obj2', objectives[1].id);
+    const task1 = createTask({ title: 'Task for obj1', prompt: 'Task for obj1' }, objectives[0].id);
+    const task2 = createTask({ title: 'Task for obj2', prompt: 'Task for obj2' }, objectives[1].id);
     createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
 
     // Verify traceability: task -> objective -> goal
@@ -517,7 +517,7 @@ describe('agent model — plan traceability', () => {
     const { config, objectives } = makeTestAgent();
     // Build a weekly plan but do NOT attach it to the config — the new
     // schema forbids `weeklyPlans` on the agent JSON.
-    const task = createTask('Weekly task', objectives[0].id);
+    const task = createTask({ title: 'Weekly task', prompt: 'Weekly task' }, objectives[0].id);
     createWeeklyPlan('2026-W16', '2026-04', [task]);
 
     const result = validateAgentConfig(config);

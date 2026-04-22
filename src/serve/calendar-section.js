@@ -167,7 +167,10 @@ function projectTask(task, weekMonday, timeZone) {
   const slot = weekMonday ? computeTaskSlot(task, weekMonday, timeZone) : null;
   return {
     id: task.id,
-    description: task.description,
+    // The dashboard only needs the short label; the full prompt is never
+    // surfaced in calendar cells or the drawer header, so it is not
+    // projected onto the wire payload.
+    title: task.title,
     status: task.status,
     priority: task.priority || null,
     estimatedMinutes:
@@ -515,7 +518,9 @@ function projectActivityEntryForDrawer(entry) {
     id: entry.id,
     timestamp: entry.timestamp,
     status: entry.status,
-    description: entry.description,
+    // Activity-log entries store the compact task title under `title`.
+    // The drawer surface is user-facing, so surfacing that is correct.
+    title: entry.title,
   };
   if (typeof entry.duration === 'number') projected.duration = entry.duration;
   const urls = Array.isArray(meta.resources?.urls) ? meta.resources.urls.slice(0, 10) : [];
@@ -884,7 +889,7 @@ function renderTaskCard(task, num) {
   const dataAttrs = [
     `data-task-id="${escapeAttr(task.id || '')}"`,
     `data-task-status="${escapeAttr(status)}"`,
-    `data-task-desc="${escapeAttr(task.description || '')}"`,
+    `data-task-title="${escapeAttr(task.title || '')}"`,
     priority ? `data-task-priority="${escapeAttr(priority)}"` : '',
     task.runAt ? `data-task-run-at="${escapeAttr(task.runAt)}"` : '',
     task.objectiveId ? `data-task-objective="${escapeAttr(task.objectiveId)}"` : '',
@@ -897,13 +902,13 @@ function renderTaskCard(task, num) {
     typeof num === 'number' ? `data-task-num="${escapeAttr(String(num))}"` : '',
   ].filter(Boolean).join(' ');
   return [
-    `<button type="button" class="${statusCls}${priorityCls}" ${dataAttrs} title="${escapeAttr(task.description || '')}">`,
+    `<button type="button" class="${statusCls}${priorityCls}" ${dataAttrs} title="${escapeAttr(task.title || '')}">`,
     `<div class="calendar-task-head">`,
     `<span class="calendar-task-status" aria-label="status: ${statusLabel}">${icon}</span>`,
     numPart,
     timePart,
     `</div>`,
-    `<div class="calendar-task-desc">${escapeHtml(task.description || '')}</div>`,
+    `<div class="calendar-task-desc">${escapeHtml(task.title || '')}</div>`,
     `</button>`,
   ].join('');
 }
