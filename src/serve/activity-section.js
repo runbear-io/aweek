@@ -456,7 +456,7 @@ function renderExecutionLogLink(entry) {
   const baseWithExt = basename(p);
   if (!baseWithExt.endsWith('.jsonl')) return '';
   const base = baseWithExt.slice(0, -'.jsonl'.length);
-  const href = `/api/executions/${encodeURIComponent(agentId)}/${encodeURIComponent(base)}`;
+  const href = `/executions/${encodeURIComponent(agentId)}/${encodeURIComponent(base)}`;
   return (
     `<div class="activity-detail-row activity-detail-exec-log">` +
       `<a class="activity-exec-log-link" href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" title="Open execution log in a new tab">` +
