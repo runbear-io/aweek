@@ -891,6 +891,7 @@ function renderTaskCard(task, num) {
     `data-task-id="${escapeAttr(task.id || '')}"`,
     `data-task-status="${escapeAttr(status)}"`,
     `data-task-title="${escapeAttr(task.title || '')}"`,
+    task.prompt ? `data-task-prompt="${escapeAttr(task.prompt)}"` : '',
     priority ? `data-task-priority="${escapeAttr(priority)}"` : '',
     task.runAt ? `data-task-run-at="${escapeAttr(task.runAt)}"` : '',
     task.objectiveId ? `data-task-objective="${escapeAttr(task.objectiveId)}"` : '',

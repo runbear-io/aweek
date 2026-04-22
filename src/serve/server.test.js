@@ -159,6 +159,8 @@ describe('renderDashboardShell()', () => {
     assert.match(html, /data-drawer-chips/);
     assert.match(html, /data-drawer-desc/);
     assert.match(html, /data-drawer-fields/);
+    assert.match(html, /data-drawer-prompt\b/);
+    assert.match(html, /data-drawer-prompt-body/);
     assert.match(html, /class="drawer-close"/);
     // Drawer CSS hook
     assert.match(html, /\.drawer\.open/);
