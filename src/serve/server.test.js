@@ -451,7 +451,7 @@ describe('startServer()', () => {
     assert.equal(res.statusCode, 404);
   });
 
-  it('serves a transcript as plain text when the file exists', async () => {
+  it('serves an execution log as plain text when the file exists', async () => {
     const execDir = join(projectDir, '.aweek', 'agents', 'writer', 'executions');
     await mkdir(execDir, { recursive: true });
     const line = JSON.stringify({
@@ -480,20 +480,20 @@ describe('startServer()', () => {
     assert.match(res.body, /"model": "claude-opus-4-7"/);
   });
 
-  it('returns 404 for a missing transcript', async () => {
+  it('returns 404 for a missing execution log', async () => {
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
     const res = await httpGet(`${handle.url}api/executions/writer/task-abc_session-42`);
     assert.equal(res.statusCode, 404);
-    assert.match(res.body, /No transcript/);
+    assert.match(res.body, /No execution log/);
   });
 
-  it('rejects transcript requests with traversal-looking segments', async () => {
+  it('rejects execution-log requests with traversal-looking segments', async () => {
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
     const res = await httpGet(`${handle.url}api/executions/writer/..%2Fetc`);
     assert.equal(res.statusCode, 400);
   });
 
-  it('rejects transcript basenames without the `_` separator', async () => {
+  it('rejects execution-log basenames without the `_` separator', async () => {
     handle = await startServer({ projectDir, port: 0, host: '127.0.0.1' });
     const res = await httpGet(`${handle.url}api/executions/writer/no-separator-here`);
     assert.equal(res.statusCode, 400);

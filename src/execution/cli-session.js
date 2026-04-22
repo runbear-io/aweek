@@ -160,7 +160,7 @@ export function buildTaskPrompt(task) {
  *   tool_use blocks), every tool_result, and the final result + usage.
  *   Claude Code requires `--verbose` alongside `stream-json` under
  *   `--print`. The heartbeat persists the full NDJSON stream per
- *   execution so the dashboard can render a transcript; token usage is
+ *   execution so the dashboard can render an execution log; token usage is
  *   pulled from the final `{type:"result"}` event by `parseTokenUsage`.
  * - `--agent REF` selects the Claude Code subagent defined by
  *   `.claude/agents/<REF>.md` (owner of identity, model, tools, skills,
@@ -227,10 +227,10 @@ export function buildCliArgs(subagentRef, task, opts = {}) {
  * @param {boolean} [opts.dangerouslySkipPermissions=false] - Skip permission prompts
  * @param {function} [opts.spawnFn] - Injectable spawn function (for testing)
  * @param {object} [opts.env] - Additional environment variables
- * @param {{writeLine: (line: string) => void}} [opts.transcriptWriter]
+ * @param {{writeLine: (line: string) => void}} [opts.executionLogWriter]
  *   Receives each stdout line (one stream-json event per line) as it
- *   arrives. The heartbeat passes a transcript-store writer so the full
- *   session is persisted to
+ *   arrives. The heartbeat passes an execution-log-store writer so the
+ *   full session is persisted to
  *   `<agentsDir>/<agent>/executions/<taskId>-<executionId>.jsonl`. The
  *   writer is responsible for its own close — the launcher never calls
  *   close(), so the caller controls the file lifetime.
@@ -244,7 +244,7 @@ export async function launchSession(agentId, subagentRef, task, opts = {}) {
   const cli = opts.cli || DEFAULT_CLI;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnFn = opts.spawnFn || nodeSpawn;
-  const transcriptWriter = opts.transcriptWriter || null;
+  const executionLogWriter = opts.executionLogWriter || null;
 
   const cliArgs = buildCliArgs(subagentRef, task, {
     model: opts.model,
@@ -289,14 +289,14 @@ export async function launchSession(agentId, subagentRef, task, opts = {}) {
       : null;
 
     // Stream-json emits one event per line. We consume stdout via readline
-    // so the transcript writer sees each event atomically and we still
+    // so the execution-log writer sees each event atomically and we still
     // accumulate the full stdout for parseTokenUsage fallbacks.
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
     rl.on('line', (line) => {
       stdout += line + '\n';
-      if (transcriptWriter) {
+      if (executionLogWriter) {
         try {
-          transcriptWriter.writeLine(line);
+          executionLogWriter.writeLine(line);
         } catch {
           // Writer failures must not kill the session. Persistence is
           // best-effort — the session's primary job is running the task.

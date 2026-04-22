@@ -595,7 +595,7 @@ async function executeOneSelection(selection, ctx) {
         durationMs,
         exitCode: session?.exitCode ?? null,
         timedOut: session?.timedOut ?? false,
-        transcriptPath: execResult?.transcriptPath || null,
+        executionLogPath: execResult?.executionLogPath || null,
       },
       result: {
         success: finalStatus === 'completed',

@@ -1,13 +1,13 @@
 /**
- * Execution-transcript maintenance skill module.
+ * Execution-log maintenance skill module.
  *
- * Per-execution NDJSON transcripts accumulate under
+ * Per-execution NDJSON logs accumulate under
  * `<projectDir>/.aweek/agents/<slug>/executions/*.jsonl` every time the
  * heartbeat spawns a Claude Code CLI session. Disk usage is bounded
  * loosely (Read tool output + tool_use inputs dominate — a session can
  * be 100 KB to several MB), so users will eventually want a prune
  * command. This module implements that: scan all agents' executions
- * directories, delete any transcript whose mtime is older than
+ * directories, delete any execution log whose mtime is older than
  * `olderThanWeeks` weeks (default 4), and report what went.
  *
  * Everything here is read/write on disk only — no LLM calls, no
@@ -22,22 +22,22 @@ const DEFAULT_OLDER_THAN_WEEKS = 4;
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Delete execution transcripts older than a cutoff.
+ * Delete execution logs older than a cutoff.
  *
  * @param {object} opts
  * @param {string} opts.projectDir - Project root (parent of `.aweek`).
  * @param {number} [opts.olderThanWeeks] - Retention cutoff in whole weeks.
- *   Transcripts with mtime older than `now - olderThanWeeks * 1 week` are
- *   deleted. `0` prunes everything; negative values throw.
+ *   Execution logs with mtime older than `now - olderThanWeeks * 1 week`
+ *   are deleted. `0` prunes everything; negative values throw.
  * @param {Date} [opts.now] - Injectable "now" for deterministic tests.
  * @returns {Promise<{
  *   deleted: string[],  // Absolute paths of files removed.
- *   kept: number,       // Count of transcripts retained.
+ *   kept: number,       // Count of execution logs retained.
  *   scannedAgents: string[],  // Agent slugs whose executions dir was scanned.
  *   cutoffIso: string,  // The resolved cutoff instant, for reporting.
  * }>}
  */
-export async function pruneTranscripts({
+export async function pruneExecutionLogs({
   projectDir,
   olderThanWeeks = DEFAULT_OLDER_THAN_WEEKS,
   now = new Date(),

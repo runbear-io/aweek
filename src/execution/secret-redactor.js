@@ -1,5 +1,5 @@
 /**
- * Best-effort secret redactor for CLI transcript lines.
+ * Best-effort secret redactor for CLI execution-log lines.
  *
  * Applied as each stream-json line comes out of the Claude Code CLI before
  * it's persisted to `.aweek/agents/<slug>/executions/<taskId>-<executionId>.jsonl`.
@@ -8,8 +8,8 @@
  *
  * This is a defense-in-depth layer, NOT a security guarantee. Custom token
  * formats, free-text secrets in prompts, and anything the agent happens to
- * read from disk can still leak. Treat the transcript files as machine-local
- * only and keep `.aweek/` gitignored.
+ * read from disk can still leak. Treat the execution-log files as
+ * machine-local only and keep `.aweek/` gitignored.
  */
 
 const MARKER = '[REDACTED]';

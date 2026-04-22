@@ -2,20 +2,20 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildTranscriptSummary,
-  parseRawTranscript,
-  renderTranscriptSummaryHtml,
-} from './transcript-summary.js';
+  buildExecutionLogSummary,
+  parseExecutionLog,
+  renderExecutionLogSummaryHtml,
+} from './execution-log-summary.js';
 
 function jsonl(events) {
   return events.map((e) => JSON.stringify(e)).join('\n');
 }
 
-describe('transcript-summary — parseRawTranscript', () => {
+describe('execution-log-summary — parseExecutionLog', () => {
   it('returns an empty list for empty input', () => {
-    assert.deepEqual(parseRawTranscript(''), []);
-    assert.deepEqual(parseRawTranscript([]), []);
-    assert.deepEqual(parseRawTranscript(null), []);
+    assert.deepEqual(parseExecutionLog(''), []);
+    assert.deepEqual(parseExecutionLog([]), []);
+    assert.deepEqual(parseExecutionLog(null), []);
   });
 
   it('parses each JSONL line and preserves its raw form', () => {
@@ -23,7 +23,7 @@ describe('transcript-summary — parseRawTranscript', () => {
       { type: 'system', subtype: 'init', model: 'm' },
       { type: 'result', subtype: 'success' },
     ]);
-    const events = parseRawTranscript(raw);
+    const events = parseExecutionLog(raw);
     assert.equal(events.length, 2);
     assert.equal(events[0].type, 'system');
     assert.equal(events[0].subtype, 'init');
@@ -32,7 +32,7 @@ describe('transcript-summary — parseRawTranscript', () => {
   });
 
   it('surfaces unparseable lines rather than dropping them', () => {
-    const events = parseRawTranscript('not valid json\n' + JSON.stringify({ type: 'result' }));
+    const events = parseExecutionLog('not valid json\n' + JSON.stringify({ type: 'result' }));
     assert.equal(events.length, 2);
     assert.equal(events[0].type, 'unparseable');
     assert.equal(events[0].raw, 'not valid json');
@@ -40,9 +40,9 @@ describe('transcript-summary — parseRawTranscript', () => {
   });
 });
 
-describe('transcript-summary — buildTranscriptSummary', () => {
+describe('execution-log-summary — buildExecutionLogSummary', () => {
   it('fills the headline from the `result` event and the `system:init` event', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([
         {
           type: 'system',
@@ -63,7 +63,7 @@ describe('transcript-summary — buildTranscriptSummary', () => {
         },
       ]),
     );
-    const s = buildTranscriptSummary(events);
+    const s = buildExecutionLogSummary(events);
     assert.equal(s.headline.status, 'completed');
     assert.equal(s.headline.subtype, 'success');
     assert.equal(s.headline.durationMs, 1234);
@@ -79,14 +79,14 @@ describe('transcript-summary — buildTranscriptSummary', () => {
   });
 
   it('uses `result.result` as the finalResult when present', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([{ type: 'result', subtype: 'success', result: 'the final answer' }]),
     );
-    assert.equal(buildTranscriptSummary(events).finalResult, 'the final answer');
+    assert.equal(buildExecutionLogSummary(events).finalResult, 'the final answer');
   });
 
   it('falls back to the last assistant:text when `result.result` is absent', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([
         {
           type: 'assistant',
@@ -95,11 +95,11 @@ describe('transcript-summary — buildTranscriptSummary', () => {
         { type: 'result', subtype: 'success' },
       ]),
     );
-    assert.equal(buildTranscriptSummary(events).finalResult, 'hello from the agent');
+    assert.equal(buildExecutionLogSummary(events).finalResult, 'hello from the agent');
   });
 
   it('surfaces permission_denials from the result event', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([
         {
           type: 'result',
@@ -110,13 +110,13 @@ describe('transcript-summary — buildTranscriptSummary', () => {
         },
       ]),
     );
-    const s = buildTranscriptSummary(events);
+    const s = buildExecutionLogSummary(events);
     assert.equal(s.permissionDenials.length, 1);
     assert.equal(s.permissionDenials[0].tool_name, 'Bash');
   });
 
   it('filters hook_started / hook_response / init out of the timeline but counts them', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([
         { type: 'system', subtype: 'hook_started', hook_id: 'a' },
         { type: 'system', subtype: 'hook_response', hook_id: 'a', exit_code: 0 },
@@ -127,7 +127,7 @@ describe('transcript-summary — buildTranscriptSummary', () => {
         },
       ]),
     );
-    const s = buildTranscriptSummary(events);
+    const s = buildExecutionLogSummary(events);
     assert.equal(s.timeline.length, 1, 'only the assistant turn should appear');
     assert.equal(s.timeline[0].kind, 'text');
     assert.equal(s.filteredCount, 3);
@@ -135,7 +135,7 @@ describe('transcript-summary — buildTranscriptSummary', () => {
   });
 
   it('builds tool_use timeline rows with a summarized input line', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([
         {
           type: 'assistant',
@@ -152,7 +152,7 @@ describe('transcript-summary — buildTranscriptSummary', () => {
         },
       ]),
     );
-    const s = buildTranscriptSummary(events);
+    const s = buildExecutionLogSummary(events);
     assert.equal(s.timeline.length, 1);
     assert.equal(s.timeline[0].kind, 'tool_use');
     assert.equal(s.timeline[0].label, 'Tool: Read');
@@ -160,7 +160,7 @@ describe('transcript-summary — buildTranscriptSummary', () => {
   });
 
   it('marks tool_result error blocks with the ✗ icon', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([
         {
           type: 'user',
@@ -177,7 +177,7 @@ describe('transcript-summary — buildTranscriptSummary', () => {
         },
       ]),
     );
-    const s = buildTranscriptSummary(events);
+    const s = buildExecutionLogSummary(events);
     assert.equal(s.timeline.length, 1);
     assert.equal(s.timeline[0].kind, 'tool_result');
     assert.equal(s.timeline[0].icon, '✗');
@@ -185,29 +185,29 @@ describe('transcript-summary — buildTranscriptSummary', () => {
   });
 
   it('surfaces rate_limit_event rows', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([{ type: 'rate_limit_event', rate_limit_type: 'input_tokens' }]),
     );
-    const s = buildTranscriptSummary(events);
+    const s = buildExecutionLogSummary(events);
     assert.equal(s.timeline.length, 1);
     assert.equal(s.timeline[0].kind, 'rate_limit');
     assert.equal(s.timeline[0].meta, 'input_tokens');
   });
 
   it('falls back gracefully when there is no result event', () => {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([{ type: 'system', subtype: 'init', model: 'm' }]),
     );
-    const s = buildTranscriptSummary(events);
+    const s = buildExecutionLogSummary(events);
     assert.equal(s.headline.status, 'incomplete');
     assert.equal(s.finalResult, null);
     assert.equal(s.permissionDenials.length, 0);
   });
 });
 
-describe('transcript-summary — renderTranscriptSummaryHtml', () => {
+describe('execution-log-summary — renderExecutionLogSummaryHtml', () => {
   function makeSummary() {
-    const events = parseRawTranscript(
+    const events = parseExecutionLog(
       jsonl([
         {
           type: 'system',
@@ -253,11 +253,11 @@ describe('transcript-summary — renderTranscriptSummaryHtml', () => {
         },
       ]),
     );
-    return buildTranscriptSummary(events);
+    return buildExecutionLogSummary(events);
   }
 
   it('renders a full HTML document with the headline, final output, denials, timeline, and raw section', () => {
-    const html = renderTranscriptSummaryHtml(makeSummary(), {
+    const html = renderExecutionLogSummaryHtml(makeSummary(), {
       agentId: 'writer',
       basename: 'task-abc_session-1',
     });
@@ -279,15 +279,15 @@ describe('transcript-summary — renderTranscriptSummaryHtml', () => {
     assert.match(html, /<h2>Timeline/);
     assert.match(html, /Tool: Read/);
     // Raw section
-    assert.match(html, /Full raw transcript/);
+    assert.match(html, /Full raw execution log/);
     // Breadcrumb link back to dashboard
     assert.match(html, /href="\/\?agent=writer&amp;tab=activity"/);
     // Raw JSONL link
     assert.match(html, /\/api\/executions\/writer\/task-abc_session-1/);
   });
 
-  it('escapes HTML-dangerous characters in agent, basename, and transcript bodies', () => {
-    const events = parseRawTranscript(
+  it('escapes HTML-dangerous characters in agent, basename, and execution-log bodies', () => {
+    const events = parseExecutionLog(
       jsonl([
         {
           type: 'assistant',
@@ -298,7 +298,7 @@ describe('transcript-summary — renderTranscriptSummaryHtml', () => {
         { type: 'result', subtype: 'success', result: 'done' },
       ]),
     );
-    const html = renderTranscriptSummaryHtml(buildTranscriptSummary(events), {
+    const html = renderExecutionLogSummaryHtml(buildExecutionLogSummary(events), {
       agentId: '<bad>',
       basename: '"evil"_1',
     });
@@ -309,8 +309,8 @@ describe('transcript-summary — renderTranscriptSummaryHtml', () => {
   });
 
   it('omits the Final output section when there is nothing to show', () => {
-    const events = parseRawTranscript(jsonl([{ type: 'result', subtype: 'success' }]));
-    const html = renderTranscriptSummaryHtml(buildTranscriptSummary(events), {
+    const events = parseExecutionLog(jsonl([{ type: 'result', subtype: 'success' }]));
+    const html = renderExecutionLogSummaryHtml(buildExecutionLogSummary(events), {
       agentId: 'w',
       basename: 't_1',
     });
@@ -318,8 +318,8 @@ describe('transcript-summary — renderTranscriptSummaryHtml', () => {
   });
 
   it('omits the denials section when there are none', () => {
-    const events = parseRawTranscript(jsonl([{ type: 'result', subtype: 'success' }]));
-    const html = renderTranscriptSummaryHtml(buildTranscriptSummary(events), {
+    const events = parseExecutionLog(jsonl([{ type: 'result', subtype: 'success' }]));
+    const html = renderExecutionLogSummaryHtml(buildExecutionLogSummary(events), {
       agentId: 'w',
       basename: 't_1',
     });

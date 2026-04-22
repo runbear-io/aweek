@@ -1,23 +1,23 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatTranscriptLine } from './transcript-formatter.js';
+import { formatExecutionLogLine } from './execution-log-formatter.js';
 
-describe('transcript-formatter — formatTranscriptLine', () => {
+describe('execution-log-formatter — formatExecutionLogLine', () => {
   it('returns [] for empty / non-string input', () => {
-    assert.deepEqual(formatTranscriptLine(''), []);
-    assert.deepEqual(formatTranscriptLine(null), []);
-    assert.deepEqual(formatTranscriptLine(undefined), []);
+    assert.deepEqual(formatExecutionLogLine(''), []);
+    assert.deepEqual(formatExecutionLogLine(null), []);
+    assert.deepEqual(formatExecutionLogLine(undefined), []);
   });
 
   it('returns the raw line for invalid JSON, with a trailing blank', () => {
-    assert.deepEqual(formatTranscriptLine('not json'), ['not json', '']);
+    assert.deepEqual(formatExecutionLogLine('not json'), ['not json', '']);
   });
 
   it('returns the raw line for non-object JSON (string, number, null)', () => {
-    assert.deepEqual(formatTranscriptLine('"just a string"'), ['"just a string"', '']);
-    assert.deepEqual(formatTranscriptLine('42'), ['42', '']);
-    assert.deepEqual(formatTranscriptLine('null'), ['null', '']);
+    assert.deepEqual(formatExecutionLogLine('"just a string"'), ['"just a string"', '']);
+    assert.deepEqual(formatExecutionLogLine('42'), ['42', '']);
+    assert.deepEqual(formatExecutionLogLine('null'), ['null', '']);
   });
 
   it('pretty-prints a system:init event with every field preserved', () => {
@@ -30,7 +30,7 @@ describe('transcript-formatter — formatTranscriptLine', () => {
       tools: ['Read', 'Grep'],
       permissionMode: 'bypassPermissions',
     };
-    const out = formatTranscriptLine(JSON.stringify(event));
+    const out = formatExecutionLogLine(JSON.stringify(event));
     // Last line is a blank-line separator.
     assert.equal(out[out.length - 1], '');
     const joined = out.slice(0, -1).join('\n');
@@ -57,7 +57,7 @@ describe('transcript-formatter — formatTranscriptLine', () => {
         usage: { input_tokens: 7, output_tokens: 3 },
       },
     };
-    const out = formatTranscriptLine(JSON.stringify(event));
+    const out = formatExecutionLogLine(JSON.stringify(event));
     assert.equal(out[out.length - 1], '');
     const joined = out.slice(0, -1).join('\n');
     assert.deepEqual(JSON.parse(joined), event);
@@ -81,7 +81,7 @@ describe('transcript-formatter — formatTranscriptLine', () => {
         ],
       },
     };
-    const out = formatTranscriptLine(JSON.stringify(event));
+    const out = formatExecutionLogLine(JSON.stringify(event));
     const joined = out.slice(0, -1).join('\n');
     assert.deepEqual(JSON.parse(joined), event);
     assert.ok(joined.includes('"is_error": true'));
@@ -90,7 +90,7 @@ describe('transcript-formatter — formatTranscriptLine', () => {
 
   it('preserves unknown event types byte-for-byte', () => {
     const event = { type: 'custom_new_event_type', foo: 1, bar: { nested: true } };
-    const out = formatTranscriptLine(JSON.stringify(event));
+    const out = formatExecutionLogLine(JSON.stringify(event));
     const joined = out.slice(0, -1).join('\n');
     assert.deepEqual(JSON.parse(joined), event);
   });
@@ -101,15 +101,15 @@ describe('transcript-formatter — formatTranscriptLine', () => {
       type: 'assistant',
       message: { role: 'assistant', content: [{ type: 'text', text: big }] },
     };
-    const out = formatTranscriptLine(JSON.stringify(event));
+    const out = formatExecutionLogLine(JSON.stringify(event));
     const joined = out.slice(0, -1).join('\n');
     assert.deepEqual(JSON.parse(joined), event);
     assert.ok(joined.includes(big));
   });
 
   it('emits a trailing blank line so consecutive events are separated', () => {
-    const a = formatTranscriptLine(JSON.stringify({ type: 'system', subtype: 'init' }));
-    const b = formatTranscriptLine(JSON.stringify({ type: 'result', subtype: 'success' }));
+    const a = formatExecutionLogLine(JSON.stringify({ type: 'system', subtype: 'init' }));
+    const b = formatExecutionLogLine(JSON.stringify({ type: 'result', subtype: 'success' }));
     assert.equal(a[a.length - 1], '');
     assert.equal(b[b.length - 1], '');
     // Joining the way the server does — `formatted.join('\n') + '\n'` —

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, utimes, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { pruneTranscripts, DEFAULT_OLDER_THAN_WEEKS } from './execution.js';
+import { pruneExecutionLogs, DEFAULT_OLDER_THAN_WEEKS } from './execution.js';
 
 async function makeProject() {
   const dir = await mkdtemp(join(tmpdir(), 'aweek-prune-'));
@@ -12,7 +12,7 @@ async function makeProject() {
   return dir;
 }
 
-async function writeTranscript(projectDir, agentId, basename, { mtime } = {}) {
+async function writeExecutionLog(projectDir, agentId, basename, { mtime } = {}) {
   const dir = join(projectDir, '.aweek', 'agents', agentId, 'executions');
   await mkdir(dir, { recursive: true });
   const path = join(dir, `${basename}.jsonl`);
@@ -23,47 +23,47 @@ async function writeTranscript(projectDir, agentId, basename, { mtime } = {}) {
   return path;
 }
 
-describe('execution — pruneTranscripts', () => {
+describe('execution — pruneExecutionLogs', () => {
   it('throws when projectDir is missing', async () => {
-    await assert.rejects(() => pruneTranscripts({}), /projectDir is required/);
+    await assert.rejects(() => pruneExecutionLogs({}), /projectDir is required/);
   });
 
   it('throws when olderThanWeeks is negative', async () => {
     const dir = await makeProject();
     await assert.rejects(
-      () => pruneTranscripts({ projectDir: dir, olderThanWeeks: -1 }),
+      () => pruneExecutionLogs({ projectDir: dir, olderThanWeeks: -1 }),
       /must be >= 0/,
     );
   });
 
   it('returns empty result when .aweek/agents is missing', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'aweek-prune-'));
-    const result = await pruneTranscripts({ projectDir: dir });
+    const result = await pruneExecutionLogs({ projectDir: dir });
     assert.deepEqual(result.deleted, []);
     assert.equal(result.kept, 0);
     assert.deepEqual(result.scannedAgents, []);
   });
 
-  it('deletes transcripts older than the cutoff and keeps fresh ones', async () => {
+  it('deletes execution logs older than the cutoff and keeps fresh ones', async () => {
     const projectDir = await makeProject();
     const now = new Date('2026-04-21T00:00:00Z');
     const oldMtime = new Date('2026-03-01T00:00:00Z'); // ~7 weeks old
     const freshMtime = new Date('2026-04-20T00:00:00Z');
 
-    const oldPath = await writeTranscript(
+    const oldPath = await writeExecutionLog(
       projectDir,
       'writer',
       'task-1_session-1',
       { mtime: oldMtime },
     );
-    const freshPath = await writeTranscript(
+    const freshPath = await writeExecutionLog(
       projectDir,
       'writer',
       'task-2_session-2',
       { mtime: freshMtime },
     );
 
-    const result = await pruneTranscripts({
+    const result = await pruneExecutionLogs({
       projectDir,
       olderThanWeeks: 4,
       now,
@@ -83,14 +83,14 @@ describe('execution — pruneTranscripts', () => {
     const now = new Date('2026-04-21T00:00:00Z');
     const oldMtime = new Date('2026-01-01T00:00:00Z');
 
-    await writeTranscript(projectDir, 'writer', 'task-a_session-a', {
+    await writeExecutionLog(projectDir, 'writer', 'task-a_session-a', {
       mtime: oldMtime,
     });
-    await writeTranscript(projectDir, 'coder', 'task-b_session-b', {
+    await writeExecutionLog(projectDir, 'coder', 'task-b_session-b', {
       mtime: oldMtime,
     });
 
-    const result = await pruneTranscripts({
+    const result = await pruneExecutionLogs({
       projectDir,
       olderThanWeeks: 4,
       now,
@@ -112,7 +112,7 @@ describe('execution — pruneTranscripts', () => {
       new Date('2020-01-01T00:00:00Z'),
     );
 
-    const result = await pruneTranscripts({
+    const result = await pruneExecutionLogs({
       projectDir,
       olderThanWeeks: 4,
       now: new Date('2026-04-21T00:00:00Z'),
@@ -125,7 +125,7 @@ describe('execution — pruneTranscripts', () => {
     const projectDir = await makeProject();
     await mkdir(join(projectDir, '.aweek', 'agents', 'quiet-bot'), { recursive: true });
 
-    const result = await pruneTranscripts({
+    const result = await pruneExecutionLogs({
       projectDir,
       now: new Date('2026-04-21T00:00:00Z'),
     });
@@ -135,9 +135,9 @@ describe('execution — pruneTranscripts', () => {
   it('prunes everything with olderThanWeeks: 0', async () => {
     const projectDir = await makeProject();
     const mtime = new Date('2026-04-20T12:00:00Z');
-    await writeTranscript(projectDir, 'writer', 'task-1_session-1', { mtime });
+    await writeExecutionLog(projectDir, 'writer', 'task-1_session-1', { mtime });
 
-    const result = await pruneTranscripts({
+    const result = await pruneExecutionLogs({
       projectDir,
       olderThanWeeks: 0,
       // Run the prune one second after the mtime so every existing file is
