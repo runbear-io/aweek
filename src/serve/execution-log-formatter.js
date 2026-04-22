@@ -1,9 +1,9 @@
 /**
- * Pretty-printer for stream-json transcript events.
+ * Pretty-printer for stream-json execution-log events.
  *
  * The heartbeat persists Claude Code's stream-json output verbatim to
  * `<agentsDir>/<agent>/executions/<taskId>_<executionId>.jsonl`. The
- * dashboard's transcript endpoint streams that file through this
+ * dashboard's execution-log endpoint streams that file through this
  * formatter so every field lands in the browser — nothing is dropped or
  * summarized — rendered as indented JSON with a blank line between
  * events for readability.
@@ -21,7 +21,7 @@
  * @param {string} rawLine
  * @returns {string[]}
  */
-export function formatTranscriptLine(rawLine) {
+export function formatExecutionLogLine(rawLine) {
   if (typeof rawLine !== 'string' || rawLine.length === 0) return [];
 
   let event;

@@ -22,9 +22,9 @@
 import { launchSession, parseTokenUsage } from './cli-session.js';
 import { createUsageRecord, UsageStore } from '../storage/usage-store.js';
 import {
-  openTranscriptWriter,
-  transcriptPath,
-} from '../storage/transcript-store.js';
+  openExecutionLogWriter,
+  executionLogPath,
+} from '../storage/execution-log-store.js';
 
 /**
  * @typedef {import('./cli-session.js').SessionResult} SessionResult
@@ -37,8 +37,8 @@ import {
  * @property {{ inputTokens: number, outputTokens: number, totalTokens: number, costUsd: number } | null} tokenUsage - Parsed token usage (null if parsing failed)
  * @property {object | null} usageRecord - Persisted usage record (null if tracking failed or no usage data)
  * @property {boolean} usageTracked - Whether usage was successfully tracked
- * @property {string | null} transcriptPath - Absolute path of the NDJSON
- *   transcript file when `agentsDir` was provided; otherwise `null`.
+ * @property {string | null} executionLogPath - Absolute path of the NDJSON
+ *   execution-log file when `agentsDir` was provided; otherwise `null`.
  */
 
 /**
@@ -60,11 +60,11 @@ import {
  * @param {object} [opts.env] - Extra environment variables
  * @param {UsageStore} [opts.usageStore] - UsageStore instance for persisting usage
  * @param {string} [opts.sessionId] - Optional session identifier for deduplication
- *   (also used as the execution id when recording a transcript).
+ *   (also used as the execution id when recording an execution log).
  * @param {string} [opts.agentsDir] - `.aweek/agents` root. When provided
  *   (and `task.taskId` is set), the session's full NDJSON stream is
  *   persisted to `<agentsDir>/<agent>/executions/<taskId>-<sessionId>.jsonl`.
- *   Omit to skip transcript capture.
+ *   Omit to skip execution-log capture.
  * @returns {Promise<ExecutionResult>}
  */
 export async function executeSessionWithTracking(agentId, subagentRef, task, opts = {}) {
@@ -77,23 +77,23 @@ export async function executeSessionWithTracking(agentId, subagentRef, task, opt
   const { usageStore, sessionId, agentsDir, ...launchOpts } = opts;
   const effectiveSessionId = sessionId || `session-${Date.now()}`;
 
-  // Optional transcript capture — only when the caller supplied agentsDir
-  // AND the task has an id we can namespace under.
-  let transcriptWriter = null;
-  let recordedTranscriptPath = null;
+  // Optional execution-log capture — only when the caller supplied
+  // agentsDir AND the task has an id we can namespace under.
+  let executionLogWriter = null;
+  let recordedExecutionLogPath = null;
   if (agentsDir && task.taskId) {
     try {
-      transcriptWriter = await openTranscriptWriter(
+      executionLogWriter = await openExecutionLogWriter(
         agentsDir,
         agentId,
         task.taskId,
         effectiveSessionId,
       );
-      recordedTranscriptPath = transcriptWriter.path;
+      recordedExecutionLogPath = executionLogWriter.path;
     } catch {
-      // Never let transcript setup prevent a tick from running.
-      transcriptWriter = null;
-      recordedTranscriptPath = null;
+      // Never let execution-log setup prevent a tick from running.
+      executionLogWriter = null;
+      recordedExecutionLogPath = null;
     }
   }
 
@@ -102,12 +102,12 @@ export async function executeSessionWithTracking(agentId, subagentRef, task, opt
   try {
     sessionResult = await launchSession(agentId, subagentRef, task, {
       ...launchOpts,
-      transcriptWriter,
+      executionLogWriter,
     });
   } finally {
-    if (transcriptWriter) {
+    if (executionLogWriter) {
       try {
-        await transcriptWriter.close();
+        await executionLogWriter.close();
       } catch { /* best-effort */ }
     }
   }
@@ -146,16 +146,16 @@ export async function executeSessionWithTracking(agentId, subagentRef, task, opt
     tokenUsage,
     usageRecord,
     usageTracked,
-    transcriptPath: recordedTranscriptPath,
+    executionLogPath: recordedExecutionLogPath,
   };
 }
 
 /**
- * Re-export of the transcript path helper so callers that only import
- * from the executor module can resolve paths without also importing the
- * storage module.
+ * Re-export of the execution-log path helper so callers that only
+ * import from the executor module can resolve paths without also
+ * importing the storage module.
  */
-export { transcriptPath };
+export { executionLogPath };
 
 /**
  * Convert a plan week string (e.g., "2026-W16") to a Monday date for usage storage.

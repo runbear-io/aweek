@@ -20,13 +20,13 @@ import { existsSync } from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { platform as nodePlatform } from 'node:process';
 import { networkInterfaces as nodeNetworkInterfaces } from 'node:os';
-import { readTranscriptLines } from '../storage/transcript-store.js';
-import { formatTranscriptLine } from './transcript-formatter.js';
+import { readExecutionLogLines } from '../storage/execution-log-store.js';
+import { formatExecutionLogLine } from './execution-log-formatter.js';
 import {
-  buildTranscriptSummary,
-  parseRawTranscript,
-  renderTranscriptSummaryHtml,
-} from './transcript-summary.js';
+  buildExecutionLogSummary,
+  parseExecutionLog,
+  renderExecutionLogSummaryHtml,
+} from './execution-log-summary.js';
 import {
   MISSING_AWEEK_DIR_CODE,
   createNoAweekDirError,
@@ -262,17 +262,17 @@ async function handleRequest(req, res, ctx) {
   // non-ASCII slugs round-trip correctly. `?week=YYYY-Www` overrides the
   // default "current week" resolution so the dashboard can paginate
   // without a separate endpoint.
-  // Execution transcript endpoint.
+  // Execution log endpoint.
   // Path shape: `/api/executions/<agent-slug>/<basename>` where basename is
   // `<taskId>-<executionId>` — the filename stem the heartbeat writes under
   // `.aweek/agents/<slug>/executions/`. Returns a formatted plain-text
-  // transcript (one or more lines per stream-json event) so users can
+  // execution log (one or more lines per stream-json event) so users can
   // read, tail, or grep the session from a browser.
-  const transcriptMatch = /^\/api\/executions\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
-  if (transcriptMatch) {
-    const slug = safeDecode(transcriptMatch[1]);
-    const basename = safeDecode(transcriptMatch[2]);
-    await handleTranscriptRequest(req, res, {
+  const executionLogMatch = /^\/api\/executions\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
+  if (executionLogMatch) {
+    const slug = safeDecode(executionLogMatch[1]);
+    const basename = safeDecode(executionLogMatch[2]);
+    await handleExecutionLogRequest(req, res, {
       projectDir: ctx.projectDir,
       agentId: slug,
       basename,
@@ -291,7 +291,7 @@ async function handleRequest(req, res, ctx) {
   if (summaryMatch) {
     const slug = safeDecode(summaryMatch[1]);
     const basename = safeDecode(summaryMatch[2]);
-    await handleTranscriptSummaryRequest(req, res, {
+    await handleExecutionLogSummaryRequest(req, res, {
       projectDir: ctx.projectDir,
       agentId: slug,
       basename,
@@ -793,19 +793,19 @@ export function renderDashboardShell({
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
   }
   .drawer-activity-url:hover { border-color: var(--accent); }
-  .drawer-activity-transcript {
+  .drawer-activity-exec-log {
     position: relative;
     z-index: 1;
     margin-top: 6px;
   }
-  .drawer-activity-transcript-link {
+  .drawer-activity-exec-log-link {
     display: inline-block;
     font: 11px/1 var(--font-mono);
     color: var(--muted);
     text-decoration: underline dotted;
     text-underline-offset: 2px;
   }
-  .drawer-activity-transcript-link:hover { color: var(--accent); }
+  .drawer-activity-exec-log-link:hover { color: var(--accent); }
   .drawer-activity-error {
     margin-top: 6px;
     color: var(--status-failed);
@@ -961,21 +961,21 @@ ${extraStyles}
       if (status === 'failed' && e.errorMessage) {
         errHtml = '<div class="drawer-activity-error">' + esc(e.errorMessage) + '</div>';
       }
-      var transcriptHtml = '';
-      if (e.transcriptBasename) {
-        // Link to the full per-execution transcript as plain text, opened
-        // in a new tab so the drawer context is preserved. The outer
-        // overlay link (drawer-activity-link) sits underneath via z-index,
-        // so this inner anchor is the one the click lands on.
+      var execLogHtml = '';
+      if (e.executionLogBasename) {
+        // Link to the full per-execution log as plain text, opened in a
+        // new tab so the drawer context is preserved. The outer overlay
+        // link (drawer-activity-link) sits underneath via z-index, so
+        // this inner anchor is the one the click lands on.
         var agent = new URLSearchParams(location.search).get('agent') || '';
         var tHref = '/executions/'
-          + encodeURIComponent(agent) + '/' + encodeURIComponent(e.transcriptBasename);
-        transcriptHtml = '<div class="drawer-activity-transcript">'
-          + '<a class="drawer-activity-transcript-link" href="' + esc(tHref)
-          + '" target="_blank" rel="noopener noreferrer">view transcript</a>'
+          + encodeURIComponent(agent) + '/' + encodeURIComponent(e.executionLogBasename);
+        execLogHtml = '<div class="drawer-activity-exec-log">'
+          + '<a class="drawer-activity-exec-log-link" href="' + esc(tHref)
+          + '" target="_blank" rel="noopener noreferrer">view execution log</a>'
           + '</div>';
       }
-      var body = head + descHtml + metaHtml + urlsHtml + transcriptHtml + errHtml;
+      var body = head + descHtml + metaHtml + urlsHtml + execLogHtml + errHtml;
       var href = esc(activityEntryHref(e));
       // The whole item is a link into the activity tab. Nested <a> (the
       // URL chips) are still allowed by most browsers in practice even
@@ -1128,7 +1128,7 @@ function safeDecode(segment) {
 }
 
 /**
- * Render the NDJSON transcript for a single execution as plain text.
+ * Render the NDJSON execution log for a single execution as plain text.
  *
  * The `basename` segment is the file stem — `<taskId>-<executionId>` —
  * that the heartbeat wrote under
@@ -1141,7 +1141,7 @@ function safeDecode(segment) {
  * @param {import('node:http').ServerResponse} res
  * @param {{projectDir: string, agentId: string, basename: string}} ctx
  */
-async function handleTranscriptRequest(_req, res, ctx) {
+async function handleExecutionLogRequest(_req, res, ctx) {
   const { projectDir, agentId, basename } = ctx;
   const safeAgent = typeof agentId === 'string' && agentId.length > 0
     && !agentId.includes('/') && !agentId.includes('..');
@@ -1175,24 +1175,24 @@ async function handleTranscriptRequest(_req, res, ctx) {
   res.setHeader('Cache-Control', 'no-store');
 
   let wrote = false;
-  for await (const rawLine of readTranscriptLines(agentsDir, agentId, taskId, executionId)) {
-    const formatted = formatTranscriptLine(rawLine);
+  for await (const rawLine of readExecutionLogLines(agentsDir, agentId, taskId, executionId)) {
+    const formatted = formatExecutionLogLine(rawLine);
     if (formatted.length === 0) continue;
     wrote = true;
     res.write(formatted.join('\n') + '\n');
   }
 
   if (!wrote) {
-    // readTranscriptLines yields nothing on ENOENT — surface a 404 body so
-    // the dashboard can distinguish "no transcript captured" from "empty
-    // transcript". The 200 status was already committed on the first
-    // write(), so only rewrite when we haven't sent any bytes yet. Node's
-    // response is still mutable because headersSent is false until the
-    // first write.
+    // readExecutionLogLines yields nothing on ENOENT — surface a 404
+    // body so the dashboard can distinguish "no execution log captured"
+    // from "empty execution log". The 200 status was already committed
+    // on the first write(), so only rewrite when we haven't sent any
+    // bytes yet. Node's response is still mutable because headersSent
+    // is false until the first write.
     if (!res.headersSent) {
       res.statusCode = 404;
     }
-    res.end('No transcript captured for this execution.\n');
+    res.end('No execution log captured for this execution.\n');
     return;
   }
 
@@ -1202,13 +1202,13 @@ async function handleTranscriptRequest(_req, res, ctx) {
 /**
  * Handle the `GET /executions/<agent>/<basename>` HTML summary page.
  *
- * Buffers the entire JSONL before rendering — transcripts are a few
+ * Buffers the entire JSONL before rendering — execution logs are a few
  * hundred KB at most, and the summary builder needs the terminal
  * `result` event to produce the headline. The raw-bytes endpoint
  * (`/api/executions/...`) stays streaming for curl/tail workflows that
  * want to watch a session tick-by-tick.
  */
-async function handleTranscriptSummaryRequest(_req, res, ctx) {
+async function handleExecutionLogSummaryRequest(_req, res, ctx) {
   const { projectDir, agentId, basename } = ctx;
   const safeAgent = typeof agentId === 'string' && agentId.length > 0
     && !agentId.includes('/') && !agentId.includes('..');
@@ -1233,20 +1233,20 @@ async function handleTranscriptSummaryRequest(_req, res, ctx) {
   const agentsDir = join(projectDir, '.aweek', 'agents');
 
   const rawLines = [];
-  for await (const line of readTranscriptLines(agentsDir, agentId, taskId, executionId)) {
+  for await (const line of readExecutionLogLines(agentsDir, agentId, taskId, executionId)) {
     rawLines.push(line);
   }
 
   if (rawLines.length === 0) {
     res.statusCode = 404;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end('No transcript captured for this execution.\n');
+    res.end('No execution log captured for this execution.\n');
     return;
   }
 
-  const events = parseRawTranscript(rawLines);
-  const summary = buildTranscriptSummary(events);
-  const html = renderTranscriptSummaryHtml(summary, {
+  const events = parseExecutionLog(rawLines);
+  const summary = buildExecutionLogSummary(events);
+  const html = renderExecutionLogSummaryHtml(summary, {
     agentId,
     basename,
     rawHref: `/api/executions/${encodeURIComponent(agentId)}/${encodeURIComponent(basename)}`,

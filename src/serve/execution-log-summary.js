@@ -1,7 +1,7 @@
 /**
- * Summary builder + HTML renderer for execution transcripts.
+ * Summary builder + HTML renderer for execution logs.
  *
- * The raw stream-json transcript is ~150 events long for a normal tick
+ * The raw stream-json execution log is ~150 events long for a normal tick
  * and a few thousand for a verbose one. Rendering it as pretty JSON
  * drowns the signal: the first ~10% is session-bootstrap noise (hook
  * events + a giant tools registry dump from `system:init`), and the
@@ -40,7 +40,7 @@ const NOISE_SYSTEM_SUBTYPES = new Set(['hook_started', 'hook_response']);
  * @param {string | string[]} input
  * @returns {Array<{ type: string, subtype?: string, parsed?: object, raw: string }>}
  */
-export function parseRawTranscript(input) {
+export function parseExecutionLog(input) {
   const lines = Array.isArray(input)
     ? input
     : String(input || '').split('\n');
@@ -70,7 +70,7 @@ export function parseRawTranscript(input) {
 /**
  * Build a summary object from the parsed event list.
  *
- * @param {ReturnType<typeof parseRawTranscript>} events
+ * @param {ReturnType<typeof parseExecutionLog>} events
  * @returns {{
  *   headline: object,
  *   finalResult: string | null,
@@ -80,7 +80,7 @@ export function parseRawTranscript(input) {
  *   filteredCount: number,
  * }}
  */
-export function buildTranscriptSummary(events) {
+export function buildExecutionLogSummary(events) {
   const resultEvent = findLast(events, (e) => e.type === 'result');
   const initEvent = events.find(
     (e) => e.type === 'system' && e.subtype === 'init',
@@ -352,14 +352,14 @@ function firstKey(obj) {
 /**
  * Render the summary as a self-contained HTML document.
  *
- * @param {ReturnType<typeof buildTranscriptSummary>} summary
+ * @param {ReturnType<typeof buildExecutionLogSummary>} summary
  * @param {object} meta
  * @param {string} meta.agentId
  * @param {string} meta.basename - `<taskId>_<sessionId>` stem.
  * @param {string} [meta.rawHref] - Link back to the raw JSONL endpoint.
  * @returns {string}
  */
-export function renderTranscriptSummaryHtml(summary, meta = {}) {
+export function renderExecutionLogSummaryHtml(summary, meta = {}) {
   const { agentId = '', basename = '' } = meta;
   const rawHref = meta.rawHref || buildRawHref(agentId, basename);
   const h = summary.headline;
@@ -514,7 +514,7 @@ function renderRawSection(summary) {
   return [
     '<section class="section raw">',
     '  <details>',
-    `    <summary>Full raw transcript <span class="count">(${summary.rawEvents.length} events, ${summary.filteredCount} filtered from timeline)</span></summary>`,
+    `    <summary>Full raw execution log <span class="count">(${summary.rawEvents.length} events, ${summary.filteredCount} filtered from timeline)</span></summary>`,
     `    <pre>${esc(allPretty)}</pre>`,
     '  </details>',
     '</section>',

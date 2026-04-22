@@ -432,24 +432,24 @@ function renderActivityDetails(entry) {
     );
   }
 
-  const transcriptHtml = renderTranscriptLink(entry);
-  if (transcriptHtml) parts.push(transcriptHtml);
+  const execLogHtml = renderExecutionLogLink(entry);
+  if (execLogHtml) parts.push(execLogHtml);
 
   if (parts.length === 0) return '';
   return `<div class="activity-details">${parts.join('')}</div>`;
 }
 
 /**
- * Derive the dashboard URL segment from a stored transcript path and
- * render a "view transcript" anchor. Older executions (pre-transcript
- * feature) have no `metadata.execution.transcriptPath` field and get no
- * link.
+ * Derive the dashboard URL segment from a stored execution-log path and
+ * render a "view execution log" anchor. Older executions (pre–execution
+ * log feature) have no `metadata.execution.executionLogPath` field and
+ * get no link.
  *
  * @param {object} entry
  * @returns {string}
  */
-function renderTranscriptLink(entry) {
-  const p = entry?.metadata?.execution?.transcriptPath;
+function renderExecutionLogLink(entry) {
+  const p = entry?.metadata?.execution?.executionLogPath;
   if (typeof p !== 'string' || p.length === 0) return '';
   const agentId = entry?.agentId;
   if (typeof agentId !== 'string' || agentId.length === 0) return '';
@@ -458,9 +458,9 @@ function renderTranscriptLink(entry) {
   const base = baseWithExt.slice(0, -'.jsonl'.length);
   const href = `/api/executions/${encodeURIComponent(agentId)}/${encodeURIComponent(base)}`;
   return (
-    `<div class="activity-detail-row activity-detail-transcript">` +
-      `<a class="activity-transcript-link" href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" title="Open transcript in a new tab">` +
-        `view transcript` +
+    `<div class="activity-detail-row activity-detail-exec-log">` +
+      `<a class="activity-exec-log-link" href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer" title="Open execution log in a new tab">` +
+        `view execution log` +
       `</a>` +
     `</div>`
   );

@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  transcriptPath,
-  openTranscriptWriter,
-  transcriptExists,
-  readTranscriptLines,
-} from './transcript-store.js';
+  executionLogPath,
+  openExecutionLogWriter,
+  executionLogExists,
+  readExecutionLogLines,
+} from './execution-log-store.js';
 
 async function makeAgentsDir() {
-  const root = await mkdtemp(join(tmpdir(), 'aweek-transcript-'));
+  const root = await mkdtemp(join(tmpdir(), 'aweek-execution-log-'));
   const agentsDir = join(root, 'agents');
   await mkdir(agentsDir, { recursive: true });
   return agentsDir;
@@ -24,26 +24,26 @@ async function collect(it) {
   return out;
 }
 
-describe('transcript-store — transcriptPath', () => {
+describe('execution-log-store — executionLogPath', () => {
   it('joins agentsDir/<agent>/executions/<task>_<exec>.jsonl', () => {
     assert.equal(
-      transcriptPath('/a/b/agents', 'writer', 'task-abc', 'exec-1'),
+      executionLogPath('/a/b/agents', 'writer', 'task-abc', 'exec-1'),
       join('/a/b/agents', 'writer', 'executions', 'task-abc_exec-1.jsonl'),
     );
   });
 
   it('rejects missing arguments', () => {
-    assert.throws(() => transcriptPath('', 'a', 't', 'e'), /agentsDir is required/);
-    assert.throws(() => transcriptPath('/a', '', 't', 'e'), /agentId is required/);
-    assert.throws(() => transcriptPath('/a', 'b', '', 'e'), /taskId is required/);
-    assert.throws(() => transcriptPath('/a', 'b', 't', ''), /executionId is required/);
+    assert.throws(() => executionLogPath('', 'a', 't', 'e'), /agentsDir is required/);
+    assert.throws(() => executionLogPath('/a', '', 't', 'e'), /agentId is required/);
+    assert.throws(() => executionLogPath('/a', 'b', '', 'e'), /taskId is required/);
+    assert.throws(() => executionLogPath('/a', 'b', 't', ''), /executionId is required/);
   });
 });
 
-describe('transcript-store — openTranscriptWriter', () => {
+describe('execution-log-store — openExecutionLogWriter', () => {
   it('creates the executions directory and writes lines', async () => {
     const agentsDir = await makeAgentsDir();
-    const w = await openTranscriptWriter(agentsDir, 'writer', 'task-1', 'exec-1');
+    const w = await openExecutionLogWriter(agentsDir, 'writer', 'task-1', 'exec-1');
 
     w.writeLine('{"type":"system","subtype":"init"}');
     w.writeLine('{"type":"user","content":"hello"}');
@@ -58,7 +58,7 @@ describe('transcript-store — openTranscriptWriter', () => {
 
   it('appends newlines only when missing (preserves single-line format)', async () => {
     const agentsDir = await makeAgentsDir();
-    const w = await openTranscriptWriter(agentsDir, 'writer', 'task-2', 'exec-1');
+    const w = await openExecutionLogWriter(agentsDir, 'writer', 'task-2', 'exec-1');
 
     w.writeLine('one');
     w.writeLine('two\n');
@@ -71,7 +71,7 @@ describe('transcript-store — openTranscriptWriter', () => {
 
   it('redacts obvious secrets before they hit disk', async () => {
     const agentsDir = await makeAgentsDir();
-    const w = await openTranscriptWriter(agentsDir, 'writer', 'task-3', 'exec-1');
+    const w = await openExecutionLogWriter(agentsDir, 'writer', 'task-3', 'exec-1');
 
     w.writeLine('API_KEY=sk-abcDEF0123456789xyz used');
     w.writeLine('token=ghp_1234567890abcdefghijklmnopqrstuvwxyz');
@@ -85,7 +85,7 @@ describe('transcript-store — openTranscriptWriter', () => {
 
   it('silently drops empty / non-string lines', async () => {
     const agentsDir = await makeAgentsDir();
-    const w = await openTranscriptWriter(agentsDir, 'writer', 'task-4', 'exec-1');
+    const w = await openExecutionLogWriter(agentsDir, 'writer', 'task-4', 'exec-1');
 
     w.writeLine('');
     w.writeLine(null);
@@ -98,40 +98,40 @@ describe('transcript-store — openTranscriptWriter', () => {
   });
 });
 
-describe('transcript-store — transcriptExists', () => {
+describe('execution-log-store — executionLogExists', () => {
   it('returns false when the file is missing', async () => {
     const agentsDir = await makeAgentsDir();
     assert.equal(
-      await transcriptExists(agentsDir, 'writer', 'task-x', 'exec-x'),
+      await executionLogExists(agentsDir, 'writer', 'task-x', 'exec-x'),
       false,
     );
   });
 
   it('returns true after a write', async () => {
     const agentsDir = await makeAgentsDir();
-    const w = await openTranscriptWriter(agentsDir, 'writer', 'task-y', 'exec-y');
+    const w = await openExecutionLogWriter(agentsDir, 'writer', 'task-y', 'exec-y');
     w.writeLine('line');
     await w.close();
 
     assert.equal(
-      await transcriptExists(agentsDir, 'writer', 'task-y', 'exec-y'),
+      await executionLogExists(agentsDir, 'writer', 'task-y', 'exec-y'),
       true,
     );
   });
 });
 
-describe('transcript-store — readTranscriptLines', () => {
+describe('execution-log-store — readExecutionLogLines', () => {
   it('yields nothing when the file is missing', async () => {
     const agentsDir = await makeAgentsDir();
     const lines = await collect(
-      readTranscriptLines(agentsDir, 'writer', 'task-z', 'exec-z'),
+      readExecutionLogLines(agentsDir, 'writer', 'task-z', 'exec-z'),
     );
     assert.deepEqual(lines, []);
   });
 
   it('yields each non-empty line in order', async () => {
     const agentsDir = await makeAgentsDir();
-    const path = transcriptPath(agentsDir, 'writer', 'task-r', 'exec-r');
+    const path = executionLogPath(agentsDir, 'writer', 'task-r', 'exec-r');
     await mkdir(join(agentsDir, 'writer', 'executions'), { recursive: true });
     await writeFile(
       path,
@@ -140,7 +140,7 @@ describe('transcript-store — readTranscriptLines', () => {
     );
 
     const lines = await collect(
-      readTranscriptLines(agentsDir, 'writer', 'task-r', 'exec-r'),
+      readExecutionLogLines(agentsDir, 'writer', 'task-r', 'exec-r'),
     );
     assert.deepEqual(lines, [
       '{"type":"system"}',

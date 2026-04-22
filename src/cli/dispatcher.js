@@ -242,13 +242,13 @@ export const REGISTRY = Object.freeze({
   // for the completed week, returning a context object ready to spread into
   // generateWeeklyPlan's options parameter. Only called from the weekly-review
   // → next-week-planner autonomous chain, not from user-invoked /aweek:plan.
-  // Maintenance ops for per-execution CLI transcripts. `prune` walks
+  // Maintenance ops for per-execution CLI execution logs. `prune` walks
   // `.aweek/agents/*/executions/*.jsonl` and deletes entries older than
   // `olderThanWeeks` (default 4). Invoked directly by users via
   // `aweek exec execution prune --input-json -`.
   execution: {
     prune: (input) =>
-      execution.pruneTranscripts({
+      execution.pruneExecutionLogs({
         projectDir: input?.projectDir,
         olderThanWeeks: input?.olderThanWeeks,
       }),

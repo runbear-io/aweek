@@ -1,8 +1,8 @@
 /**
- * Per-execution CLI transcript storage.
+ * Per-execution CLI execution-log storage.
  *
  * Each Claude Code CLI session the heartbeat spawns for a task writes a
- * full NDJSON transcript to
+ * full NDJSON execution log to
  *
  *   <agentsDir>/<agentId>/executions/<taskId>-<executionId>.jsonl
  *
@@ -11,9 +11,9 @@
  * blocks, final result + usage). The secret redactor runs on each line
  * before it's written, so obvious API-key shapes are scrubbed at source.
  *
- * The dashboard reads these files back to render a task-detail transcript
- * view. Missing files are treated as "no transcript captured for this
- * execution" (older runs or sessions that crashed before any event
+ * The dashboard reads these files back to render a task-detail execution
+ * log view. Missing files are treated as "no execution log captured for
+ * this execution" (older runs or sessions that crashed before any event
  * arrived), and the reader returns an empty iterator rather than
  * throwing.
  */
@@ -26,9 +26,9 @@ import { createInterface } from 'node:readline';
 import { redactLine } from '../execution/secret-redactor.js';
 
 /**
- * Absolute path to an execution's transcript file. Keeps the naming flat
- * (`<taskId>-<executionId>.jsonl`) so discovery by taskId is a cheap glob
- * — no need to walk per-run subdirectories.
+ * Absolute path to an execution's execution-log file. Keeps the naming
+ * flat (`<taskId>-<executionId>.jsonl`) so discovery by taskId is a cheap
+ * glob — no need to walk per-run subdirectories.
  *
  * @param {string} agentsDir `.aweek/agents` root
  * @param {string} agentId
@@ -36,7 +36,7 @@ import { redactLine } from '../execution/secret-redactor.js';
  * @param {string} executionId
  * @returns {string}
  */
-export function transcriptPath(agentsDir, agentId, taskId, executionId) {
+export function executionLogPath(agentsDir, agentId, taskId, executionId) {
   if (!agentsDir) throw new TypeError('agentsDir is required');
   if (!agentId) throw new TypeError('agentId is required');
   if (!taskId) throw new TypeError('taskId is required');
@@ -50,9 +50,10 @@ export function transcriptPath(agentsDir, agentId, taskId, executionId) {
 }
 
 /**
- * Open an append-mode writer for a new transcript. Caller is responsible
- * for calling `close()` when the session ends. Every line passed to
- * `writeLine` is routed through the secret redactor before hitting disk.
+ * Open an append-mode writer for a new execution log. Caller is
+ * responsible for calling `close()` when the session ends. Every line
+ * passed to `writeLine` is routed through the secret redactor before
+ * hitting disk.
  *
  * @param {string} agentsDir
  * @param {string} agentId
@@ -60,8 +61,8 @@ export function transcriptPath(agentsDir, agentId, taskId, executionId) {
  * @param {string} executionId
  * @returns {Promise<{ writeLine: (line: string) => void, close: () => Promise<void>, path: string }>}
  */
-export async function openTranscriptWriter(agentsDir, agentId, taskId, executionId) {
-  const path = transcriptPath(agentsDir, agentId, taskId, executionId);
+export async function openExecutionLogWriter(agentsDir, agentId, taskId, executionId) {
+  const path = executionLogPath(agentsDir, agentId, taskId, executionId);
   await mkdir(dirname(path), { recursive: true });
 
   const stream = createWriteStream(path, { flags: 'a', encoding: 'utf8' });
@@ -81,8 +82,9 @@ export async function openTranscriptWriter(agentsDir, agentId, taskId, execution
 }
 
 /**
- * Check whether a transcript exists on disk. Useful for the dashboard —
- * older executions recorded before this feature landed won't have a file.
+ * Check whether an execution log exists on disk. Useful for the
+ * dashboard — older executions recorded before this feature landed won't
+ * have a file.
  *
  * @param {string} agentsDir
  * @param {string} agentId
@@ -90,9 +92,9 @@ export async function openTranscriptWriter(agentsDir, agentId, taskId, execution
  * @param {string} executionId
  * @returns {Promise<boolean>}
  */
-export async function transcriptExists(agentsDir, agentId, taskId, executionId) {
+export async function executionLogExists(agentsDir, agentId, taskId, executionId) {
   try {
-    const s = await stat(transcriptPath(agentsDir, agentId, taskId, executionId));
+    const s = await stat(executionLogPath(agentsDir, agentId, taskId, executionId));
     return s.isFile();
   } catch (err) {
     if (err && err.code === 'ENOENT') return false;
@@ -101,9 +103,9 @@ export async function transcriptExists(agentsDir, agentId, taskId, executionId) 
 }
 
 /**
- * Stream the transcript lines back. Yields raw strings — one per event in
- * the underlying JSONL. Missing files yield nothing. Callers that want
- * parsed events can `JSON.parse` each line.
+ * Stream the execution-log lines back. Yields raw strings — one per
+ * event in the underlying JSONL. Missing files yield nothing. Callers
+ * that want parsed events can `JSON.parse` each line.
  *
  * @param {string} agentsDir
  * @param {string} agentId
@@ -111,8 +113,8 @@ export async function transcriptExists(agentsDir, agentId, taskId, executionId) 
  * @param {string} executionId
  * @returns {AsyncGenerator<string>}
  */
-export async function* readTranscriptLines(agentsDir, agentId, taskId, executionId) {
-  const path = transcriptPath(agentsDir, agentId, taskId, executionId);
+export async function* readExecutionLogLines(agentsDir, agentId, taskId, executionId) {
+  const path = executionLogPath(agentsDir, agentId, taskId, executionId);
   let stream;
   try {
     stream = createReadStream(path, { encoding: 'utf8' });
