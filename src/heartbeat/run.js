@@ -542,7 +542,18 @@ async function executeOneSelection(selection, ctx) {
         objectiveId: task.objectiveId,
         week,
       },
-      { cwd: projectDir, usageStore, env: agentEnv, agentsDir },
+      {
+        cwd: projectDir,
+        usageStore,
+        env: agentEnv,
+        agentsDir,
+        // Heartbeat ticks run without a TTY — there's no human to
+        // approve permission prompts, so default-gate would silently
+        // block every tool call. Safety guards belong in the
+        // subagent's system prompt, not in a dialog the heartbeat
+        // can't answer.
+        dangerouslySkipPermissions: true,
+      },
     );
   } catch (err) {
     error = err;
