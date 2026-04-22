@@ -16,7 +16,7 @@ import {
 function makeTask(overrides = {}) {
   return {
     id: 'task-001',
-    description: 'Do some work',
+    title: 'Do some work', prompt: 'Do some work',
     objectiveId: '2026-04',
     status: 'pending',
     ...overrides,
@@ -29,7 +29,7 @@ function makeLogEntry(overrides = {}) {
     timestamp: '2026-04-14T10:00:00.000Z',
     agentId: 'agent-x',
     status: 'completed',
-    description: 'Completed something',
+    title: 'Completed something',
     duration: 30000,
     ...overrides,
   };
@@ -129,7 +129,7 @@ describe('groupLogEntriesByStatus', () => {
   });
 
   it('uses "unknown" for entries without a status', () => {
-    const entries = [{ id: 'log-x', description: 'mystery entry' }];
+    const entries = [{ id: 'log-x', title: 'mystery entry' }];
     const grouped = groupLogEntriesByStatus(entries);
     assert.equal(grouped.unknown.length, 1);
   });

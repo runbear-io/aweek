@@ -110,14 +110,14 @@ export function runAtForDate(dateStr, hourUtc = CARRY_OVER_HOUR_UTC) {
  * Convert daily-review adjustment records into `weeklyAdjustment` operations.
  *
  * Each record from `buildAdjustmentsForTomorrow` carries `{ type, taskId,
- * description, text }`. This function translates those into operations that
+ * title, text }`. This function translates those into operations that
  * `adjustGoals` / `applyWeeklyAdjustment` can apply to the live weekly plan.
  *
  * Records whose `taskId` cannot be found in `weeklyPlan.tasks` are silently
  * skipped — the human-readable daily review already captures every suggestion,
  * so no information is lost.
  *
- * @param {Array<{ type: string, taskId: string, description: string, text: string }>} adjustmentRecords
+ * @param {Array<{ type: string, taskId: string, title: string, text: string }>} adjustmentRecords
  *   Adjustment records produced by `buildAdjustmentsForTomorrow`.
  * @param {object|null} weeklyPlan - The current approved weekly plan.
  * @param {string} date - The review date (YYYY-MM-DD).
@@ -133,7 +133,7 @@ export function extractWeeklyAdjustmentOps(adjustmentRecords, weeklyPlan, date, 
   const ops = [];
 
   for (const record of adjustmentRecords) {
-    const { type, taskId, description } = record;
+    const { type, taskId, title } = record;
 
     // Look up the task so we can read objectiveId and verify existence.
     const task = weeklyPlan.tasks.find((t) => t.id === taskId);
@@ -166,13 +166,19 @@ export function extractWeeklyAdjustmentOps(adjustmentRecords, weeklyPlan, date, 
       case 'follow-up': {
         // Delegated task: add a lightweight follow-up check task tomorrow.
         // Reuse the original task's objectiveId so the follow-up traces to the
-        // same planning section. Skip if no objectiveId is available.
+        // same planning section. Skip if no objectiveId is available. The
+        // `title` stays short (≤ 80 chars enforced by the schema) while
+        // `prompt` carries the actionable instruction for Claude.
         const objectiveId = task.objectiveId || null;
         if (objectiveId) {
+          const baseTitle = `Follow up: ${title}`;
+          const trimmedTitle =
+            baseTitle.length > 80 ? `${baseTitle.slice(0, 77)}...` : baseTitle;
           ops.push({
             action: 'add',
             week,
-            description: `Follow up on delegated task: ${description}`,
+            title: trimmedTitle,
+            prompt: `Follow up on delegated task: ${title}`,
             objectiveId,
             runAt: tomorrowRunAt,
           });
@@ -339,7 +345,7 @@ export async function clearPendingAdjustmentBatch(baseDir, agentId, date) {
  * @param {string} opts.agentId
  * @param {string} opts.date - Review date (YYYY-MM-DD)
  * @param {string} opts.week - ISO week string for the target plan (YYYY-Www)
- * @param {Array<{ type: string, taskId: string, description: string, text: string }>} opts.adjustmentRecords
+ * @param {Array<{ type: string, taskId: string, title: string, text: string }>} opts.adjustmentRecords
  *   Adjustment records from `buildAdjustmentsForTomorrow` (stored in daily-review metadata).
  * @param {object|null} opts.weeklyPlan - The weekly plan loaded by `generateDailyReview`.
  * @param {string} [opts.createdAt] - Override creation timestamp (ISO datetime).

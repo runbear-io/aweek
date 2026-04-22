@@ -391,20 +391,20 @@ describe('aggregateWeeklyMetrics', () => {
       agentId,
       taskId: 'task-aaa11111',
       status: 'completed',
-      description: 'Did task 1',
+      title: 'Did task 1',
       duration: 60000,
     });
     const entry2 = createLogEntry({
       agentId,
       taskId: 'task-bbb22222',
       status: 'failed',
-      description: 'Failed task 2',
+      title: 'Failed task 2',
     });
     const entry3 = createLogEntry({
       agentId,
       taskId: 'task-ccc33333',
       status: 'completed',
-      description: 'Did task 3',
+      title: 'Did task 3',
       duration: 30000,
     });
 
@@ -499,7 +499,7 @@ describe('aggregateWeeklyMetrics', () => {
       agentId,
       taskId: 'task-aaa11111',
       status: 'completed',
-      description: 'Task done',
+      title: 'Task done',
     });
     await activityLogStore.append(agentId, entry);
 

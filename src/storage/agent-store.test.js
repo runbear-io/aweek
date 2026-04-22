@@ -167,7 +167,7 @@ describe('AgentStore', () => {
     const monthlyPlan = createMonthlyPlan('2026-04', [obj]);
     config.monthlyPlans.push(monthlyPlan);
 
-    const task = createTask('Write unit tests', obj.id);
+    const task = createTask({ title: 'Write unit tests', prompt: 'Write unit tests' }, obj.id);
     const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
 
     // Validate the config on its own (no embedded weeklyPlans field).
@@ -238,7 +238,7 @@ describe('AgentStore', () => {
 
     const goal = createGoal('Legacy goal');
     const obj = createObjective('Legacy obj', goal.id);
-    const task = createTask('Legacy task', obj.id);
+    const task = createTask({ title: 'Legacy task', prompt: 'Legacy task' }, obj.id);
     const legacyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
 
     const base = createAgentConfig({ subagentRef: 'legacy-bot' });

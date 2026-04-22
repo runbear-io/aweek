@@ -8,7 +8,9 @@
  *   - agentId:     The agent that performed the activity
  *   - taskId:      The weekly-plan task ID (if applicable)
  *   - status:      Outcome of the activity
- *   - description: Human-readable summary of what happened
+ *   - title:       Short single-line label sourced from the task's title —
+ *                  the log is a user-facing surface, so it tracks the
+ *                  calendar label rather than the full prompt.
  *   - duration:    Wall-clock milliseconds the activity took
  *   - metadata:    Optional extra key-value data (tokens used, error info, etc.)
  */
@@ -19,7 +21,7 @@ export const ACTIVITY_STATUSES = ['started', 'completed', 'failed', 'skipped', '
 export const activityLogEntrySchema = {
   $id: 'aweek://schemas/activity-log-entry',
   type: 'object',
-  required: ['id', 'timestamp', 'agentId', 'status', 'description'],
+  required: ['id', 'timestamp', 'agentId', 'status', 'title'],
   properties: {
     id: {
       type: 'string',
@@ -44,10 +46,12 @@ export const activityLogEntrySchema = {
       enum: ACTIVITY_STATUSES,
       description: 'Outcome of the activity',
     },
-    description: {
+    title: {
       type: 'string',
       minLength: 1,
-      description: 'Human-readable summary of what happened',
+      description:
+        'Short single-line label sourced from the task title when the log ' +
+        'entry traces back to a weekly task.',
     },
     duration: {
       type: 'integer',

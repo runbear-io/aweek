@@ -221,7 +221,8 @@ export function createTrackedExecutor(config = {}) {
 
     const task = {
       taskId: taskInfo.taskId,
-      description: taskInfo.payload?.description || taskInfo.taskId,
+      title: taskInfo.payload?.title || taskInfo.taskId,
+      prompt: taskInfo.payload?.prompt || taskInfo.taskId,
       objectiveId: taskInfo.payload?.objectiveId,
       week: taskInfo.payload?.week,
       additionalContext: taskInfo.payload?.additionalContext,

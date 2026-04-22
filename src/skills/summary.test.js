@@ -377,9 +377,9 @@ describe('buildSummary end-to-end', () => {
     await agentStore.save(alice);
 
     const plan = createWeeklyPlan('2026-W16', '2026-04', [
-      { ...createTask('t1', 'obj-1'), status: 'completed' },
-      { ...createTask('t2', 'obj-1'), status: 'pending' },
-      { ...createTask('t3', 'obj-1'), status: 'pending' },
+      { ...createTask({ title: 't1', prompt: 't1' }, 'obj-1'), status: 'completed' },
+      { ...createTask({ title: 't2', prompt: 't2' }, 'obj-1'), status: 'pending' },
+      { ...createTask({ title: 't3', prompt: 't3' }, 'obj-1'), status: 'pending' },
     ]);
     plan.approved = true;
     plan.approvedAt = new Date().toISOString();
@@ -595,8 +595,8 @@ describe('buildAgentDrillDown', () => {
     await agentStore.save(alice);
 
     const plan = createWeeklyPlan('2026-W16', '2026-04', [
-      { ...createTask('t1', 'obj-1'), status: 'completed' },
-      { ...createTask('t2', 'obj-1'), status: 'pending' },
+      { ...createTask({ title: 't1', prompt: 't1' }, 'obj-1'), status: 'completed' },
+      { ...createTask({ title: 't2', prompt: 't2' }, 'obj-1'), status: 'pending' },
     ]);
     plan.approved = true;
     plan.approvedAt = new Date().toISOString();

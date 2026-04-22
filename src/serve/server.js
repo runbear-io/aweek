@@ -912,8 +912,8 @@ ${extraStyles}
         + chip('chip-status chip-status-' + status, status.replace(/-/g, ' '))
         + '<span class="drawer-activity-ts">' + esc(fmtDate(e.timestamp)) + '</span>'
         + '</div>';
-      var descHtml = e.description
-        ? '<div class="drawer-activity-desc">' + esc(truncate(e.description, 140)) + '</div>'
+      var descHtml = e.title
+        ? '<div class="drawer-activity-desc">' + esc(truncate(e.title, 140)) + '</div>'
         : '';
       var meta = [];
       if (e.duration) meta.push('<span>duration<strong>' + esc(fmtDuration(e.duration)) + '</strong></span>');
@@ -1015,7 +1015,7 @@ ${extraStyles}
       open({
         id: d.taskId,
         num: d.taskNum,
-        desc: d.taskDesc,
+        desc: d.taskTitle,
         status: d.taskStatus,
         priority: d.taskPriority,
         track: d.taskTrack,

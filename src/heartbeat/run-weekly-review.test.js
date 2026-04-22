@@ -87,7 +87,8 @@ function makeApprovedPlan(week, tasks) {
 function makeWeeklyReviewTask(overrides = {}) {
   return {
     id: `task-wkrev-${uid()}`,
-    description: 'Weekly review — end-of-week reflection and next-week planning',
+    title: 'Weekly review — end-of-week reflection and next-week planning',
+    prompt: 'Weekly review — end-of-week reflection and next-week planning',
     objectiveId: WEEKLY_REVIEW_OBJECTIVE_ID,
     status: 'pending',
     priority: 'high',
@@ -217,7 +218,8 @@ describe('runHeartbeatForAgent — weekly-review task pipeline (AC 30003)', () =
     const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const workTask = {
       id: `task-work-${uid()}`,
-      description: 'Regular work item',
+      title: 'Regular work item',
+      prompt: 'Regular work item',
       objectiveId: 'obj-worktask',
       status: 'pending',
       priority: 'medium',
@@ -346,7 +348,7 @@ describe('runHeartbeatForAgent — next-week planner chain (AC 30101)', () => {
     // approved.
     const sentinelTask = {
       id: 'task-sentinel-chain-001',
-      description: 'Sentinel — must survive the chain',
+      title: 'Sentinel — must survive the chain', prompt: 'Sentinel — must survive the chain',
       objectiveId: 'obj-sentinel',
       status: 'pending',
       priority: 'high',
@@ -378,7 +380,7 @@ describe('runHeartbeatForAgent — next-week planner chain (AC 30101)', () => {
     // week's plan for the heartbeat tick.
     const sentinelTask = {
       id: 'task-sentinel-chain-002',
-      description: 'Sentinel',
+      title: 'Sentinel', prompt: 'Sentinel',
       objectiveId: 'obj-sentinel',
       status: 'pending',
       priority: 'medium',

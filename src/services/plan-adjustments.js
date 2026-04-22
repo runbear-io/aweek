@@ -269,7 +269,8 @@ export function validateMonthlyAdjustment(op, agentConfig) {
  * @param {'add' | 'update'} op.action
  * @param {string} op.week - YYYY-Www
  * @param {string} [op.taskId] - Required for update
- * @param {string} [op.description] - Required for add
+ * @param {string} [op.title] - Required for add (calendar label, ≤ 80 chars)
+ * @param {string} [op.prompt] - Required for add (instruction sent to Claude)
  * @param {string} [op.objectiveId] - Required for add
  * @param {string} [op.status] - For update
  * @param {object} agentConfig - Agent config (used for monthly-plan lookups)
@@ -320,8 +321,13 @@ export function validateWeeklyAdjustment(op, agentConfig, weeklyPlans = []) {
             errors.push(`tasks[${i}] must be an object`);
             continue;
           }
-          if (!seed.description || typeof seed.description !== 'string' || seed.description.trim().length === 0) {
-            errors.push(`tasks[${i}].description must be a non-empty string`);
+          if (!seed.title || typeof seed.title !== 'string' || seed.title.trim().length === 0) {
+            errors.push(`tasks[${i}].title must be a non-empty string`);
+          } else if (seed.title.length > 80) {
+            errors.push(`tasks[${i}].title must be at most 80 characters`);
+          }
+          if (!seed.prompt || typeof seed.prompt !== 'string' || seed.prompt.trim().length === 0) {
+            errors.push(`tasks[${i}].prompt must be a non-empty string`);
           }
           if (seed.objectiveId !== undefined && seed.objectiveId !== null) {
             if (typeof seed.objectiveId !== 'string' || seed.objectiveId.length === 0) {
@@ -373,8 +379,15 @@ export function validateWeeklyAdjustment(op, agentConfig, weeklyPlans = []) {
       if (op.status && !validStatuses.includes(op.status)) {
         errors.push(`status must be one of: ${validStatuses.join(', ')}`);
       }
-      if (op.description !== undefined && (typeof op.description !== 'string' || op.description.trim().length === 0)) {
-        errors.push('description must be a non-empty string');
+      if (op.title !== undefined) {
+        if (typeof op.title !== 'string' || op.title.trim().length === 0) {
+          errors.push('title must be a non-empty string');
+        } else if (op.title.length > 80) {
+          errors.push('title must be at most 80 characters');
+        }
+      }
+      if (op.prompt !== undefined && (typeof op.prompt !== 'string' || op.prompt.trim().length === 0)) {
+        errors.push('prompt must be a non-empty string');
       }
       if (op.track !== undefined && op.track !== null && !isValidTrack(op.track)) {
         errors.push(
@@ -388,19 +401,25 @@ export function validateWeeklyAdjustment(op, agentConfig, weeklyPlans = []) {
       }
       if (
         !op.status &&
-        op.description === undefined &&
+        op.title === undefined &&
+        op.prompt === undefined &&
         op.track === undefined &&
         op.runAt === undefined
       ) {
         errors.push(
-          'At least one field to update is required (status, description, track, or runAt)',
+          'At least one field to update is required (status, title, prompt, track, or runAt)',
         );
       }
     }
 
     if (op.action === 'add') {
-      if (!op.description || typeof op.description !== 'string' || op.description.trim().length === 0) {
-        errors.push('description is required for adding a task');
+      if (!op.title || typeof op.title !== 'string' || op.title.trim().length === 0) {
+        errors.push('title is required for adding a task');
+      } else if (op.title.length > 80) {
+        errors.push('title must be at most 80 characters');
+      }
+      if (!op.prompt || typeof op.prompt !== 'string' || op.prompt.trim().length === 0) {
+        errors.push('prompt is required for adding a task');
       }
       // `objectiveId` is now a free-form string that typically points at a
       // monthly section heading in plan.md — no longer required, no longer
@@ -536,7 +555,7 @@ export function applyWeeklyAdjustment(config, op, weeklyPlans = []) {
     }
     const tasks = Array.isArray(op.tasks)
       ? op.tasks.map((seed) =>
-          createTask(seed.description, seed.objectiveId, {
+          createTask({ title: seed.title, prompt: seed.prompt }, seed.objectiveId, {
             ...(seed.priority !== undefined ? { priority: seed.priority } : {}),
             ...(seed.estimatedMinutes !== undefined
               ? { estimatedMinutes: seed.estimatedMinutes }
@@ -556,7 +575,7 @@ export function applyWeeklyAdjustment(config, op, weeklyPlans = []) {
   if (!plan) return { applied: false, result: null, error: `No weekly plan for ${op.week}` };
 
   if (op.action === 'add') {
-    const task = createTask(op.description, op.objectiveId, {
+    const task = createTask({ title: op.title, prompt: op.prompt }, op.objectiveId, {
       ...(op.track !== undefined ? { track: op.track } : {}),
       ...(op.runAt !== undefined ? { runAt: op.runAt } : {}),
     });
@@ -570,7 +589,8 @@ export function applyWeeklyAdjustment(config, op, weeklyPlans = []) {
     const task = plan.tasks.find((t) => t.id === op.taskId);
     if (!task) return { applied: false, result: null, error: `Task not found: ${op.taskId}` };
 
-    if (op.description) task.description = op.description;
+    if (op.title) task.title = op.title;
+    if (op.prompt) task.prompt = op.prompt;
     if (op.status) {
       task.status = op.status;
       if (op.status === 'completed') {
@@ -771,7 +791,7 @@ export function formatAdjustmentSummary(results) {
       if (r.result.week && Array.isArray(r.result.tasks)) {
         lines.push(`    - Created weekly plan ${r.result.week} (${r.result.tasks.length} task(s)) — pending approval`);
       } else {
-        lines.push(`    - ${r.result.id}: ${r.result.description || '(updated)'}`);
+        lines.push(`    - ${r.result.id}: ${r.result.title || '(updated)'}`);
       }
     }
   }

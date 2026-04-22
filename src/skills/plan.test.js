@@ -93,7 +93,7 @@ function buildTestAgent({ subagentRef = TEST_SLUG, planApproved = false } = {}) 
   const monthlyPlan = createMonthlyPlan('2026-04', [objective]);
   config.monthlyPlans.push(monthlyPlan);
 
-  const task = createTask('Draft the spec', objective.id, {
+  const task = createTask({ title: 'Draft the spec', prompt: 'Draft the spec' }, objective.id, {
     priority: 'high',
     estimatedMinutes: 60,
   });
@@ -335,7 +335,7 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
     assert.ok(result.formatted, 'expected a `formatted` field');
     assert.match(result.formatted, /2026-W16/);
     assert.ok(
-      result.formatted.includes(task.description),
+      result.formatted.includes(task.title),
       'formatted output should mention the task description',
     );
   });
@@ -365,7 +365,8 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
       edits: [
         {
           action: 'add',
-          description: 'Write the README',
+          title: 'Write the README',
+          prompt: 'Write the README',
           objectiveId: objective.id,
           priority: 'medium',
           estimatedMinutes: 45,
@@ -377,7 +378,7 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
     const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
     assert.equal(persistedPlan.tasks.length, 2);
-    assert.ok(persistedPlan.tasks.some((t) => t.description === 'Write the README'));
+    assert.ok(persistedPlan.tasks.some((t) => t.title === 'Write the README'));
     // Default behavior: still pending.
     assert.equal(persistedPlan.approved, false);
   });
@@ -392,7 +393,8 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
       edits: [
         {
           action: 'add',
-          description: 'Cut a release branch',
+          title: 'Cut a release branch',
+          prompt: 'Cut a release branch',
           objectiveId: objective.id,
           priority: 'high',
           estimatedMinutes: 30,
@@ -573,13 +575,13 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     // Simulate 5 daily-review tasks (Mon–Fri) as buildReviewTasks() produces.
     const dailyReviewTasks = [
-      "Week orientation: open your weekly plan, confirm today's top two priorities.",
-      'Day-two check-in: note what moved forward yesterday, update task statuses.',
-      'Mid-week pulse: you are halfway through — assess overall pacing.',
-      'Pre-close prep: drive open items toward done, escalate any unresolved blockers.',
-      'End-of-day Friday: record today\'s outcomes, note what carries forward.',
-    ].map((desc, i) =>
-      createTask(desc, DAILY_REVIEW_OBJECTIVE_ID, {
+      ['Mon review: week orientation', "Week orientation: open your weekly plan, confirm today's top two priorities."],
+      ['Tue review: day-two check-in', 'Day-two check-in: note what moved forward yesterday, update task statuses.'],
+      ['Wed review: mid-week pulse', 'Mid-week pulse: you are halfway through — assess overall pacing.'],
+      ['Thu review: pre-close prep', 'Pre-close prep: drive open items toward done, escalate any unresolved blockers.'],
+      ['Fri review: end-of-day wrap-up', 'End-of-day Friday: record today\'s outcomes, note what carries forward.'],
+    ].map(([title, prompt], i) =>
+      createTask({ title, prompt }, DAILY_REVIEW_OBJECTIVE_ID, {
         priority: 'medium',
         estimatedMinutes: 30,
         runAt: `2026-04-${20 + i}T17:00:00Z`,
@@ -589,7 +591,10 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     // Simulate the single weekly-review task (Friday afternoon).
     const weeklyReviewTask = createTask(
-      'Weekly review: assess outcomes against this week\'s plan, capture wins / misses / learnings.',
+      {
+        title: 'Weekly review',
+        prompt: 'Weekly review: assess outcomes against this week\'s plan, capture wins / misses / learnings.',
+      },
       WEEKLY_REVIEW_OBJECTIVE_ID,
       {
         priority: 'high',
@@ -622,17 +627,17 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
     assert.ok(result.formatted, 'expected a `formatted` field');
     // Existing work task is still visible.
     assert.ok(
-      result.formatted.includes(task.description),
+      result.formatted.includes(task.title),
       'existing work task should appear in the formatted output',
     );
     // Daily review tasks appear alongside the work task.
     assert.ok(
-      result.formatted.includes(dailyReviewTasks[0].description),
+      result.formatted.includes(dailyReviewTasks[0].title),
       'first daily-review task should appear in the formatted output',
     );
     // Weekly review task appears.
     assert.ok(
-      result.formatted.includes(weeklyReviewTask.description),
+      result.formatted.includes(weeklyReviewTask.title),
       'weekly-review task should appear in the formatted output',
     );
     // Task count includes both work and review tasks.
@@ -708,7 +713,8 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
       edits: [
         {
           action: 'add',
-          description: 'Write changelog entry',
+          title: 'Write changelog entry',
+          prompt: 'Write changelog entry',
           objectiveId: objective.id,
           priority: 'low',
           estimatedMinutes: 20,
@@ -722,7 +728,7 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(persisted.tasks.length, originalCount + 1, 'total task count should be +1');
     assert.ok(
-      persisted.tasks.some((t) => t.description === 'Write changelog entry'),
+      persisted.tasks.some((t) => t.title === 'Write changelog entry'),
       'new work task should be present',
     );
     // Review tasks are untouched.
@@ -750,7 +756,8 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
       edits: [
         {
           action: 'add',
-          description: 'Cut a release branch',
+          title: 'Cut a release branch',
+          prompt: 'Cut a release branch',
           objectiveId: objective.id,
           priority: 'high',
           estimatedMinutes: 30,
@@ -827,7 +834,8 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
         {
           action: 'add',
           week: weeklyPlan.week,
-          description: 'Draft release notes',
+          title: 'Draft release notes',
+          prompt: 'Draft release notes',
           objectiveId: objective.id,
           priority: 'medium',
         },
@@ -844,7 +852,7 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
       'one additional work task should have been added',
     );
     assert.ok(
-      persisted.tasks.some((t) => t.description === 'Draft release notes'),
+      persisted.tasks.some((t) => t.title === 'Draft release notes'),
       'added task should be present in the persisted plan',
     );
     // Review tasks are untouched by the weekly adjustment.
@@ -1051,14 +1059,12 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     const { config, weeklyPlan } = buildTestAgent();
 
     // Inject advisor-mode review tasks to simulate a generator-produced plan.
-    const dailyReviewTask = createTask(
-      'Week orientation: open your weekly plan, confirm priorities.',
+    const dailyReviewTask = createTask({ title: 'Week orientation: open your weekly plan, confirm priorities.', prompt: 'Week orientation: open your weekly plan, confirm priorities.' },
       DAILY_REVIEW_OBJECTIVE_ID,
       { priority: 'medium', estimatedMinutes: 30, runAt: '2026-04-20T17:00:00Z',
         track: DAILY_REVIEW_OBJECTIVE_ID },
     );
-    const weeklyReviewTask = createTask(
-      'Weekly review: assess outcomes and hand off to next-week planner.',
+    const weeklyReviewTask = createTask({ title: 'Weekly review: assess outcomes and hand off to next-week planner.', prompt: 'Weekly review: assess outcomes and hand off to next-week planner.' },
       WEEKLY_REVIEW_OBJECTIVE_ID,
       { priority: 'high', estimatedMinutes: 60, runAt: '2026-04-24T18:00:00Z',
         track: WEEKLY_REVIEW_OBJECTIVE_ID },

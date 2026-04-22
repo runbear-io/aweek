@@ -27,14 +27,20 @@ import { writeFile } from 'node:fs/promises';
 const uid = () => randomBytes(4).toString('hex');
 
 function makeTask(overrides = {}) {
-  return {
+  // Accept legacy `description` overrides so older cases keep reading
+  // naturally; title + prompt both take the string when only one is provided.
+  const text =
+    overrides.title || overrides.prompt || overrides.description || 'Do something';
+  const base = {
     id: overrides.id || `task-${uid()}`,
-    description: overrides.description || 'Do something',
+    title: text,
+    prompt: text,
     objectiveId: overrides.objectiveId || `obj-${uid()}`,
     priority: overrides.priority || 'medium',
     status: overrides.status || 'pending',
-    ...overrides,
   };
+  const { description: _ignored, ...rest } = overrides;
+  return { ...base, ...rest };
 }
 
 function makePlan(overrides = {}) {
@@ -164,7 +170,7 @@ describe('tickAgent', () => {
     assert.equal(result.outcome, 'task_selected');
     assert.equal(result.agentId, agentId);
     assert.equal(result.task.id, criticalTask.id);
-    assert.equal(result.task.description, 'critical-task');
+    assert.equal(result.task.title, 'critical-task');
     assert.equal(result.taskIndex, 1); // original index
     assert.equal(result.week, '2026-W16');
     assert.ok(result.summary);
@@ -297,7 +303,7 @@ describe('tickAgent', () => {
 
     const result = await tickAgent(agentId, { weeklyPlanStore: store });
     assert.equal(result.outcome, 'task_selected');
-    assert.equal(result.task.description, 'current-week-task');
+    assert.equal(result.task.title, 'current-week-task');
     assert.equal(result.week, '2026-W16');
   });
 });
@@ -511,8 +517,8 @@ describe('runHeartbeatTickAll', () => {
 
     const r1 = results.find((r) => r.agentId === agent1);
     const r2 = results.find((r) => r.agentId === agent2);
-    assert.equal(r1.result.task.description, 'task-for-agent1');
-    assert.equal(r2.result.task.description, 'task-for-agent2');
+    assert.equal(r1.result.task.title, 'task-for-agent1');
+    assert.equal(r2.result.task.title, 'task-for-agent2');
   });
 
   it('handles mixed results — some agents with plans, some without', async () => {
@@ -789,7 +795,7 @@ describe('tickAgent with executionStore (deduplication)', () => {
       executionStore: brokenExecStore,
     });
     assert.equal(result.outcome, 'task_selected');
-    assert.equal(result.task.description, 'broken-exec-store');
+    assert.equal(result.task.title, 'broken-exec-store');
   });
 
   it('different agents are not deduplicated against each other', async () => {
@@ -812,8 +818,8 @@ describe('tickAgent with executionStore (deduplication)', () => {
 
     assert.equal(r1.outcome, 'task_selected');
     assert.equal(r2.outcome, 'task_selected');
-    assert.equal(r1.task.description, 'agent1-task');
-    assert.equal(r2.task.description, 'agent2-task');
+    assert.equal(r1.task.title, 'agent1-task');
+    assert.equal(r2.task.title, 'agent2-task');
   });
 });
 
@@ -983,7 +989,7 @@ describe('tickAgent resume guard (paused agents)', () => {
     });
 
     assert.equal(result.outcome, 'task_selected');
-    assert.equal(result.task.description, 'should-run');
+    assert.equal(result.task.title, 'should-run');
   });
 
   it('proceeds normally when agentStore is not provided (backward compatible)', async () => {
@@ -1301,7 +1307,7 @@ describe('tickAgent subagent-missing auto-pause (AC 5)', () => {
       home: homeDir,
     });
     assert.equal(result.outcome, 'task_selected');
-    assert.equal(result.task.description, 'real');
+    assert.equal(result.task.title, 'real');
 
     // Not paused as a side effect.
     const reloaded = await agentStore.load(agentId);

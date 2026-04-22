@@ -61,7 +61,7 @@ async function seedAgentWithPendingPlan({ agentsDir, week = '2026-W17', month = 
   config.goals = [goal];
   config.monthlyPlans = [createMonthlyPlan(month, [objective])];
 
-  const task = createTask('Outline the first essay', objective.id, {
+  const task = createTask({ title: 'Outline the first essay', prompt: 'Outline the first essay' }, objective.id, {
     priority: 'high',
   });
   const plan = createWeeklyPlan(week, month, [task]);
@@ -133,7 +133,7 @@ describe('AC 7 — approval → heartbeat handoff (no per-agent crontab)', () =>
     assert.equal(tick.outcome, 'task_selected');
     assert.equal(tick.week, week);
     assert.equal(tick.task.id, task.id);
-    assert.equal(tick.task.description, 'Outline the first essay');
+    assert.equal(tick.task.title, 'Outline the first essay');
   });
 
   it('runHeartbeatForAll (aweek heartbeat --all entry point) picks up the freshly approved plan', async () => {

@@ -187,17 +187,19 @@ export function summariseActivityLog(entries) {
   ];
   if (failed > 0) parts.push(`${failed} failed`);
 
-  // Most recent completed entry description — strongest continuity anchor.
+  // Most recent completed entry title — strongest continuity anchor.
+  // Activity-log entries store `title` (sourced from task.title), so this
+  // keeps the continuity hint focused on the user-facing label.
   const lastCompleted = [...entries]
     .reverse()
     .find(
       (e) =>
         e.status === 'completed' &&
-        typeof e.description === 'string' &&
-        e.description.trim().length > 0,
+        typeof e.title === 'string' &&
+        e.title.trim().length > 0,
     );
   if (lastCompleted) {
-    const desc = lastCompleted.description.trim();
+    const desc = lastCompleted.title.trim();
     const truncated = desc.length > 80 ? `${desc.slice(0, 77)}...` : desc;
     parts.push(`most recent completed: "${truncated}"`);
   }

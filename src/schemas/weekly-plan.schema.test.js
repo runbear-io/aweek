@@ -24,7 +24,7 @@ describe('weekly plan schema', () => {
   const makeTask = () => {
     const goal = createGoal('Test goal', '3mo');
     const obj = createObjective('Test objective', goal.id);
-    return { task: createTask('Do something', obj.id), obj, goal };
+    return { task: createTask({ title: 'Do something', prompt: 'Do something' }, obj.id), obj, goal };
   };
 
   describe('valid inputs', () => {
@@ -185,7 +185,8 @@ describe('weekly plan schema', () => {
   describe('invalid inputs — task validation', () => {
     it('should reject task without id', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
-        description: 'Missing id',
+        title: 'Missing id',
+        prompt: 'Missing id',
         objectiveId: 'obj-abc12345',
         status: 'pending',
       }]);
@@ -196,7 +197,8 @@ describe('weekly plan schema', () => {
     it('should reject task with invalid id pattern', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'bad-id',
-        description: 'Bad ID pattern',
+        title: 'Bad ID pattern',
+        prompt: 'Bad ID pattern',
         objectiveId: 'obj-abc12345',
         status: 'pending',
       }]);
@@ -204,9 +206,10 @@ describe('weekly plan schema', () => {
       assert.equal(result.valid, false);
     });
 
-    it('should reject task without description', () => {
+    it('should reject task without title', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
+        prompt: 'No title supplied',
         objectiveId: 'obj-abc12345',
         status: 'pending',
       }]);
@@ -214,10 +217,46 @@ describe('weekly plan schema', () => {
       assert.equal(result.valid, false);
     });
 
-    it('should reject task with empty description', () => {
+    it('should reject task without prompt', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
-        description: '',
+        title: 'No prompt supplied',
+        objectiveId: 'obj-abc12345',
+        status: 'pending',
+      }]);
+      const result = validateWeeklyPlan(plan);
+      assert.equal(result.valid, false);
+    });
+
+    it('should reject task with empty title', () => {
+      const plan = createWeeklyPlan('2026-W16', '2026-04', [{
+        id: 'task-abc12345',
+        title: '',
+        prompt: 'Blank title',
+        objectiveId: 'obj-abc12345',
+        status: 'pending',
+      }]);
+      const result = validateWeeklyPlan(plan);
+      assert.equal(result.valid, false);
+    });
+
+    it('should reject task with title longer than 80 characters', () => {
+      const plan = createWeeklyPlan('2026-W16', '2026-04', [{
+        id: 'task-abc12345',
+        title: 'a'.repeat(81),
+        prompt: 'Title too long',
+        objectiveId: 'obj-abc12345',
+        status: 'pending',
+      }]);
+      const result = validateWeeklyPlan(plan);
+      assert.equal(result.valid, false);
+    });
+
+    it('should reject task with empty prompt', () => {
+      const plan = createWeeklyPlan('2026-W16', '2026-04', [{
+        id: 'task-abc12345',
+        title: 'Has title',
+        prompt: '',
         objectiveId: 'obj-abc12345',
         status: 'pending',
       }]);
@@ -228,7 +267,8 @@ describe('weekly plan schema', () => {
     it('accepts a task without objectiveId (free-form in the plan.md world)', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
-        description: 'No objective ref',
+        title: 'No objective ref',
+        prompt: 'No objective ref',
         priority: 'medium',
         status: 'pending',
       }]);
@@ -239,7 +279,8 @@ describe('weekly plan schema', () => {
     it('accepts any non-empty objectiveId string (e.g. a plan.md section heading)', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
-        description: 'Links to a plan.md section',
+        title: 'Links to a plan.md section',
+        prompt: 'Links to a plan.md section',
         objectiveId: '2026-04',
         priority: 'medium',
         status: 'pending',
@@ -251,7 +292,8 @@ describe('weekly plan schema', () => {
     it('rejects an empty-string objectiveId', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
-        description: 'Empty tag',
+        title: 'Empty tag',
+        prompt: 'Empty tag',
         objectiveId: '',
         priority: 'medium',
         status: 'pending',
@@ -263,7 +305,8 @@ describe('weekly plan schema', () => {
     it('should reject task with invalid status', () => {
       const plan = createWeeklyPlan('2026-W16', '2026-04', [{
         id: 'task-abc12345',
-        description: 'Bad status',
+        title: 'Bad status',
+        prompt: 'Bad status',
         objectiveId: 'obj-abc12345',
         status: 'unknown',
       }]);
@@ -294,7 +337,7 @@ describe('weekly plan schema', () => {
     it('should verify tasks trace back to objectives via objectiveId', () => {
       const goal = createGoal('Ship feature', '1mo');
       const obj = createObjective('Build API', goal.id);
-      const task = createTask('Implement endpoint', obj.id);
+      const task = createTask({ title: 'Implement endpoint', prompt: 'Implement endpoint' }, obj.id);
 
       // Verify the traceability chain: task -> objective -> goal
       assert.equal(task.objectiveId, obj.id);
@@ -309,8 +352,8 @@ describe('weekly plan schema', () => {
       const goal = createGoal('Multi-objective goal', '3mo');
       const obj1 = createObjective('Objective A', goal.id);
       const obj2 = createObjective('Objective B', goal.id);
-      const task1 = createTask('Task for A', obj1.id);
-      const task2 = createTask('Task for B', obj2.id);
+      const task1 = createTask({ title: 'Task for A', prompt: 'Task for A' }, obj1.id);
+      const task2 = createTask({ title: 'Task for B', prompt: 'Task for B' }, obj2.id);
 
       const plan = createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
       const result = validateWeeklyPlan(plan);
@@ -324,7 +367,7 @@ describe('weekly task schema — track field', () => {
   const makeTask = () => {
     const goal = createGoal('Test goal', '3mo');
     const obj = createObjective('Test objective', goal.id);
-    return createTask('Publish one X.com post', obj.id);
+    return createTask({ title: 'Publish one X.com post', prompt: 'Publish one X.com post' }, obj.id);
   };
 
   it('accepts a task with a valid track', () => {
@@ -356,14 +399,14 @@ describe('weekly task schema — track field', () => {
   it('createTask attaches track when provided via opts', () => {
     const goal = createGoal('Test goal', '3mo');
     const obj = createObjective('Test objective', goal.id);
-    const task = createTask('X post 1', obj.id, { track: 'x-com' });
+    const task = createTask({ title: 'X post 1', prompt: 'X post 1' }, obj.id, { track: 'x-com' });
     assert.equal(task.track, 'x-com');
   });
 
   it('createTask omits track when not provided', () => {
     const goal = createGoal('Test goal', '3mo');
     const obj = createObjective('Test objective', goal.id);
-    const task = createTask('Just do it', obj.id);
+    const task = createTask({ title: 'Just do it', prompt: 'Just do it' }, obj.id);
     assert.equal(task.track, undefined);
   });
 });
@@ -372,7 +415,7 @@ describe('weekly task schema — runAt field', () => {
   const makeTask = () => {
     const goal = createGoal('Test goal', '3mo');
     const obj = createObjective('Test objective', goal.id);
-    return createTask('Publish one X.com post', obj.id);
+    return createTask({ title: 'Publish one X.com post', prompt: 'Publish one X.com post' }, obj.id);
   };
 
   it('accepts a task with a valid ISO 8601 runAt', () => {
@@ -394,7 +437,7 @@ describe('weekly task schema — runAt field', () => {
   it('createTask attaches runAt when provided', () => {
     const goal = createGoal('Test goal', '3mo');
     const obj = createObjective('Test objective', goal.id);
-    const task = createTask('Publish', obj.id, {
+    const task = createTask({ title: 'Publish', prompt: 'Publish' }, obj.id, {
       runAt: '2026-04-20T14:00:00Z',
     });
     assert.equal(task.runAt, '2026-04-20T14:00:00Z');
@@ -403,7 +446,7 @@ describe('weekly task schema — runAt field', () => {
   it('createTask omits runAt when not provided', () => {
     const goal = createGoal('Test goal', '3mo');
     const obj = createObjective('Test objective', goal.id);
-    const task = createTask('No schedule', obj.id);
+    const task = createTask({ title: 'No schedule', prompt: 'No schedule' }, obj.id);
     assert.equal(task.runAt, undefined);
   });
 
@@ -419,7 +462,8 @@ describe('weekly task schema — runAt field', () => {
 describe('weekly task schema — reserved objectiveId values', () => {
   const makeReviewTask = (objectiveId, runAt = '2026-04-21T17:00:00Z') => ({
     id: `task-${Math.random().toString(16).slice(2, 10)}`,
-    description: 'Review task',
+    title: 'Review task',
+    prompt: 'Review task',
     objectiveId,
     priority: 'high',
     status: 'pending',
@@ -440,7 +484,7 @@ describe('weekly task schema — reserved objectiveId values', () => {
   });
 
   it('createTask accepts DAILY_REVIEW_OBJECTIVE_ID as objectiveId', () => {
-    const task = createTask('End-of-day reflection', DAILY_REVIEW_OBJECTIVE_ID);
+    const task = createTask({ title: 'End-of-day reflection', prompt: 'End-of-day reflection' }, DAILY_REVIEW_OBJECTIVE_ID);
     assert.equal(task.objectiveId, DAILY_REVIEW_OBJECTIVE_ID);
     const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
     assert.equal(validateWeeklyPlan(plan).valid, true);
@@ -460,7 +504,7 @@ describe('weekly task schema — reserved objectiveId values', () => {
   });
 
   it('createTask accepts WEEKLY_REVIEW_OBJECTIVE_ID as objectiveId', () => {
-    const task = createTask('End-of-week review', WEEKLY_REVIEW_OBJECTIVE_ID);
+    const task = createTask({ title: 'End-of-week review', prompt: 'End-of-week review' }, WEEKLY_REVIEW_OBJECTIVE_ID);
     assert.equal(task.objectiveId, WEEKLY_REVIEW_OBJECTIVE_ID);
     const plan = createWeeklyPlan('2026-W17', '2026-04', [task]);
     assert.equal(validateWeeklyPlan(plan).valid, true);
@@ -478,9 +522,9 @@ describe('weekly task schema — reserved objectiveId values', () => {
   it('schema accepts a plan that mixes regular and review tasks', () => {
     const goal = createGoal('Ship feature', '1mo');
     const obj = createGoal('Build API', '1mo');
-    const regularTask = createTask('Implement endpoint', obj.id);
-    const dailyTask = createTask('Daily reflection', DAILY_REVIEW_OBJECTIVE_ID);
-    const weeklyTask = createTask('Week-in-review', WEEKLY_REVIEW_OBJECTIVE_ID);
+    const regularTask = createTask({ title: 'Implement endpoint', prompt: 'Implement endpoint' }, obj.id);
+    const dailyTask = createTask({ title: 'Daily reflection', prompt: 'Daily reflection' }, DAILY_REVIEW_OBJECTIVE_ID);
+    const weeklyTask = createTask({ title: 'Week-in-review', prompt: 'Week-in-review' }, WEEKLY_REVIEW_OBJECTIVE_ID);
     weeklyTask.runAt = '2026-04-24T16:00:00Z';
 
     const plan = createWeeklyPlan('2026-W17', '2026-04', [regularTask, dailyTask, weeklyTask]);

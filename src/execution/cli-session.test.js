@@ -32,7 +32,8 @@ const SUBAGENT_REF = 'research-bot';
 function makeTask(overrides = {}) {
   return {
     taskId: 'task-abc12345',
-    description: 'Gather quarterly revenue data from public filings',
+    title: 'Gather quarterly revenue data',
+    prompt: 'Gather quarterly revenue data from public filings',
     ...overrides,
   };
 }
@@ -56,7 +57,7 @@ function makeAgentConfig(overrides = {}) {
 function makeSelectedTask(overrides = {}) {
   return {
     id: 'task-abc12345',
-    description: 'Gather quarterly revenue data',
+    title: 'Gather quarterly revenue data', prompt: 'Gather quarterly revenue data',
     objectiveId: 'obj-xyz98765',
     priority: 'high',
     status: 'pending',
@@ -160,7 +161,7 @@ describe('buildRuntimeContext', () => {
 
   it('throws if taskId is missing', () => {
     assert.throws(
-      () => buildRuntimeContext({ description: 'd' }),
+      () => buildRuntimeContext({ title: 'd', prompt: 'd' }),
       /task\.taskId is required/
     );
   });
@@ -174,7 +175,7 @@ describe('buildTaskPrompt', () => {
     const task = makeTask();
     const result = buildTaskPrompt(task);
 
-    assert.ok(result.includes('## Task: Gather quarterly revenue data'));
+    assert.ok(result.includes('## Task: Gather quarterly revenue data from public filings'));
     assert.ok(result.includes('Task ID: task-abc12345'));
     assert.ok(result.includes('## Instructions'));
   });
@@ -185,15 +186,15 @@ describe('buildTaskPrompt', () => {
 
   it('throws if taskId is missing', () => {
     assert.throws(
-      () => buildTaskPrompt({ description: 'd' }),
+      () => buildTaskPrompt({ title: 'd', prompt: 'd' }),
       /task\.taskId is required/
     );
   });
 
-  it('throws if description is missing', () => {
+  it('throws if prompt is missing', () => {
     assert.throws(
       () => buildTaskPrompt({ taskId: 't' }),
-      /task\.description is required/
+      /task\.prompt is required/
     );
   });
 });
@@ -241,7 +242,7 @@ describe('buildCliArgs', () => {
 
     const lastArg = args[args.length - 1];
     assert.ok(lastArg.includes('## Task:'));
-    assert.ok(lastArg.includes(task.description));
+    assert.ok(lastArg.includes(task.prompt));
   });
 
   it('--agent comes before --append-system-prompt which comes before the positional task', () => {
@@ -497,7 +498,7 @@ describe('buildSessionConfig', () => {
     assert.equal(result.agentId, 'research-bot');
     assert.equal(result.subagentRef, 'research-bot');
     assert.equal(result.task.taskId, 'task-abc12345');
-    assert.equal(result.task.description, 'Gather quarterly revenue data');
+    assert.equal(result.task.title, 'Gather quarterly revenue data');
     assert.equal(result.task.objectiveId, 'obj-xyz98765');
     assert.equal(result.task.week, '2026-W16');
   });
@@ -555,15 +556,15 @@ describe('buildSessionConfig', () => {
 
   it('throws if selectedTask.id is missing', () => {
     assert.throws(
-      () => buildSessionConfig(makeAgentConfig(), { description: 'd' }),
+      () => buildSessionConfig(makeAgentConfig(), { title: 'd', prompt: 'd' }),
       /selectedTask\.id is required/
     );
   });
 
-  it('throws if selectedTask.description is missing', () => {
+  it('throws if selectedTask.prompt is missing', () => {
     assert.throws(
       () => buildSessionConfig(makeAgentConfig(), { id: 't' }),
-      /selectedTask\.description is required/
+      /selectedTask\.prompt is required/
     );
   });
 });

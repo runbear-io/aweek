@@ -495,7 +495,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
 
     const icon = STATUS_ICONS[task.status] || '?';
     const prefix = `${icon} ${num}. `;
-    const capped = trunc(`${prefix}${task.description}`, TASK_CONTENT_MAX);
+    const capped = trunc(`${prefix}${task.title}`, TASK_CONTENT_MAX);
     const chunks = [];
     for (let i = 0; i < capped.length; i += cellWidth) {
       chunks.push(pad(capped.slice(i, i + cellWidth), cellWidth));

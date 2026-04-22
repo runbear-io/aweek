@@ -152,7 +152,7 @@ export function renderDayCell(dayComparison, opts = {}) {
   const shown = tasks.slice(0, maxTasks);
   for (const task of shown) {
     const icon = statusIcon(task.status);
-    const desc = truncate(task.description || task.id || 'task', cellWidth - 4);
+    const desc = truncate(task.title || task.id || 'task', cellWidth - 4);
     lines.push(`  ${icon} ${desc}`);
   }
   if (tasks.length > maxTasks) {
@@ -165,7 +165,7 @@ export function renderDayCell(dayComparison, opts = {}) {
     const shownEntries = actualEntries.slice(0, maxTasks);
     for (const entry of shownEntries) {
       const icon = statusIcon(entry.status);
-      const desc = truncate(entry.description || entry.taskId || 'activity', cellWidth - 4);
+      const desc = truncate(entry.title || entry.taskId || 'activity', cellWidth - 4);
       lines.push(`  ${icon} ${desc}`);
     }
     if (actualEntries.length > maxTasks) {
@@ -274,7 +274,7 @@ export function renderWeeklySummary(weeklyData) {
     lines.push(` Unscheduled tasks (${unscheduledTasks.length}):`);
     for (const task of unscheduledTasks.slice(0, 5)) {
       const icon = statusIcon(task.status);
-      const desc = truncate(task.description || task.id, 50);
+      const desc = truncate(task.title || task.id, 50);
       lines.push(`   ${icon} ${desc} [${task.status}]`);
     }
     if (unscheduledTasks.length > 5) {

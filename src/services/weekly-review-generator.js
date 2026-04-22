@@ -23,7 +23,9 @@ export function collectCompletedTasksFromPlan(weeklyPlan) {
     .filter((t) => t.status === 'completed')
     .map((t) => ({
       taskId: t.id,
-      description: t.description,
+      // The review markdown is user-facing, so surface the short title
+      // rather than the long prompt that was sent to Claude.
+      description: t.title,
       objectiveId: t.objectiveId,
       priority: t.priority || 'medium',
       completedAt: t.completedAt || null,
@@ -45,7 +47,10 @@ export function collectCompletedFromActivityLog(logEntries) {
     .map((e) => ({
       logId: e.id,
       taskId: e.taskId || null,
-      description: e.description,
+      // Activity-log entries store `title` — keep the internal review
+      // record keyed on `description` since downstream formatters have
+      // historically consumed that field name.
+      description: e.title,
       completedAt: e.timestamp,
       durationMs: e.duration || null,
       metadata: e.metadata || null,
@@ -399,7 +404,7 @@ export function formatTaskStatusSection(workTasks) {
       tags.push(`done:${task.completedAt.slice(0, 10)}`);
     }
     const suffix = tags.length > 0 ? ` _(${tags.join(', ')})_` : '';
-    lines.push(`- ${marker} ${task.description}${suffix}`);
+    lines.push(`- ${marker} ${task.title}${suffix}`);
   }
 
   lines.push('');
@@ -465,7 +470,7 @@ export function formatCarryOverSection(workTasks) {
       tags.push(task.objectiveId);
     }
     const tagSuffix = tags.length > 0 ? ` _(${tags.join(', ')})_` : '';
-    lines.push(`- [ ] ${task.description}${tagSuffix}${statusNote}`);
+    lines.push(`- [ ] ${task.title}${tagSuffix}${statusNote}`);
   }
 
   lines.push('');
@@ -536,13 +541,13 @@ export function formatWhatWorkedSection(collectedData) {
   if (criticalDone.length > 0) {
     lines.push('');
     lines.push(
-      `**Critical work shipped:** ${criticalDone.map((t) => t.description).join('; ')}.`
+      `**Critical work shipped:** ${criticalDone.map((t) => t.title).join('; ')}.`
     );
   }
   if (highDone.length > 0) {
     lines.push('');
     lines.push(
-      `**High-priority wins:** ${highDone.map((t) => t.description).join('; ')}.`
+      `**High-priority wins:** ${highDone.map((t) => t.title).join('; ')}.`
     );
   }
 

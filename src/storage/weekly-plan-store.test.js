@@ -26,7 +26,7 @@ describe('WeeklyPlanStore', () => {
   function makeTestPlan(week = '2026-W16', month = '2026-04') {
     const goal = createGoal('Test goal');
     const obj = createObjective('Test objective', goal.id);
-    const task = createTask('Test task', obj.id);
+    const task = createTask({ title: 'Test task', prompt: 'Test task' }, obj.id);
     const plan = createWeeklyPlan(week, month, [task]);
     return { goal, obj, task, plan };
   }
@@ -302,7 +302,7 @@ describe('WeeklyPlanStore', () => {
     const { plan } = makeTestPlan('2026-W37');
     await store.save(agentId, plan);
 
-    const newTask = createTask('New task', obj.id);
+    const newTask = createTask({ title: 'New task', prompt: 'New task' }, obj.id);
     await store.addTask(agentId, '2026-W37', newTask);
 
     const loaded = await store.load(agentId, '2026-W37');
@@ -319,12 +319,12 @@ describe('WeeklyPlanStore', () => {
     const goal = createGoal('Traced goal');
     const obj = createObjective('Traced obj', goal.id);
 
-    const task1 = createTask('Task in W14', obj.id);
+    const task1 = createTask({ title: 'Task in W14', prompt: 'Task in W14' }, obj.id);
     const plan1 = createWeeklyPlan('2026-W14', '2026-04', [task1]);
 
-    const task2 = createTask('Task in W15', obj.id);
+    const task2 = createTask({ title: 'Task in W15', prompt: 'Task in W15' }, obj.id);
     const otherObj = createObjective('Other obj', goal.id);
-    const otherTask = createTask('Unrelated task', otherObj.id);
+    const otherTask = createTask({ title: 'Unrelated task', prompt: 'Unrelated task' }, otherObj.id);
     const plan2 = createWeeklyPlan('2026-W15', '2026-04', [task2, otherTask]);
 
     await store.save(freshAgent, plan1);
@@ -431,7 +431,7 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
   // ---------------------------------------------------------------------------
 
   it('saves and loads a daily-review task without modification', async () => {
-    const task = createTask('End-of-day reflection', DAILY_REVIEW_OBJECTIVE_ID, {
+    const task = createTask({ title: 'End-of-day reflection', prompt: 'End-of-day reflection' }, DAILY_REVIEW_OBJECTIVE_ID, {
       runAt: '2027-01-20T17:00:00Z',
       priority: 'high',
     });
@@ -445,7 +445,7 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
   });
 
   it('validates a plan with a daily-review task on save (assertValid passes)', async () => {
-    const task = createTask('Daily check-in', DAILY_REVIEW_OBJECTIVE_ID, {
+    const task = createTask({ title: 'Daily check-in', prompt: 'Daily check-in' }, DAILY_REVIEW_OBJECTIVE_ID, {
       runAt: '2027-01-21T17:00:00Z',
     });
     const plan = createWeeklyPlan('2027-W05', '2027-01', [task]);
@@ -460,7 +460,7 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
   // ---------------------------------------------------------------------------
 
   it('saves and loads a weekly-review task without modification', async () => {
-    const task = createTask('Week-in-review', WEEKLY_REVIEW_OBJECTIVE_ID, {
+    const task = createTask({ title: 'Week-in-review', prompt: 'Week-in-review' }, WEEKLY_REVIEW_OBJECTIVE_ID, {
       runAt: '2027-01-24T18:00:00Z',
       priority: 'high',
     });
@@ -483,12 +483,12 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
   it('preserves mixed plans (regular work + daily-review + weekly-review) in round-trip', async () => {
     const goal = createGoal('Ship something');
     const obj = createObjective('Build it', goal.id);
-    const regularTask = createTask('Implement feature', obj.id);
-    const daily1 = createTask('Mon review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-18T17:00:00Z' });
-    const daily2 = createTask('Tue review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-19T17:00:00Z' });
-    const daily3 = createTask('Wed review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-20T17:00:00Z' });
-    const daily4 = createTask('Thu review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-21T17:00:00Z' });
-    const weeklyTask = createTask('Week review', WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-22T18:00:00Z' });
+    const regularTask = createTask({ title: 'Implement feature', prompt: 'Implement feature' }, obj.id);
+    const daily1 = createTask({ title: 'Mon review', prompt: 'Mon review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-18T17:00:00Z' });
+    const daily2 = createTask({ title: 'Tue review', prompt: 'Tue review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-19T17:00:00Z' });
+    const daily3 = createTask({ title: 'Wed review', prompt: 'Wed review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-20T17:00:00Z' });
+    const daily4 = createTask({ title: 'Thu review', prompt: 'Thu review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-21T17:00:00Z' });
+    const weeklyTask = createTask({ title: 'Week review', prompt: 'Week review' }, WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-22T18:00:00Z' });
 
     const allTasks = [regularTask, daily1, daily2, daily3, daily4, weeklyTask];
     const plan = createWeeklyPlan('2027-W04', '2027-01', allTasks);
@@ -517,7 +517,7 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
   // ---------------------------------------------------------------------------
 
   it('updateTaskStatus marks a daily-review task completed and sets completedAt', async () => {
-    const task = createTask('Fri daily review', DAILY_REVIEW_OBJECTIVE_ID, {
+    const task = createTask({ title: 'Fri daily review', prompt: 'Fri daily review' }, DAILY_REVIEW_OBJECTIVE_ID, {
       runAt: '2027-01-22T17:00:00Z',
     });
     const plan = createWeeklyPlan('2027-W06', '2027-01', [task]);
@@ -542,8 +542,8 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
   // ---------------------------------------------------------------------------
 
   it('approve does not strip review tasks from the plan', async () => {
-    const daily = createTask('Thu daily review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-21T17:00:00Z' });
-    const weekly = createTask('Week review', WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-22T18:00:00Z' });
+    const daily = createTask({ title: 'Thu daily review', prompt: 'Thu daily review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-21T17:00:00Z' });
+    const weekly = createTask({ title: 'Week review', prompt: 'Week review' }, WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-22T18:00:00Z' });
     const plan = createWeeklyPlan('2027-W07', '2027-01', [daily, weekly]);
     await reviewStore.save(AGENT, plan);
 
@@ -566,8 +566,8 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
 
   it('getTasksForObjective returns daily-review tasks when queried with DAILY_REVIEW_OBJECTIVE_ID', async () => {
     const TAGENT = 'agent-review-trace-rt-abc1';
-    const d1 = createTask('Mon review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-02T17:00:00Z' });
-    const d2 = createTask('Tue review', DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-03T17:00:00Z' });
+    const d1 = createTask({ title: 'Mon review', prompt: 'Mon review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-02T17:00:00Z' });
+    const d2 = createTask({ title: 'Tue review', prompt: 'Tue review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-03T17:00:00Z' });
     const plan1 = createWeeklyPlan('2027-W06', '2027-02', [d1]);
     const plan2 = createWeeklyPlan('2027-W07', '2027-02', [d2]);
     await reviewStore.save(TAGENT, plan1);
@@ -580,7 +580,7 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
 
   it('getTasksForObjective returns the weekly-review task when queried with WEEKLY_REVIEW_OBJECTIVE_ID', async () => {
     const WAGENT = 'agent-review-wktrace-rt-abc1';
-    const wr = createTask('Week-in-review', WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-06T18:00:00Z' });
+    const wr = createTask({ title: 'Week-in-review', prompt: 'Week-in-review' }, WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-02-06T18:00:00Z' });
     const plan = createWeeklyPlan('2027-W06', '2027-02', [wr]);
     await reviewStore.save(WAGENT, plan);
 
@@ -596,8 +596,8 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
   it('isReviewObjectiveId correctly classifies tasks after a load from disk', async () => {
     const goal = createGoal('Work goal');
     const obj = createObjective('Work obj', goal.id);
-    const workTask = createTask('Do the work', obj.id);
-    const reviewTask = createTask('Daily reflection', DAILY_REVIEW_OBJECTIVE_ID, {
+    const workTask = createTask({ title: 'Do the work', prompt: 'Do the work' }, obj.id);
+    const reviewTask = createTask({ title: 'Daily reflection', prompt: 'Daily reflection' }, DAILY_REVIEW_OBJECTIVE_ID, {
       runAt: '2027-02-09T17:00:00Z',
     });
     const plan = createWeeklyPlan('2027-W08', '2027-02', [workTask, reviewTask]);

@@ -56,14 +56,18 @@ function makeSubagentRef(prefix = 'agent') {
 }
 
 function makeTask(overrides = {}) {
-  return {
+  const text =
+    overrides.title || overrides.prompt || overrides.description || 'Implement feature X';
+  const base = {
     id: overrides.id || `task-${uid()}`,
-    description: overrides.description || 'Implement feature X',
+    title: text,
+    prompt: text,
     objectiveId: overrides.objectiveId || `obj-${uid()}`,
     priority: overrides.priority || 'medium',
     status: overrides.status || 'pending',
-    ...overrides,
   };
+  const { description: _ignored, ...rest } = overrides;
+  return { ...base, ...rest };
 }
 
 function makePlan(overrides = {}) {
@@ -242,7 +246,7 @@ describe('heartbeat trigger → CLI session config (subagent-first)', () => {
 
     // Verify task context flows through
     assert.equal(sessionConfig.task.taskId, task.id);
-    assert.equal(sessionConfig.task.description, 'Analyze quarterly earnings');
+    assert.equal(sessionConfig.task.title, 'Analyze quarterly earnings');
     assert.equal(sessionConfig.task.objectiveId, 'obj-earnings-2026');
     assert.equal(sessionConfig.task.week, '2026-W16');
   });
@@ -762,7 +766,7 @@ describe('multi-agent parallel heartbeat → CLI sessions (subagent-first)', () 
       assert.equal(config.agentId, agent.id);
       assert.equal(config.subagentRef, agent.id);
       assert.equal(config.identity, undefined);
-      assert.equal(config.task.description, agent.task.description);
+      assert.equal(config.task.title, agent.task.title);
 
       // Launch the CLI session (mock) and verify per-agent routing.
       const mockSpawn = createMockSpawn({ stdout: '{"result":"ok"}' });
@@ -775,7 +779,7 @@ describe('multi-agent parallel heartbeat → CLI sessions (subagent-first)', () 
 
       assertSubagentFirstArgs(mockSpawn.calls[0].args, {
         subagentRef: agent.id,
-        taskDescription: agent.task.description,
+        taskDescription: agent.task.title,
       });
     }
 
@@ -842,7 +846,8 @@ describe('CLI session launch options from heartbeat context (subagent-first)', (
     const subagentRef = 'architect';
     const task = {
       taskId: 'task-arch-001',
-      description: 'Design database schema',
+      title: 'Design database schema',
+      prompt: 'Design database schema',
     };
 
     const args = buildCliArgs(subagentRef, task, { model: 'opus' });
@@ -857,7 +862,8 @@ describe('CLI session launch options from heartbeat context (subagent-first)', (
     const subagentRef = 'auto-bot';
     const task = {
       taskId: 'task-auto-001',
-      description: 'Run scheduled cleanup',
+      title: 'Run scheduled cleanup',
+      prompt: 'Run scheduled cleanup',
     };
 
     const args = buildCliArgs(subagentRef, task, { dangerouslySkipPermissions: true });
@@ -894,7 +900,7 @@ describe('CLI session launch options from heartbeat context (subagent-first)', (
     await launchSession(
       'agent-cwd-test',
       'dir-bot',
-      { taskId: 'task-cwd-001', description: 'Process files' },
+      { taskId: 'task-cwd-001', title: 'Process files', prompt: 'Process files' },
       { spawnFn: mockSpawn, cwd: '/workspace/my-project' }
     );
 
@@ -920,7 +926,7 @@ describe('token usage parsing from heartbeat-triggered sessions (subagent-first)
     const session = await launchSession(
       'agent-tokens-1',
       'worker-bot',
-      { taskId: 'task-tok-1', description: 'Do work' },
+      { taskId: 'task-tok-1', title: 'Do work', prompt: 'Do work' },
       { spawnFn: mockSpawn }
     );
 
@@ -945,7 +951,7 @@ describe('token usage parsing from heartbeat-triggered sessions (subagent-first)
     const session = await launchSession(
       'agent-stream-1',
       'stream-bot',
-      { taskId: 'task-stream-1', description: 'Stream task' },
+      { taskId: 'task-stream-1', title: 'Stream task', prompt: 'Stream task' },
       { spawnFn: mockSpawn }
     );
 
@@ -962,7 +968,7 @@ describe('token usage parsing from heartbeat-triggered sessions (subagent-first)
     const session = await launchSession(
       'agent-err-1',
       'fail-bot',
-      { taskId: 'task-err-1', description: 'Fail task' },
+      { taskId: 'task-err-1', title: 'Fail task', prompt: 'Fail task' },
       { spawnFn: mockSpawn }
     );
 
@@ -1138,7 +1144,7 @@ describe('heartbeat → CLI edge cases (subagent-first)', () => {
     const session = await launchSession(
       'agent-timeout',
       'slow-bot',
-      { taskId: 'task-slow-1', description: 'Long running task' },
+      { taskId: 'task-slow-1', title: 'Long running task', prompt: 'Long running task' },
       { spawnFn: timeoutSpawn, timeoutMs: 10 }
     );
 
@@ -1237,22 +1243,22 @@ describe('heartbeat → CLI subagent-first guardrails', () => {
 
   it('buildCliArgs refuses empty subagentRef (would otherwise invoke claude with no --agent target)', () => {
     assert.throws(
-      () => buildCliArgs('', { taskId: 't', description: 'd' }),
+      () => buildCliArgs('', { taskId: 't', title: 'd', prompt: 'd' }),
       /subagentRef is required/,
     );
     assert.throws(
-      () => buildCliArgs(null, { taskId: 't', description: 'd' }),
+      () => buildCliArgs(null, { taskId: 't', title: 'd', prompt: 'd' }),
       /subagentRef is required/,
     );
   });
 
   it('launchSession refuses empty subagentRef', async () => {
     await assert.rejects(
-      () => launchSession('agent-x', '', { taskId: 't', description: 'd' }, {}),
+      () => launchSession('agent-x', '', { taskId: 't', title: 'd', prompt: 'd' }, {}),
       /subagentRef is required/,
     );
     await assert.rejects(
-      () => launchSession('agent-x', null, { taskId: 't', description: 'd' }, {}),
+      () => launchSession('agent-x', null, { taskId: 't', title: 'd', prompt: 'd' }, {}),
       /subagentRef is required/,
     );
   });

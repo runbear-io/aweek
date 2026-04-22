@@ -87,13 +87,14 @@ async function writeActivityLog(projectDir, slug, weekMonday, entries) {
  * Build a minimal valid activity-log entry for testing.
  */
 function makeEntry(overrides = {}) {
+  const { description, title, ...rest } = overrides;
   return {
-    id: overrides.id ?? `log-${Math.random().toString(16).slice(2, 10)}`,
-    timestamp: overrides.timestamp ?? '2026-04-14T10:00:00.000Z',
-    agentId: overrides.agentId ?? 'writer',
-    status: overrides.status ?? 'completed',
-    description: overrides.description ?? 'Write a blog post about AI agents',
-    ...overrides,
+    id: rest.id ?? `log-${Math.random().toString(16).slice(2, 10)}`,
+    timestamp: rest.timestamp ?? '2026-04-14T10:00:00.000Z',
+    agentId: rest.agentId ?? 'writer',
+    status: rest.status ?? 'completed',
+    title: title ?? description ?? 'Write a blog post about AI agents',
+    ...rest,
   };
 }
 
@@ -298,8 +299,8 @@ describe('renderActivitySection() — entry rendering', () => {
 
   it('renders rows in the supplied order (caller is responsible for sorting)', () => {
     const entries = [
-      makeEntry({ id: 'log-first', description: 'First task' }),
-      makeEntry({ id: 'log-second', description: 'Second task' }),
+      makeEntry({ id: 'log-first', title: 'First task' }),
+      makeEntry({ id: 'log-second', title: 'Second task' }),
     ];
     const html = renderActivitySection(viewWithEntries(entries));
     const firstIdx = html.indexOf('First task');
@@ -523,7 +524,7 @@ describe('gatherActivity() — agent with log entries', () => {
     await writeActivityLog(projectDir, 'writer', '2026-04-13', entries);
 
     const view = await gatherActivity({ projectDir, selectedSlug: 'writer' });
-    const descs = view.selected.entries.map((e) => e.description);
+    const descs = view.selected.entries.map((e) => e.title);
     assert.deepEqual(descs, ['Newest', 'Middle', 'Oldest']);
   });
 
@@ -534,7 +535,7 @@ describe('gatherActivity() — agent with log entries', () => {
 
     const view = await gatherActivity({ projectDir, selectedSlug: 'writer' });
     assert.equal(view.selected.slug, 'writer');
-    assert.equal(view.selected.entries[0].description, 'Writer task');
+    assert.equal(view.selected.entries[0].title, 'Writer task');
   });
 
   it('falls back to first (alphabetical) agent when selectedSlug is unknown', async () => {
@@ -571,7 +572,7 @@ describe('gatherActivity() — agent with log entries', () => {
       agentId: 'writer',
       timestamp: '2026-04-14T09:00:00.000Z',
       status: 'completed',
-      description: 'Draft article',
+      title: 'Draft article',
     });
     await writeActivityLog(projectDir, 'writer', '2026-04-13', [entry]);
 
@@ -580,7 +581,7 @@ describe('gatherActivity() — agent with log entries', () => {
     assert.equal(e.id, 'log-ab01cd02');
     assert.equal(e.agentId, 'writer');
     assert.equal(e.status, 'completed');
-    assert.equal(e.description, 'Draft article');
+    assert.equal(e.title, 'Draft article');
     assert.equal(typeof e.timestamp, 'string');
   });
 });
@@ -917,7 +918,7 @@ describe('gatherActivity() — dateRange param', () => {
     }
 
     const view = await gatherActivity({ projectDir, selectedSlug: 'writer', dateRange: 'last-7-days' });
-    const descs = view.selected.entries.map((e) => e.description);
+    const descs = view.selected.entries.map((e) => e.title);
     assert.ok(descs.includes('Recent'), 'recent entry should be included');
     assert.ok(!descs.includes('Old'), 'old entry should be excluded');
   });
@@ -945,7 +946,7 @@ describe('gatherActivity() — dateRange param', () => {
     }
 
     const view = await gatherActivity({ projectDir, selectedSlug: 'writer', dateRange: 'this-week' });
-    const descs = view.selected.entries.map((e) => e.description);
+    const descs = view.selected.entries.map((e) => e.title);
     assert.ok(descs.includes('This week'), 'in-week entry should be included');
     assert.ok(!descs.includes('Last week'), 'out-of-week entry should be excluded');
   });
@@ -1065,7 +1066,7 @@ describe('gatherActivity() — agent context from URL routing', () => {
     await writeActivityLog(projectDir, 'coder', '2026-04-13', coderEntries);
 
     const view = await gatherActivity({ projectDir, selectedSlug: 'writer' });
-    const descriptions = view.selected.entries.map((e) => e.description);
+    const descriptions = view.selected.entries.map((e) => e.title);
     assert.ok(descriptions.includes('Write post'), 'writer log entry should be included');
     assert.ok(!descriptions.includes('Fix bug'), 'coder log must NOT bleed into writer view');
   });
@@ -1214,7 +1215,7 @@ describe('renderActivitySection() — entry detail block', () => {
 
   it('wraps each row in an .activity-entry container with a clickable toggle', () => {
     const html = renderActivitySection(baseView([
-      { id: 'log-1', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'completed', description: 'Done' },
+      { id: 'log-1', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'completed', title: 'Done' },
     ]));
     assert.match(html, /<div class="activity-entry"/);
     // Row is wrapped in a <button> toggle so the whole row is clickable
@@ -1230,7 +1231,7 @@ describe('renderActivitySection() — entry detail block', () => {
         timestamp: '2026-04-20T10:00:00.000Z',
         agentId: 'writer',
         status: 'completed',
-        description: 'Publish',
+        title: 'Publish',
         metadata: { resources: { urls: ['https://example.com/post', 'https://runbear.io/pricing'] } },
       },
     ]));
@@ -1250,7 +1251,7 @@ describe('renderActivitySection() — entry detail block', () => {
         timestamp: '2026-04-20T10:00:00.000Z',
         agentId: 'writer',
         status: 'completed',
-        description: 'Lots',
+        title: 'Lots',
         metadata: { resources: { urls } },
       },
     ]));
@@ -1266,7 +1267,7 @@ describe('renderActivitySection() — entry detail block', () => {
         timestamp: '2026-04-20T10:00:00.000Z',
         agentId: 'writer',
         status: 'completed',
-        description: 'Ran',
+        title: 'Ran',
         metadata: { tokenUsage: { inputTokens: 1234, outputTokens: 567 } },
       },
     ]));
@@ -1281,7 +1282,7 @@ describe('renderActivitySection() — entry detail block', () => {
         timestamp: '2026-04-20T10:00:00.000Z',
         agentId: 'writer',
         status: 'failed',
-        description: 'Boom',
+        title: 'Boom',
         duration: 4200,
         metadata: { error: { message: 'network timeout after 30s' } },
       },
@@ -1292,7 +1293,7 @@ describe('renderActivitySection() — entry detail block', () => {
 
   it('does not render a details block when there is nothing to show', () => {
     const html = renderActivitySection(baseView([
-      { id: 'log-quiet', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'skipped', description: 'No-op' },
+      { id: 'log-quiet', timestamp: '2026-04-20T10:00:00.000Z', agentId: 'writer', status: 'skipped', title: 'No-op' },
     ]));
     // No visible details wrapper for a no-op entry — we keep the
     // assertion to the rendered DOM element and ignore the inline
@@ -1312,7 +1313,7 @@ describe('renderActivitySection() — entry detail block', () => {
         timestamp: '2026-04-20T10:00:00.000Z',
         agentId: 'writer',
         status: 'completed',
-        description: 'Xss probe',
+        title: 'Xss probe',
         metadata: { resources: { urls: [evil] } },
       },
     ]));
@@ -1327,7 +1328,7 @@ describe('renderActivitySection() — entry detail block', () => {
         timestamp: '2026-04-20T10:00:00.000Z',
         agentId: 'writer',
         status: 'completed',
-        description: 'Ran',
+        title: 'Ran',
         duration: 1200,
       },
     ]));
@@ -1343,7 +1344,7 @@ describe('renderActivitySection() — entry detail block', () => {
         timestamp: '2026-04-20T10:00:00.000Z',
         agentId: 'writer',
         status: 'completed',
-        description: 'Ran',
+        title: 'Ran',
         duration: 1200,
       },
     ]));

@@ -793,7 +793,7 @@ describe('GET /api/agents/:slug/calendar — server routing', () => {
       tasks: [
         {
           id: 'task-mon-am',
-          description: 'Monday morning draft',
+          title: 'Monday morning draft', prompt: 'Monday morning draft',
           status: 'pending',
           priority: 'high',
           estimatedMinutes: 60,
@@ -837,21 +837,21 @@ describe('GET /api/agents/:slug/calendar — server routing', () => {
         // client.
         {
           id: 'task-pending',
-          description: 'Pending on Mon 09:00',
+          title: 'Pending on Mon 09:00', prompt: 'Pending on Mon 09:00',
           status: 'pending',
           priority: 'medium',
           runAt: '2026-04-13T09:00:00.000Z',
         },
         {
           id: 'task-inprogress',
-          description: 'In progress on Wed 14:30',
+          title: 'In progress on Wed 14:30', prompt: 'In progress on Wed 14:30',
           status: 'in-progress',
           priority: 'high',
           runAt: '2026-04-15T14:30:00.000Z',
         },
         {
           id: 'task-completed',
-          description: 'Completed on Fri 16:45',
+          title: 'Completed on Fri 16:45', prompt: 'Completed on Fri 16:45',
           status: 'completed',
           priority: 'low',
           runAt: '2026-04-17T16:45:00.000Z',
@@ -859,14 +859,14 @@ describe('GET /api/agents/:slug/calendar — server routing', () => {
         },
         {
           id: 'task-failed',
-          description: 'Failed on Sun 23:00',
+          title: 'Failed on Sun 23:00', prompt: 'Failed on Sun 23:00',
           status: 'failed',
           priority: 'critical',
           runAt: '2026-04-19T23:00:00.000Z',
         },
         {
           id: 'task-unscheduled',
-          description: 'No runAt — unscheduled',
+          title: 'No runAt — unscheduled', prompt: 'No runAt — unscheduled',
           status: 'pending',
           priority: 'low',
         },
@@ -994,7 +994,7 @@ describe('GET /api/agents/:slug/calendar — server routing', () => {
       tasks: [
         {
           id: 'task-live-1',
-          description: 'Live task',
+          title: 'Live task', prompt: 'Live task',
           status: 'in-progress',
           runAt: '2026-04-13T10:00:00.000Z',
         },

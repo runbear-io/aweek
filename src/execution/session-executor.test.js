@@ -30,7 +30,8 @@ const SUBAGENT_REF = 'test-bot';
 function makeTask(overrides = {}) {
   return {
     taskId: 'task-test001',
-    description: 'Run a test task',
+    title: 'Run a test task',
+    prompt: 'Run a test task',
     ...overrides,
   };
 }
@@ -440,7 +441,8 @@ describe('createTrackedExecutor', () => {
     const result = await executor('agent-bot', {
       taskId: 'task-exec-001',
       payload: {
-        description: 'Execute something',
+        title: 'Execute something',
+        prompt: 'Execute something',
         objectiveId: 'obj-1',
         week: '2026-W16',
       },
@@ -528,8 +530,8 @@ describe('createTrackedExecutor', () => {
       sessionOpts: { spawnFn: mockSpawn },
     });
 
-    await executor('agent-a', { taskId: 'task-a1', payload: { description: 'Task A1' } });
-    await executor('agent-b', { taskId: 'task-b1', payload: { description: 'Task B1' } });
+    await executor('agent-a', { taskId: 'task-a1', payload: { title: 'Task A1', prompt: 'Task A1' } });
+    await executor('agent-b', { taskId: 'task-b1', payload: { title: 'Task B1', prompt: 'Task B1' } });
 
     const recordsA = await usageStore.load('agent-a');
     const recordsB = await usageStore.load('agent-b');

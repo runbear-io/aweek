@@ -45,22 +45,28 @@ export function getMondayDate(date = new Date(), tz) {
 
 /**
  * Create a new activity log entry.
+ *
+ * The entry's `title` mirrors the originating weekly task's short
+ * calendar label. The log is a user-facing surface — dashboards, activity
+ * rows, drawer headers — so it tracks the compact title rather than the
+ * long-form prompt fed to Claude.
+ *
  * @param {object} opts
  * @param {string} opts.agentId - Agent that performed the activity
  * @param {string} [opts.taskId] - Weekly-plan task ID (if applicable)
  * @param {string} opts.status - One of: started, completed, failed, skipped, delegated
- * @param {string} opts.description - Human-readable summary
+ * @param {string} opts.title - Short single-line label (typically copied from task.title)
  * @param {number} [opts.duration] - Wall-clock milliseconds
  * @param {object} [opts.metadata] - Optional extra data
  * @returns {object} A valid activity log entry
  */
-export function createLogEntry({ agentId, taskId, status, description, duration, metadata }) {
+export function createLogEntry({ agentId, taskId, status, title, duration, metadata }) {
   const entry = {
     id: `log-${shortId()}`,
     timestamp: new Date().toISOString(),
     agentId,
     status,
-    description,
+    title,
   };
   if (taskId !== undefined) entry.taskId = taskId;
   if (duration !== undefined) entry.duration = duration;

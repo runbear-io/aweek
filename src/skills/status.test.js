@@ -45,7 +45,7 @@ function makePlan(week, tasks = [], approved = true) {
 }
 
 function makeTask(id, status = 'pending') {
-  const task = createTask(`Task ${id}`, 'obj-1');
+  const task = createTask({ title: `Task ${id}`, prompt: `Task ${id}` }, 'obj-1');
   task.id = `task-${id}`;
   task.status = status;
   return task;
@@ -257,7 +257,7 @@ describe('buildAgentStatus', () => {
       agentId: agent.id,
       taskId: 't1',
       status: 'completed',
-      description: 'Did something',
+      title: 'Did something',
       duration: 5000,
     });
     // Manually set timestamp to match the week
