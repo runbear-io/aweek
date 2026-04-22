@@ -167,10 +167,11 @@ function projectTask(task, weekMonday, timeZone) {
   const slot = weekMonday ? computeTaskSlot(task, weekMonday, timeZone) : null;
   return {
     id: task.id,
-    // The dashboard only needs the short label; the full prompt is never
-    // surfaced in calendar cells or the drawer header, so it is not
-    // projected onto the wire payload.
+    // Calendar cells render `title`; the drawer surfaces `prompt` in its
+    // own section so users can see what the heartbeat actually sends to
+    // Claude. Both travel on the wire payload.
     title: task.title,
+    prompt: typeof task.prompt === 'string' ? task.prompt : null,
     status: task.status,
     priority: task.priority || null,
     estimatedMinutes:
