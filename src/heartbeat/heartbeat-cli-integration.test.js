@@ -865,6 +865,29 @@ describe('CLI session launch options from heartbeat context (subagent-first)', (
     assert.ok(args.includes('--dangerously-skip-permissions'));
   });
 
+  it('heartbeat call site enables dangerouslySkipPermissions by default', async () => {
+    // Regression guard: heartbeat ticks run without a TTY, so unless
+    // the flag is set every tool call silently fails at the permission
+    // gate. Read run.js directly to confirm the call site still passes
+    // `dangerouslySkipPermissions: true` — this flag has no runtime
+    // injection surface, so a source check is the cheapest regression
+    // proof short of a full CLI-spawn integration.
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const runPath = fileURLToPath(
+      new URL('../heartbeat/run.js', import.meta.url),
+    );
+    const src = await readFile(runPath, 'utf8');
+    const idx = src.indexOf('executeSessionWithTracking(');
+    assert.ok(idx >= 0, 'expected executeSessionWithTracking call in run.js');
+    const windowAfter = src.slice(idx, idx + 2000);
+    assert.match(
+      windowAfter,
+      /dangerouslySkipPermissions:\s*true/,
+      'heartbeat must pass dangerouslySkipPermissions: true — unattended ticks have no TTY for the permission dialog',
+    );
+  });
+
   it('custom working directory passed to spawn options', async () => {
     const mockSpawn = createMockSpawn({ stdout: '{"result":"ok"}' });
 
