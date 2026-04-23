@@ -22,7 +22,7 @@
 import React from 'react';
 
 import { cn } from '../lib/cn.js';
-import { AppSidebar } from './app-sidebar.jsx';
+import { AgentDetailSidebar, AppSidebar } from './app-sidebar.jsx';
 import { Footer } from './footer.jsx';
 import { Header } from './header.jsx';
 import {
@@ -65,6 +65,7 @@ export function Layout({
   return (
     <SidebarProvider defaultOpen={defaultSidebarOpen}>
       <AppSidebar />
+      <AgentDetailSidebar />
       <SidebarInset
         data-component="layout"
         className={cn('min-w-0 antialiased', className)}

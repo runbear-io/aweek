@@ -31,7 +31,7 @@
  * @module serve/spa/components/app-sidebar
  */
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   Activity,
@@ -53,6 +53,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from './ui/sidebar.jsx';
 
 const AGENT_TABS = Object.freeze([
@@ -128,6 +129,14 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
   const location = useLocation();
   const pathname = location?.pathname ?? '/';
   const detail = parseAgentDetailRoute(pathname);
+  const { setOpen } = useSidebar();
+
+  // When an agent is selected, collapse the primary rail to its
+  // icon-only strip so the secondary (detail) sidebar becomes the
+  // focus. Re-expand when the user goes back to the list.
+  useEffect(() => {
+    setOpen(detail == null);
+  }, [detail == null, setOpen]);
 
   return (
     <Sidebar
@@ -182,35 +191,6 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        {detail ? (
-          <SidebarGroup data-agent-detail-group={detail.slug}>
-            <SidebarGroupLabel className="truncate" title={detail.slug}>
-              {detail.slug}
-            </SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {AGENT_TABS.map(({ tab, label, icon: Icon }) => {
-                  const to = `/agents/${detail.slug}/${tab}`;
-                  const active = detail.tab === tab;
-                  return (
-                    <SidebarMenuItem key={tab}>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={active}
-                        data-nav-item={to}
-                      >
-                        <Link to={to}>
-                          <Icon className="h-4 w-4" aria-hidden="true" />
-                          <span>{label}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        ) : null}
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center justify-between gap-2 px-2 py-1.5 group-data-[collapsible=icon]/sidebar:justify-center group-data-[collapsible=icon]/sidebar:px-0">
@@ -225,3 +205,70 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
 }
 
 export default AppSidebar;
+
+/**
+ * `AgentDetailSidebar` — secondary sidebar that appears only when the
+ * route is inside `/agents/:slug`. Hosts the four per-agent tabs as a
+ * nested left rail to the right of the primary `AppSidebar` (which
+ * collapses to its icon-only strip while this one is visible).
+ *
+ * Uses `collapsible="none"` so this rail keeps a fixed width regardless
+ * of the shared `SidebarProvider` `open` state — `AppSidebar` is the
+ * only sidebar that responds to the collapse toggle.
+ *
+ * Tests + routing use `data-component="agent-detail-sidebar"`.
+ */
+export function AgentDetailSidebar() {
+  const location = useLocation();
+  const detail = parseAgentDetailRoute(location?.pathname ?? '/');
+  if (!detail) return null;
+
+  return (
+    <Sidebar
+      collapsible="none"
+      data-component="agent-detail-sidebar"
+      aria-label={`${detail.slug} detail navigation`}
+      className="border-l"
+    >
+      <SidebarHeader>
+        <div className="flex flex-col gap-0.5 px-2 py-1.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Agent
+          </span>
+          <span
+            className="truncate text-sm font-semibold text-foreground"
+            title={detail.slug}
+          >
+            {detail.slug}
+          </span>
+        </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {AGENT_TABS.map(({ tab, label, icon: Icon }) => {
+                const to = `/agents/${detail.slug}/${tab}`;
+                const active = detail.tab === tab;
+                return (
+                  <SidebarMenuItem key={tab}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={active}
+                      data-nav-item={to}
+                    >
+                      <Link to={to}>
+                        <Icon className="h-4 w-4" aria-hidden="true" />
+                        <span>{label}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </Sidebar>
+  );
+}
