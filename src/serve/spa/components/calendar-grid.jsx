@@ -140,6 +140,7 @@ export function CalendarGrid({
   endHour = DEFAULT_END_HOUR,
   showWeekend,
   className,
+  onSelectTask,
 }) {
   const safeTasks = Array.isArray(tasks) ? tasks : [];
   const { placedByDayHour, numbering } = useMemo(
@@ -237,6 +238,7 @@ export function CalendarGrid({
                           key={entry.task.id}
                           task={entry.task}
                           number={numbering.get(entry.task.id)}
+                          onSelect={onSelectTask}
                         />
                       ))}
                     </div>
@@ -278,7 +280,7 @@ export default CalendarGrid;
  * @param {{ task: CalendarTask, number: number | undefined }} props
  * @returns {JSX.Element}
  */
-export function TaskChip({ task, number }) {
+export function TaskChip({ task, number, onSelect }) {
   const review = isReviewTask(task);
   const icon = review ? REVIEW_ICON : STATUS_ICONS[task.status] || '?';
   const tone = review
@@ -296,12 +298,27 @@ export function TaskChip({ task, number }) {
   ]
     .filter(Boolean)
     .join('\n');
+
+  const Tag = onSelect ? 'button' : 'div';
+  const interactiveProps = onSelect
+    ? {
+        type: 'button',
+        onClick: () => onSelect(task),
+        className: cn(
+          'w-full rounded border px-1.5 py-1 text-left text-[11px] leading-snug transition-colors cursor-pointer hover:ring-1 hover:ring-ring focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+          tone,
+        ),
+      }
+    : {
+        className: cn(
+          'rounded border px-1.5 py-1 text-[11px] leading-snug',
+          tone,
+        ),
+      };
+
   return (
-    <div
-      className={cn(
-        'rounded border px-1.5 py-1 text-[11px] leading-snug',
-        tone,
-      )}
+    <Tag
+      {...interactiveProps}
       data-task-id={task.id}
       data-task-number={number}
       data-task-status={task.status}
@@ -327,7 +344,7 @@ export function TaskChip({ task, number }) {
           </span>
         ) : null}
       </div>
-    </div>
+    </Tag>
   );
 }
 

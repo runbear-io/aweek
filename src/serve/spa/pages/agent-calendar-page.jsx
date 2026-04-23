@@ -55,7 +55,7 @@
  * @module serve/spa/pages/agent-calendar-page
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 
 import { Badge } from '../components/ui/badge.jsx';
 import { Button } from '../components/ui/button.jsx';
@@ -67,6 +67,13 @@ import {
   CardTitle,
 } from '../components/ui/card.jsx';
 import { ScrollArea } from '../components/ui/scroll-area.jsx';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '../components/ui/sheet.jsx';
 import { cn } from '../lib/cn.js';
 import { useAgentCalendar } from '../hooks/use-agent-calendar.js';
 import {
@@ -111,6 +118,7 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
     baseUrl,
     fetch: fetchImpl,
   });
+  const [selectedTask, setSelectedTask] = useState(null);
 
   if (!slug) {
     return <CalendarEmpty message="Select an agent to view its calendar." />;
@@ -166,10 +174,110 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
         weekMonday={data.weekMonday}
         timeZone={data.timeZone}
         agentId={data.agentId}
+        onSelectTask={setSelectedTask}
       />
       <Backlog calendar={data} />
       <Legend />
+      <TaskDetailSheet
+        task={selectedTask}
+        onClose={() => setSelectedTask(null)}
+      />
     </section>
+  );
+}
+
+/**
+ * Right-side shadcn Sheet surfacing the fields of a single calendar task.
+ * Opens when a `TaskChip` is clicked and the parent page sets `task` to a
+ * non-null value. Closing sets `task` back to `null` via `onClose`.
+ *
+ * @param {{ task: CalendarTask | null, onClose: () => void }} props
+ */
+function TaskDetailSheet({ task, onClose }) {
+  const open = task != null;
+  const review = task ? isReviewTask(task) : false;
+  const icon = task
+    ? review
+      ? REVIEW_ICON
+      : STATUS_ICONS[task.status] || '?'
+    : '';
+  const label = task
+    ? review
+      ? REVIEW_DISPLAY_NAMES[task.objectiveId] || 'Review'
+      : task.title
+    : '';
+  return (
+    <Sheet open={open} onOpenChange={(next) => (next ? null : onClose())}>
+      <SheetContent className="w-full sm:max-w-md">
+        {task ? (
+          <>
+            <SheetHeader>
+              <SheetTitle className="flex items-center gap-2">
+                <span aria-hidden="true" className="font-mono">
+                  {icon}
+                </span>
+                <span>{label}</span>
+              </SheetTitle>
+              {task.objectiveId ? (
+                <SheetDescription>
+                  Objective{' '}
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                    {task.objectiveId}
+                  </code>
+                </SheetDescription>
+              ) : null}
+            </SheetHeader>
+            <div className="mt-6 grid gap-4 text-sm">
+              <TaskField label="Status">
+                <Badge variant="outline" className="capitalize">
+                  {task.status || 'unknown'}
+                </Badge>
+              </TaskField>
+              {task.runAt ? (
+                <TaskField label="Run at">
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                    {task.runAt}
+                  </code>
+                </TaskField>
+              ) : null}
+              {task.estimatedMinutes ? (
+                <TaskField label="Estimate">
+                  {task.estimatedMinutes} min
+                </TaskField>
+              ) : null}
+              {task.track ? (
+                <TaskField label="Track">{task.track}</TaskField>
+              ) : null}
+              {task.prompt ? (
+                <TaskField label="Prompt">
+                  <pre className="whitespace-pre-wrap rounded-md border bg-muted/40 p-3 font-mono text-xs text-foreground">
+                    {task.prompt}
+                  </pre>
+                </TaskField>
+              ) : null}
+              {task.id ? (
+                <TaskField label="Task ID">
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                    {task.id}
+                  </code>
+                </TaskField>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function TaskField({ label, children }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <div className="text-foreground">{children}</div>
+    </div>
   );
 }
 
