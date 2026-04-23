@@ -23,6 +23,13 @@
  *   stream. The per-source sections remain available below for focused
  *   drill-downs (e.g. "show me just the heartbeats this week").
  *
+ * Styling contract (AC 60201):
+ *   Every color / background / border resolves to a shadcn theme token
+ *   (`bg-card`, `bg-muted`, `text-foreground`, `text-muted-foreground`,
+ *   `border-border`, `bg-destructive/10`, …). No hardcoded palette
+ *   utilities remain, so the page re-themes for free when `.dark` is
+ *   toggled on `<html>`.
+ *
  * @module serve/spa/pages/agent-activity-page
  */
 
@@ -31,6 +38,13 @@ import React, { useState } from 'react';
 import { ActivityTimeline } from '../components/activity-timeline.jsx';
 import { Badge } from '../components/ui/badge.jsx';
 import { Button } from '../components/ui/button.jsx';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '../components/ui/card.jsx';
 import { useAgentLogs } from '../hooks/use-agent-logs.js';
 
 /**
@@ -44,6 +58,23 @@ const DATE_RANGE_OPTIONS = [
   { value: 'this-week', label: 'This week' },
   { value: 'last-7-days', label: 'Last 7 days' },
 ];
+
+/**
+ * Map an execution row's free-form status string to a canonical shadcn
+ * `Badge` variant (`default` · `secondary` · `destructive` · `outline`).
+ * Keeps the tonal distinction between completed / failed / skipped /
+ * other while staying inside the stock shadcn palette — no bespoke
+ * variants, no hardcoded tailwind colors.
+ *
+ * @param {string} status
+ * @returns {'default' | 'secondary' | 'destructive' | 'outline'}
+ */
+function executionBadgeVariant(status) {
+  if (status === 'completed' || status === 'success') return 'default';
+  if (status === 'failed' || status === 'failure') return 'destructive';
+  if (status === 'skipped') return 'secondary';
+  return 'outline';
+}
 
 /**
  * @param {{
@@ -107,10 +138,10 @@ export function AgentActivityPage({
         emptyMessage={`No activity in this range for "${data.slug}".`}
       />
       <details
-        className="group rounded-md border border-slate-800 bg-slate-900/30"
+        className="group rounded-lg border bg-card text-card-foreground"
         data-page="agent-activity-breakdown"
       >
-        <summary className="cursor-pointer select-none border-b border-slate-800 bg-slate-900/50 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400 group-open:border-b-slate-800">
+        <summary className="cursor-pointer select-none border-b bg-muted/50 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           By source
         </summary>
         <div className="flex flex-col gap-4 p-3">
@@ -130,13 +161,13 @@ function ActivityHeader({ logs, loading, onRefresh, dateRange, onRange }) {
   const totalRows =
     (logs.entries?.length || 0) + (logs.executions?.length || 0);
   return (
-    <header className="flex flex-col gap-3 border-b border-slate-800 pb-3">
+    <header className="flex flex-col gap-3 border-b pb-3">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-base font-semibold tracking-tight text-slate-100">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
             Activity
           </h1>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-muted-foreground">
             <code>{logs.slug}</code> · {totalRows} row{totalRows === 1 ? '' : 's'}
           </p>
         </div>
@@ -164,21 +195,19 @@ function DateRangeFilter({ value, onChange }) {
       {DATE_RANGE_OPTIONS.map((opt) => {
         const selected = opt.value === value;
         return (
-          <button
+          <Button
             key={opt.value}
             type="button"
             role="radio"
             aria-checked={selected}
             data-range-value={opt.value}
             onClick={() => onChange(opt.value)}
-            className={
-              selected
-                ? 'rounded-full border border-sky-400/50 bg-sky-500/10 px-3 py-1 text-xs font-semibold text-sky-200'
-                : 'rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-slate-400 hover:border-slate-500 hover:text-slate-200'
-            }
+            variant={selected ? 'default' : 'outline'}
+            size="sm"
+            className="rounded-full"
           >
             {opt.label}
-          </button>
+          </Button>
         );
       })}
     </div>
@@ -189,43 +218,51 @@ function DateRangeFilter({ value, onChange }) {
 
 function ActivityEntries({ entries }) {
   return (
-    <section className="rounded-md border border-slate-800 bg-slate-900/30">
-      <div className="border-b border-slate-800 bg-slate-900/50 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
-        Activity log
-      </div>
-      {entries && entries.length > 0 ? (
-        <ul role="list" className="divide-y divide-slate-800">
-          {entries.map((entry, idx) => (
-            <EntryRow key={entry.id || entry.at || idx} entry={entry} />
-          ))}
-        </ul>
-      ) : (
-        <div className="px-4 py-6 text-center text-xs italic text-slate-500">
-          No activity entries in this range.
+    <Card as="section">
+      <CardHeader className="space-y-0 border-b bg-muted/50 p-0">
+        <div className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Activity log
         </div>
-      )}
-    </section>
+      </CardHeader>
+      <CardContent className="p-0">
+        {entries && entries.length > 0 ? (
+          <ul role="list" className="divide-y">
+            {entries.map((entry, idx) => (
+              <EntryRow key={entry.id || entry.at || idx} entry={entry} />
+            ))}
+          </ul>
+        ) : (
+          <div className="px-4 py-6 text-center text-xs italic text-muted-foreground">
+            No activity entries in this range.
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
 function ExecutionEntries({ executions }) {
   return (
-    <section className="rounded-md border border-slate-800 bg-slate-900/30">
-      <div className="border-b border-slate-800 bg-slate-900/50 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
-        Execution history
-      </div>
-      {executions && executions.length > 0 ? (
-        <ul role="list" className="divide-y divide-slate-800">
-          {executions.map((row, idx) => (
-            <ExecutionRow key={row.id || row.startedAt || idx} row={row} />
-          ))}
-        </ul>
-      ) : (
-        <div className="px-4 py-6 text-center text-xs italic text-slate-500">
-          No executions in this range.
+    <Card as="section">
+      <CardHeader className="space-y-0 border-b bg-muted/50 p-0">
+        <div className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Execution history
         </div>
-      )}
-    </section>
+      </CardHeader>
+      <CardContent className="p-0">
+        {executions && executions.length > 0 ? (
+          <ul role="list" className="divide-y">
+            {executions.map((row, idx) => (
+              <ExecutionRow key={row.id || row.startedAt || idx} row={row} />
+            ))}
+          </ul>
+        ) : (
+          <div className="px-4 py-6 text-center text-xs italic text-muted-foreground">
+            No executions in this range.
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -243,26 +280,24 @@ function EntryRow({ entry }) {
   const taskId = entry.taskId || null;
   return (
     <li className="flex flex-col gap-1 px-4 py-2.5">
-      <div className="flex items-center gap-2 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <time dateTime={at} className="tabular-nums">
           {formatDate(at)}
         </time>
-        <Badge variant="secondary" className="rounded">
-          {status}
-        </Badge>
+        <Badge variant="secondary">{status}</Badge>
         {taskId ? (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-muted-foreground">
             Task <code>{taskId}</code>
           </span>
         ) : null}
         {durationMs != null ? (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-muted-foreground">
             {formatDuration(durationMs)}
           </span>
         ) : null}
       </div>
       {title ? (
-        <div className="text-sm text-slate-200">{String(title)}</div>
+        <div className="text-sm text-foreground">{String(title)}</div>
       ) : null}
     </li>
   );
@@ -287,17 +322,10 @@ function ExecutionRow({ row }) {
     row?.metadata?.tokensUsed;
   const cost = row.costUsd ?? row?.metadata?.costUsd;
   const error = row.error || row?.metadata?.error;
-  const variant =
-    status === 'completed' || status === 'success'
-      ? 'success'
-      : status === 'failed' || status === 'failure'
-        ? 'destructive'
-        : status === 'skipped'
-          ? 'warning'
-          : 'outline';
+  const variant = executionBadgeVariant(status);
   return (
     <li className="flex flex-col gap-1 px-4 py-2.5">
-      <div className="flex items-center gap-2 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <time dateTime={timestamp} className="tabular-nums">
           {formatDate(timestamp)}
         </time>
@@ -305,12 +333,12 @@ function ExecutionRow({ row }) {
           {String(status)}
         </Badge>
         {windowStart && windowEnd && windowStart !== windowEnd ? (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-muted-foreground">
             window {formatDate(windowStart)} → {formatDate(windowEnd)}
           </span>
         ) : null}
       </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-300">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground">
         {row.taskId ? (
           <span>
             Task <code className="text-[11px]">{row.taskId}</code>
@@ -321,7 +349,7 @@ function ExecutionRow({ row }) {
         {cost != null ? <span>${(Number(cost) || 0).toFixed(4)}</span> : null}
       </div>
       {error ? (
-        <div className="rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">
+        <div className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">
           {String(error)}
         </div>
       ) : null}
@@ -338,8 +366,8 @@ function ActivitySkeleton({ dateRange, onRange }) {
       data-page="agent-activity"
       data-loading="true"
     >
-      <header className="flex flex-col gap-3 border-b border-slate-800 pb-3">
-        <div className="text-base font-semibold tracking-tight text-slate-100">
+      <header className="flex flex-col gap-3 border-b pb-3">
+        <div className="text-base font-semibold leading-none tracking-tight text-foreground">
           Activity
         </div>
         <DateRangeFilter value={dateRange} onChange={onRange} />
@@ -347,7 +375,7 @@ function ActivitySkeleton({ dateRange, onRange }) {
       <div
         role="status"
         aria-live="polite"
-        className="animate-pulse text-sm text-slate-500"
+        className="animate-pulse text-sm text-muted-foreground"
       >
         Loading activity…
       </div>
@@ -357,13 +385,16 @@ function ActivitySkeleton({ dateRange, onRange }) {
 
 function ActivityEmpty({ message }) {
   return (
-    <div
-      className="rounded-md border border-dashed border-slate-800 p-8 text-center text-sm italic text-slate-400"
+    <Card
+      as="div"
+      className="border-dashed bg-transparent shadow-none"
       data-page="agent-activity"
       data-state="empty"
     >
-      {message}
-    </div>
+      <CardHeader className="items-center p-8 text-center">
+        <CardDescription className="text-sm italic">{message}</CardDescription>
+      </CardHeader>
+    </Card>
   );
 }
 
@@ -374,29 +405,36 @@ function ActivityError({ error, onRetry, dateRange, onRange }) {
       data-page="agent-activity"
       data-error="true"
     >
-      <header className="flex flex-col gap-3 border-b border-slate-800 pb-3">
-        <div className="text-base font-semibold tracking-tight text-slate-100">
+      <header className="flex flex-col gap-3 border-b pb-3">
+        <div className="text-base font-semibold leading-none tracking-tight text-foreground">
           Activity
         </div>
         <DateRangeFilter value={dateRange} onChange={onRange} />
       </header>
-      <div
+      <Card
         role="alert"
-        className="rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200"
+        as="div"
+        className="border-destructive/40 bg-destructive/10 text-destructive"
       >
-        <div className="font-semibold">Failed to load activity.</div>
-        <div className="mt-1 text-xs opacity-80">
-          {error?.message || String(error)}
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRetry}
-          className="mt-3 border-red-400/50 text-red-200 hover:bg-red-500/20"
-        >
-          Retry
-        </Button>
-      </div>
+        <CardHeader className="space-y-1 p-4">
+          <CardTitle className="text-sm font-semibold leading-none">
+            Failed to load activity.
+          </CardTitle>
+          <CardDescription className="text-xs text-destructive/80">
+            {error?.message || String(error)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-4 pt-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            className="border-destructive/40 text-destructive hover:bg-destructive/20 hover:text-destructive"
+          >
+            Retry
+          </Button>
+        </CardContent>
+      </Card>
     </section>
   );
 }
@@ -405,16 +443,21 @@ function StaleBanner({ error, onRetry }) {
   return (
     <div
       role="alert"
-      className="rounded border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-200"
+      className="flex flex-wrap items-center gap-2 rounded-md border bg-muted px-3 py-2 text-xs text-muted-foreground"
     >
-      Refresh failed ({error?.message || 'unknown error'}) — showing last-known data.{' '}
-      <button
+      <span>
+        Refresh failed ({error?.message || 'unknown error'}) — showing
+        last-known data.
+      </span>
+      <Button
         type="button"
         onClick={onRetry}
-        className="underline decoration-dotted hover:decoration-solid"
+        variant="link"
+        size="sm"
+        className="h-auto px-0 py-0 text-xs"
       >
         Retry
-      </button>
+      </Button>
     </div>
   );
 }

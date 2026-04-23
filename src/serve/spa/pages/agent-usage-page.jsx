@@ -12,12 +12,13 @@
  *   - Per-week historical roll-up bar chart
  *   - Paused/pausedReason surfaced prominently
  *
- * Styling: every card on this page is composed from the shadcn `Card`
- * family (`Card`, `CardHeader`, `CardTitle`, `CardContent`). Buttons use
- * the shadcn `Button` primitive. The raw `<section>` / `<button>` nodes
- * that previously carried bespoke Tailwind borders have been
- * consolidated onto the primitives so the Budget tab reads as a single
- * visual family with the rest of the dashboard.
+ * Styling uses canonical shadcn/ui token utilities only — every colour
+ * resolves to a theme token declared in `styles/globals.css`
+ * (`--foreground`, `--muted-foreground`, `--destructive`, `--primary`, …)
+ * so light and dark modes render correctly without per-palette overrides.
+ * Every card on this page is composed from the shadcn `Card` family
+ * (`Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`).
+ * Buttons use the shadcn `Button` primitive.
  *
  * @module serve/spa/pages/agent-usage-page
  */
@@ -29,6 +30,7 @@ import { Button } from '../components/ui/button.jsx';
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from '../components/ui/card.jsx';
@@ -81,36 +83,48 @@ export default AgentUsagePage;
 // ── Subcomponents ────────────────────────────────────────────────────
 
 function UsageHeader({ usage, loading, onRefresh }) {
+  // The outer element is a native <header> so the landmark role "banner"
+  // is exposed without an explicit `role=`. The inner chrome is composed
+  // from shadcn/ui Card primitives so the header reads as part of the
+  // same dashboard surface family used by the rest of the SPA.
   return (
-    <header className="flex items-center justify-between border-b border-slate-800 pb-3">
-      <div>
-        <h1 className="text-base font-semibold tracking-tight text-slate-100">
-          {usage.name} — Budget
-        </h1>
-        <p className="text-xs text-slate-400">
-          <code>{usage.slug}</code> · week of {usage.weekMonday}
-        </p>
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRefresh}
-        disabled={loading}
-      >
-        {loading ? 'Refreshing…' : 'Refresh'}
-      </Button>
+    <header>
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <div className="flex flex-col gap-1">
+            <CardTitle as="h1" className="text-base">
+              {usage.name} — Budget
+            </CardTitle>
+            <CardDescription className="text-xs">
+              <code className="font-mono text-foreground">{usage.slug}</code> ·
+              week of{' '}
+              <time dateTime={usage.weekMonday} className="tabular-nums">
+                {usage.weekMonday}
+              </time>
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRefresh}
+            disabled={loading}
+          >
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        </CardHeader>
+      </Card>
     </header>
   );
 }
 
 function PausedBanner({ usage }) {
+  // Neutral muted chrome — the stock shadcn palette does not expose a
+  // warning token, so the "advisory" paused state uses the muted surface
+  // (parity with the stale-data banner below).
   return (
-    <Card
-      role="alert"
-      className="border-amber-400/40 bg-amber-500/10 text-amber-200"
-    >
-      <CardContent className="p-3 pt-3 text-sm sm:p-3 sm:pt-3">
-        <strong className="font-semibold uppercase tracking-wider text-amber-100">
+    <Card role="alert" className="bg-muted text-muted-foreground">
+      <CardContent className="p-3 text-sm">
+        <strong className="font-semibold uppercase tracking-wider text-foreground">
           Paused
         </strong>
         {usage.pausedReason ? ` — ${formatPausedReason(usage.pausedReason)}` : null}
@@ -137,27 +151,27 @@ function CurrentWeekCard({ usage }) {
     <Card
       as="section"
       aria-label="This week"
-      className={cn(overBudget && 'border-red-400/50 bg-red-500/5')}
+      className={cn(overBudget && 'border-destructive/40 bg-destructive/5')}
     >
-      <CardHeader className="border-b border-slate-800 bg-slate-900/50 p-0 px-4 py-2 sm:p-0 sm:px-4 sm:py-2">
+      <CardHeader className="border-b bg-muted/50 px-4 py-2 space-y-0">
         <CardTitle
           as="h2"
-          className="text-[10px] font-semibold uppercase tracking-widest text-slate-400"
+          className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
         >
           This week
         </CardTitle>
       </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-x-6 gap-y-2 p-4 pt-3 sm:p-4 sm:pt-3 md:grid-cols-2">
+      <CardContent className="grid grid-cols-1 gap-x-6 gap-y-2 p-4 md:grid-cols-2">
         {noBudget ? (
           <Stat
             label="Weekly limit"
-            value={<span className="italic text-slate-500">no budget set</span>}
+            value={<span className="italic text-muted-foreground">no budget set</span>}
           />
         ) : (
           <Stat
             label="Tokens used"
             value={
-              <span className={overBudget ? 'font-semibold text-red-400' : ''}>
+              <span className={overBudget ? 'font-semibold text-destructive' : ''}>
                 {formatTokens(tokensUsed)} / {formatTokens(tokenLimit)}
               </span>
             }
@@ -167,7 +181,7 @@ function CurrentWeekCard({ usage }) {
           <Stat
             label="Utilisation"
             value={
-              <span className={overBudget ? 'font-semibold text-red-400' : ''}>
+              <span className={overBudget ? 'font-semibold text-destructive' : ''}>
                 {utilizationPct != null ? `${utilizationPct}%` : '—'}
               </span>
             }
@@ -177,7 +191,7 @@ function CurrentWeekCard({ usage }) {
           <Stat
             label={overBudget ? 'Exceeded by' : 'Remaining'}
             value={
-              <span className="italic text-slate-500">
+              <span className="italic text-muted-foreground">
                 {overBudget
                   ? `${formatTokens(tokensUsed - tokenLimit)} tokens`
                   : `${formatTokens(remaining)} tokens`}
@@ -191,7 +205,7 @@ function CurrentWeekCard({ usage }) {
         <Stat label="Records" value={recordCount} />
       </CardContent>
       {!noBudget ? (
-        <CardContent className="p-4 pb-3 pt-0 sm:p-4 sm:pb-3 sm:pt-0">
+        <CardContent className="px-4 pb-3 pt-0">
           <ProgressBar value={utilizationPct ?? 0} danger={overBudget} />
         </CardContent>
       ) : null}
@@ -203,11 +217,8 @@ function CurrentWeekCard({ usage }) {
 function HistoryCard({ weeks, limit }) {
   if (!weeks || weeks.length === 0) {
     return (
-      <Card
-        as="section"
-        aria-label="Weekly history"
-      >
-        <CardContent className="p-4 pt-4 text-sm italic text-slate-500 sm:p-4 sm:pt-4">
+      <Card as="section" aria-label="Weekly history">
+        <CardContent className="p-4 text-sm italic text-muted-foreground">
           No historical usage recorded yet.
         </CardContent>
       </Card>
@@ -220,15 +231,15 @@ function HistoryCard({ weeks, limit }) {
   );
   return (
     <Card as="section" aria-label="Weekly history">
-      <CardHeader className="border-b border-slate-800 bg-slate-900/50 p-0 px-4 py-2 sm:p-0 sm:px-4 sm:py-2">
+      <CardHeader className="border-b bg-muted/50 px-4 py-2 space-y-0">
         <CardTitle
           as="h2"
-          className="text-[10px] font-semibold uppercase tracking-widest text-slate-400"
+          className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
         >
           Weekly history
         </CardTitle>
       </CardHeader>
-      <CardContent className="p-4 pt-3 sm:p-4 sm:pt-3">
+      <CardContent className="p-4">
         <ul role="list" className="flex flex-col gap-1">
           {weeks.map((week) => {
             const total = Number(week.totalTokens) || 0;
@@ -240,16 +251,16 @@ function HistoryCard({ weeks, limit }) {
                 className="grid grid-cols-[96px_1fr_auto] items-center gap-3 text-xs"
               >
                 <time
-                  className="tabular-nums text-slate-400"
+                  className="tabular-nums text-muted-foreground"
                   dateTime={week.weekMonday}
                 >
                   {week.weekMonday}
                 </time>
-                <div className="relative h-2 overflow-hidden rounded bg-slate-800">
+                <div className="relative h-2 overflow-hidden rounded bg-muted">
                   <span
                     className={cn(
                       'absolute inset-y-0 left-0 rounded',
-                      over ? 'bg-red-400' : 'bg-emerald-400/80',
+                      over ? 'bg-destructive' : 'bg-primary',
                     )}
                     style={{ width: `${pct}%` }}
                   />
@@ -257,7 +268,9 @@ function HistoryCard({ weeks, limit }) {
                 <span
                   className={cn(
                     'tabular-nums',
-                    over ? 'font-semibold text-red-400' : 'text-slate-300',
+                    over
+                      ? 'font-semibold text-destructive'
+                      : 'text-foreground',
                   )}
                 >
                   {formatTokens(total)}
@@ -274,10 +287,10 @@ function HistoryCard({ weeks, limit }) {
 function Stat({ label, value }) {
   return (
     <div className="flex flex-col text-sm">
-      <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
+      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </span>
-      <span className="text-slate-100">{value}</span>
+      <span className="text-foreground">{value}</span>
     </div>
   );
 }
@@ -290,12 +303,12 @@ function ProgressBar({ value, danger }) {
       aria-valuenow={clamped}
       aria-valuemin={0}
       aria-valuemax={100}
-      className="relative h-1.5 w-full overflow-hidden rounded bg-slate-800"
+      className="relative h-1.5 w-full overflow-hidden rounded bg-muted"
     >
       <span
         className={cn(
           'block h-full rounded transition-[width] duration-200',
-          danger ? 'bg-red-400' : 'bg-emerald-400',
+          danger ? 'bg-destructive' : 'bg-primary',
         )}
         style={{ width: `${clamped}%` }}
       />
@@ -312,7 +325,7 @@ function UsageEmpty({ message }) {
       data-page="agent-usage"
       data-state="empty"
     >
-      <CardContent className="p-8 pt-8 text-center text-sm italic text-slate-400 sm:p-8 sm:pt-8">
+      <CardContent className="p-8 text-center text-sm italic text-muted-foreground">
         {message}
       </CardContent>
     </Card>
@@ -321,41 +334,39 @@ function UsageEmpty({ message }) {
 
 function UsageSkeleton() {
   return (
-    <Card
+    <div
       role="status"
       aria-live="polite"
-      className="animate-pulse border-slate-800"
+      className="animate-pulse text-sm text-muted-foreground"
       data-page="agent-usage"
       data-loading="true"
     >
-      <CardContent className="p-4 pt-4 text-sm text-slate-500 sm:p-6 sm:pt-6">
-        Loading usage…
-      </CardContent>
-    </Card>
+      Loading usage…
+    </div>
   );
 }
 
 function UsageError({ error, onRetry }) {
+  // Destructive-token Card communicates failure in the same chrome family
+  // as the healthy usage surface. Mirrors `AgentsPageError` so the alert
+  // re-themes cleanly via the `--destructive` token in light + dark modes.
   return (
     <Card
       role="alert"
-      className="border-red-500/40 bg-red-500/10 text-red-200"
       data-page="agent-usage"
       data-error="true"
+      className="border-destructive/40 bg-destructive/10 text-destructive"
     >
-      <CardHeader className="p-4 pb-2 sm:p-6 sm:pb-2">
-        <CardTitle as="h2" className="text-sm text-red-100">
+      <CardHeader className="space-y-1">
+        <CardTitle as="h2" className="text-sm text-destructive">
           Failed to load usage.
         </CardTitle>
+        <CardDescription className="text-xs text-destructive/80">
+          {error?.message || String(error)}
+        </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3 p-4 pt-0 sm:p-6 sm:pt-0">
-        <p className="text-xs opacity-80">{error?.message || String(error)}</p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRetry}
-          className="self-start border-red-400/50 text-red-200 hover:bg-red-500/20"
-        >
+      <CardContent className="pt-0">
+        <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
       </CardContent>
@@ -364,12 +375,12 @@ function UsageError({ error, onRetry }) {
 }
 
 function StaleBanner({ error, onRetry }) {
+  // Neutral muted chrome for the "stale" callout — the stock shadcn
+  // palette does not expose a warning token, so we use the muted surface
+  // to signal "advisory, not destructive" (parity with `agents-page.jsx`).
   return (
-    <Card
-      role="alert"
-      className="border-amber-500/40 bg-amber-500/10 text-amber-200"
-    >
-      <CardContent className="flex flex-wrap items-center gap-2 p-2.5 pt-2.5 text-xs sm:p-2.5 sm:pt-2.5">
+    <Card role="alert" className="bg-muted text-muted-foreground">
+      <CardContent className="flex items-center gap-2 p-2.5 text-xs">
         <span>
           Refresh failed ({error?.message || 'unknown error'}) — showing last-known
           data.
@@ -378,7 +389,7 @@ function StaleBanner({ error, onRetry }) {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto px-0 text-xs text-amber-200 underline decoration-dotted hover:decoration-solid"
+          className="h-auto p-0 text-xs"
         >
           Retry
         </Button>

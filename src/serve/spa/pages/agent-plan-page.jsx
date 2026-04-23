@@ -20,13 +20,16 @@
  * subset covers the canonical plan.md structure (H1–H4, lists, code,
  * bold/italic, links, blockquotes).
  *
- * Styling: the page is composed from shadcn primitives
+ * Styling: composed entirely from stock shadcn/ui primitives
  * (`Badge`, `Button`, `Card`, `CardHeader`, `CardTitle`,
- * `CardDescription`, `CardContent`). Plain `<section>`/`<div>`
- * containers that carried bespoke Tailwind borders have been
- * consolidated onto the `Card` family so the Strategy tab reads as a
- * single visual family with the rest of the dashboard (Agents table,
- * Activity timeline, etc.).
+ * `CardDescription`, `CardContent`). Every colour/surface class
+ * resolves to a shadcn theme token declared in `styles/globals.css`
+ * (`--foreground`, `--muted-foreground`, `--card`, `--destructive`,
+ * …) — no hardcoded palette utilities — so the page re-themes for
+ * both light and dark modes without per-palette overrides. Approval/latest-approved state is communicated via the
+ * canonical Badge variants (`default` / `secondary` / `outline`)
+ * rather than bespoke `success`/`warning` variants that don't exist
+ * in stock shadcn.
  *
  * @module serve/spa/pages/agent-plan-page
  */
@@ -94,31 +97,36 @@ export default AgentPlanPage;
  * lookup in the component tests) stay meaningful.
  */
 function PlanHeader({ plan, loading, onRefresh }) {
+  // Outer <header> stays a native landmark so `getByRole('banner')`
+  // still resolves in tests. Inner chrome uses a shadcn Card so the
+  // Strategy header reads as part of the same dashboard surface family
+  // used across the SPA (Overview table, Activity timeline, etc.).
   return (
-    <header
-      className="flex items-center justify-between border-b border-slate-800 pb-3"
-      data-plan-header="true"
-    >
-      <div className="flex flex-col gap-1">
-        <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-100">
-          {plan.name} — Plan
-        </h1>
-        <p className="text-xs text-slate-400">
-          <code className="rounded bg-slate-900 px-1.5 py-0.5 text-[11px] text-slate-300">
-            {plan.slug}
-          </code>{' '}
-          · {plan.weeklyPlans.length} weekly plan
-          {plan.weeklyPlans.length === 1 ? '' : 's'}
-        </p>
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRefresh}
-        disabled={loading}
-      >
-        {loading ? 'Refreshing…' : 'Refresh'}
-      </Button>
+    <header data-plan-header="true">
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <div className="flex flex-col gap-1">
+            <CardTitle as="h1" className="text-base">
+              {plan.name} — Plan
+            </CardTitle>
+            <CardDescription className="text-xs">
+              <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                {plan.slug}
+              </code>{' '}
+              · {plan.weeklyPlans.length} weekly plan
+              {plan.weeklyPlans.length === 1 ? '' : 's'}
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRefresh}
+            disabled={loading}
+          >
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        </CardHeader>
+      </Card>
     </header>
   );
 }
@@ -131,10 +139,10 @@ function PlanMarkdown({ plan }) {
         className="border-dashed"
         data-plan-empty="true"
       >
-        <CardContent className="p-6 pt-6 text-sm italic text-slate-400 sm:p-6 sm:pt-6">
-          No <code className="not-italic text-slate-200">plan.md</code> yet for{' '}
-          <strong className="not-italic text-slate-200">{plan.name}</strong>.
-          Run <code className="not-italic text-slate-200">/aweek:plan</code> to
+        <CardContent className="p-6 pt-6 text-sm italic text-muted-foreground sm:p-6 sm:pt-6">
+          No <code className="not-italic text-foreground">plan.md</code> yet for{' '}
+          <strong className="not-italic text-foreground">{plan.name}</strong>.
+          Run <code className="not-italic text-foreground">/aweek:plan</code> to
           draft long-term goals, monthly plans, and strategies.
         </CardContent>
       </Card>
@@ -145,7 +153,7 @@ function PlanMarkdown({ plan }) {
     <Card data-plan-card="markdown">
       <CardContent className="p-4 pt-4 sm:p-6 sm:pt-6">
         <article
-          className="prose prose-invert max-w-none text-sm leading-6 text-slate-200"
+          className="max-w-none text-sm leading-6 text-foreground"
           data-plan-body="true"
         >
           {blocks.map((block, idx) => (
@@ -165,11 +173,11 @@ function WeeklyPlansList({ plan }) {
       <CardHeader className="pb-2">
         <CardTitle
           as="h2"
-          className="text-[10px] font-semibold uppercase tracking-widest text-slate-400"
+          className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
         >
           Weekly plans
         </CardTitle>
-        <CardDescription className="text-xs text-slate-500">
+        <CardDescription className="text-xs">
           {plan.weeklyPlans.length} plan
           {plan.weeklyPlans.length === 1 ? '' : 's'} on disk
         </CardDescription>
@@ -196,18 +204,18 @@ function WeeklyPlanRow({ week, isLatestApproved }) {
   return (
     <li
       data-week={week.week}
-      className="flex items-center justify-between gap-3 rounded-md border border-slate-800 bg-slate-900/30 px-3 py-2"
+      className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2"
     >
       <div className="flex flex-wrap items-center gap-3">
-        <code className="rounded bg-slate-900 px-1.5 py-0.5 text-xs font-semibold text-slate-100">
+        <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-semibold text-foreground">
           {week.week}
         </code>
         {isLatestApproved ? (
-          <Badge variant="success" className="tracking-widest">
+          <Badge variant="default" className="tracking-widest">
             latest approved
           </Badge>
         ) : null}
-        <span className="text-xs text-slate-400">
+        <span className="text-xs text-muted-foreground">
           {(week.tasks || []).length} task
           {(week.tasks || []).length === 1 ? '' : 's'}
         </span>
@@ -217,10 +225,18 @@ function WeeklyPlanRow({ week, isLatestApproved }) {
   );
 }
 
+/**
+ * Approval chip. Stock shadcn Badge only ships `default` /
+ * `secondary` / `destructive` / `outline` variants (no `success`
+ * /`warning`), so the approval state is communicated via tone:
+ * solid `secondary` for approved weeks, hollow `outline` for
+ * pending. Tests assert the text label (`approved` vs `pending`)
+ * not the variant.
+ */
 function ApprovalBadge({ approved }) {
   return (
     <Badge
-      variant={approved ? 'success' : 'warning'}
+      variant={approved ? 'secondary' : 'outline'}
       className="tracking-widest"
     >
       {approved ? 'approved' : 'pending'}
@@ -436,7 +452,7 @@ function PlanEmpty({ message }) {
       data-page="agent-plan"
       data-state="empty"
     >
-      <CardContent className="p-8 pt-8 text-center text-sm italic text-slate-400 sm:p-8 sm:pt-8">
+      <CardContent className="p-8 pt-8 text-center text-sm italic text-muted-foreground sm:p-8 sm:pt-8">
         {message}
       </CardContent>
     </Card>
@@ -448,11 +464,11 @@ function PlanSkeleton() {
     <Card
       role="status"
       aria-live="polite"
-      className="animate-pulse border-slate-800"
+      className="animate-pulse"
       data-page="agent-plan"
       data-loading="true"
     >
-      <CardContent className="p-4 pt-4 text-sm text-slate-500 sm:p-6 sm:pt-6">
+      <CardContent className="p-4 pt-4 text-sm text-muted-foreground sm:p-6 sm:pt-6">
         Loading plan…
       </CardContent>
     </Card>
@@ -460,28 +476,27 @@ function PlanSkeleton() {
 }
 
 function PlanError({ error, onRetry }) {
+  // Destructive-token Card communicates failure in the same chrome
+  // family used by sibling pages (see `AgentsPageError`) — no
+  // hardcoded `red-*` utilities, so the alert tones re-theme for free
+  // under light/dark mode.
   return (
     <Card
       role="alert"
-      className="border-red-500/40 bg-red-500/10 text-red-200"
+      className="border-destructive/40 bg-destructive/10 text-destructive"
       data-page="agent-plan"
       data-error="true"
     >
       <CardHeader className="p-4 pb-1 sm:p-6 sm:pb-2">
-        <CardTitle as="h2" className="text-sm text-red-100">
+        <CardTitle as="h2" className="text-sm text-destructive">
           Failed to load plan.
         </CardTitle>
-        <CardDescription className="text-xs text-red-200/80">
+        <CardDescription className="text-xs text-destructive/80">
           {error?.message || String(error)}
         </CardDescription>
       </CardHeader>
       <CardContent className="p-4 pt-2 sm:p-6 sm:pt-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRetry}
-          className="border-red-400/50 text-red-200 hover:bg-red-500/20"
-        >
+        <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
       </CardContent>
@@ -490,10 +505,13 @@ function PlanError({ error, onRetry }) {
 }
 
 function StaleBanner({ error, onRetry }) {
+  // Neutral muted chrome for the advisory "stale" callout — stock
+  // shadcn has no warning token, so the banner uses `muted` surface
+  // tones and leaves the destructive palette for real failures.
   return (
     <Card
       role="alert"
-      className="border-amber-500/40 bg-amber-500/10 text-amber-200"
+      className="bg-muted text-muted-foreground"
       data-plan-stale="true"
     >
       <CardContent className="flex flex-wrap items-center gap-2 p-2.5 pt-2.5 text-xs sm:p-2.5 sm:pt-2.5">
@@ -505,7 +523,7 @@ function StaleBanner({ error, onRetry }) {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto px-0 text-amber-200 underline decoration-dotted hover:decoration-solid"
+          className="h-auto p-0 text-xs"
         >
           Retry
         </Button>

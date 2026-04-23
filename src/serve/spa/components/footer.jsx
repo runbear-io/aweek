@@ -28,18 +28,18 @@ export function Footer({ children, className } = {}) {
     <footer
       data-component="footer"
       className={cn(
-        'flex items-center justify-between gap-3 border-t border-slate-800 bg-slate-950/80 px-4 py-3 text-[11px] text-slate-500',
+        'flex items-center justify-between gap-3 border-t border-border bg-background/80 px-4 py-3 text-[11px] text-muted-foreground',
         className,
       )}
     >
       <p>
         aweek · {year} · read-only dashboard served from{' '}
-        <code className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-300">
+        <code className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground">
           .aweek/
         </code>
       </p>
       {children ? (
-        <div className="flex items-center gap-2 text-slate-400">{children}</div>
+        <div className="flex items-center gap-2 text-muted-foreground">{children}</div>
       ) : null}
     </footer>
   );

@@ -35,15 +35,17 @@ afterEach(() => {
 });
 
 describe('Button', () => {
-  it('renders a native <button> with type="button" and the default variant', () => {
+  it('renders a native <button> with the default variant', () => {
     const { container } = render(<Button>Save</Button>);
     const btn = container.querySelector('[data-component="button"]');
     expect(btn).not.toBeNull();
     expect(btn.tagName).toBe('BUTTON');
-    expect(btn).toHaveAttribute('type', 'button');
-    expect(btn).toHaveAttribute('data-variant', 'primary');
+    expect(btn).toHaveAttribute('data-variant', 'default');
     expect(btn).toHaveAttribute('data-size', 'default');
     expect(btn).toHaveTextContent('Save');
+    // Canonical shadcn default variant uses the primary token.
+    expect(btn.className).toContain('bg-primary');
+    expect(btn.className).toContain('text-primary-foreground');
   });
 
   it('honours variant + size props and composes caller className last', () => {
@@ -58,7 +60,8 @@ describe('Button', () => {
     expect(btn.className).toContain('shadow-xl');
     // Base + variant tokens must coexist.
     expect(btn.className).toContain('inline-flex');
-    expect(btn.className).toContain('bg-red-500/90');
+    expect(btn.className).toContain('bg-destructive');
+    expect(btn.className).toContain('text-destructive-foreground');
   });
 
   it('forwards refs to the underlying DOM node', () => {
@@ -75,15 +78,17 @@ describe('Button', () => {
       className: 'mt-2',
     });
     expect(cls).toContain('inline-flex');
-    expect(cls).toContain('border-slate-700');
-    expect(cls).toContain('h-10');
+    expect(cls).toContain('border-input');
+    expect(cls).toContain('bg-background');
+    expect(cls).toContain('h-11');
     expect(cls).toContain('mt-2');
   });
 
-  it('buttonVariants falls back to the primary/default recipe on unknown values', () => {
-    const cls = buttonVariants({ variant: 'bogus', size: 'nope' });
-    expect(cls).toContain('bg-sky-500/90'); // primary
-    expect(cls).toContain('h-9'); // default
+  it('buttonVariants falls back to the default recipe on unset values', () => {
+    const cls = buttonVariants();
+    expect(cls).toContain('bg-primary');
+    expect(cls).toContain('text-primary-foreground');
+    expect(cls).toContain('h-10');
   });
 });
 
@@ -96,7 +101,9 @@ describe('Input', () => {
     expect(input).toHaveAttribute('type', 'text');
     expect(input).toHaveAttribute('placeholder', 'Search');
     expect(input.className).toContain('rounded-md');
-    expect(input.className).toContain('border-slate-700');
+    expect(input.className).toContain('border-input');
+    expect(input.className).toContain('bg-background');
+    expect(input.className).toContain('placeholder:text-muted-foreground');
   });
 
   it('forwards custom type + className + aria-invalid', () => {
@@ -217,22 +224,60 @@ describe('Badge', () => {
     expect(badge.tagName).toBe('SPAN');
     expect(badge).toHaveAttribute('data-variant', 'default');
     expect(badge).toHaveTextContent('Active');
-    expect(badge.className).toContain('rounded-full');
-    expect(badge.className).toContain('bg-sky-500/10');
+    expect(badge.className).toContain('rounded-md');
+    // Canonical shadcn default variant uses the primary token.
+    expect(badge.className).toContain('bg-primary');
+    expect(badge.className).toContain('text-primary-foreground');
   });
 
-  it('switches tone via the variant prop', () => {
-    const { container } = render(<Badge variant="success">Healthy</Badge>);
+  it('switches tone via the variant prop (secondary → bg-secondary token)', () => {
+    const { container } = render(<Badge variant="secondary">Info</Badge>);
     const badge = container.querySelector('[data-component="badge"]');
-    expect(badge).toHaveAttribute('data-variant', 'success');
-    expect(badge.className).toContain('bg-emerald-500/10');
+    expect(badge).toHaveAttribute('data-variant', 'secondary');
+    expect(badge.className).toContain('bg-secondary');
+    expect(badge.className).toContain('text-secondary-foreground');
   });
 
-  it('badgeVariants returns a class string for a given variant', () => {
-    expect(badgeVariants({ variant: 'warning' })).toContain('bg-amber-500/10');
-    expect(badgeVariants({ variant: 'destructive' })).toContain(
-      'bg-red-500/10',
+  it('destructive variant resolves to the destructive token', () => {
+    const { container } = render(
+      <Badge variant="destructive">Paused</Badge>,
     );
-    expect(badgeVariants({ variant: 'bogus' })).toContain('bg-sky-500/10');
+    const badge = container.querySelector('[data-component="badge"]');
+    expect(badge).toHaveAttribute('data-variant', 'destructive');
+    expect(badge.className).toContain('bg-destructive');
+    expect(badge.className).toContain('text-destructive-foreground');
+  });
+
+  it('outline variant uses the foreground token with no background fill', () => {
+    const { container } = render(<Badge variant="outline">Draft</Badge>);
+    const badge = container.querySelector('[data-component="badge"]');
+    expect(badge).toHaveAttribute('data-variant', 'outline');
+    expect(badge.className).toContain('text-foreground');
+  });
+
+  it('badgeVariants returns a class string for each canonical variant', () => {
+    expect(badgeVariants({ variant: 'secondary' })).toContain('bg-secondary');
+    expect(badgeVariants({ variant: 'destructive' })).toContain(
+      'bg-destructive',
+    );
+    expect(badgeVariants({ variant: 'outline' })).toContain('text-foreground');
+    // When the variant prop is omitted, CVA applies the default recipe.
+    expect(badgeVariants()).toContain('bg-primary');
+  });
+
+  it('forwards refs to the underlying DOM node', () => {
+    const ref = React.createRef();
+    render(<Badge ref={ref}>Ref me</Badge>);
+    expect(ref.current).not.toBeNull();
+    expect(ref.current.tagName).toBe('SPAN');
+  });
+
+  it('composes caller className last so overrides win', () => {
+    const { container } = render(
+      <Badge className="tracking-widest">Active</Badge>,
+    );
+    const badge = container.querySelector('[data-component="badge"]');
+    expect(badge.className).toContain('tracking-widest');
+    expect(badge.className).toContain('bg-primary');
   });
 });
