@@ -1,25 +1,21 @@
 /**
- * shadcn/ui-style ScrollArea primitives.
+ * shadcn/ui ScrollArea primitives.
  *
- * Thin wrapper around `@radix-ui/react-scroll-area` — the same headless
- * component shadcn/ui itself ships on its reference page
- * (https://ui.shadcn.com/docs/components/scroll-area). The public
- * surface mirrors the shadcn reference exactly — `ScrollArea` plus the
- * lower-level `ScrollBar` — so pages like Activity Timeline and the
- * agent drill-down can use it as a drop-in replacement for a raw
- * `overflow-auto` div and get:
+ * Canonical shadcn markup (https://ui.shadcn.com/docs/components/scroll-area)
+ * wrapping `@radix-ui/react-scroll-area`. Exports `ScrollArea` + `ScrollBar`
+ * so pages like Activity Timeline and the agent drill-down get:
  *
  *   - An overlay-style scrollbar track that doesn't shift layout.
  *   - Correct keyboard scroll + focus handling.
  *   - Consistent chrome across webkit / firefox / safari.
  *
- * The visual palette (slate-900 track, slate-600 thumb) matches the
- * chrome used by `Nav`, `Tabs`, `Table`, and `Button` so the dashboard
- * reads as a single visual family.
+ * Colours are driven by the shadcn design tokens in `styles/globals.css`
+ * (`--border`, `--background`, ...) so the same markup renders correctly
+ * in both the light and dark themes.
  *
  * Usage:
  *
- *   <ScrollArea className="h-72 w-full rounded-md border border-slate-800">
+ *   <ScrollArea className="h-72 w-full rounded-md border">
  *     <div className="p-4 space-y-2">{items}</div>
  *   </ScrollArea>
  *
@@ -39,21 +35,17 @@ import { cn } from '../../lib/utils.js';
  *   children?: React.ReactNode,
  * } & React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>} props
  */
-export const ScrollArea = React.forwardRef(function ScrollArea(
+const ScrollArea = React.forwardRef(function ScrollArea(
   { className, children, ...props },
   ref,
 ) {
   return (
     <ScrollAreaPrimitive.Root
       ref={ref}
-      data-component="scroll-area"
       className={cn('relative overflow-hidden', className)}
       {...props}
     >
-      <ScrollAreaPrimitive.Viewport
-        data-component="scroll-area-viewport"
-        className="h-full w-full rounded-[inherit]"
-      >
+      <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />
@@ -61,6 +53,7 @@ export const ScrollArea = React.forwardRef(function ScrollArea(
     </ScrollAreaPrimitive.Root>
   );
 });
+ScrollArea.displayName = ScrollAreaPrimitive.Root.displayName;
 
 /**
  * Scrollbar track + thumb. Exposed separately so callers can opt into
@@ -72,7 +65,7 @@ export const ScrollArea = React.forwardRef(function ScrollArea(
  *   orientation?: 'vertical' | 'horizontal',
  * } & React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>} props
  */
-export const ScrollBar = React.forwardRef(function ScrollBar(
+const ScrollBar = React.forwardRef(function ScrollBar(
   { className, orientation = 'vertical', ...props },
   ref,
 ) {
@@ -80,24 +73,21 @@ export const ScrollBar = React.forwardRef(function ScrollBar(
     <ScrollAreaPrimitive.ScrollAreaScrollbar
       ref={ref}
       orientation={orientation}
-      data-component="scroll-area-scrollbar"
-      data-orientation={orientation}
       className={cn(
         'flex touch-none select-none transition-colors',
         orientation === 'vertical' &&
-          'h-full w-2.5 border-l border-l-transparent p-px',
+          'h-full w-2.5 border-l border-l-transparent p-[1px]',
         orientation === 'horizontal' &&
-          'h-2.5 flex-col border-t border-t-transparent p-px',
+          'h-2.5 flex-col border-t border-t-transparent p-[1px]',
         className,
       )}
       {...props}
     >
-      <ScrollAreaPrimitive.ScrollAreaThumb
-        data-component="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-slate-600"
-      />
+      <ScrollAreaPrimitive.ScrollAreaThumb className="relative flex-1 rounded-full bg-border" />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   );
 });
+ScrollBar.displayName = ScrollAreaPrimitive.ScrollAreaScrollbar.displayName;
 
+export { ScrollArea, ScrollBar };
 export default ScrollArea;

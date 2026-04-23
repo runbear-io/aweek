@@ -29,16 +29,33 @@
  *     hidden when `runAt` is absent or falls outside the visible window
  *   - Status counts + legend
  *
- * Styling: the Calendar tab's surrounding chrome (counts strip,
- * backlog, empty / loading / error states, stale banner) is composed
- * from shadcn primitives (`Badge`, `Button`, `Card`, `CardHeader`,
- * `CardTitle`, `CardContent`, `ScrollArea`). The inner grid is still
- * owned by `CalendarGrid` which has its own Tailwind-tokenised chrome.
+ * Styling (Sub-AC 2.2):
+ *   The Calendar tab's surrounding chrome (header, counts strip, backlog,
+ *   empty / loading / error states, stale banner) is composed from stock
+ *   shadcn primitives (`Badge`, `Button`, `Card`, `CardHeader`, `CardTitle`,
+ *   `CardContent`, `CardDescription`, `ScrollArea`). Every colour utility
+ *   resolves to a shadcn design token declared in `styles/globals.css`
+ *   (`--foreground`, `--muted-foreground`, `--muted`, `--destructive`, …)
+ *   so the page re-themes correctly in both light and dark modes without
+ *   any bespoke palette overrides. No hardcoded colour utilities live
+ *   here anymore.
+ *
+ *   The approval badge maps `approved → variant="default"` and
+ *   `pending → variant="outline"` since the stock `Badge` primitive only
+ *   exposes `default`, `secondary`, `destructive`, and `outline` variants
+ *   (no bespoke `success` / `warning` recipes). The error Card mirrors
+ *   the destructive-tinted chrome used by the Overview page error path,
+ *   and the stale banner uses the neutral muted surface used by the
+ *   Overview page's advisory banner — so every surface in the SPA reads
+ *   as part of the same primitive family.
+ *
+ *   The inner grid is still owned by `CalendarGrid`, which manages its
+ *   own Tailwind chrome.
  *
  * @module serve/spa/pages/agent-calendar-page
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 
 import { Badge } from '../components/ui/badge.jsx';
 import { Button } from '../components/ui/button.jsx';
@@ -50,6 +67,14 @@ import {
   CardTitle,
 } from '../components/ui/card.jsx';
 import { ScrollArea } from '../components/ui/scroll-area.jsx';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '../components/ui/sheet.jsx';
+import { cn } from '../lib/cn.js';
 import { useAgentCalendar } from '../hooks/use-agent-calendar.js';
 import {
   CalendarGrid,
@@ -93,6 +118,7 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
     baseUrl,
     fetch: fetchImpl,
   });
+  const [selectedTask, setSelectedTask] = useState(null);
 
   if (!slug) {
     return <CalendarEmpty message="Select an agent to view its calendar." />;
@@ -118,13 +144,13 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
         <CalendarHeader calendar={data} loading={loading} onRefresh={refresh} />
         {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
         <Card className="border-dashed" data-state="no-plan">
-          <CardContent className="p-6 pt-6 text-sm italic text-slate-400 sm:p-6 sm:pt-6">
+          <CardContent className="p-6 text-sm italic text-muted-foreground">
             No weekly plan yet for{' '}
-            <strong className="not-italic text-slate-200">
+            <strong className="not-italic text-foreground">
               {data.agentId}
             </strong>
             . Run{' '}
-            <code className="not-italic text-slate-200">/aweek:plan</code> to
+            <code className="not-italic text-foreground">/aweek:plan</code> to
             draft and approve a weekly plan.
           </CardContent>
         </Card>
@@ -148,10 +174,110 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
         weekMonday={data.weekMonday}
         timeZone={data.timeZone}
         agentId={data.agentId}
+        onSelectTask={setSelectedTask}
       />
       <Backlog calendar={data} />
       <Legend />
+      <TaskDetailSheet
+        task={selectedTask}
+        onClose={() => setSelectedTask(null)}
+      />
     </section>
+  );
+}
+
+/**
+ * Right-side shadcn Sheet surfacing the fields of a single calendar task.
+ * Opens when a `TaskChip` is clicked and the parent page sets `task` to a
+ * non-null value. Closing sets `task` back to `null` via `onClose`.
+ *
+ * @param {{ task: CalendarTask | null, onClose: () => void }} props
+ */
+function TaskDetailSheet({ task, onClose }) {
+  const open = task != null;
+  const review = task ? isReviewTask(task) : false;
+  const icon = task
+    ? review
+      ? REVIEW_ICON
+      : STATUS_ICONS[task.status] || '?'
+    : '';
+  const label = task
+    ? review
+      ? REVIEW_DISPLAY_NAMES[task.objectiveId] || 'Review'
+      : task.title
+    : '';
+  return (
+    <Sheet open={open} onOpenChange={(next) => (next ? null : onClose())}>
+      <SheetContent className="w-full sm:max-w-md">
+        {task ? (
+          <>
+            <SheetHeader>
+              <SheetTitle className="flex items-center gap-2">
+                <span aria-hidden="true" className="font-mono">
+                  {icon}
+                </span>
+                <span>{label}</span>
+              </SheetTitle>
+              {task.objectiveId ? (
+                <SheetDescription>
+                  Objective{' '}
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                    {task.objectiveId}
+                  </code>
+                </SheetDescription>
+              ) : null}
+            </SheetHeader>
+            <div className="mt-6 grid gap-4 text-sm">
+              <TaskField label="Status">
+                <Badge variant="outline" className="capitalize">
+                  {task.status || 'unknown'}
+                </Badge>
+              </TaskField>
+              {task.runAt ? (
+                <TaskField label="Run at">
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                    {task.runAt}
+                  </code>
+                </TaskField>
+              ) : null}
+              {task.estimatedMinutes ? (
+                <TaskField label="Estimate">
+                  {task.estimatedMinutes} min
+                </TaskField>
+              ) : null}
+              {task.track ? (
+                <TaskField label="Track">{task.track}</TaskField>
+              ) : null}
+              {task.prompt ? (
+                <TaskField label="Prompt">
+                  <pre className="whitespace-pre-wrap rounded-md border bg-muted/40 p-3 font-mono text-xs text-foreground">
+                    {task.prompt}
+                  </pre>
+                </TaskField>
+              ) : null}
+              {task.id ? (
+                <TaskField label="Task ID">
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                    {task.id}
+                  </code>
+                </TaskField>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function TaskField({ label, children }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <div className="text-foreground">{children}</div>
+    </div>
   );
 }
 
@@ -167,22 +293,22 @@ function CalendarHeader({ calendar, loading, onRefresh }) {
   const reviewSlotCount = calendar.tasks.length - workTaskCount;
   return (
     <header
-      className="flex flex-col gap-2 border-b border-slate-800 pb-3 sm:flex-row sm:items-center sm:justify-between"
+      className="flex flex-col gap-2 border-b pb-3 sm:flex-row sm:items-center sm:justify-between"
       data-calendar-header="true"
     >
       <div>
-        <h1 className="text-base font-semibold tracking-tight text-slate-100">
+        <h1 className="text-base font-semibold tracking-tight text-foreground">
           {calendar.agentId} — Calendar
           {calendar.week ? (
-            <span className="ml-2 text-xs font-normal text-slate-400">
+            <span className="ml-2 text-xs font-normal text-muted-foreground">
               Week{' '}
-              <code className="rounded bg-slate-900 px-1.5 py-0.5 text-[11px] text-slate-300">
+              <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
                 {calendar.week}
               </code>
             </span>
           ) : null}
         </h1>
-        <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+        <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <ApprovalBadge approved={calendar.approved} />
           <span>
             {workTaskCount} task{workTaskCount === 1 ? '' : 's'}
@@ -194,7 +320,7 @@ function CalendarHeader({ calendar, loading, onRefresh }) {
           ) : null}
           <span>
             · TZ{' '}
-            <code className="rounded bg-slate-900 px-1 py-0.5 text-[10px] text-slate-300">
+            <code className="rounded bg-muted px-1 py-0.5 text-[10px] text-foreground">
               {calendar.timeZone || 'UTC'}
             </code>
           </span>
@@ -213,10 +339,16 @@ function CalendarHeader({ calendar, loading, onRefresh }) {
   );
 }
 
+/**
+ * Map `approved` onto stock shadcn Badge variants only. The primitive
+ * exposes `default`, `secondary`, `destructive`, and `outline` — no
+ * bespoke `success` / `warning` recipes — so we use `default` as the
+ * filled "confirmed" tone and `outline` as the "awaiting action" tone.
+ */
 function ApprovalBadge({ approved }) {
   return (
     <Badge
-      variant={approved ? 'success' : 'warning'}
+      variant={approved ? 'default' : 'outline'}
       className="tracking-widest"
     >
       {approved ? 'approved' : 'pending'}
@@ -226,34 +358,32 @@ function ApprovalBadge({ approved }) {
 
 /** @param {{ counts: AgentCalendar['counts'] }} props */
 function CountsStrip({ counts }) {
+  // Tone map keyed on tokens only — no hardcoded per-status hues. The
+  // only semantic callouts stock shadcn exposes are `foreground` (default),
+  // `muted-foreground` (de-emphasised), and `destructive` (failure).
   const items = [
-    { key: 'pending', label: 'Pending', value: counts.pending, tone: 'text-slate-300' },
+    { key: 'pending', label: 'Pending', value: counts.pending },
+    { key: 'inProgress', label: 'In progress', value: counts.inProgress },
+    { key: 'completed', label: 'Completed', value: counts.completed },
     {
-      key: 'inProgress',
-      label: 'In progress',
-      value: counts.inProgress,
-      tone: 'text-sky-300',
+      key: 'failed',
+      label: 'Failed',
+      value: counts.failed,
+      tone: 'text-destructive',
     },
+    { key: 'delegated', label: 'Delegated', value: counts.delegated },
     {
-      key: 'completed',
-      label: 'Completed',
-      value: counts.completed,
-      tone: 'text-emerald-300',
+      key: 'skipped',
+      label: 'Skipped',
+      value: counts.skipped,
+      tone: 'text-muted-foreground',
     },
-    { key: 'failed', label: 'Failed', value: counts.failed, tone: 'text-red-300' },
-    {
-      key: 'delegated',
-      label: 'Delegated',
-      value: counts.delegated,
-      tone: 'text-violet-300',
-    },
-    { key: 'skipped', label: 'Skipped', value: counts.skipped, tone: 'text-slate-500' },
   ];
   return (
     <Card data-calendar-card="counts">
-      <CardContent className="p-0 pt-0 sm:p-0 sm:pt-0">
+      <CardContent className="p-3">
         <dl
-          className="grid grid-cols-3 gap-2 px-3 py-2 text-xs sm:grid-cols-6"
+          className="grid grid-cols-3 gap-2 text-xs sm:grid-cols-6"
           data-calendar-counts="true"
         >
           {items.map((item) => (
@@ -263,10 +393,15 @@ function CountsStrip({ counts }) {
               data-count-key={item.key}
               data-count-value={item.value}
             >
-              <dt className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">
+              <dt className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
                 {item.label}
               </dt>
-              <dd className={`text-sm font-semibold tabular-nums ${item.tone}`}>
+              <dd
+                className={cn(
+                  'text-sm font-semibold tabular-nums',
+                  item.tone || 'text-foreground',
+                )}
+              >
                 {item.value}
               </dd>
             </div>
@@ -284,15 +419,15 @@ function Backlog({ calendar }) {
   const { numbering } = layoutTasks(calendar.tasks);
   return (
     <Card data-calendar-backlog="true" data-calendar-card="backlog">
-      <CardHeader className="border-b border-slate-800 bg-slate-900/50 p-0 sm:p-0">
+      <CardHeader className="border-b bg-muted/50 px-4 py-2 space-y-0">
         <CardTitle
           as="h2"
-          className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400"
+          className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
         >
           Backlog ({unscheduled.length})
         </CardTitle>
       </CardHeader>
-      <CardContent className="p-0 pt-0 sm:p-0 sm:pt-0">
+      <CardContent className="p-0">
         <ScrollArea className="max-h-64">
           <ul role="list" className="flex flex-col gap-1 px-3 py-2">
             {unscheduled.map((task) => {
@@ -308,19 +443,22 @@ function Backlog({ calendar }) {
                   key={task.id}
                   data-task-id={task.id}
                   data-task-number={numbering.get(task.id)}
-                  className="flex items-start gap-2 text-xs text-slate-300"
+                  className="flex items-start gap-2 text-xs text-foreground"
                 >
-                  <span aria-hidden="true" className="font-mono text-slate-400">
+                  <span
+                    aria-hidden="true"
+                    className="font-mono text-muted-foreground"
+                  >
                     {icon}
                   </span>
-                  <span className="font-semibold tabular-nums text-slate-500">
+                  <span className="font-semibold tabular-nums text-muted-foreground">
                     {numbering.get(task.id)}.
                   </span>
                   <span className="flex-1">{label}</span>
                   {task.runAt ? (
                     <time
                       dateTime={task.runAt}
-                      className="text-[10px] tabular-nums text-slate-500"
+                      className="text-[10px] tabular-nums text-muted-foreground"
                     >
                       {task.runAt}
                     </time>
@@ -347,15 +485,13 @@ function Legend() {
   ];
   return (
     <p
-      className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500"
+      className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground"
       data-calendar-legend="true"
     >
-      <span className="font-semibold uppercase tracking-widest text-slate-400">
-        Legend
-      </span>
+      <span className="font-semibold uppercase tracking-widest">Legend</span>
       {items.map(([icon, label]) => (
         <span key={label} className="inline-flex items-center gap-1">
-          <span className="font-mono text-slate-300" aria-hidden="true">
+          <span className="font-mono text-foreground" aria-hidden="true">
             {icon}
           </span>
           {label}
@@ -375,7 +511,7 @@ function CalendarEmpty({ message }) {
       data-tab-body="calendar"
       data-state="empty"
     >
-      <CardContent className="p-8 pt-8 text-center text-sm italic text-slate-400 sm:p-8 sm:pt-8">
+      <CardContent className="p-8 text-center text-sm italic text-muted-foreground">
         {message}
       </CardContent>
     </Card>
@@ -387,42 +523,43 @@ function CalendarSkeleton() {
     <Card
       role="status"
       aria-live="polite"
-      className="animate-pulse border-slate-800"
+      className="animate-pulse"
       data-page="agent-calendar"
       data-tab-body="calendar"
       data-loading="true"
     >
-      <CardContent className="p-4 pt-4 text-sm text-slate-500 sm:p-6 sm:pt-6">
+      <CardContent className="p-6 text-sm text-muted-foreground">
         Loading calendar…
       </CardContent>
     </Card>
   );
 }
 
+/**
+ * Error Card — mirrors the destructive-tinted chrome used by the
+ * Overview page's error path (`AgentsPageError` in `agents-page.jsx`)
+ * so every error surface in the SPA reads as part of the same shadcn
+ * primitive family.
+ */
 function CalendarError({ error, onRetry }) {
   return (
     <Card
       role="alert"
-      className="border-red-500/40 bg-red-500/10 text-red-200"
+      className="border-destructive/40 bg-destructive/10 text-destructive"
       data-page="agent-calendar"
       data-tab-body="calendar"
       data-error="true"
     >
-      <CardHeader className="p-4 pb-1 sm:p-6 sm:pb-2">
-        <CardTitle as="h2" className="text-sm text-red-100">
+      <CardHeader className="space-y-1">
+        <CardTitle as="h2" className="text-sm text-destructive">
           Failed to load calendar.
         </CardTitle>
-        <CardDescription className="text-xs text-red-200/80">
+        <CardDescription className="text-xs text-destructive/80">
           {error?.message || String(error)}
         </CardDescription>
       </CardHeader>
-      <CardContent className="p-4 pt-2 sm:p-6 sm:pt-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRetry}
-          className="border-red-400/50 text-red-200 hover:bg-red-500/20"
-        >
+      <CardContent className="pt-0">
+        <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
       </CardContent>
@@ -430,14 +567,19 @@ function CalendarError({ error, onRetry }) {
   );
 }
 
+/**
+ * Advisory "stale data" banner. Stock shadcn does not expose a warning
+ * token, so we reuse the neutral muted surface pattern from
+ * `agents-page.jsx`'s `StaleBanner` — same chrome, same primitives.
+ */
 function StaleBanner({ error, onRetry }) {
   return (
     <Card
       role="alert"
-      className="border-amber-500/40 bg-amber-500/10 text-amber-200"
+      className="bg-muted text-muted-foreground"
       data-calendar-stale="true"
     >
-      <CardContent className="flex flex-wrap items-center gap-2 p-2.5 pt-2.5 text-xs sm:p-2.5 sm:pt-2.5">
+      <CardContent className="flex flex-wrap items-center gap-2 p-2.5 text-xs">
         <span>
           Refresh failed ({error?.message || 'unknown error'}) — showing
           last-known data.
@@ -446,7 +588,7 @@ function StaleBanner({ error, onRetry }) {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto px-0 text-amber-200 underline decoration-dotted hover:decoration-solid"
+          className="h-auto p-0 text-xs"
         >
           Retry
         </Button>

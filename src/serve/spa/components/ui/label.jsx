@@ -40,8 +40,8 @@ export const Label = React.forwardRef(function Label(
       ref={ref}
       data-component="label"
       className={cn(
-        'text-sm font-medium leading-none text-slate-200',
-        'peer-disabled:cursor-not-allowed peer-disabled:opacity-60',
+        'text-sm font-medium leading-none text-foreground',
+        'peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
         className,
       )}
       {...props}
