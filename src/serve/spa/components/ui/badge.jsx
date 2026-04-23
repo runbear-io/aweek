@@ -1,81 +1,88 @@
 /**
- * shadcn/ui-style Badge primitive.
+ * shadcn/ui Badge primitive (canonical markup).
  *
- * Dependency-free vendored implementation of shadcn/ui's `badge`
- * component (https://ui.shadcn.com/docs/components/badge). Used for
- * inline status chips (agent state, run result, budget tier) across the
- * SPA. Variants reuse the same palette family as `Button` so tone is
- * consistent across controls.
+ * Vendored verbatim from shadcn/ui's reference implementation
+ * (https://ui.shadcn.com/docs/components/badge). Inline status chip styled
+ * via `class-variance-authority`. All colors resolve to the shadcn theme
+ * tokens declared in `styles/globals.css` (`--primary`, `--secondary`,
+ * `--destructive`, `--foreground`, …) so the control re-themes for free
+ * when the `.dark` class is toggled on `<html>`.
  *
- * Usage:
+ * Public surface:
+ *   - `<Badge>` — `<span>` element with a `variant` prop (and optional
+ *     `asChild` for slotting `<Link>` / `<a>` targets).
+ *   - `badgeVariants({ variant, className })` — CVA recipe helper for
+ *     styling non-`<span>` elements as badges.
  *
- *   <Badge>default</Badge>
- *   <Badge variant="success">healthy</Badge>
- *   <Badge variant="destructive">paused</Badge>
+ * Variants: `default` · `secondary` · `destructive` · `outline`.
  *
  * @module serve/spa/components/ui/badge
  */
 
 import React from 'react';
+import { Slot } from '@radix-ui/react-slot';
+import { cva } from 'class-variance-authority';
 
 import { cn } from '../../lib/cn.js';
 
 /**
- * @typedef {'default' | 'secondary' | 'outline' | 'success' | 'warning' | 'destructive'} BadgeVariant
+ * @typedef {'default' | 'secondary' | 'destructive' | 'outline'} BadgeVariant
  */
-
-/** @type {Record<BadgeVariant, string>} */
-const VARIANT_CLASSES = {
-  default:
-    'border-sky-400/40 bg-sky-500/10 text-sky-200',
-  secondary:
-    'border-slate-700 bg-slate-900/60 text-slate-200',
-  outline:
-    'border-slate-700 bg-transparent text-slate-300',
-  success:
-    'border-emerald-400/40 bg-emerald-500/10 text-emerald-200',
-  warning:
-    'border-amber-400/40 bg-amber-500/10 text-amber-200',
-  destructive:
-    'border-red-400/40 bg-red-500/10 text-red-200',
-};
 
 /**
- * Recipe helper — returns the resolved class string for a given
- * `variant`, mirroring shadcn's CVA factory.
- *
- * @param {{ variant?: BadgeVariant, className?: string }} [opts]
- * @returns {string}
+ * CVA recipe — returns the resolved class string for a given `variant`.
+ * Every color resolves to a shadcn theme token so the badge inherits the
+ * active light/dark palette without any bespoke color classes.
  */
-export function badgeVariants({ variant = 'default', className } = {}) {
-  return cn(
-    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
-    VARIANT_CLASSES[variant] || VARIANT_CLASSES.default,
-    className,
-  );
-}
+export const badgeVariants = cva(
+  'inline-flex items-center justify-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&>svg]:pointer-events-none [&>svg]:size-3',
+  {
+    variants: {
+      variant: {
+        default:
+          'border-transparent bg-primary text-primary-foreground hover:bg-primary/90',
+        secondary:
+          'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/90',
+        destructive:
+          'border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/90',
+        outline: 'text-foreground hover:bg-accent hover:text-accent-foreground',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  },
+);
 
 /**
  * Badge — inline status chip.
  *
+ * When `asChild` is true the component renders via Radix `Slot`, cloning
+ * its sole child and forwarding refs + props onto it (canonical shadcn
+ * pattern used for turning `<Link>` / `<a>` into a styled badge).
+ *
  * @param {{
  *   variant?: BadgeVariant,
+ *   asChild?: boolean,
  *   className?: string,
  * } & React.HTMLAttributes<HTMLSpanElement>} props
  */
 export const Badge = React.forwardRef(function Badge(
-  { variant = 'default', className, ...props },
+  { className, variant, asChild = false, ...props },
   ref,
 ) {
+  const Comp = asChild ? Slot : 'span';
   return (
-    <span
+    <Comp
       ref={ref}
       data-component="badge"
-      data-variant={variant}
-      className={badgeVariants({ variant, className })}
+      data-variant={variant ?? 'default'}
+      className={cn(badgeVariants({ variant, className }))}
       {...props}
     />
   );
 });
+
+Badge.displayName = 'Badge';
 
 export default Badge;

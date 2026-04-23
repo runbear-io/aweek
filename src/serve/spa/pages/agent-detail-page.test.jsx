@@ -18,6 +18,7 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 import {
   AgentDetailPage,
@@ -25,6 +26,19 @@ import {
   DEFAULT_AGENT_DETAIL_TAB,
   normaliseTab,
 } from './agent-detail-page.jsx';
+
+/**
+ * Render `AgentDetailPage` inside a `MemoryRouter` so the internal
+ * breadcrumb `<Link>` elements (`Agents → :slug → :tab` per AC 3) can
+ * resolve a routing context. Test helpers default to
+ * `initialEntries={['/agents/<slug>']}` so `useLocation()` matches the
+ * component's real-world mount point.
+ */
+function renderWithRouter(ui, { initialEntries = ['/agents/alice'] } = {}) {
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>,
+  );
+}
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 // `AgentProfile` shape mirrors `src/serve/data/agents.js` →
@@ -143,7 +157,10 @@ function makeFetchStub(profile, { ok = true, status = 200, statusText = 'OK' } =
 
 function renderDetail(profile, props = {}, stubOpts = {}) {
   const { fetch } = makeFetchStub(profile, stubOpts);
-  const utils = render(<AgentDetailPage slug={profile.slug} fetch={fetch} {...props} />);
+  const utils = renderWithRouter(
+    <AgentDetailPage slug={profile.slug} fetch={fetch} {...props} />,
+    { initialEntries: [`/agents/${profile.slug}`] },
+  );
   return { ...utils, fetch };
 }
 
@@ -164,14 +181,16 @@ describe('AgentDetailPage — route wiring', () => {
 
   it('shows a loading skeleton until the first profile fetch resolves', async () => {
     const fetch = vi.fn(() => new Promise(() => {})); // never resolves
-    render(<AgentDetailPage slug="alice" fetch={fetch} />);
+    renderWithRouter(<AgentDetailPage slug="alice" fetch={fetch} />);
     const loader = await screen.findByRole('status');
     expect(loader).toHaveAttribute('data-loading', 'true');
     expect(loader).toHaveTextContent(/loading agent/i);
   });
 
   it('shows an empty state when no slug is supplied', async () => {
-    const { container } = render(<AgentDetailPage slug="" />);
+    const { container } = renderWithRouter(<AgentDetailPage slug="" />, {
+      initialEntries: ['/agents'],
+    });
     const empty = container.querySelector('[data-page="agent-detail"][data-state="empty"]');
     expect(empty).not.toBeNull();
     expect(empty).toHaveTextContent(/select an agent/i);
@@ -228,7 +247,9 @@ describe('AgentDetailPage — identity header', () => {
 
     // No onBack → no Back button.
     cleanup();
-    render(<AgentDetailPage slug={ALICE.slug} fetch={fetch} />);
+    renderWithRouter(<AgentDetailPage slug={ALICE.slug} fetch={fetch} />, {
+      initialEntries: [`/agents/${ALICE.slug}`],
+    });
     await screen.findByRole('banner');
     expect(
       screen.queryByRole('button', { name: /back to agent list/i }),
@@ -329,6 +350,62 @@ describe('AgentDetailPage — tab navigation scaffolding', () => {
     expect(container.querySelector('[data-tab="activity"]')).toBeNull();
     expect(container.querySelector('[data-tab="strategy"]')).toBeNull();
     expect(container.querySelector('[data-tab="profile"]')).toBeNull();
+  });
+});
+
+// ── Breadcrumb navigation (AC 3) ─────────────────────────────────────
+
+describe('AgentDetailPage — breadcrumb trail', () => {
+  it('renders a three-segment trail: Agents → :slug → active tab label', async () => {
+    renderDetail(ALICE);
+    const nav = await screen.findByRole('navigation', { name: /breadcrumb/i });
+    const list = within(nav).getByRole('list');
+    // Separators carry role="presentation" per the shadcn contract, so
+    // only the 3 BreadcrumbItem crumbs surface as listitems.
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(3);
+
+    const links = within(nav).getAllByRole('link');
+    const labels = links.map((a) => a.textContent.trim());
+    expect(labels).toContain('Agents');
+    expect(labels).toContain('alice');
+    // The current tab segment uses role="link" + aria-current="page" per
+    // the shadcn BreadcrumbPage contract; it is not a real anchor but
+    // testing-library surfaces it via the accessible `link` role too.
+    const current = within(nav).getByText('Calendar');
+    expect(current).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('points the Agents crumb at /agents and the slug crumb at /agents/:slug', async () => {
+    renderDetail(ALICE);
+    const nav = await screen.findByRole('navigation', { name: /breadcrumb/i });
+    const agents = within(nav).getByRole('link', { name: 'Agents' });
+    const slug = within(nav).getByRole('link', { name: 'alice' });
+    expect(agents).toHaveAttribute('href', '/agents');
+    expect(slug).toHaveAttribute('href', '/agents/alice');
+  });
+
+  it('updates the current-tab crumb when the active tab changes', async () => {
+    renderDetail(ALICE, { initialTab: 'profile' });
+    const nav = await screen.findByRole('navigation', { name: /breadcrumb/i });
+    expect(within(nav).getByText('Profile')).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  it('sits above the identity header in the document order', async () => {
+    const { container } = renderDetail(ALICE);
+    await screen.findByRole('banner');
+    const section = container.querySelector('[data-page="agent-detail"]');
+    const crumb = section.querySelector('[data-agent-detail-breadcrumb]');
+    const header = section.querySelector('[data-agent-detail-header]');
+    expect(crumb).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(
+      crumb.compareDocumentPosition(header) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 

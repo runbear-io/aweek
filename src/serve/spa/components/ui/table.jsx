@@ -1,12 +1,10 @@
 /**
- * shadcn/ui-style Table primitives.
+ * shadcn/ui Table primitives — canonical reference implementation.
  *
- * This is a vendored, dependency-free version of the official shadcn/ui
- * `table` component (https://ui.shadcn.com/docs/components/table). We
- * keep the public surface byte-identical to the reference implementation
- * so later upgrades — including the full shadcn CLI install once the
- * Vite/Tailwind/shadcn deps land in `package.json` — can drop it in
- * without rippling through the Overview page:
+ * This is the vendored, dependency-free version of the official
+ * shadcn/ui `table` component (https://ui.shadcn.com/docs/components/table).
+ * The public surface is byte-identical to the reference so a future
+ * `shadcn@latest add table` install can drop in without changes:
  *
  *   Table
  *     ├── TableHeader
@@ -18,8 +16,20 @@
  *     ├── TableFooter
  *     └── TableCaption
  *
- * Styling uses Tailwind utilities composed via `../../lib/cn.js`. Each
- * primitive forwards `ref` and spreads any extra props so shadcn's
+ * Styling uses only shadcn theme tokens resolved by
+ * `tailwind.config.js` → `globals.css` custom properties:
+ *
+ *   - `border-border` (implicit via the `* { @apply border-border }`
+ *      base reset in `globals.css`, so `border-b` / `border-t` on the
+ *      table primitives picks the themed colour automatically)
+ *   - `bg-muted`, `bg-muted/50` for selected-row and footer tints
+ *   - `text-muted-foreground` for muted chrome (column headers, caption)
+ *
+ * No hardcoded slate/gray/zinc palette classes anywhere — both light
+ * and dark modes derive from the `--*` tokens declared on `:root` and
+ * `.dark` in `globals.css`.
+ *
+ * Each primitive forwards `ref` and spreads extra props so shadcn's
  * idiomatic patterns keep working:
  *
  *   <TableRow className="cursor-pointer" onClick={...} data-agent-slug={slug}>
@@ -34,10 +44,9 @@ import { cn } from '../../lib/cn.js';
 /**
  * Outer scroll container + `<table>` element.
  *
- * Wrapping in an overflow-x-auto div keeps wide tables readable on
+ * Wrapping in an overflow-auto div keeps wide tables readable on
  * narrow viewports without forcing the whole dashboard into horizontal
- * overflow. The wrapper's role="region" + tabIndex=0 follows shadcn's
- * accessibility default so keyboard users can scroll horizontally.
+ * overflow.
  */
 export const Table = React.forwardRef(function Table(
   { className, ...props },
@@ -56,9 +65,8 @@ export const Table = React.forwardRef(function Table(
 });
 
 /**
- * `<thead>` — a sticky-header sibling-selector keeps the column labels
- * visible in long tables. Callers can override borders / bg via
- * `className`.
+ * `<thead>` — every descendant `<tr>` gets a bottom border so the
+ * header row reads as a separator above the body.
  */
 export const TableHeader = React.forwardRef(function TableHeader(
   { className, ...props },
@@ -93,7 +101,7 @@ export const TableBody = React.forwardRef(function TableBody(
 });
 
 /**
- * `<tfoot>` — lighter chrome for totals / summary rows.
+ * `<tfoot>` — muted fill for totals / summary rows.
  */
 export const TableFooter = React.forwardRef(function TableFooter(
   { className, ...props },
@@ -104,7 +112,7 @@ export const TableFooter = React.forwardRef(function TableFooter(
       ref={ref}
       data-component="table-footer"
       className={cn(
-        'border-t bg-slate-900/40 font-medium [&>tr]:last:border-b-0',
+        'border-t bg-muted/50 font-medium [&>tr]:last:border-b-0',
         className,
       )}
       {...props}
@@ -125,7 +133,7 @@ export const TableRow = React.forwardRef(function TableRow(
       ref={ref}
       data-component="table-row"
       className={cn(
-        'border-b border-slate-800 transition-colors hover:bg-slate-900/50 data-[state=selected]:bg-slate-900/70',
+        'border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted',
         className,
       )}
       {...props}
@@ -134,8 +142,9 @@ export const TableRow = React.forwardRef(function TableRow(
 });
 
 /**
- * Column header cell. `text-slate-400` + uppercase matches the muted
- * header style from the SSR dashboard baseline.
+ * Column header cell. `text-muted-foreground` matches the canonical
+ * shadcn chrome — the actual hue comes from the themed `--muted-foreground`
+ * token so light and dark modes render correctly without per-mode overrides.
  */
 export const TableHead = React.forwardRef(function TableHead(
   { className, ...props },
@@ -147,7 +156,7 @@ export const TableHead = React.forwardRef(function TableHead(
       scope="col"
       data-component="table-head"
       className={cn(
-        'h-10 px-3 text-left align-middle text-[11px] font-semibold uppercase tracking-wider text-slate-400 [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
+        'h-12 px-4 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
         className,
       )}
       {...props}
@@ -156,8 +165,9 @@ export const TableHead = React.forwardRef(function TableHead(
 });
 
 /**
- * Body cell. Uses the slightly taller padding shadcn ships so budget /
- * token numbers have breathing room.
+ * Body cell. Uses canonical shadcn padding so budget / token numbers
+ * have breathing room. Inherits colour from the parent `text-foreground`
+ * body rule declared in `globals.css`.
  */
 export const TableCell = React.forwardRef(function TableCell(
   { className, ...props },
@@ -168,7 +178,7 @@ export const TableCell = React.forwardRef(function TableCell(
       ref={ref}
       data-component="table-cell"
       className={cn(
-        'px-3 py-2.5 align-middle text-sm text-slate-100 [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
+        'p-4 align-middle [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
         className,
       )}
       {...props}
@@ -188,7 +198,7 @@ export const TableCaption = React.forwardRef(function TableCaption(
     <caption
       ref={ref}
       data-component="table-caption"
-      className={cn('mt-3 text-xs text-slate-400', className)}
+      className={cn('mt-4 text-sm text-muted-foreground', className)}
       {...props}
     />
   );

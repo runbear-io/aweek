@@ -139,24 +139,24 @@ export function ActivityTimeline({
       data-component="activity-timeline"
       data-row-count={totalRows}
       className={[
-        'rounded-md border border-slate-800 bg-slate-900/30',
+        'rounded-md border border-border bg-muted/30',
         className || '',
       ]
         .filter(Boolean)
         .join(' ')}
     >
-      <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/50 px-4 py-2">
-        <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+      <div className="flex items-center justify-between border-b border-border bg-muted/50 px-4 py-2">
+        <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           {title}
         </div>
-        <div className="text-[11px] text-slate-500 tabular-nums">
+        <div className="text-[11px] text-muted-foreground tabular-nums">
           {totalRows} row{totalRows === 1 ? '' : 's'}
         </div>
       </div>
 
       {totalRows === 0 ? (
         <div
-          className="px-4 py-6 text-center text-xs italic text-slate-500"
+          className="px-4 py-6 text-center text-xs italic text-muted-foreground"
           data-timeline-empty="true"
         >
           {emptyMessage}
@@ -165,7 +165,7 @@ export function ActivityTimeline({
         <ol
           role="list"
           aria-label="Chronological activity timeline"
-          className="relative divide-y divide-slate-800"
+          className="relative divide-y divide-border"
         >
           {items.map((item) => (
             <TimelineRow key={item.key} item={item} />
@@ -221,7 +221,7 @@ function SourceRail({ source }) {
           className="mt-1.5 h-2.5 w-2.5 rounded-full border border-violet-300/70 bg-violet-500"
           data-rail-dot="execution"
         />
-        <span className="w-px flex-1 bg-slate-800" />
+        <span className="w-px flex-1 bg-border" />
       </div>
     );
   }
@@ -231,7 +231,7 @@ function SourceRail({ source }) {
         className="mt-1.5 h-2.5 w-2.5 rounded-full border border-sky-300/70 bg-sky-500"
         data-rail-dot="activity"
       />
-      <span className="w-px flex-1 bg-slate-800" />
+      <span className="w-px flex-1 bg-border" />
     </div>
   );
 }
@@ -262,27 +262,27 @@ function ActivityRowBody({ entry, timestamp }) {
   const taskId = entry?.taskId || null;
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <SourceBadge source="activity" />
         <time dateTime={timestamp || undefined} className="tabular-nums">
           {formatDate(timestamp)}
         </time>
-        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-300">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-foreground">
           {String(status)}
         </span>
         {taskId ? (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-muted-foreground">
             Task <code>{taskId}</code>
           </span>
         ) : null}
         {durationMs != null ? (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-muted-foreground">
             {formatDuration(durationMs)}
           </span>
         ) : null}
       </div>
       {title ? (
-        <div className="text-sm text-slate-200">{String(title)}</div>
+        <div className="text-sm text-foreground">{String(title)}</div>
       ) : null}
     </>
   );
@@ -312,10 +312,10 @@ function ExecutionRowBody({ row, timestamp }) {
         ? 'text-red-300 border-red-400/40 bg-red-500/10'
         : status === 'skipped'
           ? 'text-amber-300 border-amber-300/40 bg-amber-500/10'
-          : 'text-slate-400 border-slate-700 bg-slate-800/40';
+          : 'text-muted-foreground border-border bg-muted/40';
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <SourceBadge source="execution" />
         <time dateTime={timestamp || undefined} className="tabular-nums">
           {formatDate(timestamp)}
@@ -326,12 +326,12 @@ function ExecutionRowBody({ row, timestamp }) {
           {String(status)}
         </span>
         {windowStart && windowEnd && windowStart !== windowEnd ? (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-muted-foreground">
             window {formatDate(windowStart)} → {formatDate(windowEnd)}
           </span>
         ) : null}
       </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-300">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground">
         {row?.taskId ? (
           <span>
             Task <code className="text-[11px]">{row.taskId}</code>

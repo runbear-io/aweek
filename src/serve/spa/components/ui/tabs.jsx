@@ -118,9 +118,11 @@ export const Tabs = React.forwardRef(function Tabs(
 /**
  * Horizontal row of triggers.
  *
- * Radix renders this as `role="tablist"` and handles keyboard nav.
- * A shared bottom border is applied here so the active trigger's
- * underline reads as continuous with the chrome.
+ * Radix renders this as `role="tablist"` and handles keyboard nav. The
+ * canonical shadcn markup is a rounded `bg-muted` pill container that
+ * houses each trigger; active triggers raise on top via `bg-background`
+ * + `shadow-sm`, so the component reads correctly in both light and
+ * dark themes via the shadcn token palette.
  *
  * @param {{ className?: string, children?: React.ReactNode } & React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>} props
  */
@@ -133,7 +135,7 @@ export const TabsList = React.forwardRef(function TabsList(
       ref={ref}
       data-component="tabs-list"
       className={cn(
-        'inline-flex items-center gap-1 border-b border-slate-800',
+        'inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground',
         className,
       )}
       {...props}
@@ -171,16 +173,15 @@ export const TabsTrigger = React.forwardRef(function TabsTrigger(
       data-component="tabs-trigger"
       data-tab-value={value}
       className={cn(
-        // Base trigger chrome.
-        '-mb-px inline-flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-400 transition-colors',
-        // Focus ring.
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/60',
+        // Base trigger chrome — canonical shadcn pill geometry.
+        'inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all',
+        // Focus ring uses the themed ring token so both light/dark land.
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         // Disabled.
         'disabled:pointer-events-none disabled:opacity-50',
-        // Hover (inactive only — active is owned by data-[state=active]).
-        'hover:border-slate-700 hover:text-slate-200',
-        // Active state via Radix data-state hook.
-        'data-[state=active]:border-sky-400 data-[state=active]:text-slate-100 data-[state=active]:hover:border-sky-400',
+        // Active state via Radix data-state hook — raises onto a themed
+        // surface pill and adopts the base foreground token.
+        'data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm',
         className,
       )}
       {...props}
@@ -217,7 +218,10 @@ export const TabsContent = React.forwardRef(function TabsContent(
       forceMount={forceMount || undefined}
       data-component="tabs-content"
       data-tab={value}
-      className={cn('focus-visible:outline-none', className)}
+      className={cn(
+        'mt-2 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        className,
+      )}
       {...props}
     >
       {children}

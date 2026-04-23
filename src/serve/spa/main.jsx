@@ -8,9 +8,19 @@ import {
   DEFAULT_AGENT_DETAIL_TAB,
   normaliseTab,
 } from './pages/index.js';
+import { Layout } from './components/layout.jsx';
+import { ThemeProvider } from './components/theme-provider.jsx';
 import './styles/globals.css';
 
-document.documentElement.classList.add('dark');
+function AgentsRoute() {
+  const navigate = useNavigate();
+  // Every row on the /agents list navigates to /agents/:slug. The
+  // `AgentsPage` component is routing-agnostic — it exposes an
+  // `onSelectAgent(slug)` callback that this router wrapper wires to
+  // `useNavigate`. This keeps the component unit-testable without a
+  // `BrowserRouter` while still producing real links in the SPA.
+  return <AgentsPage onSelectAgent={(slug) => navigate(`/agents/${slug}`)} />;
+}
 
 function AgentDetailRoute() {
   const { slug, tab } = useParams();
@@ -25,12 +35,18 @@ function AgentDetailRoute() {
   );
 }
 
-createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <BrowserRouter>
+/**
+ * `AppShell` — wraps every page in the shared `Layout` so the sidebar,
+ * header, and footer built by AC 2/4/5 actually render in the live SPA.
+ * Without this wrapper the routes bypass the sidebar entirely and the
+ * theme toggle in the sidebar footer is unreachable.
+ */
+function AppShell() {
+  return (
+    <Layout>
       <Routes>
         <Route path="/" element={<Navigate to="/agents" replace />} />
-        <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/agents" element={<AgentsRoute />} />
         <Route path="/agents/:slug" element={<AgentDetailRoute />} />
         <Route path="/agents/:slug/:tab" element={<AgentDetailRoute />} />
         <Route path="/calendar" element={<Navigate to="/agents" replace />} />
@@ -39,6 +55,16 @@ createRoot(document.getElementById('root')).render(
         <Route path="/profile" element={<Navigate to="/agents" replace />} />
         <Route path="*" element={<Navigate to="/agents" replace />} />
       </Routes>
-    </BrowserRouter>
+    </Layout>
+  );
+}
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <ThemeProvider>
+      <BrowserRouter>
+        <AppShell />
+      </BrowserRouter>
+    </ThemeProvider>
   </React.StrictMode>,
 );

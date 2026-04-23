@@ -1,11 +1,11 @@
 /**
- * shadcn/ui-style Card primitives.
+ * shadcn/ui Card primitives.
  *
- * Dependency-free vendored implementation of shadcn/ui's `card`
- * component family (https://ui.shadcn.com/docs/components/card). The
- * public surface mirrors the shadcn reference so later upgrades — e.g.
- * dropping in the official `@shadcn/ui` CLI install once the SPA is
- * fully bootstrapped — slot in without touching consumers:
+ * Canonical shadcn/ui `card` component family
+ * (https://ui.shadcn.com/docs/components/card). The public surface
+ * mirrors the shadcn reference so later upgrades — e.g. dropping in
+ * the official `@shadcn/ui` CLI install once the SPA is fully
+ * bootstrapped — slot in without touching consumers:
  *
  *   Card
  *     ├── CardHeader
@@ -14,10 +14,10 @@
  *     ├── CardContent
  *     └── CardFooter
  *
- * Cards are used throughout the SPA (dashboard stats, agent summary
- * panels, form containers) so the palette matches the surrounding
- * chrome — slate-800 border, slate-900/40 background, slate-100/200
- * text — per the shared dark dashboard tokens.
+ * All colour/surface styling goes through shadcn theme tokens
+ * (`bg-card`, `text-card-foreground`, `border`, `text-muted-foreground`)
+ * so the same markup renders correctly in both light and dark themes
+ * by toggling the `.dark` class on `<html>`.
  *
  * @module serve/spa/components/ui/card
  */
@@ -45,7 +45,7 @@ export const Card = React.forwardRef(function Card(
       ref={ref}
       data-component="card"
       className={cn(
-        'rounded-lg border border-slate-800 bg-slate-900/40 text-slate-100 shadow-sm',
+        'rounded-lg border bg-card text-card-foreground shadow-sm',
         className,
       )}
       {...props}
@@ -55,7 +55,7 @@ export const Card = React.forwardRef(function Card(
 
 /**
  * CardHeader — top slot for titles + optional trailing actions. Stacks
- * `CardTitle` + `CardDescription` with a 1.5 gap.
+ * `CardTitle` + `CardDescription` with canonical shadcn spacing.
  */
 export const CardHeader = React.forwardRef(function CardHeader(
   { className, ...props },
@@ -65,7 +65,7 @@ export const CardHeader = React.forwardRef(function CardHeader(
     <div
       ref={ref}
       data-component="card-header"
-      className={cn('flex flex-col gap-1.5 p-4 sm:p-6', className)}
+      className={cn('flex flex-col space-y-1.5 p-6', className)}
       {...props}
     />
   );
@@ -85,7 +85,7 @@ export const CardTitle = React.forwardRef(function CardTitle(
       ref={ref}
       data-component="card-title"
       className={cn(
-        'text-base font-semibold leading-tight tracking-tight text-slate-100',
+        'text-2xl font-semibold leading-none tracking-tight',
         className,
       )}
       {...props}
@@ -104,7 +104,7 @@ export const CardDescription = React.forwardRef(function CardDescription(
     <p
       ref={ref}
       data-component="card-description"
-      className={cn('text-sm text-slate-400', className)}
+      className={cn('text-sm text-muted-foreground', className)}
       {...props}
     />
   );
@@ -122,7 +122,7 @@ export const CardContent = React.forwardRef(function CardContent(
     <div
       ref={ref}
       data-component="card-content"
-      className={cn('p-4 pt-0 sm:p-6 sm:pt-0', className)}
+      className={cn('p-6 pt-0', className)}
       {...props}
     />
   );
@@ -140,7 +140,7 @@ export const CardFooter = React.forwardRef(function CardFooter(
     <div
       ref={ref}
       data-component="card-footer"
-      className={cn('flex items-center gap-2 p-4 pt-0 sm:p-6 sm:pt-0', className)}
+      className={cn('flex items-center p-6 pt-0', className)}
       {...props}
     />
   );

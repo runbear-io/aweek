@@ -101,7 +101,7 @@ export function Nav({
       aria-label="Primary"
       data-component="nav"
       className={cn(
-        'flex items-center gap-1 border-b border-slate-800 bg-slate-950/60 px-4 py-2 text-sm',
+        'flex items-center gap-1 border-b border-border bg-background/60 px-4 py-2 text-sm',
         className,
       )}
     >
@@ -138,8 +138,8 @@ export function Nav({
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/60',
                   active
-                    ? 'border-sky-500/60 bg-sky-500/10 text-slate-100'
-                    : 'border-transparent text-slate-400 hover:border-slate-700 hover:bg-slate-900/60 hover:text-slate-200',
+                    ? 'border-primary/60 bg-primary/10 text-foreground'
+                    : 'border-transparent text-muted-foreground hover:border-border hover:bg-accent hover:text-accent-foreground',
                 )}
               >
                 {item.label}

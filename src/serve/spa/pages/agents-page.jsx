@@ -20,11 +20,10 @@
  *   Agent | Status | Tasks | Budget — plus a week header mirroring the
  *   terminal's "Week: 2026-Wnn (Monday: YYYY-MM-DD)" caption.
  *
- * Styling uses Tailwind utility classes composed via shadcn/ui-style
- * `Table` primitives vendored under `../components/ui/table.jsx`. The
- * primitives keep the public surface byte-identical to the upstream
- * shadcn/ui reference so the full `shadcn@latest add table` install can
- * drop in later without changing this file.
+ * Styling uses canonical shadcn/ui token utilities only — every colour
+ * resolves to a theme token declared in `styles/globals.css` (`--foreground`,
+ * `--muted-foreground`, `--destructive`, …) so light and dark modes
+ * render correctly without per-palette overrides.
  *
  * @module serve/spa/pages/agents-page
  */
@@ -115,7 +114,7 @@ function AgentsPageHeader({ count, week, loading, onRefresh }) {
               Agents
             </CardTitle>
             <CardDescription className="text-xs">
-              Week <span className="font-mono text-slate-200">{week}</span> ·{' '}
+              Week <span className="font-mono text-foreground">{week}</span> ·{' '}
               {count} agent{count === 1 ? '' : 's'} · read from{' '}
               <code>.aweek/</code>
             </CardDescription>
@@ -164,9 +163,27 @@ function AgentsTable({ rows, onSelect }) {
               <TableRow
                 key={row.slug}
                 data-agent-slug={row.slug}
-                onClick={() => onSelect && onSelect(row.slug)}
+                data-href={onSelect ? `/agents/${row.slug}` : undefined}
+                onClick={
+                  onSelect ? () => onSelect(row.slug) : undefined
+                }
+                onKeyDown={
+                  onSelect
+                    ? (event) => {
+                        // Enter/Space activate the row like a native link so
+                        // keyboard users can reach /agents/:slug without a
+                        // dedicated click target.
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          onSelect(row.slug);
+                        }
+                      }
+                    : undefined
+                }
+                role={onSelect ? 'link' : undefined}
+                tabIndex={onSelect ? 0 : undefined}
                 className={cn(
-                  onSelect && 'cursor-pointer focus-within:bg-slate-900/70',
+                  onSelect && 'cursor-pointer focus-within:bg-muted/50',
                 )}
               >
                 <TableCell>
@@ -199,7 +216,7 @@ function AgentsTable({ rows, onSelect }) {
 function AgentCell({ row, onSelect }) {
   const name = (
     <span className="flex items-center gap-2">
-      <span className="text-sm font-semibold text-slate-100">{row.name}</span>
+      <span className="text-sm font-semibold text-foreground">{row.name}</span>
       {row.missing ? (
         <Badge variant="destructive">subagent missing</Badge>
       ) : null}
@@ -215,19 +232,19 @@ function AgentCell({ row, onSelect }) {
             event.stopPropagation();
             onSelect(row.slug);
           }}
-          className="h-auto justify-start p-0 text-left text-slate-100 no-underline hover:underline focus:underline"
+          className="h-auto justify-start p-0 text-left text-foreground no-underline hover:underline focus:underline"
         >
           {name}
         </Button>
       ) : (
         name
       )}
-      <div className="flex items-center gap-2 text-xs text-slate-400">
-        <code className="rounded bg-slate-900 px-1.5 py-0.5 text-[11px]">
+      <div className="flex min-w-0 max-w-[520px] items-center gap-2 text-xs text-muted-foreground">
+        <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px]">
           {row.slug}
         </code>
         {row.description ? (
-          <span className="truncate">· {row.description}</span>
+          <span className="min-w-0 truncate">· {row.description}</span>
         ) : null}
       </div>
     </div>
@@ -236,17 +253,17 @@ function AgentCell({ row, onSelect }) {
 
 function StatusBadge({ status }) {
   const label = statusLabel(status);
+  // Map agent status onto stock shadcn Badge variants only. "active"
+  // reads as the neutral default fill, "paused" as a muted outline, and
+  // any destructive/unknown state as the destructive variant.
   const variant =
     status === 'active'
-      ? 'success'
+      ? 'default'
       : status === 'paused'
-        ? 'warning'
+        ? 'outline'
         : 'destructive';
   return (
-    <Badge
-      variant={variant}
-      className="tracking-widest"
-    >
+    <Badge variant={variant} className="tracking-widest">
       {label}
     </Badge>
   );
@@ -267,13 +284,13 @@ function statusLabel(status) {
 function TasksCell({ row }) {
   const total = Number(row.tasksTotal) || 0;
   if (total <= 0) {
-    return <span className="italic text-slate-500">—</span>;
+    return <span className="italic text-muted-foreground">—</span>;
   }
   const completed = Number(row.tasksCompleted) || 0;
   return (
-    <span className="text-sm text-slate-200">
+    <span className="text-sm text-foreground">
       {completed}
-      <span className="text-slate-500">/{total}</span>
+      <span className="text-muted-foreground">/{total}</span>
     </span>
   );
 }
@@ -281,19 +298,19 @@ function TasksCell({ row }) {
 /**
  * Budget cell — mirrors `formatBudgetCell` in `src/skills/summary.js`:
  *   "no limit"               when tokenLimit is falsy
- *   "used / limit (pct%)"    otherwise; bold red when at/over limit.
+ *   "used / limit (pct%)"    otherwise; destructive when at/over limit.
  */
 function BudgetCell({ row }) {
   if (!row.tokenLimit || row.tokenLimit <= 0) {
-    return <span className="italic text-slate-500">no limit</span>;
+    return <span className="italic text-muted-foreground">no limit</span>;
   }
   const over = row.tokensUsed >= row.tokenLimit;
   const pct = row.utilizationPct != null ? `${row.utilizationPct}%` : '—';
   return (
-    <span className={cn(over ? 'font-semibold text-red-400' : 'text-slate-200')}>
+    <span className={cn(over ? 'font-semibold text-destructive' : 'text-foreground')}>
       {formatTokens(row.tokensUsed)}
-      <span className="text-slate-500"> / {formatTokens(row.tokenLimit)}</span>
-      <span className="ml-1 text-xs text-slate-400">({pct})</span>
+      <span className="text-muted-foreground"> / {formatTokens(row.tokenLimit)}</span>
+      <span className="ml-1 text-xs text-muted-foreground">({pct})</span>
     </span>
   );
 }
@@ -305,9 +322,9 @@ function AgentsPageEmpty() {
   // surface maintain visual consistency whether or not agents exist.
   return (
     <Card className="border-dashed">
-      <CardContent className="p-8 text-center text-sm italic text-slate-400">
+      <CardContent className="p-8 text-center text-sm italic text-muted-foreground">
         No agents yet. Run{' '}
-        <code className="not-italic text-slate-200">/aweek:hire</code> to create
+        <code className="not-italic text-foreground">/aweek:hire</code> to create
         one.
       </CardContent>
     </Card>
@@ -319,7 +336,7 @@ function AgentsPageSkeleton() {
     <div
       role="status"
       aria-live="polite"
-      className="animate-pulse text-sm text-slate-500"
+      className="animate-pulse text-sm text-muted-foreground"
       data-page="agents"
       data-loading="true"
     >
@@ -329,7 +346,7 @@ function AgentsPageSkeleton() {
 }
 
 function AgentsPageError({ error, onRetry }) {
-  // Destructive-variant Card communicates failure in the same chrome
+  // Destructive-token Card communicates failure in the same chrome
   // family as the healthy Overview surface (rather than a bespoke div).
   // `role="alert"` is kept on the outer element so assistive tech picks
   // the banner up immediately and the existing test contract
@@ -339,23 +356,18 @@ function AgentsPageError({ error, onRetry }) {
       role="alert"
       data-page="agents"
       data-error="true"
-      className="border-red-500/40 bg-red-500/10 text-red-200"
+      className="border-destructive/40 bg-destructive/10 text-destructive"
     >
       <CardHeader className="space-y-1">
-        <CardTitle as="h2" className="text-sm text-red-200">
+        <CardTitle as="h2" className="text-sm text-destructive">
           Failed to load agents.
         </CardTitle>
-        <CardDescription className="text-xs text-red-200/80">
+        <CardDescription className="text-xs text-destructive/80">
           {error?.message || String(error)}
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-0">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRetry}
-          className="border-red-400/50 text-red-200 hover:bg-red-500/20"
-        >
+        <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
       </CardContent>
@@ -364,11 +376,11 @@ function AgentsPageError({ error, onRetry }) {
 }
 
 function StaleBanner({ error, onRetry }) {
+  // Neutral muted chrome for the "stale" callout — the stock shadcn
+  // palette does not expose a warning token, so we use the muted
+  // surface + outline border to signal "advisory, not destructive".
   return (
-    <Card
-      role="alert"
-      className="border-amber-500/40 bg-amber-500/10 text-amber-200"
-    >
+    <Card role="alert" className="bg-muted text-muted-foreground">
       <CardContent className="flex items-center gap-2 p-2.5 text-xs">
         <span>
           Refresh failed ({error?.message || 'unknown error'}) — showing last-known
@@ -378,7 +390,7 @@ function StaleBanner({ error, onRetry }) {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto p-0 text-xs text-amber-200 underline decoration-dotted hover:decoration-solid"
+          className="h-auto p-0 text-xs"
         >
           Retry
         </Button>

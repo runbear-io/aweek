@@ -1,25 +1,20 @@
 /**
  * `Layout` — shared application shell.
  *
- * Wraps page content in the canonical `<Header>` + `<Nav>` + `<main>` +
- * `<Footer>` stack so every route inherits identical chrome. Consumers
- * pass the current `pathname` (+ optional `onNavigate`) so the nav's
- * active-link highlighting stays in sync with the URL.
- *
- * Styling is Tailwind-only (no plain CSS, no inline styles). The shell
- * fills the viewport via `min-h-screen` and places the footer at the
- * bottom of the scroll region using flex.
+ * Wraps page content in a `SidebarProvider` + `AppSidebar` +
+ * `SidebarInset` stack so every route renders beside the canonical left
+ * rail. The inset carries `<Header>` + `<main>` + `<Footer>` slots so
+ * top chrome and footer content stay consistent across pages.
  *
  * Composition:
  *
- *   <Layout pathname={pathname} onNavigate={push}>
+ *   <Layout>
  *     <AgentsPage />
  *   </Layout>
  *
- * The shell is intentionally un-opinionated about routing: parent code
- * owns the URL and simply hands the active pathname in. This keeps the
- * layout usable under any router (react-router, a plain browser
- * navigation, a test harness, etc.).
+ * The layout is router-agnostic in the sense that it does not own any
+ * routing state — it simply assumes a react-router context is present
+ * above it so `AppSidebar`'s `<Link>`-based nav works.
  *
  * @module serve/spa/components/layout
  */
@@ -27,53 +22,63 @@
 import React from 'react';
 
 import { cn } from '../lib/cn.js';
+import { AppSidebar } from './app-sidebar.jsx';
 import { Footer } from './footer.jsx';
 import { Header } from './header.jsx';
-import { Nav } from './nav.jsx';
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from './ui/sidebar.jsx';
 
 /**
  * Application shell.
  *
  * @param {{
- *   pathname?: string,
- *   onNavigate?: (href: string) => void,
  *   title?: string,
  *   subtitle?: string,
  *   headerActions?: React.ReactNode,
  *   footer?: React.ReactNode,
  *   className?: string,
  *   children?: React.ReactNode,
+ *   defaultSidebarOpen?: boolean,
  * }} [props]
  * @returns {JSX.Element}
  */
 export function Layout({
-  pathname = '/',
-  onNavigate,
   title,
   subtitle,
   headerActions,
   footer,
   className,
   children,
+  defaultSidebarOpen = true,
 } = {}) {
+  const actions = (
+    <>
+      <SidebarTrigger className="-ml-1" />
+      {headerActions ? (
+        <div className="ml-auto flex items-center gap-2">{headerActions}</div>
+      ) : null}
+    </>
+  );
   return (
-    <div
-      data-component="layout"
-      className={cn(
-        'flex min-h-screen flex-col bg-slate-950 text-slate-100 antialiased',
-        className,
-      )}
-    >
-      <Header title={title} subtitle={subtitle} actions={headerActions} />
-      <Nav pathname={pathname} onNavigate={onNavigate} />
-      <main
-        data-component="main"
-        className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8"
+    <SidebarProvider defaultOpen={defaultSidebarOpen}>
+      <AppSidebar />
+      <SidebarInset
+        data-component="layout"
+        className={cn('min-w-0 antialiased', className)}
       >
-        {children}
-      </main>
-      <Footer>{footer}</Footer>
-    </div>
+        <Header title={title} subtitle={subtitle} actions={actions} />
+        <div
+          data-component="main"
+          className="flex min-w-0 flex-1 flex-col gap-4 overflow-x-auto p-4 md:gap-6 md:p-6"
+        >
+          {children}
+        </div>
+        <Footer>{footer}</Footer>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }
 
