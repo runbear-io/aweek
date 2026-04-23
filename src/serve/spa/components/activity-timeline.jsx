@@ -30,6 +30,7 @@
  */
 
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 /**
  * @typedef {import('../lib/api-client.js').ActivityEntry} ActivityEntry
@@ -130,6 +131,7 @@ export function ActivityTimeline({
   emptyMessage = 'No activity in this range.',
   title = 'Timeline',
   className,
+  agentSlug,
 }) {
   const items = buildTimeline(entries, executions);
   const totalRows = items.length;
@@ -168,7 +170,7 @@ export function ActivityTimeline({
           className="relative divide-y divide-border"
         >
           {items.map((item) => (
-            <TimelineRow key={item.key} item={item} />
+            <TimelineRow key={item.key} item={item} agentSlug={agentSlug} />
           ))}
         </ol>
       )}
@@ -186,7 +188,7 @@ export default ActivityTimeline;
  *
  * @param {{ item: TimelineItem }} props
  */
-function TimelineRow({ item }) {
+function TimelineRow({ item, agentSlug }) {
   return (
     <li
       className="flex items-start gap-3 px-4 py-2.5"
@@ -198,7 +200,11 @@ function TimelineRow({ item }) {
         {item.source === 'activity' ? (
           <ActivityRowBody entry={item.raw} timestamp={item.timestamp} />
         ) : (
-          <ExecutionRowBody row={item.raw} timestamp={item.timestamp} />
+          <ExecutionRowBody
+            row={item.raw}
+            timestamp={item.timestamp}
+            agentSlug={agentSlug}
+          />
         )}
       </div>
     </li>
@@ -288,7 +294,7 @@ function ActivityRowBody({ entry, timestamp }) {
   );
 }
 
-function ExecutionRowBody({ row, timestamp }) {
+function ExecutionRowBody({ row, timestamp, agentSlug }) {
   // Field names mirror `createExecutionRecord` in execution-store.js:
   //   { id, idempotencyKey, agentId, timestamp, windowStart, windowEnd,
   //     status, taskId?, duration?, metadata? }
@@ -341,6 +347,15 @@ function ExecutionRowBody({ row, timestamp }) {
         {tokens != null ? <span>{formatTokens(tokens)} tokens</span> : null}
         {cost != null ? (
           <span>${(Number(cost) || 0).toFixed(4)}</span>
+        ) : null}
+        {agentSlug && row?.taskId && row?.id ? (
+          <Link
+            to={`/agents/${encodeURIComponent(agentSlug)}/activity/${encodeURIComponent(`${row.taskId}_${row.id}`)}`}
+            className="ml-auto text-xs text-primary underline-offset-2 hover:underline focus:underline focus:outline-none"
+            data-execution-log-link="true"
+          >
+            View log →
+          </Link>
         ) : null}
       </div>
       {error ? (
