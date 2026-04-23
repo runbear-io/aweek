@@ -2,70 +2,54 @@
  * aweek serve — local HTTP dashboard.
  *
  * Entry point for the `aweek serve` subcommand. Launches a lightweight
- * HTTP server that renders a read-only dashboard over live data read
- * from the `.aweek/` folder on each request.
+ * HTTP server that serves a React + Vite SPA build from disk with SPA
+ * fallback routing so client-side routes resolve back to the app shell
+ * without reloading through a 404.
  *
- * Sub-AC 2 wires up the HTTP server skeleton: it binds to the configured
- * host/port, serves a root dashboard HTML shell at `GET /`, and returns
- * a startup result with the resolved URL. Later sub-ACs add the data
- * endpoints (agents, calendar, plan, budget) that the shell will hydrate
- * from. The HTML shell ships with the reference dark-theme tokens so the
- * look-and-feel is in place from day one; section bodies are intentionally
- * placeholder until the data routes land.
+ * Sub-AC 1 scope (AC 7): the command handler is refactored from SSR to
+ * static file serving. JSON data endpoints that hydrate the SPA come in
+ * later sub-ACs. Surface for this sub-AC:
+ *
+ *   GET /healthz            → liveness probe (JSON)
+ *   GET /<asset>            → static file from the Vite build directory
+ *   GET /<anything-else>    → SPA fallback → index.html
+ *
+ * When the build directory is missing (fresh clone, no `pnpm build` yet),
+ * the server serves a friendly HTML stub with build instructions instead
+ * of a hard 404. This keeps the CLI runnable during development and in
+ * CI smoke tests that never run the frontend build.
  */
 
 import { createServer } from 'node:http';
-import { join, resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { pipeline } from 'node:stream/promises';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { platform as nodePlatform } from 'node:process';
 import { networkInterfaces as nodeNetworkInterfaces } from 'node:os';
-import { readExecutionLogLines } from '../storage/execution-log-store.js';
-import { formatExecutionLogLine } from './execution-log-formatter.js';
-import {
-  buildExecutionLogSummary,
-  parseExecutionLog,
-  renderExecutionLogSummaryHtml,
-} from './execution-log-summary.js';
+
 import {
   MISSING_AWEEK_DIR_CODE,
   createNoAweekDirError,
   formatNoAweekDirMessage,
   isNoAweekDirError,
 } from './errors.js';
-import { gatherAgents, agentsSectionStyles } from './agents-section.js';
-import { renderSidebar, sidebarStyles } from './sidebar-section.js';
-import { renderTabBar, tabBarStyles, resolveActiveTab } from './tabs-section.js';
 import {
-  gatherActivity,
-  renderActivitySection,
-  activitySectionStyles,
-} from './activity-section.js';
-import {
-  gatherBudget,
-  renderBudgetSection,
-  budgetSectionStyles,
-} from './budget-section.js';
-import {
-  gatherPlans,
-  renderPlanSection,
-  planSectionStyles,
-} from './plan-section.js';
-import {
-  renderStrategySection,
-  strategySectionStyles,
-} from './strategy-section.js';
-import {
-  gatherProfile,
-  renderProfileSection,
-  profileSectionStyles,
-} from './profile-section.js';
-import {
-  gatherCalendar,
-  gatherCalendarView,
-  renderCalendarSection,
-  calendarSectionStyles,
-} from './calendar-section.js';
+  gatherAgentsList,
+  gatherAgentProfile,
+  gatherAgentPlan,
+  gatherAgentCalendar,
+  gatherAgentUsage,
+  gatherAgentLogs,
+} from './data/index.js';
+// The /api/summary endpoint intentionally reuses the terminal
+// `/aweek:summary` composer so the SPA Overview tab shows byte-identical
+// cells (Agent / Goals / Tasks / Budget / Status) to the CLI baseline.
+// This single source of truth guarantees feature parity between the two
+// surfaces — any future tweak to summary.js shows up in both without
+// per-consumer drift.
+import { buildSummary } from '../skills/summary.js';
 
 // Re-export the friendly-error surface so callers that already import
 // from `./server.js` (CLI layer, tests) don't need to reach into the
@@ -91,12 +75,98 @@ export const DEFAULT_HOST = '0.0.0.0';
 export const PORT_SCAN_LIMIT = 20;
 
 /**
+ * Directory name of the Vite build output relative to the package root.
+ * The actual absolute path is computed by `resolveDefaultBuildDir()` so
+ * tests can override it via `--build-dir` / `normaliseServeOptions({ buildDir })`.
+ */
+export const DEFAULT_BUILD_DIR_NAME = 'dist';
+
+/**
  * Hosts that should not be surfaced verbatim in the user-facing URL. A
  * `0.0.0.0` (or `::`) bind means "all interfaces"; the user-reachable
  * address on the local machine is `localhost`. We display that instead
  * and print the LAN hint separately (see bin/aweek.js).
  */
 const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '::0']);
+
+/**
+ * Whitelist of SPA client-side route patterns. Any request whose
+ * pathname matches one of these is considered a legitimate SPA route
+ * and gets the `index.html` shell returned (200 OK) so the React router
+ * can render the page. Every other pathname (unknown slugs under `/xyz`,
+ * bare `/api`, typo'd routes) returns a 404 JSON envelope.
+ *
+ * The whitelist is intentionally narrow — it mirrors the tab list in
+ * the SPA sidebar plus the per-agent detail routes — so accidental
+ * typos / probe requests don't silently serve the shell and mask real
+ * 404s in operator logs.
+ */
+const CLIENT_ROUTE_PATTERNS = [
+  /^\/$/,
+  /^\/agents\/?$/,
+  /^\/calendar\/?$/,
+  /^\/activity\/?$/,
+  /^\/strategy\/?$/,
+  /^\/profile\/?$/,
+  // /agents/:slug and /agents/:slug/<anything>
+  /^\/agents\/[^/]+(?:\/.*)?$/,
+];
+
+/**
+ * Returns true when `pathname` matches one of the SPA's whitelisted
+ * client-side routes. Used by the static-file server to decide whether
+ * to fall back to `index.html` (whitelisted) or emit a 404 JSON body
+ * (non-whitelisted).
+ *
+ * @param {string} pathname
+ * @returns {boolean}
+ */
+export function isWhitelistedClientRoute(pathname) {
+  if (typeof pathname !== 'string') return false;
+  return CLIENT_ROUTE_PATTERNS.some((rx) => rx.test(pathname));
+}
+
+/**
+ * MIME type lookup for the file extensions the Vite bundle emits. Anything
+ * not listed falls back to `application/octet-stream` which the browser
+ * reliably treats as an opaque download — a safe default for unknown
+ * extensions that prevents accidental script-injection via mislabelled
+ * content types.
+ */
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.ico': 'image/x-icon',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
+};
+
+/**
+ * Resolve the default Vite build output directory. The build lives at
+ * `<packageRoot>/dist/` — two levels up from this file (`src/serve/server.js`).
+ * Exported so tests and any future CLI flag can override it via the
+ * `buildDir` option of `startServer`.
+ *
+ * @returns {string} absolute path to the default build directory
+ */
+export function resolveDefaultBuildDir() {
+  return fileURLToPath(new URL(`../../${DEFAULT_BUILD_DIR_NAME}/`, import.meta.url));
+}
 
 /**
  * A bound host is "wildcard" — i.e. the server actually accepts
@@ -122,7 +192,8 @@ export function isWildcardHost(host) {
  * @param {string} [raw.host]
  * @param {boolean} [raw.open]
  * @param {string} [raw.projectDir]
- * @returns {{ port: number, host: string, open: boolean, projectDir: string }}
+ * @param {string} [raw.buildDir] — override the Vite build output directory
+ * @returns {{ port: number, host: string, open: boolean, projectDir: string, buildDir: string }}
  */
 export function normaliseServeOptions(raw = {}) {
   const projectDir = raw.projectDir ? resolve(raw.projectDir) : process.cwd();
@@ -140,8 +211,9 @@ export function normaliseServeOptions(raw = {}) {
 
   const host = typeof raw.host === 'string' && raw.host.length > 0 ? raw.host : DEFAULT_HOST;
   const open = raw.open !== false; // default true; `--no-open` sets false
+  const buildDir = raw.buildDir ? resolve(raw.buildDir) : resolveDefaultBuildDir();
 
-  return { port, host, open, projectDir };
+  return { port, host, open, projectDir, buildDir };
 }
 
 /**
@@ -172,16 +244,18 @@ export function formatDashboardUrl(host, port) {
  * directly clickable by the user; callers that want the raw bind host
  * can read `host` from the result.
  *
- * Later sub-ACs attach the full dashboard router; for now the server
- * serves a read-only HTML shell at `GET /` with the four target sections
- * stubbed out, plus a health check at `GET /healthz` and a 404 for all
- * other paths.
+ * The router is intentionally minimal for sub-AC 1 of AC 7:
+ *   - GET /healthz          → `{ ok: true, projectDir }`
+ *   - GET /<file>           → static file from the Vite build directory
+ *   - GET /<anything-else>  → SPA fallback → index.html
+ *
+ * JSON data endpoints that feed the SPA are added by subsequent sub-ACs.
  *
  * @param {object} [options] — see `normaliseServeOptions` for shape
- * @returns {Promise<{ server: import('node:http').Server, port: number, host: string, url: string, projectDir: string, close: () => Promise<void> }>}
+ * @returns {Promise<{ server: import('node:http').Server, port: number, host: string, url: string, projectDir: string, buildDir: string, close: () => Promise<void> }>}
  */
 export async function startServer(options = {}) {
-  const { port, host, projectDir } = normaliseServeOptions(options);
+  const { port, host, projectDir, buildDir } = normaliseServeOptions(options);
 
   const dataDir = resolve(projectDir, '.aweek');
   if (!existsSync(dataDir)) {
@@ -196,7 +270,7 @@ export async function startServer(options = {}) {
     // error cannot crash the process. Emit a plain-text 500 when the
     // headers have not already been sent so the user sees something
     // actionable rather than a broken pipe.
-    Promise.resolve(handleRequest(req, res, { projectDir, dataDir })).catch((err) => {
+    Promise.resolve(handleRequest(req, res, { projectDir, dataDir, buildDir })).catch((err) => {
       if (!res.headersSent) {
         res.statusCode = 500;
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -219,6 +293,7 @@ export async function startServer(options = {}) {
     host,
     url,
     projectDir,
+    buildDir,
     close: () =>
       new Promise((resolveClose, rejectClose) => {
         server.close((err) => (err ? rejectClose(err) : resolveClose()));
@@ -227,14 +302,13 @@ export async function startServer(options = {}) {
 }
 
 /**
- * Request router. Sub-AC 2 only wires up the shell route and a health
- * check; later sub-ACs will register JSON endpoints for the four
- * dashboard sections. All handlers re-read `.aweek/` on every request
- * so the dashboard reflects live state without a server restart.
+ * HTTP request router. Method-checks once, routes `/healthz` to a JSON
+ * liveness probe, and otherwise hands off to the SPA static-file
+ * handler. Data endpoints (`/api/...`) are added in follow-up sub-ACs.
  *
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string, dataDir: string }} ctx
+ * @param {{ projectDir: string, dataDir: string, buildDir: string }} ctx
  */
 async function handleRequest(req, res, ctx) {
   const method = req.method || 'GET';
@@ -252,1068 +326,641 @@ async function handleRequest(req, res, ctx) {
   if (pathname === '/healthz') {
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify({ ok: true, projectDir: ctx.projectDir }));
     return;
   }
 
-  // JSON data endpoint: one agent's current-week calendar / task list.
-  // Path shape: `/api/agents/<slug>/calendar`. The slug is URL-decoded so
-  // plugin-prefixed agent ids (e.g. `oh-my-claudecode-writer`) and any
-  // non-ASCII slugs round-trip correctly. `?week=YYYY-Www` overrides the
-  // default "current week" resolution so the dashboard can paginate
-  // without a separate endpoint.
-  // Execution log endpoint.
-  // Path shape: `/api/executions/<agent-slug>/<basename>` where basename is
-  // `<taskId>-<executionId>` — the filename stem the heartbeat writes under
-  // `.aweek/agents/<slug>/executions/`. Returns a formatted plain-text
-  // execution log (one or more lines per stream-json event) so users can
-  // read, tail, or grep the session from a browser.
-  const executionLogMatch = /^\/api\/executions\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
-  if (executionLogMatch) {
-    const slug = safeDecode(executionLogMatch[1]);
-    const basename = safeDecode(executionLogMatch[2]);
-    await handleExecutionLogRequest(req, res, {
-      projectDir: ctx.projectDir,
-      agentId: slug,
-      basename,
-    });
+  if (pathname === '/api/summary' || pathname === '/api/summary/') {
+    await handleSummary(res, ctx);
     return;
   }
 
-  // Human-readable execution summary page.
-  // Path shape: `/executions/<agent-slug>/<basename>`. Parses the same
-  // JSONL the `/api/executions/...` endpoint streams, but renders a
-  // progressive-disclosure HTML view: headline + final output +
-  // permission denials + per-turn timeline up top, full raw JSON
-  // collapsed at the bottom. The raw endpoint remains available for
-  // curl / grep / tail workflows.
-  const summaryMatch = /^\/executions\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
-  if (summaryMatch) {
-    const slug = safeDecode(summaryMatch[1]);
-    const basename = safeDecode(summaryMatch[2]);
-    await handleExecutionLogSummaryRequest(req, res, {
-      projectDir: ctx.projectDir,
-      agentId: slug,
-      basename,
-    });
+  if (pathname === '/api/agents' || pathname === '/api/agents/') {
+    await handleAgentsList(res, ctx);
     return;
   }
 
-  const calendarMatch = /^\/api\/agents\/([^/]+)\/calendar\/?$/.exec(pathname);
-  if (calendarMatch) {
-    const slug = safeDecode(calendarMatch[1]);
-    const query = parseQuery(rawUrl);
-    const payload = await gatherCalendar({
-      projectDir: ctx.projectDir,
-      agentId: slug,
-      week: query.week,
-    });
-    if (payload && payload.notFound) {
-      res.statusCode = 404;
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-store');
-      res.end(JSON.stringify({ error: 'Agent not found', agentId: slug }));
+  const agentDetailMatch = pathname.match(/^\/api\/agents\/([^/]+)\/?$/);
+  if (agentDetailMatch) {
+    const slug = decodeSlug(agentDetailMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
       return;
     }
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.end(JSON.stringify(payload));
+    await handleAgentDetail(res, ctx, slug);
     return;
   }
 
-  if (pathname === '/' || pathname === '/index.html') {
-    // Pull the currently-selected agent from the query string. The plan
-    // section (and future calendar section) honour `?agent=<slug>` so
-    // users can deep-link to a specific agent. `URL` wants a base, so
-    // we give it a dummy one — only `searchParams` is consumed.
-    const url = new URL(rawUrl, 'http://localhost');
-    const selectedSlug = url.searchParams.get('agent') || undefined;
-    const activeTab = url.searchParams.get('tab') || undefined;
-
-    // Re-read `.aweek/` on every request so the dashboard reflects live
-    // state without a server restart. Each section gatherer is awaited in
-    // parallel so a slow filesystem read on one card does not serialize
-    // the others. Each gatherer also absorbs its own errors into an empty
-    // list so a single broken section cannot knock the whole dashboard
-    // offline — read-only tooling must prefer "degraded" over "500".
-    const calendarWeek = url.searchParams.get('week') || undefined;
-    const dateRange = url.searchParams.get('dateRange') || undefined;
-    const resolvedActiveTab = resolveActiveTab(activeTab);
-    const [agents, budget, plans, calendarView, activityView, profileView] = await Promise.all([
-      gatherAgents({ projectDir: ctx.projectDir }).catch(() => []),
-      gatherBudget({ projectDir: ctx.projectDir }).catch(() => []),
-      gatherPlans({ projectDir: ctx.projectDir, selectedSlug }).catch(() => ({
-        agents: [],
-        selected: null,
-      })),
-      gatherCalendarView({
-        projectDir: ctx.projectDir,
-        selectedSlug,
-        week: calendarWeek,
-      }).catch(() => ({ agents: [], selected: null })),
-      // Activity log is only fetched when the activity tab is active to
-      // avoid unnecessary filesystem reads on every request.
-      resolvedActiveTab === 'activity'
-        ? gatherActivity({ projectDir: ctx.projectDir, selectedSlug, dateRange }).catch(() => ({
-            agents: [],
-            selected: null,
-          }))
-        : Promise.resolve(null),
-      // Profile data is only fetched when the profile tab is active.
-      resolvedActiveTab === 'profile'
-        ? gatherProfile({ projectDir: ctx.projectDir, selectedSlug }).catch(() => ({
-            agents: [],
-            selected: null,
-          }))
-        : Promise.resolve(null),
-    ]);
-
-    const html = renderDashboardShell({
-      zeroAgents: agents.length === 0,
-      projectDir: ctx.projectDir,
-      sidebar: renderSidebar(agents, selectedSlug),
-      tabBar: renderTabBar(selectedSlug, activeTab),
-      activeTab: resolvedActiveTab,
-      sections: {
-        budget: renderBudgetSection(budget),
-        plan: renderPlanSection(plans),
-        calendar: renderCalendarSection(calendarView),
-        activity: activityView ? renderActivitySection(activityView) : '',
-        strategy: renderStrategySection(plans),
-        profile: profileView ? renderProfileSection(profileView) : '',
-      },
-      extraStyles:
-        sidebarStyles() +
-        agentsSectionStyles() +
-        budgetSectionStyles() +
-        planSectionStyles() +
-        calendarSectionStyles() +
-        tabBarStyles() +
-        activitySectionStyles() +
-        strategySectionStyles() +
-        profileSectionStyles(),
-    });
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    res.end(html);
+  const agentPlanMatch = pathname.match(/^\/api\/agents\/([^/]+)\/plan\/?$/);
+  if (agentPlanMatch) {
+    const slug = decodeSlug(agentPlanMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    await handleAgentPlan(res, ctx, slug);
     return;
   }
 
-  res.statusCode = 404;
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.end(`Not found: ${pathname}\n`);
+  const agentCalendarMatch = pathname.match(/^\/api\/agents\/([^/]+)\/calendar\/?$/);
+  if (agentCalendarMatch) {
+    const slug = decodeSlug(agentCalendarMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    const queryString = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : '';
+    const params = new URLSearchParams(queryString);
+    const week = params.get('week') || undefined;
+    await handleAgentCalendar(res, ctx, slug, week);
+    return;
+  }
+
+  const agentUsageMatch = pathname.match(/^\/api\/agents\/([^/]+)\/usage\/?$/);
+  if (agentUsageMatch) {
+    const slug = decodeSlug(agentUsageMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    await handleAgentUsage(res, ctx, slug);
+    return;
+  }
+
+  const agentLogsMatch = pathname.match(/^\/api\/agents\/([^/]+)\/logs\/?$/);
+  if (agentLogsMatch) {
+    const slug = decodeSlug(agentLogsMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    // The dashboard's date-range pill maps to a `?dateRange=` query
+    // string. Unknown / missing values fall back to "all" inside the
+    // gatherer so we don't need to validate it here.
+    const queryString = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : '';
+    const params = new URLSearchParams(queryString);
+    const dateRange = params.get('dateRange') || undefined;
+    await handleAgentLogs(res, ctx, slug, dateRange);
+    return;
+  }
+
+  await serveSpa(req, res, pathname, ctx);
 }
 
 /**
- * Render the dashboard HTML shell. The shell is self-contained (no
- * external network requests), ships the reference dark-theme CSS
- * tokens, and lays out the four target sections as cards:
+ * Decode a URL-encoded slug segment and validate it is safe to pass
+ * downstream as a filesystem key (no traversal, no NUL bytes, no
+ * path separators). Returns `null` when the segment is malformed.
  *
- *   1. Agents         — list with status
- *   2. Calendar       — weekly calendar / task list per agent
- *   3. Plan           — rendered plan.md
- *   4. Budget / Usage — usage with over-budget highlighting
+ * @param {string} raw
+ * @returns {string | null}
+ */
+function decodeSlug(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  if (
+    decoded.length === 0 ||
+    decoded.includes('\0') ||
+    decoded.includes('/') ||
+    decoded.includes('\\') ||
+    decoded === '.' ||
+    decoded === '..'
+  ) {
+    return null;
+  }
+  return decoded;
+}
+
+/**
+ * Send a JSON response with a stable envelope. Always `no-store` so
+ * the dashboard reflects the filesystem truth on every manual refresh.
  *
- * Sections not present in `ctx.sections` render a "will appear here"
- * placeholder so this function remains callable in isolation (used by
- * the shell snapshot test and by any future static-export mode).
+ * @param {import('node:http').ServerResponse} res
+ * @param {number} statusCode
+ * @param {unknown} body
+ */
+function sendJson(res, statusCode, body) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * GET /api/summary — return the compact dashboard payload used by the
+ * SPA Overview tab. This endpoint is intentionally a thin shim over
+ * `buildSummary` from `src/skills/summary.js` so the web view and the
+ * terminal `/aweek:summary` render the same Agent / Goals / Tasks /
+ * Budget / Status cells. `buildSummary` composes every row through
+ * `buildSummaryRow`, which in turn pulls data from the existing
+ * `src/storage/*` stores — honouring the read-only contract for
+ * `aweek serve`.
  *
- * @param {{
- *   projectDir: string,
- *   sections?: {
- *     agents?: string,
- *     calendar?: string,
- *     plan?: string,
- *     budget?: string,
- *   },
- *   extraStyles?: string,
- * }} ctx
+ * Response shape:
+ *   200 { rows:   [{ agent, goals, tasks, budget, status }, ...],
+ *         week:   'YYYY-Www',
+ *         weekMonday: 'YYYY-MM-DD',
+ *         agentCount: number }
+ *   500 { error: string }
+ *
+ * Per-row fields map 1:1 to the terminal summary table:
+ *   - agent  → display name from `.claude/agents/<slug>.md` (or slug + missing marker)
+ *   - goals  → "N" / "active/total"
+ *   - tasks  → "completed/total" for the current week
+ *   - budget → "used / limit (pct%)" or "no limit"
+ *   - status → label like "ACTIVE" / "PAUSED" / "RUNNING"
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ */
+async function handleSummary(res, ctx) {
+  try {
+    // `buildSummary` expects the per-agent data directory (.aweek/agents)
+    // and needs the project root separately so it can resolve the
+    // subagent identity markdown under `.claude/agents/`.
+    const dataDir = join(ctx.projectDir, '.aweek', 'agents');
+    const { rows, week, weekMonday, agentCount } = await buildSummary({
+      dataDir,
+      projectDir: ctx.projectDir,
+    });
+    sendJson(res, 200, { rows, week, weekMonday, agentCount });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && err.message ? err.message : 'Failed to load summary',
+    });
+  }
+}
+
+/**
+ * GET /api/agents — return the overview list row for every agent on disk.
+ *
+ * Delegates to `gatherAgentsList`, which fans out to `AgentStore.loadAll`
+ * (via `listAllAgents`), `UsageStore.weeklyTotal`, and the `.claude/agents/<slug>.md`
+ * identity primitive. The data layer enforces the read-only contract;
+ * this handler only translates its return value to HTTP JSON.
+ *
+ * Response shape:
+ *   200 { agents: [{ slug, name, description, missing, status,
+ *                    tokensUsed, tokenLimit, utilizationPct }, ...] }
+ *   500 { error: string }
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ */
+async function handleAgentsList(res, ctx) {
+  try {
+    const agents = await gatherAgentsList({ projectDir: ctx.projectDir });
+    sendJson(res, 200, { agents });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && err.message ? err.message : 'Failed to load agents',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug — return the detail payload for a single agent.
+ *
+ * Delegates to `gatherAgentProfile`, which returns `null` when the slug
+ * does not exist on disk so we map that to a 404. Any other failure
+ * bubbles up as a 500 so the SPA can render an actionable error state.
+ *
+ * Response shape:
+ *   200 { agent: { slug, name, description, missing, identityPath,
+ *                  createdAt, updatedAt, paused, pausedReason,
+ *                  periodStart, tokenLimit, tokensUsed, remaining,
+ *                  overBudget, utilizationPct, weekMonday } }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ * @param {string} slug
+ */
+async function handleAgentDetail(res, ctx, slug) {
+  try {
+    const agent = await gatherAgentProfile({ projectDir: ctx.projectDir, slug });
+    if (!agent) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, { agent });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && err.message ? err.message : 'Failed to load agent',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/plan — return the plan payload for an agent.
+ *
+ * Delegates to `gatherAgentPlan`, which returns `null` when the slug
+ * does not exist on disk so we map that to 404. The envelope carries
+ * both the freeform `plan.md` body (from `plan-markdown-store`) and
+ * the structured weekly plans (from `weekly-plan-store`) so the SPA
+ * can render the Strategy / Plan / Calendar tabs without additional
+ * round-trips. Any other failure bubbles up as a 500 so the SPA can
+ * render an actionable error state.
+ *
+ * Response shape:
+ *   200 { plan: { slug, name, hasPlan, markdown,
+ *                 weeklyPlans: [...], latestApproved: {...}|null } }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ * @param {string} slug
+ */
+async function handleAgentPlan(res, ctx, slug) {
+  try {
+    const plan = await gatherAgentPlan({ projectDir: ctx.projectDir, slug });
+    if (!plan) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, { plan });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && err.message ? err.message : 'Failed to load plan',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/calendar — return the weekly calendar payload for
+ * an agent. Delegates to `gatherAgentCalendar`, which sources tasks from
+ * the weekly-plan store, computes each task's day/hour slot via the
+ * shared `computeTaskSlot` helper, and co-gathers per-task activity rows
+ * so the Calendar tab can render the grid without additional round-trips.
+ *
+ * When the agent exists but has no weekly plan yet, the gatherer returns
+ * `noPlan: true` and we forward that as a 200 — the SPA renders a "no
+ * plan yet" empty state instead of an error. 404 only fires when the
+ * slug is unknown on disk.
+ *
+ * Optional `?week=YYYY-Www` overrides the current-week default (matches
+ * the terminal `/aweek:calendar` `--week` flag).
+ *
+ * Response shape:
+ *   200 { calendar: { agentId, week, month, approved, timeZone,
+ *                     weekMonday, noPlan, tasks: [...], counts: {...},
+ *                     activityByTask: {...} } }
+ *   400 { error: 'Invalid agent slug' }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ * @param {string} slug
+ * @param {string | undefined} week
+ */
+async function handleAgentCalendar(res, ctx, slug, week) {
+  try {
+    const calendar = await gatherAgentCalendar({
+      projectDir: ctx.projectDir,
+      slug,
+      week,
+    });
+    if (calendar && calendar.notFound) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, { calendar });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && err.message ? err.message : 'Failed to load calendar',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/usage — return the budget + usage payload for an agent.
+ *
+ * Delegates to `gatherAgentUsage`, which returns `null` when the slug does
+ * not exist on disk so we map that to 404. The envelope carries the
+ * current week's token usage compared against the configured weekly
+ * budget plus a per-week historical roll-up so the SPA can render a
+ * trend chart without additional round-trips. Any other failure bubbles
+ * up as a 500 so the SPA can render an actionable error state.
+ *
+ * Response shape:
+ *   200 { usage: { slug, name, missing, paused, pausedReason,
+ *                  weekMonday, tokenLimit, tokensUsed,
+ *                  inputTokens, outputTokens, costUsd, recordCount,
+ *                  remaining, overBudget, utilizationPct,
+ *                  weeks: [{ weekMonday, recordCount, inputTokens,
+ *                            outputTokens, totalTokens, costUsd }] } }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ * @param {string} slug
+ */
+async function handleAgentUsage(res, ctx, slug) {
+  try {
+    const usage = await gatherAgentUsage({ projectDir: ctx.projectDir, slug });
+    if (!usage) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, { usage });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && err.message ? err.message : 'Failed to load usage',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/logs — return the merged execution-log payload
+ * for an agent. Sources the user-facing activity-log entries from
+ * `activity-log-store.js` and the heartbeat audit trail from
+ * `execution-store.js` via the `gatherAgentLogs` data layer. Returns
+ * `null` (→ 404) when the slug does not exist on disk.
+ *
+ * The optional `?dateRange=` query string accepts the same presets as
+ * the SPA's date filter — `all` (default), `this-week`, `last-7-days`.
+ * Unknown values fall back to `all` inside the gatherer so they cannot
+ * leak garbage into the response.
+ *
+ * Response shape:
+ *   200 { logs: { slug, dateRange,
+ *                 entries: [...activity-log entries, newest first],
+ *                 executions: [...execution records, newest first] } }
+ *   400 { error: 'Invalid agent slug' }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ * @param {string} slug
+ * @param {string | undefined} dateRange
+ */
+async function handleAgentLogs(res, ctx, slug, dateRange) {
+  try {
+    const logs = await gatherAgentLogs({
+      projectDir: ctx.projectDir,
+      slug,
+      dateRange,
+    });
+    if (!logs) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, { logs });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && err.message ? err.message : 'Failed to load logs',
+    });
+  }
+}
+
+/**
+ * Serve the Vite SPA bundle with path-traversal-safe static lookup and
+ * client-side-routing fallback.
+ *
+ * The algorithm:
+ *   1. If the build directory does not exist yet, render a friendly HTML
+ *      stub with build instructions. First-run users see actionable copy
+ *      instead of an opaque 404.
+ *   2. Otherwise, try to resolve `pathname` to an existing file under
+ *      `buildDir` (with a traversal guard). If it resolves and is a file,
+ *      stream it back with an appropriate `Content-Type` + caching header.
+ *   3. If the request looks like a static asset (has a recognised
+ *      extension) but the file is missing, return 404. This prevents
+ *      broken <script>/<img>/<link> tags from silently succeeding by
+ *      falling through to `index.html`.
+ *   4. Otherwise, treat the request as a client-side route and serve
+ *      `index.html` (the SPA fallback). This is what lets the React
+ *      router own URLs like `/agents/writer/calendar` without the server
+ *      needing to know the route table.
+ *
+ * @param {import('node:http').IncomingMessage} _req
+ * @param {import('node:http').ServerResponse} res
+ * @param {string} pathname — decoded pathname portion of the request URL
+ * @param {{ buildDir: string }} ctx
+ */
+async function serveSpa(_req, res, pathname, ctx) {
+  const { buildDir } = ctx;
+
+  // Static-file lookup first: any real file under `buildDir` (hashed
+  // assets, favicon, etc.) wins regardless of the client-route
+  // whitelist so the SPA bundle itself is always deliverable. We only
+  // run this branch when the build dir exists — otherwise the request
+  // can only be the SPA shell (or a 404) below.
+  if (existsSync(buildDir)) {
+    const resolved = resolveSafeFile(buildDir, pathname);
+    if (resolved && existsSync(resolved) && statSync(resolved).isFile()) {
+      await sendFile(res, resolved);
+      return;
+    }
+
+    // Asset-looking requests that miss should 404 (plain text) — falling
+    // back to the SPA shell for a broken `/favicon.ico` or `/assets/app.js`
+    // masks real deployment bugs.
+    const ext = extname(pathname).toLowerCase();
+    if (ext && ext !== '.html' && MIME_TYPES[ext]) {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(`Not found: ${pathname}\n`);
+      return;
+    }
+  }
+
+  // At this point the request is for a "client route" — either it will
+  // serve the SPA shell (whitelisted) or it is a typo / probe and
+  // deserves a 404 JSON envelope instead of the silent shell fallback
+  // that hides real 404s from operators.
+  if (!isWhitelistedClientRoute(pathname)) {
+    sendJson(res, 404, { error: 'Not found', path: pathname });
+    return;
+  }
+
+  // Whitelisted client route from here on.
+
+  // Graceful degradation: the frontend bundle hasn't been built yet.
+  // Serve a readable build-missing message rather than crashing the
+  // request or 404-ing silently, so the first-run failure is obvious.
+  if (!existsSync(buildDir)) {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(renderBuildMissingHtml(buildDir));
+    return;
+  }
+
+  // SPA fallback — the React router owns this URL.
+  const indexPath = join(buildDir, 'index.html');
+  if (!existsSync(indexPath)) {
+    // Build dir exists but is missing the entrypoint — likely a partial
+    // / broken build. Fail loud so the operator notices.
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end(`index.html not found in build dir: ${buildDir}\n`);
+    return;
+  }
+  await sendFile(res, indexPath);
+}
+
+/**
+ * Resolve a URL pathname to an absolute file path inside `buildDir`, or
+ * return `null` when the request would escape the directory. This is the
+ * traversal guard for the static file server — any `..` segment, Windows
+ * backslash, or null byte is rejected here rather than at `sendFile` time
+ * so a malformed URL never reads a file outside the build directory.
+ *
+ * @param {string} buildDir — absolute path to the Vite build directory
+ * @param {string} pathname — raw (possibly percent-encoded) URL pathname
+ * @returns {string | null} absolute path inside `buildDir`, or `null`
+ */
+export function resolveSafeFile(buildDir, pathname) {
+  if (typeof pathname !== 'string') return null;
+
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  // Reject NUL bytes (filesystem-level foot-gun on Node + libc) and
+  // Windows-style backslashes that could smuggle a traversal on cross-
+  // platform deployments.
+  if (decoded.includes('\0') || decoded.includes('\\')) return null;
+
+  // Collapse leading slashes so `/` and `//` both map to the index, and
+  // fall back to `index.html` when the URL points at a directory root.
+  const relative = decoded.replace(/^\/+/, '');
+  if (relative === '' || relative.endsWith('/')) {
+    return join(resolve(buildDir), relative, 'index.html');
+  }
+
+  const normalisedBuild = resolve(buildDir);
+  const candidate = resolve(normalisedBuild, relative);
+  // Ensure the resolved candidate really lives inside the build dir. The
+  // `+ sep` prevents `dist-sibling` from matching `dist` as a prefix.
+  if (candidate !== normalisedBuild && !candidate.startsWith(normalisedBuild + sep)) {
+    return null;
+  }
+  return candidate;
+}
+
+/**
+ * Stream a file back to the response with a sensible `Content-Type` and
+ * caching policy. Hashed Vite assets (anything under `/assets/`) are
+ * served with long-lived immutable caching; `index.html` must stay
+ * fresh so new deploys land immediately; everything else gets a short
+ * default cache so repeated dev reloads are cheap.
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {string} absPath — absolute path to a file inside the build dir
+ */
+async function sendFile(res, absPath) {
+  const ext = extname(absPath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+  const stats = statSync(absPath);
+
+  res.statusCode = 200;
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Length', String(stats.size));
+
+  // `index.html` drives the SPA shell; caching it aggressively would
+  // strand clients on stale builds. Hashed `/assets/*` can safely live
+  // in immutable cache for a year since the hash changes on rebuild.
+  const isHtml = ext === '.html';
+  const isHashedAsset = /\/assets\/[^/]+$/.test(absPath.replace(/\\/g, '/'));
+  if (isHtml) {
+    res.setHeader('Cache-Control', 'no-store');
+  } else if (isHashedAsset) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  } else {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+  }
+
+  if (res.req && res.req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+
+  await pipeline(createReadStream(absPath), res);
+}
+
+/**
+ * Render a small standalone HTML page explaining that the Vite build is
+ * missing, with the expected path and a copy-pasteable fix. Used as a
+ * first-run fallback so `aweek serve` is self-explanatory before the
+ * frontend has been built. No external assets — the page is readable
+ * without the SPA bundle.
+ *
+ * @param {string} buildDir — absolute path the server looked for
  * @returns {string}
  */
-export function renderDashboardShell({
-  projectDir,
-  sidebar = '',
-  tabBar = '',
-  sections = {},
-  extraStyles = '',
-  zeroAgents = false,
-  activeTab = 'calendar',
-} = {}) {
-  const projectLabel = escapeHtml(projectDir);
-
-  // Render a content section into a card body. `data-section` is kept on
-  // every card so server-level snapshot tests and integration tests can
-  // locate sections by key without depending on surrounding layout structure.
-  const renderSection = (key, placeholder) => {
-    const body = sections[key];
-    if (typeof body === 'string' && body.length > 0) {
-      return `<div class="card-body" data-section="${key}">${body}</div>`;
-    }
-    return `<div class="card-body placeholder" data-section="${key}">${placeholder}</div>`;
-  };
-
-  // Sidebar HTML: if a pre-rendered sidebar was supplied use it, otherwise
-  // fall back to the agents section value so the function stays backward-
-  // compatible with callers that don't provide a sidebar (e.g. unit tests
-  // that call renderDashboardShell directly).
-  const sidebarBody = typeof sidebar === 'string' && sidebar.length > 0
-    ? sidebar
-    : (typeof sections.agents === 'string' && sections.agents.length > 0
-        ? sections.agents
-        : '<div class="sidebar-empty"><p>No agents yet.</p><p>Run <code>/aweek:hire</code> to create one.</p></div>');
-
-  // Compute per-tab content so the template stays readable. Only one tab's
-  // section renders at a time — the active tab drives which card is shown.
-  // Tabs not yet implemented by their respective ACs fall through to the
-  // `calendar` default (sibling ACs will add their own branches).
-  const tabContent = zeroAgents
-    ? `<div class="zero-agents-empty" data-section="zero-agents">
-      <div class="zero-agents-icon" aria-hidden="true">🤖</div>
-      <h2 class="zero-agents-title">No agents yet</h2>
-      <p class="zero-agents-body">Hire your first agent to see their calendar, activity, strategy, and profile here.</p>
-      <p class="zero-agents-cta">Run <code>/aweek:hire</code> in Claude Code to get started.</p>
-    </div>`
-    : activeTab === 'strategy'
-      ? `<section class="card card-strategy" aria-labelledby="strategy-head">
-      <div class="card-head"><h2 id="strategy-head">Strategy</h2></div>
-      ${renderSection('strategy', 'Rendered <code>plan.md</code> will appear here.')}
-    </section>`
-    : activeTab === 'profile'
-      ? `<section class="card card-profile" aria-labelledby="profile-head">
-      <div class="card-head"><h2 id="profile-head">Profile</h2></div>
-      ${renderSection('profile', 'Agent identity, scheduling metadata, and budget breakdown will appear here.')}
-    </section>
-    <section class="card card-budget" aria-labelledby="budget-head">
-      <div class="card-head"><h2 id="budget-head">Budget &amp; usage</h2></div>
-      ${renderSection('budget', 'Budget and usage (with over-budget highlighting) will appear here.')}
-    </section>`
-      : activeTab === 'activity'
-        ? `<section class="card card-activity" aria-labelledby="activity-head">
-      <div class="card-head"><h2 id="activity-head">Activity</h2></div>
-      ${renderSection('activity', 'Activity log will appear here.')}
-    </section>`
-        : `<section class="card card-calendar" aria-labelledby="calendar-head">
-      <div class="card-head"><h2 id="calendar-head">Weekly calendar</h2></div>
-      ${renderSection('calendar', 'Weekly calendar / task list will appear here.')}
-    </section>`;
-
+export function renderBuildMissingHtml(buildDir) {
+  const dir = escapeHtml(buildDir);
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>aweek dashboard</title>
+<title>aweek dashboard — build missing</title>
 <style>
-  :root {
-    --bg: #0b0c10;
-    --panel: #12141a;
-    --panel-2: #1a1d26;
-    --border: #262a36;
-    --text: #e5e7ef;
-    --muted: #8b93a7;
-    --accent: #8ab4ff;
-    --critical: #ff6b6b;
-    --high: #ffb86b;
-    --medium: #6bd1ff;
-    --low: #a2a8b8;
-    --status-pending: #8b93a7;
-    --status-in-progress: #6bd1ff;
-    --status-completed: #72e2a4;
-    --status-failed: #ff6b6b;
-    --over-budget: #ff6b6b;
-  }
-  * { box-sizing: border-box; }
-  html, body {
+  :root { color-scheme: dark; }
+  body {
     margin: 0;
-    padding: 0;
-    background: var(--bg);
-    color: var(--text);
+    padding: 32px 24px;
+    background: #0b0c10;
+    color: #e5e7ef;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
-    font-size: 13.5px;
-    line-height: 1.45;
-    height: 100%;
-  }
-  header {
-    padding: 18px 24px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-  header h1 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  header h1 span {
-    color: var(--muted);
-    font-weight: 400;
-    margin-left: 8px;
-  }
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    margin: 16px;
-  }
-  .card:first-child { margin-top: 16px; }
-  .card-head {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .card-head h2 {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .card-body {
-    padding: 14px 16px;
-    font-size: 13.5px;
-    color: var(--text);
-  }
-  .card-body.placeholder {
-    color: var(--muted);
-    font-style: italic;
-  }
-  code {
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 12px;
-    background: rgba(138,180,255,.1);
-    padding: 1px 5px;
-    border-radius: 3px;
-  }
-  footer {
-    padding: 18px 24px;
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 11.5px;
-  }
-  .over-budget {
-    color: var(--over-budget);
-    font-weight: 600;
-  }
-  .scrim {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,.45);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity .18s ease;
-    z-index: 40;
-  }
-  .scrim.show { opacity: 1; pointer-events: auto; }
-  .drawer {
-    position: fixed;
-    inset: 0 0 0 auto;
-    width: min(460px, 94vw);
-    background: var(--panel);
-    border-left: 1px solid var(--border);
-    transform: translateX(102%);
-    transition: transform .18s ease;
-    display: flex;
-    flex-direction: column;
-    z-index: 50;
-  }
-  .drawer.open { transform: translateX(0); }
-  .drawer-head {
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .drawer-head h2 {
-    margin: 0;
     font-size: 14px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .drawer-close {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    border-radius: 6px;
-    padding: 4px 10px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 12px;
-  }
-  .drawer-close:hover { color: var(--text); }
-  .drawer-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
-  .drawer-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
-  .drawer-desc {
-    font-size: 13.5px;
     line-height: 1.55;
-    padding: 0 0 16px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 16px;
-    color: var(--text);
-    white-space: pre-wrap;
-    word-break: break-word;
   }
-  .drawer-desc:empty { display: none; }
-  .drawer-fields {
-    margin: 0;
-    display: grid;
-    grid-template-columns: 110px 1fr;
-    gap: 8px 14px;
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { margin: 0 0 8px; font-size: 20px; }
+  h1 span { color: #8b93a7; font-weight: 400; margin-left: 8px; font-size: 14px; }
+  p { color: #c7ccd9; }
+  pre, code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 12.5px;
   }
-  .drawer-fields dt { color: var(--muted); font-weight: 500; }
-  .drawer-fields dd { margin: 0; color: var(--text); word-break: break-word; }
-  .chip {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
+  pre {
+    padding: 12px 14px;
+    background: #12141a;
+    border: 1px solid #262a36;
+    border-radius: 8px;
+    overflow-x: auto;
   }
-  .chip-status-pending { background: rgba(139,147,167,.18); color: var(--status-pending); }
-  .chip-status-in-progress { background: rgba(107,209,255,.18); color: var(--status-in-progress); }
-  .chip-status-completed { background: rgba(114,226,164,.18); color: var(--status-completed); }
-  .chip-status-failed { background: rgba(255,107,107,.18); color: var(--status-failed); }
-  .chip-status-delegated { background: rgba(138,180,255,.18); color: var(--accent); }
-  .chip-status-skipped { background: rgba(139,147,167,.18); color: var(--muted); }
-  .chip-priority-critical { background: rgba(255,107,107,.18); color: var(--critical); }
-  .chip-priority-high { background: rgba(255,184,107,.18); color: var(--high); }
-  .chip-priority-medium { background: rgba(107,209,255,.18); color: var(--medium); }
-  .chip-priority-low { background: rgba(162,168,184,.18); color: var(--low); }
-  .chip-track {
-    background: rgba(138,180,255,.14);
-    color: var(--accent);
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-  .drawer-prompt {
-    margin-top: 20px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
-  }
-  .drawer-prompt-body {
-    white-space: pre-wrap;
-    word-break: break-word;
-    margin: 0;
-    padding: 10px 12px;
-    background: var(--panel-2, rgba(255, 255, 255, 0.03));
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font: 12px/1.55 var(--font-mono, ui-monospace, Menlo, monospace);
-    color: var(--text);
-    max-height: 260px;
-    overflow: auto;
-  }
-  .drawer-activity {
-    margin-top: 20px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
-  }
-  .drawer-section-title {
-    margin: 0 0 10px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .drawer-activity-list {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .drawer-activity-item {
-    position: relative;
-    padding: 8px 10px;
-    border-radius: 6px;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    font-size: 12px;
-    transition: border-color 0.12s, background 0.12s;
-  }
-  .drawer-activity-item:hover {
-    border-color: var(--accent);
-    background: rgba(138,180,255,.06);
-  }
-  .drawer-activity-link {
-    position: absolute;
-    inset: 0;
-    border-radius: 6px;
-    z-index: 0;
-  }
-  .drawer-activity-item > :not(.drawer-activity-link) {
-    position: relative;
-    z-index: 1;
-  }
-  .drawer-activity-desc {
-    margin: 4px 0 6px;
-    color: var(--text);
-    font-size: 12px;
-    line-height: 1.45;
-    word-break: break-word;
-  }
-  .drawer-activity-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-    flex-wrap: wrap;
-  }
-  .drawer-activity-ts {
-    color: var(--muted);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-  .drawer-activity-meta {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    color: var(--muted);
-    font-size: 11px;
-  }
-  .drawer-activity-meta strong { color: var(--text); font-weight: 500; margin-left: 4px; }
-  .drawer-activity-urls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 6px;
-    margin-top: 6px;
-  }
-  .drawer-activity-url {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-size: 11px;
-    background: rgba(138,180,255,.1);
-    border: 1px solid var(--border);
-    color: var(--accent);
-    text-decoration: none;
-    max-width: 320px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  }
-  .drawer-activity-url:hover { border-color: var(--accent); }
-  .drawer-activity-exec-log {
-    position: relative;
-    z-index: 1;
-    margin-top: 6px;
-  }
-  .drawer-activity-exec-log-link {
-    display: inline-block;
-    font: 11px/1 var(--font-mono);
-    color: var(--muted);
-    text-decoration: underline dotted;
-    text-underline-offset: 2px;
-  }
-  .drawer-activity-exec-log-link:hover { color: var(--accent); }
-  .drawer-activity-error {
-    margin-top: 6px;
-    color: var(--status-failed);
-    font-size: 11.5px;
-    word-break: break-word;
-  }
-  .drawer-activity-empty {
-    color: var(--muted);
-    font-size: 12px;
-    font-style: italic;
-  }
-${extraStyles}
+  code { background: rgba(138,180,255,.1); padding: 1px 5px; border-radius: 3px; }
 </style>
 </head>
-<body data-project-dir="${projectLabel}">
-<header>
-  <div>
-    <h1>aweek dashboard<span>· read-only · live data from <code>.aweek/</code></span></h1>
-  </div>
-</header>
-<div class="dashboard-layout">
-  <nav class="sidebar" data-section="agents" aria-label="Agents">
-    <div class="sidebar-head">Agents</div>
-    ${sidebarBody}
-  </nav>
-  <div class="content-area">
-    ${tabBar}
-    ${tabContent}
-  </div>
-</div>
-<div class="scrim" data-scrim hidden></div>
-<aside class="drawer" data-drawer aria-hidden="true" aria-labelledby="drawer-title" role="dialog">
-  <div class="drawer-head">
-    <h2 id="drawer-title" data-drawer-title>Task</h2>
-    <button type="button" class="drawer-close" data-drawer-close aria-label="Close">Close</button>
-  </div>
-  <div class="drawer-body">
-    <div class="drawer-chips" data-drawer-chips></div>
-    <div class="drawer-desc" data-drawer-desc></div>
-    <dl class="drawer-fields" data-drawer-fields></dl>
-    <section class="drawer-prompt" data-drawer-prompt aria-label="Task prompt" hidden>
-      <h3 class="drawer-section-title">Prompt</h3>
-      <pre class="drawer-prompt-body" data-drawer-prompt-body></pre>
-    </section>
-    <section class="drawer-activity" data-drawer-activity aria-label="Task activity" hidden>
-      <h3 class="drawer-section-title">Activity</h3>
-      <div class="drawer-activity-list" data-drawer-activity-list></div>
-    </section>
-  </div>
-</aside>
-<footer>
-  Serving live data from <code>${projectLabel}/.aweek/</code>. Refresh to re-read state.
-</footer>
-<script>
-(function() {
-  var drawer = document.querySelector('[data-drawer]');
-  var scrim = document.querySelector('[data-scrim]');
-  if (!drawer || !scrim) return;
-  var titleEl = drawer.querySelector('[data-drawer-title]');
-  var chipsEl = drawer.querySelector('[data-drawer-chips]');
-  var descEl = drawer.querySelector('[data-drawer-desc]');
-  var fieldsEl = drawer.querySelector('[data-drawer-fields]');
-  var promptEl = drawer.querySelector('[data-drawer-prompt]');
-  var promptBodyEl = drawer.querySelector('[data-drawer-prompt-body]');
-  var activityEl = drawer.querySelector('[data-drawer-activity]');
-  var activityListEl = drawer.querySelector('[data-drawer-activity-list]');
-
-  // Activity log entries embedded server-side and keyed by taskId. Parsed
-  // once on load so per-task drawer opens stay sync.
-  var taskActivity = {};
-  try {
-    var embed = document.getElementById('aweek-task-activity');
-    if (embed && embed.textContent) {
-      var parsed = JSON.parse(embed.textContent);
-      if (parsed && typeof parsed === 'object') taskActivity = parsed;
-    }
-  } catch (err) { /* leave taskActivity empty */ }
-
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
-      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
-    });
-  }
-  function fmtDate(iso) {
-    if (!iso) return '';
-    var d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString();
-  }
-  function fmtDuration(ms) {
-    if (!ms || ms < 0) return '';
-    if (ms < 1000) return ms + 'ms';
-    var s = Math.round(ms / 100) / 10;
-    if (s < 60) return s + 's';
-    var mins = Math.floor(s / 60);
-    var rem = Math.round(s - mins * 60);
-    return mins + 'm ' + rem + 's';
-  }
-  function fmtNum(n) {
-    return Number(n).toLocaleString('en-US');
-  }
-  function chip(cls, label) {
-    if (!label) return '';
-    return '<span class="chip ' + esc(cls) + '">' + esc(label) + '</span>';
-  }
-  function row(label, value) {
-    if (value === undefined || value === null || value === '') return '';
-    return '<dt>' + esc(label) + '</dt><dd>' + esc(value) + '</dd>';
-  }
-  function truncate(s, max) {
-    var str = String(s == null ? '' : s);
-    if (str.length <= max) return str;
-    return str.slice(0, max - 1) + '…';
-  }
-  function activityEntryHref(entry) {
-    // Deep-link into the activity tab with the selected agent + entry id.
-    // Read the agent slug from the current URL so switching to activity
-    // keeps the same agent context; drop the agent param when the
-    // current URL does not carry one.
-    var agent = new URLSearchParams(location.search).get('agent') || '';
-    var params = new URLSearchParams();
-    if (agent) params.set('agent', agent);
-    params.set('tab', 'activity');
-    if (entry && entry.id) params.set('entry', entry.id);
-    return '?' + params.toString();
-  }
-  function renderActivity(entries) {
-    if (!Array.isArray(entries) || entries.length === 0) {
-      return '<div class="drawer-activity-empty">No activity logged for this task yet.</div>';
-    }
-    return entries.map(function(e) {
-      var status = e.status || 'unknown';
-      var head = '<div class="drawer-activity-head">'
-        + chip('chip-status chip-status-' + status, status.replace(/-/g, ' '))
-        + '<span class="drawer-activity-ts">' + esc(fmtDate(e.timestamp)) + '</span>'
-        + '</div>';
-      var descHtml = e.title
-        ? '<div class="drawer-activity-desc">' + esc(truncate(e.title, 140)) + '</div>'
-        : '';
-      var meta = [];
-      if (e.duration) meta.push('<span>duration<strong>' + esc(fmtDuration(e.duration)) + '</strong></span>');
-      if (typeof e.tokens === 'number') meta.push('<span>tokens<strong>' + esc(fmtNum(e.tokens)) + '</strong></span>');
-      if (typeof e.exitCode === 'number' && e.exitCode !== 0) meta.push('<span>exit<strong>' + esc(e.exitCode) + '</strong></span>');
-      if (e.timedOut) meta.push('<span>timed out</span>');
-      var metaHtml = meta.length
-        ? '<div class="drawer-activity-meta">' + meta.join('') + '</div>'
-        : '';
-      var urlsHtml = '';
-      if (Array.isArray(e.urls) && e.urls.length) {
-        urlsHtml = '<div class="drawer-activity-urls">' + e.urls.slice(0, 6).map(function(u) {
-          var label = String(u);
-          if (label.indexOf('https://') === 0) label = label.slice(8);
-          else if (label.indexOf('http://') === 0) label = label.slice(7);
-          if (label.length > 46) label = label.slice(0, 43) + '…';
-          return '<a class="drawer-activity-url" href="' + esc(u) + '" target="_blank" rel="noopener noreferrer" title="' + esc(u) + '">' + esc(label) + '</a>';
-        }).join('') + '</div>';
-      }
-      var errHtml = '';
-      if (status === 'failed' && e.errorMessage) {
-        errHtml = '<div class="drawer-activity-error">' + esc(e.errorMessage) + '</div>';
-      }
-      var execLogHtml = '';
-      if (e.executionLogBasename) {
-        // Link to the full per-execution log as plain text, opened in a
-        // new tab so the drawer context is preserved. The outer overlay
-        // link (drawer-activity-link) sits underneath via z-index, so
-        // this inner anchor is the one the click lands on.
-        var agent = new URLSearchParams(location.search).get('agent') || '';
-        var tHref = '/executions/'
-          + encodeURIComponent(agent) + '/' + encodeURIComponent(e.executionLogBasename);
-        execLogHtml = '<div class="drawer-activity-exec-log">'
-          + '<a class="drawer-activity-exec-log-link" href="' + esc(tHref)
-          + '" target="_blank" rel="noopener noreferrer">view execution log</a>'
-          + '</div>';
-      }
-      var body = head + descHtml + metaHtml + urlsHtml + execLogHtml + errHtml;
-      var href = esc(activityEntryHref(e));
-      // The whole item is a link into the activity tab. Nested <a> (the
-      // URL chips) are still allowed by most browsers in practice even
-      // though the HTML spec disallows them — to stay conformant we keep
-      // the outer wrapper clickable via an overlay pseudo-link instead.
-      return ''
-        + '<div class="drawer-activity-item">'
-        +   '<a class="drawer-activity-link" href="' + href + '" aria-label="Open activity entry in Activity tab"></a>'
-        +   body
-        + '</div>';
-    }).join('');
-  }
-  function open(t) {
-    var status = t.status || 'pending';
-    var priority = t.priority || '';
-    var track = t.track || '';
-    titleEl.textContent = t.num ? ('Task #' + t.num) : 'Task';
-    var chips = '';
-    chips += chip('chip-status chip-status-' + status, status.replace(/-/g, ' '));
-    if (priority) chips += chip('chip-priority chip-priority-' + priority, priority);
-    if (track) chips += chip('chip-track', track);
-    chipsEl.innerHTML = chips;
-    descEl.textContent = t.desc || '';
-    var rows = '';
-    rows += row('Status', status);
-    if (priority) rows += row('Priority', priority);
-    if (track) rows += row('Track', track);
-    if (t.objective) rows += row('Objective', t.objective);
-    if (t.runAt) rows += row('Run at', fmtDate(t.runAt));
-    if (t.minutes) rows += row('Estimated', t.minutes + ' min');
-    if (t.completedAt) rows += row('Completed', fmtDate(t.completedAt));
-    if (t.delegatedTo) rows += row('Delegated to', t.delegatedTo);
-    if (t.id) rows += row('Task ID', t.id);
-    fieldsEl.innerHTML = rows;
-    if (promptEl && promptBodyEl) {
-      if (t.prompt && t.prompt !== t.desc) {
-        promptBodyEl.textContent = t.prompt;
-        promptEl.hidden = false;
-      } else {
-        promptEl.hidden = true;
-      }
-    }
-    if (activityEl && activityListEl) {
-      if (t.id) {
-        activityListEl.innerHTML = renderActivity(taskActivity[t.id] || []);
-        activityEl.hidden = false;
-      } else {
-        activityEl.hidden = true;
-      }
-    }
-    drawer.classList.add('open');
-    drawer.setAttribute('aria-hidden', 'false');
-    scrim.classList.add('show');
-    scrim.hidden = false;
-  }
-  function close() {
-    drawer.classList.remove('open');
-    drawer.setAttribute('aria-hidden', 'true');
-    scrim.classList.remove('show');
-    scrim.hidden = true;
-  }
-
-  document.addEventListener('click', function(e) {
-    var target = e.target;
-    if (!target || !target.closest) return;
-    var card = target.closest('.calendar-task');
-    if (card) {
-      var d = card.dataset || {};
-      open({
-        id: d.taskId,
-        num: d.taskNum,
-        desc: d.taskTitle,
-        prompt: d.taskPrompt,
-        status: d.taskStatus,
-        priority: d.taskPriority,
-        track: d.taskTrack,
-        runAt: d.taskRunAt,
-        objective: d.taskObjective,
-        minutes: d.taskMinutes,
-        completedAt: d.taskCompletedAt,
-        delegatedTo: d.taskDelegatedTo,
-      });
-      return;
-    }
-    if (target.closest('[data-drawer-close]')) { close(); return; }
-    if (target.matches && target.matches('[data-scrim]')) { close(); return; }
-  });
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && drawer.classList.contains('open')) close();
-  });
-})();
-(function() {
-  // ── URL routing: preserve active tab when switching agents ─────────────
-  // Sidebar links are rendered as plain ?agent=<slug> by the server so they
-  // work without JS (deep-link / no-JS fallback). When JavaScript is active
-  // we intercept those clicks and append the currently-active tab so the
-  // user's tab context is preserved when they switch to a different agent.
-  //
-  // Tab links already carry both agent + tab params and need no interception.
-
-  function getQueryParam(name) {
-    return new URLSearchParams(location.search).get(name) || '';
-  }
-
-  document.addEventListener('click', function(e) {
-    var target = e.target;
-    if (!target || !target.closest) return;
-
-    // Only intercept sidebar agent-picker links (.sidebar-item-link).
-    var agentLink = target.closest('.sidebar-item-link');
-    if (!agentLink) return;
-
-    var li = agentLink.closest('[data-agent-slug]');
-    if (!li) return;
-    var slug = li.getAttribute('data-agent-slug') || '';
-    if (!slug) return;
-
-    var tab = getQueryParam('tab');
-    if (tab) {
-      // A non-default tab is active — rewrite the navigation URL to
-      // include it so the selected tab is preserved after the agent switch.
-      e.preventDefault();
-      var newUrl = '?agent=' + encodeURIComponent(slug) + '&tab=' + encodeURIComponent(tab);
-      history.pushState(null, '', newUrl);
-      location.reload();
-    }
-    // No active tab → the plain ?agent=<slug> href is already correct;
-    // let the default link navigation proceed unchanged.
-  });
-
-  // When the user navigates back or forward (e.g. after an agent switch
-  // that used history.pushState), reload the page so the server renders
-  // the correct agent + tab content for the restored URL.
-  window.addEventListener('popstate', function() {
-    location.reload();
-  });
-})();
-</script>
+<body>
+<main>
+  <h1>aweek dashboard<span>· SPA bundle not found</span></h1>
+  <p>The frontend has not been built yet. <code>aweek serve</code> expected the Vite build output at:</p>
+  <pre>${dir}</pre>
+  <p>Build the SPA, then restart the server:</p>
+  <pre>pnpm install
+pnpm build
+aweek serve</pre>
+  <p>If you are developing, <code>pnpm dev</code> will rebuild on change.</p>
+</main>
 </body>
 </html>
 `;
 }
 
 /**
- * URL-decode a path segment without throwing on malformed input. A broken
- * percent-encoding from a crawler or a misbehaving client should result
- * in a 404, not a 500 — so we fall back to the raw segment and let the
- * downstream matcher decide whether it's a known slug.
- *
- * @param {string} segment
- * @returns {string}
- */
-function safeDecode(segment) {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
-}
-
-/**
- * Render the NDJSON execution log for a single execution as plain text.
- *
- * The `basename` segment is the file stem — `<taskId>-<executionId>` —
- * that the heartbeat wrote under
- * `.aweek/agents/<agentId>/executions/<basename>.jsonl`. We reject any
- * basename containing a path separator or `..` so the URL can never
- * escape the executions directory. Missing files return 404 with a
- * friendly plain-text body.
- *
- * @param {import('node:http').IncomingMessage} _req
- * @param {import('node:http').ServerResponse} res
- * @param {{projectDir: string, agentId: string, basename: string}} ctx
- */
-async function handleExecutionLogRequest(_req, res, ctx) {
-  const { projectDir, agentId, basename } = ctx;
-  const safeAgent = typeof agentId === 'string' && agentId.length > 0
-    && !agentId.includes('/') && !agentId.includes('..');
-  const safeBase = typeof basename === 'string' && basename.length > 0
-    && !basename.includes('/') && !basename.includes('..');
-  if (!safeAgent || !safeBase) {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end('Bad Request');
-    return;
-  }
-
-  // basename arrives as `<taskId>_<executionId>`. Split on the FIRST `_`
-  // because taskId's schema disallows `_` (it's `task-<a-z0-9-only>`), so
-  // the underscore is an unambiguous separator — executionId may itself
-  // contain dashes without confusing the split.
-  const cutIdx = basename.indexOf('_');
-  if (cutIdx <= 0 || cutIdx === basename.length - 1) {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end('Bad Request — basename must be <taskId>_<executionId>');
-    return;
-  }
-  const taskId = basename.slice(0, cutIdx);
-  const executionId = basename.slice(cutIdx + 1);
-
-  const agentsDir = join(projectDir, '.aweek', 'agents');
-
-  res.statusCode = 200;
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-
-  let wrote = false;
-  for await (const rawLine of readExecutionLogLines(agentsDir, agentId, taskId, executionId)) {
-    const formatted = formatExecutionLogLine(rawLine);
-    if (formatted.length === 0) continue;
-    wrote = true;
-    res.write(formatted.join('\n') + '\n');
-  }
-
-  if (!wrote) {
-    // readExecutionLogLines yields nothing on ENOENT — surface a 404
-    // body so the dashboard can distinguish "no execution log captured"
-    // from "empty execution log". The 200 status was already committed
-    // on the first write(), so only rewrite when we haven't sent any
-    // bytes yet. Node's response is still mutable because headersSent
-    // is false until the first write.
-    if (!res.headersSent) {
-      res.statusCode = 404;
-    }
-    res.end('No execution log captured for this execution.\n');
-    return;
-  }
-
-  res.end();
-}
-
-/**
- * Handle the `GET /executions/<agent>/<basename>` HTML summary page.
- *
- * Buffers the entire JSONL before rendering — execution logs are a few
- * hundred KB at most, and the summary builder needs the terminal
- * `result` event to produce the headline. The raw-bytes endpoint
- * (`/api/executions/...`) stays streaming for curl/tail workflows that
- * want to watch a session tick-by-tick.
- */
-async function handleExecutionLogSummaryRequest(_req, res, ctx) {
-  const { projectDir, agentId, basename } = ctx;
-  const safeAgent = typeof agentId === 'string' && agentId.length > 0
-    && !agentId.includes('/') && !agentId.includes('..');
-  const safeBase = typeof basename === 'string' && basename.length > 0
-    && !basename.includes('/') && !basename.includes('..');
-  if (!safeAgent || !safeBase) {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end('Bad Request');
-    return;
-  }
-
-  const cutIdx = basename.indexOf('_');
-  if (cutIdx <= 0 || cutIdx === basename.length - 1) {
-    res.statusCode = 400;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end('Bad Request — basename must be <taskId>_<executionId>');
-    return;
-  }
-  const taskId = basename.slice(0, cutIdx);
-  const executionId = basename.slice(cutIdx + 1);
-  const agentsDir = join(projectDir, '.aweek', 'agents');
-
-  const rawLines = [];
-  for await (const line of readExecutionLogLines(agentsDir, agentId, taskId, executionId)) {
-    rawLines.push(line);
-  }
-
-  if (rawLines.length === 0) {
-    res.statusCode = 404;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.end('No execution log captured for this execution.\n');
-    return;
-  }
-
-  const events = parseExecutionLog(rawLines);
-  const summary = buildExecutionLogSummary(events);
-  const html = renderExecutionLogSummaryHtml(summary, {
-    agentId,
-    basename,
-    rawHref: `/api/executions/${encodeURIComponent(agentId)}/${encodeURIComponent(basename)}`,
-  });
-
-  res.statusCode = 200;
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.end(html);
-}
-
-/**
- * Parse a URL's query string into a plain object. Only the first value
- * per key is kept — the dashboard endpoints never need repeated keys,
- * and picking one keeps the downstream validation simple. Built on
- * `URLSearchParams` so percent-decoding and `+`-as-space handling match
- * what the browser sends.
- *
- * @param {string} rawUrl
- * @returns {Record<string, string>}
- */
-function parseQuery(rawUrl) {
-  const qIdx = rawUrl.indexOf('?');
-  if (qIdx < 0) return {};
-  const params = new URLSearchParams(rawUrl.slice(qIdx + 1));
-  const out = {};
-  for (const [key, value] of params.entries()) {
-    if (!(key in out)) out[key] = value;
-  }
-  return out;
-}
-
-/**
- * HTML-escape untrusted text for safe interpolation into markup.
+ * HTML-escape untrusted text for safe interpolation into markup. The
+ * build-missing template is the only HTML we render server-side in sub-AC 1,
+ * so a local helper keeps this module free of an HTML-rendering dep.
  *
  * @param {string} value
  * @returns {string}

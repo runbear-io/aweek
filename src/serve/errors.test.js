@@ -193,8 +193,10 @@ describe('HTTP routing — 404 on unknown agent (JSON API endpoint)', () => {
     assert.equal(res.statusCode, 404);
     assert.match(res.headers['content-type'], /application\/json/);
     const body = JSON.parse(res.body);
-    assert.equal(body.error, 'Agent not found');
-    assert.equal(body.agentId, 'no-such-agent');
+    // The handler echoes the slug inside the message so the SPA (and
+    // `curl` users) can correlate the error to the request they made.
+    assert.match(body.error, /Agent not found/);
+    assert.match(body.error, /no-such-agent/);
   });
 
   it('includes the unknown agentId verbatim in the JSON error body', async () => {
@@ -202,7 +204,8 @@ describe('HTTP routing — 404 on unknown agent (JSON API endpoint)', () => {
     const res = await httpGet(`${base}/api/agents/${encodeURIComponent(slug)}/calendar`);
     assert.equal(res.statusCode, 404);
     const body = JSON.parse(res.body);
-    assert.equal(body.agentId, slug, 'URL-decoded slug is echoed back');
+    // Slug appears verbatim in the error message after URL decoding.
+    assert.match(body.error, new RegExp(slug), 'URL-decoded slug is echoed back');
   });
 
   it('sets Cache-Control: no-store on the 404 JSON response', async () => {
@@ -229,12 +232,15 @@ describe('HTTP routing — unknown agent on HTML shell route renders gracefully 
     await rm(projectDir, { recursive: true, force: true });
   });
 
-  it('GET /?agent=unknown returns 200 — unknown slug renders as empty state', async () => {
+  it('GET /?agent=unknown returns 200 — whitelisted shell route still serves the SPA', async () => {
     const res = await httpGet(`${base}/?agent=totally-unknown-agent`);
     assert.equal(res.statusCode, 200);
     assert.match(res.headers['content-type'], /text\/html/);
-    // Should render the zero-agents empty state (no agents in the temp .aweek/).
-    assert.match(res.body, /No agents yet|aweek:hire/i);
+    // The body is either the compiled SPA's `index.html` or the
+    // build-missing stub when the frontend hasn't been built yet. Both
+    // flows prove the server doesn't 500 on unknown query params and
+    // doesn't leak a stack trace.
+    assert.doesNotMatch(res.body, /Internal Server Error/);
   });
 
   it('GET /?agent=unknown does not leak a stack trace or 500 into the body', async () => {
@@ -280,7 +286,7 @@ describe('HTTP routing — invalid tab query param falls back to calendar (200)'
   });
 });
 
-describe('HTTP routing — removed / never-existed grid-layout endpoint paths return 404', () => {
+describe('HTTP routing — SPA client-route whitelist (200 shell vs 404 JSON)', () => {
   let handle;
   let base;
   let projectDir;
@@ -297,27 +303,47 @@ describe('HTTP routing — removed / never-existed grid-layout endpoint paths re
     await rm(projectDir, { recursive: true, force: true });
   });
 
-  // In the old 2x2 grid layout all content lived in a single GET / response;
-  // no dedicated sub-paths were ever routed. Any client (browser bookmark,
-  // cURL one-liner, integration test) that tries a sub-path must get a clean
-  // 404 rather than accidentally landing on / or silently succeeding.
-  const removedPaths = [
+  // The server maintains an explicit whitelist of SPA client-side routes.
+  // Requests for one of those routes get the `index.html` shell (200)
+  // so the React router can render; everything else gets a 404 JSON
+  // envelope so probe/typo traffic surfaces loudly in logs instead of
+  // silently falling through to the shell.
+  //
+  // Note: `/api/agents` is not in either list — it has its own JSON
+  // endpoint backed by the agent store (covered in server.test.js).
+
+  const whitelistedRoutes = [
     '/agents',
     '/calendar',
-    '/budget',
-    '/plan',
     '/activity',
     '/strategy',
     '/profile',
-    '/api/agents',
-    '/api',
   ];
 
-  for (const path of removedPaths) {
-    it(`GET ${path} returns 404`, async () => {
+  for (const path of whitelistedRoutes) {
+    it(`GET ${path} returns 200 (whitelisted SPA shell route)`, async () => {
+      const res = await httpGet(`${base}${path}`);
+      assert.equal(res.statusCode, 200, `expected 200 for ${path}`);
+      assert.match(res.headers['content-type'], /text\/html/);
+    });
+  }
+
+  const nonWhitelistedRoutes = [
+    '/budget',
+    '/plan',
+    '/api',
+    '/xyz',
+    '/unknown-top-level-slug',
+  ];
+
+  for (const path of nonWhitelistedRoutes) {
+    it(`GET ${path} returns 404 JSON (not whitelisted)`, async () => {
       const res = await httpGet(`${base}${path}`);
       assert.equal(res.statusCode, 404, `expected 404 for ${path}`);
-      assert.match(res.headers['content-type'], /text\/plain/);
+      assert.match(res.headers['content-type'], /application\/json/);
+      const body = JSON.parse(res.body);
+      assert.match(body.error, /Not found/);
+      assert.equal(body.path, path);
     });
   }
 });
