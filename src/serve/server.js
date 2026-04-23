@@ -157,15 +157,15 @@ const MIME_TYPES = {
 };
 
 /**
- * Resolve the default Vite build output directory. The build lives at
- * `<packageRoot>/dist/` — two levels up from this file (`src/serve/server.js`).
- * Exported so tests and any future CLI flag can override it via the
- * `buildDir` option of `startServer`.
+ * Resolve the default Vite build output directory. The SPA bundle lives at
+ * `src/serve/spa/dist/` — one directory over from this file — matching the
+ * `build.outDir` in `vite.config.js`. Exported so tests and any future CLI
+ * flag can override it via the `buildDir` option of `startServer`.
  *
  * @returns {string} absolute path to the default build directory
  */
 export function resolveDefaultBuildDir() {
-  return fileURLToPath(new URL(`../../${DEFAULT_BUILD_DIR_NAME}/`, import.meta.url));
+  return fileURLToPath(new URL(`./spa/${DEFAULT_BUILD_DIR_NAME}/`, import.meta.url));
 }
 
 /**
