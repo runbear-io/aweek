@@ -365,6 +365,38 @@ export function parseSubagentFrontmatter(content) {
 }
 
 /**
+ * Extract the system-prompt body of a subagent .md file — everything after
+ * the closing `---` frontmatter fence, trimmed of leading/trailing blank
+ * lines. When no frontmatter fence is present (e.g. a hand-crafted file
+ * without YAML), the entire (right-trimmed) content is returned so the
+ * caller still sees the prompt instead of an empty string.
+ *
+ * Used by the SPA Profile tab so users can read the live system prompt
+ * without opening the .md on disk. Matches the body written by
+ * {@link buildSubagentMarkdown} so writer/reader round-trips are lossless.
+ *
+ * @param {string} content
+ * @returns {string}
+ */
+export function parseSubagentBody(content) {
+  if (typeof content !== 'string' || content.length === 0) return '';
+  const normalized = content.replace(/^\uFEFF/, '');
+  const match = normalized.match(
+    /^\s*---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,
+  );
+  let body;
+  if (!match) {
+    // No frontmatter — treat the whole content as the body.
+    body = normalized;
+  } else {
+    body = normalized.slice(match[0].length);
+  }
+  // Strip leading blank lines (separator whitespace between fence + body)
+  // and trailing whitespace so the rendered block is tight.
+  return body.replace(/^[\r\n]+/, '').replace(/\s+$/, '');
+}
+
+/**
  * Read a subagent's live frontmatter from disk.
  *
  * Returns `{ missing: true }` when the .md file is absent — the single
@@ -374,24 +406,31 @@ export function parseSubagentFrontmatter(content) {
  * file exists but frontmatter fails to parse we still return `missing:
  * false` so callers can distinguish "file vanished" from "file malformed".
  *
+ * The system-prompt `body` is returned alongside name/description so the
+ * SPA Profile tab can render the live prompt without a second file read.
+ * Existing callers that only destructure `{ name, description, path }`
+ * continue to work unchanged — the extra field is purely additive.
+ *
  * @param {string} slug
  * @param {string} [projectDir]
- * @returns {Promise<{ missing: boolean, name: string, description: string, path: string }>}
+ * @returns {Promise<{ missing: boolean, name: string, description: string, body: string, path: string }>}
  */
 export async function readSubagentIdentity(slug, projectDir) {
   const path = subagentFilePath(slug, projectDir);
   try {
     const content = await readFile(path, 'utf8');
     const parsed = parseSubagentFrontmatter(content);
+    const body = parseSubagentBody(content);
     return {
       missing: false,
       name: parsed.name,
       description: parsed.description,
+      body,
       path,
     };
   } catch (err) {
     if (err && err.code === 'ENOENT') {
-      return { missing: true, name: '', description: '', path };
+      return { missing: true, name: '', description: '', body: '', path };
     }
     throw err;
   }

@@ -26,6 +26,7 @@ import {
   readSubagentFile,
   writeSubagentFile,
   parseSubagentFrontmatter,
+  parseSubagentBody,
   readSubagentIdentity,
   userSubagentFilePath,
   resolveSubagentFile,
@@ -388,6 +389,51 @@ describe('subagent-file — parseSubagentFrontmatter', () => {
   });
 });
 
+describe('subagent-file — parseSubagentBody', () => {
+  it('returns the body after a closing frontmatter fence', () => {
+    const content = [
+      '---',
+      'name: writer',
+      'description: A writer',
+      '---',
+      '',
+      'You are a writer.',
+      '',
+      'Rules:',
+      '- be concise',
+    ].join('\n');
+    const body = parseSubagentBody(content);
+    assert.equal(body, 'You are a writer.\n\nRules:\n- be concise');
+  });
+
+  it('returns the full content when no frontmatter fence exists', () => {
+    const content = 'just a raw prompt with no YAML frontmatter\n';
+    assert.equal(parseSubagentBody(content), 'just a raw prompt with no YAML frontmatter');
+  });
+
+  it('returns an empty string for empty or non-string input', () => {
+    assert.equal(parseSubagentBody(''), '');
+    assert.equal(parseSubagentBody(null), '');
+    assert.equal(parseSubagentBody(undefined), '');
+    assert.equal(parseSubagentBody(42), '');
+  });
+
+  it('returns an empty string when the file is only frontmatter', () => {
+    const content = '---\nname: x\ndescription: y\n---\n';
+    assert.equal(parseSubagentBody(content), '');
+  });
+
+  it('round-trips the body written by buildSubagentMarkdown', () => {
+    const systemPrompt = 'You are a writer.\n\nBe concise.';
+    const md = buildSubagentMarkdown({
+      name: 'writer',
+      description: 'A writer',
+      systemPrompt,
+    });
+    assert.equal(parseSubagentBody(md), systemPrompt);
+  });
+});
+
 describe('subagent-file — readSubagentIdentity', () => {
   let tmpDir;
 
@@ -425,6 +471,35 @@ describe('subagent-file — readSubagentIdentity', () => {
     assert.equal(identity.missing, false);
     assert.equal(identity.name, 'writer');
     assert.equal(identity.description, 'Live description from disk');
+    // System-prompt body is read back alongside frontmatter so the SPA
+    // Profile tab can render it without a second file read.
+    assert.equal(identity.body, 'You are a writer.');
+  });
+
+  it('returns the multi-line system prompt verbatim via `body`', async () => {
+    const prompt = [
+      'You are a writer.',
+      '',
+      'Rules:',
+      '- be concise',
+      '- cite sources',
+    ].join('\n');
+    await writeSubagentFile({
+      slug: 'verbose',
+      description: 'Multi-line prompt',
+      systemPrompt: prompt,
+      projectDir: tmpDir,
+    });
+
+    const identity = await readSubagentIdentity('verbose', tmpDir);
+    assert.equal(identity.missing, false);
+    assert.equal(identity.body, prompt);
+  });
+
+  it('returns body="" when the .md is absent', async () => {
+    const identity = await readSubagentIdentity('ghost', tmpDir);
+    assert.equal(identity.missing, true);
+    assert.equal(identity.body, '');
   });
 
   it('picks up edits made directly to the .md file', async () => {
