@@ -45,11 +45,15 @@ import { fileURLToPath } from 'node:url';
 // being installed via `npm link`.
 const BIN_PATH = fileURLToPath(new URL('../../bin/aweek.js', import.meta.url));
 
-// Absolute path to the Vite build directory the CLI will probe. The CLI
-// does not accept a `--build-dir` flag (that is intentionally a serve-
-// internal knob, not a user-facing surface), so for the static-asset
-// suite we seed a real fixture here and clean it up in `after`.
-const BUILD_DIR = fileURLToPath(new URL('../../dist/', import.meta.url));
+// Absolute path to the Vite build directory the CLI will probe. Matches
+// `resolveDefaultBuildDir()` in `server.js` and `build.outDir` in
+// `vite.config.js`, which both land the SPA bundle at
+// `src/serve/spa/dist/`. The CLI does not accept a `--build-dir` flag
+// (that is intentionally a serve-internal knob, not a user-facing
+// surface), so for the static-asset suite we seed our fixture files
+// here and clean them up in `after`.
+const BUILD_DIR = fileURLToPath(new URL('./spa/dist/', import.meta.url));
+const FAKE_FILES = ['assets/app-abc123.js', 'assets/app-abc123.css', 'favicon.ico'];
 
 // Indexed by the paths the fake build places under `<packageRoot>/dist/`.
 // Keeping the content small keeps assertions precise and I/O cheap.
@@ -68,13 +72,21 @@ const FAKE_APP_CSS = 'body{color:#0f0}\n';
  * already exists we simply leave it alone and the suite runs against it.
  */
 async function ensureBuildDir() {
-  if (existsSync(BUILD_DIR)) return { created: false };
+  // Whether or not a real build exists, always seed the fixture files
+  // the static-asset tests assert on (app-abc123.*, favicon.ico). They
+  // use well-known paths that do not collide with the real hashed
+  // bundle emitted by Vite, so layering them on top of a real build is
+  // safe. `index.html` is only seeded when absent so we do not clobber
+  // the real shell.
+  const hadBuild = existsSync(BUILD_DIR);
   await mkdir(join(BUILD_DIR, 'assets'), { recursive: true });
-  await writeFile(join(BUILD_DIR, 'index.html'), FAKE_INDEX_HTML, 'utf8');
+  if (!hadBuild) {
+    await writeFile(join(BUILD_DIR, 'index.html'), FAKE_INDEX_HTML, 'utf8');
+  }
   await writeFile(join(BUILD_DIR, 'assets', 'app-abc123.js'), FAKE_APP_JS, 'utf8');
   await writeFile(join(BUILD_DIR, 'assets', 'app-abc123.css'), FAKE_APP_CSS, 'utf8');
   await writeFile(join(BUILD_DIR, 'favicon.ico'), Buffer.from([0, 0, 1, 0]));
-  return { created: true };
+  return { created: !hadBuild };
 }
 
 /**
@@ -83,8 +95,18 @@ async function ensureBuildDir() {
  * developer state.
  */
 async function teardownBuildDir(handle) {
-  if (!handle || !handle.created) return;
-  await rm(BUILD_DIR, { recursive: true, force: true });
+  if (!handle) return;
+  if (handle.created) {
+    // Seed created the whole directory — remove it wholesale.
+    await rm(BUILD_DIR, { recursive: true, force: true });
+    return;
+  }
+  // A real build was present before this suite ran. Only remove the
+  // fixture files we layered on top, leaving the developer's build
+  // artifacts untouched.
+  for (const rel of FAKE_FILES) {
+    await rm(join(BUILD_DIR, rel), { force: true });
+  }
 }
 
 /**
