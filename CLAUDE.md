@@ -19,13 +19,17 @@ Slash-command distribution is handled by the Claude Code plugin system (manifest
 
 ```bash
 pnpm install            # Install dependencies
-pnpm test               # Run tests (node --test src/**/*.test.js)
-pnpm test:verbose       # Run tests with the spec reporter
-pnpm lint               # Syntax-check every src file
-pnpm build              # Syntax-check src/index.js
+pnpm test               # Run node-test suites (node --test src/**/*.test.js)
+pnpm test:verbose       # Same with the spec reporter
+pnpm test:spa           # Run SPA component tests (vitest + jsdom + Testing Library)
+pnpm lint               # Syntax-check every src file (node --check)
+pnpm build              # vite build (→ src/serve/spa/dist/) then node --check src/index.js
+pnpm dev                # One command: aweek serve + vite dev with HMR. Accepts
+                        # `-- --project-dir <path>` to point at another .aweek/
+pnpm dev:spa            # Vite dev only (for when you already run aweek serve)
 ```
 
-Local development: `claude --plugin-dir .` loads the plugin from this directory, and `/reload-plugins` picks up markdown edits without restarting.
+Local development: `claude --plugin-dir .` loads the plugin from this directory, and `/reload-plugins` picks up markdown edits without restarting. For dashboard work, `pnpm dev -- --project-dir ~/some/project` opens `http://localhost:5173` with HMR against that project's `.aweek/` data.
 
 ## Skills
 
@@ -97,6 +101,18 @@ Cron fires in the system local zone. `runHeartbeatForAll` compares the configure
 
 DST seams are handled explicitly: `localWallClockToUtc` returns the first instant past a spring-forward gap and the earlier of two candidates for a fall-back ambiguous wall clock. See `src/time/zone.test.js`.
 
+### Dashboard (`aweek serve`)
+
+`aweek serve` is a single-process Node HTTP server (`src/serve/server.js`) that serves a React SPA plus a read-only JSON API on the same port (default 3000). It replaced the older hand-rolled SSR section-module pile — none of those modules remain.
+
+- **Frontend:** React 19 + Vite 6 + Tailwind 3 + shadcn/ui primitives, all under `src/serve/spa/` (components, pages, hooks, lib, styles). The entry is `src/serve/spa/main.jsx` and the HTML shell is `src/serve/spa/index.html`. Routes: `/` redirects to `/agents`; `/agents` lists agents; `/agents/:slug` and `/agents/:slug/:tab` (calendar/activity/strategy/profile) render the detail shell. Row-click on the list navigates into the detail page; a breadcrumb (`Agents › slug › tab`) provides back-nav. Clicking a task chip on the calendar opens a shadcn Sheet with the task's fields.
+- **API layer:** thin JSON endpoint handlers in `src/serve/data/` (`agents.js`, `plan.js`, `calendar.js`, `activity.js`, `budget.js`, `logs.js`, `execution-log.js`) — each one reads from the existing `src/storage/*` stores. No new persistence, strictly read-only.
+- **Route whitelist:** the server treats `/`, `/agents`, `/agents/:slug`, `/agents/:slug/*`, `/calendar`, `/activity`, `/strategy`, `/profile` as SPA client routes and serves `index.html` for them. Everything else (including `/api` with no resource, `/xyz`) returns 404 JSON. Static asset paths under `/assets/*` hit the build directory directly.
+- **Build output:** `vite build` writes to `src/serve/spa/dist/` (configured in `vite.config.js`). `resolveDefaultBuildDir()` in `server.js` points the static handler at that path — keep the two in sync if either moves.
+- **Theme:** `components/theme-provider.jsx` + `components/theme-toggle.jsx` provide light/dark with a sidebar-footer toggle, localStorage-persisted. Every primitive is written in canonical shadcn markup (`bg-card`, `text-muted-foreground`, `border-border`, …); no hardcoded `slate-*` classes should be reintroduced.
+- **Development:** `pnpm dev` (see Commands) runs the Express backend on `:3000` and Vite HMR on `:5173`. Vite proxies `/api/*` to the backend. In production (`aweek serve`) there is **one** server process and one port — Vite is a devDependency only.
+- **CLI flags:** `aweek serve [--port <n>] [--host <addr>] [--no-open] [--project-dir <path>] [--build-dir <path>]`. `--project-dir` is the same flag used by `pnpm dev` to point the backend at another project's `.aweek/`.
+
 ### Subagent discovery
 
 `src/subagents/subagent-discovery.js` scans both `.claude/agents/` (project) and `~/.claude/agents/` (user) and returns `{ slug, scope, path, hired }` records. The hire wizard's pick-existing branch and the init four-option menu both consume this list, filtering out plugin-namespaced and already-hired slugs.
@@ -108,7 +124,9 @@ DST seams are handled explicitly: `localWallClockToUtc` returns the first instan
   plugin.json                   # Plugin manifest (name, version, keywords)
   hooks.json                    # SessionStart hook that auto-installs the CLI
 bin/
-  aweek.js                      # CLI entry (heartbeat + `aweek exec` dispatcher)
+  aweek.js                      # CLI entry (heartbeat + serve + `aweek exec` dispatcher)
+scripts/
+  dev.mjs                       # `pnpm dev` — aweek serve + vite dev with `--project-dir`
 skills/                         # Slash-command markdown (source of truth)
   init/SKILL.md
   hire/SKILL.md
@@ -137,6 +155,24 @@ src/
   execution/                    # Claude Code CLI session launcher + tracker
   lock/                         # PID-tracked file locks
   queue/                        # Per-agent task queue
+  serve/                        # Dashboard HTTP server (`aweek serve`)
+    server.js                   # Express-style handler — SPA shell + /api/* + static assets
+    data/                       # Thin JSON endpoint handlers over src/storage/*
+    spa/                        # React + Vite + Tailwind + shadcn SPA source
+      index.html                # Vite HTML entry (#root mount point)
+      main.jsx                  # Router + ThemeProvider + Layout wiring
+      pages/                    # Agents list + Agent detail tabs (calendar, activity, strategy, profile)
+      components/               # Layout, sidebar, header, footer, theme-toggle, calendar grid, activity timeline
+      components/ui/            # Canonical shadcn primitives (button, card, table, tabs, sidebar, breadcrumb, sheet, …)
+      hooks/                    # use-agents, use-agent-calendar, use-agent-plan, use-agent-logs, …
+      lib/                      # api-client, cn, utils
+      styles/globals.css        # Tailwind directives + shadcn HSL tokens (light + dark)
+      dist/                     # Vite build output (committed for release convenience)
+vite.config.js                  # Vite root = src/serve/spa/, outDir = src/serve/spa/dist/
+tailwind.config.js              # Dark class mode, shadcn color tokens
+postcss.config.js               # Tailwind + autoprefixer
+vitest.config.js                # SPA test runner config (jsdom)
+vitest.setup.js                 # Testing Library setup
 .aweek/                         # Runtime data (created by /aweek:init)
   agents/<slug>.json            # Per-agent scheduling state
   agents/<slug>/                # Per-agent subdirs (plans, usage, logs, inbox)
