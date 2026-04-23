@@ -5,6 +5,7 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from '
 import {
   AgentsPage,
   AgentDetailPage,
+  AgentExecutionLogPage,
   DEFAULT_AGENT_DETAIL_TAB,
   normaliseTab,
 } from './pages/index.js';
@@ -35,6 +36,11 @@ function AgentDetailRoute() {
   );
 }
 
+function AgentExecutionLogRoute() {
+  const { slug, basename } = useParams();
+  return <AgentExecutionLogPage slug={slug} basename={basename} />;
+}
+
 /**
  * `AppShell` — wraps every page in the shared `Layout` so the sidebar,
  * header, and footer built by AC 2/4/5 actually render in the live SPA.
@@ -48,6 +54,10 @@ function AppShell() {
         <Route path="/" element={<Navigate to="/agents" replace />} />
         <Route path="/agents" element={<AgentsRoute />} />
         <Route path="/agents/:slug" element={<AgentDetailRoute />} />
+        <Route
+          path="/agents/:slug/activity/:basename"
+          element={<AgentExecutionLogRoute />}
+        />
         <Route path="/agents/:slug/:tab" element={<AgentDetailRoute />} />
         <Route path="/calendar" element={<Navigate to="/agents" replace />} />
         <Route path="/activity" element={<Navigate to="/agents" replace />} />

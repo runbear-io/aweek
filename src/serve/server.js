@@ -42,6 +42,7 @@ import {
   gatherAgentCalendar,
   gatherAgentUsage,
   gatherAgentLogs,
+  streamExecutionLogLines,
 } from './data/index.js';
 // The /api/summary endpoint intentionally reuses the terminal
 // `/aweek:summary` composer so the SPA Overview tab shows byte-identical
@@ -405,6 +406,20 @@ async function handleRequest(req, res, ctx) {
     return;
   }
 
+  const agentExecLogMatch = pathname.match(
+    /^\/api\/agents\/([^/]+)\/executions\/([^/]+)\/?$/,
+  );
+  if (agentExecLogMatch) {
+    const slug = decodeSlug(agentExecLogMatch[1]);
+    const basename = decodeSlug(agentExecLogMatch[2]);
+    if (slug === null || basename === null) {
+      sendJson(res, 400, { error: 'Invalid slug or basename' });
+      return;
+    }
+    await handleAgentExecutionLog(res, ctx, slug, basename);
+    return;
+  }
+
   await serveSpa(req, res, pathname, ctx);
 }
 
@@ -720,6 +735,41 @@ async function handleAgentLogs(res, ctx, slug, dateRange) {
   } catch (err) {
     sendJson(res, 500, {
       error: err && err.message ? err.message : 'Failed to load logs',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/executions/:basename — return the NDJSON body of
+ * a single execution log as a JSON array of lines. The SPA's execution
+ * log page consumes this endpoint; server-side streaming keeps memory
+ * bounded while the response materialises the list for the client.
+ *
+ * Response shape:
+ *   200 { log: { slug, basename, lines: [...raw NDJSON lines] } }
+ *   400 { error: 'Invalid slug or basename' }
+ *   500 { error: string }
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {{ projectDir: string }} ctx
+ * @param {string} slug
+ * @param {string} basename — `<taskId>_<executionId>` (no `.jsonl`).
+ */
+async function handleAgentExecutionLog(res, ctx, slug, basename) {
+  try {
+    const lines = [];
+    for await (const line of streamExecutionLogLines({
+      projectDir: ctx.projectDir,
+      slug,
+      basename,
+    })) {
+      lines.push(line);
+    }
+    sendJson(res, 200, { log: { slug, basename, lines } });
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && err.message ? err.message : 'Failed to read execution log',
     });
   }
 }

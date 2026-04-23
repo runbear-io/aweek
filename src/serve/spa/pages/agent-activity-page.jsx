@@ -136,6 +136,7 @@ export function AgentActivityPage({
         executions={data.executions}
         title="Chronological timeline"
         emptyMessage={`No activity in this range for "${data.slug}".`}
+        agentSlug={data.slug}
       />
       <details
         className="group rounded-lg border bg-card text-card-foreground"

@@ -72,7 +72,7 @@ const AGENT_TABS = Object.freeze([
  */
 export function parseAgentDetailRoute(pathname) {
   if (typeof pathname !== 'string') return null;
-  const match = pathname.match(/^\/agents\/([^/]+)(?:\/([^/]+))?\/?$/);
+  const match = pathname.match(/^\/agents\/([^/]+)(?:\/([^/]+))?(?:\/.*)?$/);
   if (!match) return null;
   return { slug: match[1], tab: match[2] || 'calendar' };
 }

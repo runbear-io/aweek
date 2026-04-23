@@ -33,3 +33,4 @@ export { AgentPlanPage } from './agent-plan-page.jsx';
 export { AgentCalendarPage } from './agent-calendar-page.jsx';
 export { AgentUsagePage } from './agent-usage-page.jsx';
 export { AgentActivityPage } from './agent-activity-page.jsx';
+export { AgentExecutionLogPage } from './agent-execution-log-page.jsx';
