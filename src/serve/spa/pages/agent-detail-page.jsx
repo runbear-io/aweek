@@ -38,8 +38,17 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Badge } from '../components/ui/badge.jsx';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '../components/ui/breadcrumb.jsx';
 import { Button } from '../components/ui/button.jsx';
 import {
   Card,
@@ -54,7 +63,6 @@ import {
   TabsList,
   TabsTrigger,
 } from '../components/ui/tabs.jsx';
-import { cn } from '../lib/cn.js';
 import { useAgentProfile } from '../hooks/use-agent-profile.js';
 
 import { AgentActivityPage } from './agent-activity-page.jsx';
@@ -160,6 +168,8 @@ export function AgentDetailPage({
   }
 
   const profile = /** @type {AgentProfile} */ (data || { slug, name: slug });
+  const activeTabLabel =
+    AGENT_DETAIL_TABS.find((t) => t.value === activeTab)?.label ?? activeTab;
 
   return (
     <section
@@ -168,6 +178,11 @@ export function AgentDetailPage({
       data-agent-slug={slug}
       data-active-tab={activeTab}
     >
+      <DetailBreadcrumb
+        slug={slug}
+        tab={activeTab}
+        tabLabel={activeTabLabel}
+      />
       <DetailHeader
         profile={profile}
         loading={loading}
@@ -212,6 +227,41 @@ export function AgentDetailPage({
 
 export default AgentDetailPage;
 
+// ── Breadcrumb ───────────────────────────────────────────────────────
+
+/**
+ * Breadcrumb trail rendered above the detail header. Surfaces the
+ * three-segment path `Agents → :slug → :tab` per AC 3. The root and
+ * slug segments are navigable via react-router `<Link>`; the active
+ * tab is rendered as `BreadcrumbPage` so assistive tech announces it
+ * as the user's current position.
+ *
+ * @param {{ slug: string, tab: AgentTabValue, tabLabel: string }} props
+ */
+function DetailBreadcrumb({ slug, tab, tabLabel }) {
+  return (
+    <Breadcrumb data-agent-detail-breadcrumb="true">
+      <BreadcrumbList>
+        <BreadcrumbItem>
+          <BreadcrumbLink asChild>
+            <Link to="/agents">Agents</Link>
+          </BreadcrumbLink>
+        </BreadcrumbItem>
+        <BreadcrumbSeparator />
+        <BreadcrumbItem>
+          <BreadcrumbLink asChild>
+            <Link to={`/agents/${slug}`}>{slug}</Link>
+          </BreadcrumbLink>
+        </BreadcrumbItem>
+        <BreadcrumbSeparator />
+        <BreadcrumbItem>
+          <BreadcrumbPage data-active-tab={tab}>{tabLabel}</BreadcrumbPage>
+        </BreadcrumbItem>
+      </BreadcrumbList>
+    </Breadcrumb>
+  );
+}
+
 // ── Header ───────────────────────────────────────────────────────────
 
 /**
@@ -228,11 +278,11 @@ export default AgentDetailPage;
  * }} props
  */
 function DetailHeader({ profile, loading, onRefresh, onBack }) {
-  const tone = resolveStatusTone(profile);
   const label = resolveStatusLabel(profile);
+  const variant = resolveStatusVariant(profile);
   return (
     <header
-      className="flex flex-col gap-2 border-b border-slate-800 pb-3"
+      className="flex flex-col gap-2 border-b pb-3"
       data-agent-detail-header="true"
     >
       <div className="flex items-center justify-between gap-3">
@@ -248,7 +298,7 @@ function DetailHeader({ profile, loading, onRefresh, onBack }) {
             </Button>
           ) : null}
           <div className="flex flex-col">
-            <h1 className="text-base font-semibold tracking-tight text-slate-100">
+            <h1 className="text-base font-semibold tracking-tight text-foreground">
               {profile.name || profile.slug}
               {profile.missing ? (
                 <Badge variant="destructive" className="ml-2">
@@ -256,8 +306,8 @@ function DetailHeader({ profile, loading, onRefresh, onBack }) {
                 </Badge>
               ) : null}
             </h1>
-            <p className="text-xs text-slate-400">
-              <code className="rounded bg-slate-900 px-1.5 py-0.5 text-[11px] text-slate-300">
+            <p className="text-xs text-muted-foreground">
+              <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
                 {profile.slug}
               </code>
               {profile.description ? (
@@ -267,7 +317,7 @@ function DetailHeader({ profile, loading, onRefresh, onBack }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <StatusBadge label={label} tone={tone} />
+          <StatusBadge label={label} variant={variant} />
           <Button
             variant="outline"
             size="sm"
@@ -282,19 +332,12 @@ function DetailHeader({ profile, loading, onRefresh, onBack }) {
   );
 }
 
-function StatusBadge({ label, tone }) {
-  // Derive a shadcn Badge variant from the legacy tone class string so the
-  // active / paused / over-budget / missing palettes stay consistent.
-  const variant = tone?.includes('emerald')
-    ? 'success'
-    : tone?.includes('amber')
-      ? 'warning'
-      : 'destructive';
+function StatusBadge({ label, variant }) {
   return (
     <Badge
       data-agent-status={label}
       variant={variant}
-      className={cn('tracking-widest', tone)}
+      className="tracking-widest"
     >
       {label}
     </Badge>
@@ -302,15 +345,21 @@ function StatusBadge({ label, tone }) {
 }
 
 /**
- * Derive the status tone ring/colour from an `AgentProfile`. Mirrors
- * the Overview page's `StatusBadge` tones so the two surfaces agree on
- * how a given status reads visually.
+ * Map an `AgentProfile` onto a stock shadcn Badge variant. Mirrors the
+ * Overview page's `StatusBadge` mapping so the two surfaces agree on
+ * how a given status reads: `default` for healthy, `outline` for the
+ * advisory paused state, and `destructive` for missing / over-budget.
+ *
+ * @param {AgentProfile} profile
+ * @returns {'default' | 'outline' | 'destructive'}
  */
-function resolveStatusTone(profile) {
-  if (profile?.missing) return 'text-red-400 border-red-400/40 bg-red-500/10';
-  if (profile?.paused) return 'text-amber-300 border-amber-300/40';
-  if (profile?.overBudget) return 'text-red-400 border-red-400/40 bg-red-500/10';
-  return 'text-emerald-400 border-emerald-400/40';
+function resolveStatusVariant(profile) {
+  if (profile?.missing) return 'destructive';
+  if (profile?.pausedReason === 'budget_exhausted' || profile?.overBudget) {
+    return 'destructive';
+  }
+  if (profile?.paused) return 'outline';
+  return 'default';
 }
 
 /**
@@ -336,7 +385,7 @@ function DetailEmpty({ message }) {
       data-page="agent-detail"
       data-state="empty"
     >
-      <CardContent className="p-8 text-center text-sm italic text-slate-400">
+      <CardContent className="p-8 text-center text-sm italic text-muted-foreground">
         {message}
       </CardContent>
     </Card>
@@ -348,7 +397,7 @@ function DetailSkeleton({ slug }) {
     <div
       role="status"
       aria-live="polite"
-      className="animate-pulse text-sm text-slate-500"
+      className="animate-pulse text-sm text-muted-foreground"
       data-page="agent-detail"
       data-loading="true"
       data-agent-slug={slug}
@@ -359,29 +408,28 @@ function DetailSkeleton({ slug }) {
 }
 
 function DetailError({ error, onRetry, slug }) {
+  // Destructive-token Card communicates failure in the same chrome family
+  // as the healthy detail surface (rather than a bespoke div). Mirrors the
+  // Overview page's `AgentsPageError` so both alerts re-theme cleanly via
+  // the `--destructive` token in light + dark modes.
   return (
     <Card
       role="alert"
-      className="border-red-500/40 bg-red-500/10 text-red-200"
       data-page="agent-detail"
       data-error="true"
       data-agent-slug={slug}
+      className="border-destructive/40 bg-destructive/10 text-destructive"
     >
       <CardHeader className="space-y-1">
-        <CardTitle as="h2" className="text-sm text-red-200">
+        <CardTitle as="h2" className="text-sm text-destructive">
           Failed to load agent.
         </CardTitle>
-        <CardDescription className="text-xs text-red-200/80">
+        <CardDescription className="text-xs text-destructive/80">
           {error?.message || String(error)}
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-0">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRetry}
-          className="border-red-400/50 text-red-200 hover:bg-red-500/20"
-        >
+        <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
       </CardContent>
@@ -390,11 +438,11 @@ function DetailError({ error, onRetry, slug }) {
 }
 
 function StaleBanner({ error, onRetry }) {
+  // Neutral muted chrome for the "stale" callout — the stock shadcn
+  // palette does not expose a warning token, so we use the muted surface
+  // to signal "advisory, not destructive" (parity with `agents-page.jsx`).
   return (
-    <Card
-      role="alert"
-      className="border-amber-500/40 bg-amber-500/10 text-amber-200"
-    >
+    <Card role="alert" className="bg-muted text-muted-foreground">
       <CardContent className="flex items-center gap-2 p-2.5 text-xs">
         <span>
           Refresh failed ({error?.message || 'unknown error'}) — showing last-known
@@ -404,7 +452,7 @@ function StaleBanner({ error, onRetry }) {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto p-0 text-xs text-amber-200 underline decoration-dotted hover:decoration-solid"
+          className="h-auto p-0 text-xs"
         >
           Retry
         </Button>

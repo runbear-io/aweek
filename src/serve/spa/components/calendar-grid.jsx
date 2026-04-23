@@ -25,8 +25,9 @@
  * Visual + interaction goals:
  *   - Fully responsive: the grid is wrapped in an overflow-x-auto scroll
  *     container so narrow viewports keep the whole week accessible without
- *     collapsing columns. A `min-w-[640px]` guarantees the day columns stay
- *     legible when scrolled.
+ *     collapsing columns. The `minmax(120px, 1fr)` column track already
+ *     enforces a per-column floor, so day columns stay legible when scrolled
+ *     without any additional arbitrary min-width on the grid itself.
  *   - Sticky hour column + sticky header row so scrolling a long grid keeps
  *     the axes visible (shadcn table pattern, reused here for the grid).
  *   - Tailwind-tone-per-status chips with consistent border + background
@@ -102,11 +103,11 @@ export const REVIEW_ICON = '◆';
 
 /** Status → tailwind utility string for chip borders / backgrounds. */
 export const STATUS_TONE = {
-  pending: 'border-slate-600 bg-slate-900/60 text-slate-200',
+  pending: 'border-border bg-muted/60 text-foreground',
   'in-progress': 'border-sky-400/60 bg-sky-500/10 text-sky-200',
   completed: 'border-emerald-400/60 bg-emerald-500/10 text-emerald-200',
   failed: 'border-red-400/60 bg-red-500/10 text-red-200',
-  skipped: 'border-slate-700 bg-slate-900/40 text-slate-500',
+  skipped: 'border-border bg-muted/40 text-muted-foreground',
   delegated: 'border-violet-400/60 bg-violet-500/10 text-violet-200',
 };
 
@@ -172,13 +173,13 @@ export function CalendarGrid({
   return (
     <section
       className={cn(
-        'overflow-x-auto rounded-md border border-slate-800 bg-slate-900/20',
+        'overflow-x-auto rounded-md border border-border bg-muted/20',
         className,
       )}
       data-calendar-grid="true"
     >
       <div
-        className="grid min-w-[640px] text-xs"
+        className="grid text-xs"
         style={{
           gridTemplateColumns: `72px repeat(${dayCount}, minmax(120px, 1fr))`,
         }}
@@ -192,7 +193,7 @@ export function CalendarGrid({
         {/* Header row: blank corner + day headings */}
         <div
           role="columnheader"
-          className="sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-900/60 px-2 py-2 text-[10px] font-semibold uppercase tracking-widest text-slate-500"
+          className="sticky left-0 z-10 border-b border-r border-border bg-muted/60 px-2 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
         >
           Hour
         </div>
@@ -201,10 +202,10 @@ export function CalendarGrid({
             key={dayKey}
             role="columnheader"
             data-day={dayKey}
-            className="border-b border-r border-slate-800 bg-slate-900/40 px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-slate-300"
+            className="border-b border-r border-border bg-muted/40 px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-foreground"
           >
             <div>{dayLabels[idx]}</div>
-            <div className="text-[10px] font-normal text-slate-500">
+            <div className="text-[10px] font-normal text-muted-foreground">
               {formatDayDate(weekMondayMs, idx, timeZone)}
             </div>
           </div>
@@ -215,7 +216,7 @@ export function CalendarGrid({
           <React.Fragment key={hour}>
             <div
               role="rowheader"
-              className="sticky left-0 z-10 border-b border-r border-slate-800 bg-slate-900/60 px-2 py-2 text-right text-[11px] tabular-nums text-slate-400"
+              className="sticky left-0 z-10 border-b border-r border-border bg-muted/60 px-2 py-2 text-right text-[11px] tabular-nums text-muted-foreground"
             >
               {String(hour).padStart(2, '0')}:00
             </div>
@@ -227,7 +228,7 @@ export function CalendarGrid({
                   role="gridcell"
                   data-day={dayKey}
                   data-hour={hour}
-                  className="min-h-[44px] border-b border-r border-slate-800 p-1 align-top"
+                  className="min-h-11 border-b border-r border-border p-1 align-top"
                 >
                   {entries.length === 0 ? null : (
                     <div className="flex flex-col gap-1">

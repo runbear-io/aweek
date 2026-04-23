@@ -31,12 +31,16 @@
  *   - Missing-subagent banner when `.claude/agents/<slug>.md` is absent
  *   - 404 maps to an "agent not found" empty state
  *
- * Styling: every card on this page is composed from the shadcn `Card`
- * family (`Card`, `CardHeader`, `CardTitle`, `CardContent`) rendered as
- * a semantic `<section>` so the accessibility + test contract (cards
- * must be discoverable via `getAllByLabelText(...).find(tagName ===
- * 'SECTION')`) holds. Buttons use the shadcn `Button` primitive with the
- * `link` variant for inline retry affordances.
+ * Styling uses canonical shadcn/ui token utilities only — every color
+ * resolves to a theme token declared in `styles/globals.css`
+ * (`--foreground`, `--muted-foreground`, `--destructive`, `--primary`,
+ * …). No hardcoded palette classes are used, so light and dark modes
+ * render correctly without per-palette overrides. Every card composes the shadcn `Card` family rendered as a
+ * semantic `<section>` so the accessibility + test contract (cards must
+ * be discoverable via `getAllByLabelText(...).find(tagName ===
+ * 'SECTION')`) holds. Buttons use the shadcn `Button` primitive; only
+ * stock Badge variants (`default`, `secondary`, `destructive`, `outline`)
+ * are used.
  *
  * @module serve/spa/pages/agent-profile-page
  */
@@ -48,6 +52,7 @@ import { Button } from '../components/ui/button.jsx';
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from '../components/ui/card.jsx';
@@ -128,24 +133,32 @@ export default AgentProfilePage;
 // ── Cards ────────────────────────────────────────────────────────────
 
 function ProfileHeader({ profile, loading, onRefresh }) {
+  // The outer element is a native <header> so the landmark role "banner"
+  // is exposed without an explicit `role=` attribute. Inner chrome is
+  // composed from the shadcn/ui Card primitives so the header reads as
+  // part of the same dashboard surface family as the rest of the SPA.
   return (
-    <header className="flex items-center justify-between border-b border-slate-800 pb-3">
-      <div>
-        <h1 className="text-base font-semibold tracking-tight text-slate-100">
-          {profile.name}
-        </h1>
-        <p className="text-xs text-slate-400">
-          <code>{profile.slug}</code>
-        </p>
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRefresh}
-        disabled={loading}
-      >
-        {loading ? 'Refreshing…' : 'Refresh'}
-      </Button>
+    <header>
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <div className="flex flex-col gap-1">
+            <CardTitle as="h1" className="text-base">
+              {profile.name}
+            </CardTitle>
+            <CardDescription className="text-xs">
+              <code>{profile.slug}</code>
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRefresh}
+            disabled={loading}
+          >
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        </CardHeader>
+      </Card>
     </header>
   );
 }
@@ -168,13 +181,13 @@ function ProfileCard({ title, accent, children }) {
       as="section"
       aria-label={title}
       className={cn(
-        accent === 'danger' && 'border-red-400/50 bg-red-500/5',
+        accent === 'danger' && 'border-destructive/40 bg-destructive/5',
       )}
     >
-      <CardHeader className="border-b border-slate-800 bg-slate-900/50 p-0 px-4 py-2 sm:p-0 sm:px-4 sm:py-2">
+      <CardHeader className="border-b bg-muted/50 p-0 px-4 py-2 sm:p-0 sm:px-4 sm:py-2">
         <CardTitle
           as="h2"
-          className="text-[10px] font-semibold uppercase tracking-widest text-slate-400"
+          className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
         >
           {title}
         </CardTitle>
@@ -191,20 +204,23 @@ function IdentityCard({ profile }) {
   return (
     <ProfileCard title="Identity">
       {profile.missing ? (
-        <div className="mb-2 rounded-md border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+        <div
+          role="alert"
+          className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+        >
           <strong className="font-semibold">Subagent file missing</strong> —{' '}
           <code>.claude/agents/{profile.slug}.md</code> was not found. Restore it or
           re-run <code>/aweek:hire</code>.
         </div>
       ) : null}
-      <h3 className="text-base font-bold tracking-tight text-slate-100">
+      <h3 className="text-base font-bold tracking-tight text-foreground">
         {profile.name}
       </h3>
       <Field label="Slug">
         <code className="text-xs">{profile.slug}</code>
       </Field>
       {profile.description ? (
-        <p className="text-sm leading-6 text-slate-300">{profile.description}</p>
+        <p className="text-sm leading-6 text-foreground">{profile.description}</p>
       ) : null}
       {profile.identityPath ? (
         <Field label="File">
@@ -227,7 +243,7 @@ function SystemPromptCard({ profile }) {
   if (profile.missing) {
     return (
       <ProfileCard title="System prompt">
-        <p className="text-sm italic text-slate-500">
+        <p className="text-sm italic text-muted-foreground">
           No system prompt to show — the subagent .md file is missing.
         </p>
       </ProfileCard>
@@ -238,13 +254,13 @@ function SystemPromptCard({ profile }) {
   return (
     <ProfileCard title="System prompt">
       {prompt.length === 0 ? (
-        <p className="text-sm italic text-slate-500">
+        <p className="text-sm italic text-muted-foreground">
           Empty — no system prompt is set in the subagent .md file.
         </p>
       ) : (
         <pre
           data-field="system-prompt"
-          className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-slate-800 bg-slate-950/60 p-3 font-mono text-xs leading-5 text-slate-200"
+          className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md border bg-muted p-3 font-mono text-xs leading-5 text-foreground"
         >
           {prompt}
         </pre>
@@ -260,7 +276,11 @@ function SchedulingCard({ profile }) {
       ? `paused (${formatPausedReason(profile.pausedReason)})`
       : 'paused'
     : 'active';
-  const statusVariant = profile.paused ? 'warning' : 'success';
+  // Map scheduling status onto the stock shadcn Badge variants.
+  // "active" reads as the neutral default fill; "paused" as a muted
+  // outline. No bespoke "success" / "warning" variants are used — see
+  // `components/ui/badge.jsx` for the canonical variant list.
+  const statusVariant = profile.paused ? 'outline' : 'default';
 
   return (
     <ProfileCard title="Scheduling">
@@ -314,7 +334,7 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
   return (
     <ProfileCard title="Budget" accent={overBudget ? 'danger' : undefined}>
       {weekMonday ? (
-        <div className="mb-2 text-[11px] uppercase tracking-wider text-slate-400">
+        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">
           Week of <time dateTime={weekMonday}>{weekMonday}</time>
         </div>
       ) : null}
@@ -326,14 +346,14 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
       {noBudget ? (
         <>
           <Field label="Weekly limit">
-            <span className="italic text-slate-500">no budget set</span>
+            <span className="italic text-muted-foreground">no budget set</span>
           </Field>
           <Field label="Tokens used">{formatTokens(tokensUsed)}</Field>
         </>
       ) : (
         <>
           <Field label="Tokens used">
-            <span className={overBudget ? 'font-semibold text-red-400' : ''}>
+            <span className={overBudget ? 'font-semibold text-destructive' : ''}>
               {formatTokens(tokensUsed)} / {formatTokens(tokenLimit)}
               {overBudget ? (
                 <Badge variant="destructive" className="ml-2 tracking-widest">
@@ -343,13 +363,13 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
             </span>
           </Field>
           <Field label="Utilisation">
-            <span className={overBudget ? 'font-semibold text-red-400' : ''}>
+            <span className={overBudget ? 'font-semibold text-destructive' : ''}>
               {utilizationPct != null ? `${utilizationPct}%` : '—'}
             </span>
           </Field>
           <ProgressBar value={utilizationPct ?? 0} danger={overBudget} />
           <Field label={overBudget ? 'Exceeded by' : 'Remaining'}>
-            <span className="italic text-slate-500">
+            <span className="italic text-muted-foreground">
               {overBudget
                 ? `${formatTokens(tokensUsed - tokenLimit)} tokens`
                 : `${formatTokens(remaining)} tokens`}
@@ -360,7 +380,7 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
 
       {hasUsageBreakdown ? (
         <div
-          className="mt-2 border-t border-slate-800 pt-3"
+          className="mt-2 border-t pt-3"
           data-field="usage-breakdown"
         >
           <Field label="Input tokens">{formatTokens(inputTokens)}</Field>
@@ -370,7 +390,7 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
         </div>
       ) : usageLoading ? (
         <div
-          className="mt-2 text-[11px] italic text-slate-500"
+          className="mt-2 text-[11px] italic text-muted-foreground"
           data-field="usage-loading"
         >
           Loading usage details…
@@ -378,7 +398,7 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
       ) : usageError ? (
         <div
           role="alert"
-          className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-amber-300"
+          className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground"
           data-field="usage-error"
         >
           <span>
@@ -389,7 +409,7 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
               variant="link"
               size="sm"
               onClick={onRetryUsage}
-              className="h-auto px-0 text-[11px] text-amber-300 underline decoration-dotted hover:decoration-solid"
+              className="h-auto px-0 text-[11px]"
             >
               Retry
             </Button>
@@ -405,8 +425,8 @@ function BudgetCard({ profile, usage, usageLoading, usageError, onRetryUsage }) 
 function Field({ label, children }) {
   return (
     <div className="grid grid-cols-[110px_1fr] items-baseline gap-2 text-sm">
-      <span className="text-xs font-medium text-slate-400">{label}</span>
-      <span className="break-all text-slate-100">{children}</span>
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="break-all text-foreground">{children}</span>
     </div>
   );
 }
@@ -419,12 +439,12 @@ function ProgressBar({ value, danger }) {
       aria-valuenow={clamped}
       aria-valuemin={0}
       aria-valuemax={100}
-      className="relative h-1.5 w-full overflow-hidden rounded bg-slate-800"
+      className="relative h-1.5 w-full overflow-hidden rounded bg-muted"
     >
       <span
         className={cn(
           'block h-full rounded transition-[width] duration-200',
-          danger ? 'bg-red-400' : 'bg-emerald-400',
+          danger ? 'bg-destructive' : 'bg-primary',
         )}
         style={{ width: `${clamped}%` }}
       />
@@ -433,13 +453,16 @@ function ProgressBar({ value, danger }) {
 }
 
 function ProfileEmpty({ message }) {
+  // Dashed-border Card keeps the empty state in the same chrome family
+  // as the populated surface; muted tokens re-theme automatically for
+  // light/dark mode via `styles/globals.css`.
   return (
     <Card
       className="border-dashed"
       data-page="agent-profile"
       data-state="empty"
     >
-      <CardContent className="p-8 pt-8 text-center text-sm italic text-slate-400 sm:p-8 sm:pt-8">
+      <CardContent className="p-8 pt-8 text-center text-sm italic text-muted-foreground sm:p-8 sm:pt-8">
         {message}
       </CardContent>
     </Card>
@@ -451,11 +474,11 @@ function ProfileSkeleton() {
     <Card
       role="status"
       aria-live="polite"
-      className="animate-pulse border-slate-800"
+      className="animate-pulse"
       data-page="agent-profile"
       data-loading="true"
     >
-      <CardContent className="p-4 pt-4 text-sm text-slate-500 sm:p-6 sm:pt-6">
+      <CardContent className="p-4 pt-4 text-sm text-muted-foreground sm:p-6 sm:pt-6">
         Loading profile…
       </CardContent>
     </Card>
@@ -463,15 +486,17 @@ function ProfileSkeleton() {
 }
 
 function ProfileError({ error, onRetry }) {
+  // Destructive-token Card communicates failure in the same chrome
+  // family as the healthy profile surface (rather than a bespoke div).
   return (
     <Card
       role="alert"
-      className="border-red-500/40 bg-red-500/10 text-red-200"
+      className="border-destructive/40 bg-destructive/10 text-destructive"
       data-page="agent-profile"
       data-error="true"
     >
       <CardHeader className="p-4 pb-2 sm:p-6 sm:pb-2">
-        <CardTitle as="h2" className="text-sm text-red-100">
+        <CardTitle as="h2" className="text-sm text-destructive">
           Failed to load profile.
         </CardTitle>
       </CardHeader>
@@ -481,7 +506,7 @@ function ProfileError({ error, onRetry }) {
           variant="outline"
           size="sm"
           onClick={onRetry}
-          className="self-start border-red-400/50 text-red-200 hover:bg-red-500/20"
+          className="self-start"
         >
           Retry
         </Button>
@@ -491,11 +516,12 @@ function ProfileError({ error, onRetry }) {
 }
 
 function StaleBanner({ error, onRetry }) {
+  // Muted surface + outline border signals "advisory, not destructive".
+  // The stock shadcn token palette does not expose a warning colour, so
+  // the muted family (bg-muted/text-muted-foreground) re-themes cleanly
+  // across light + dark modes.
   return (
-    <Card
-      role="alert"
-      className="border-amber-500/40 bg-amber-500/10 text-amber-200"
-    >
+    <Card role="alert" className="bg-muted text-muted-foreground">
       <CardContent className="flex flex-wrap items-center gap-2 p-2.5 pt-2.5 text-xs sm:p-2.5 sm:pt-2.5">
         <span>
           Refresh failed ({error?.message || 'unknown error'}) — showing last-known
@@ -505,7 +531,7 @@ function StaleBanner({ error, onRetry }) {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto px-0 text-xs text-amber-200 underline decoration-dotted hover:decoration-solid"
+          className="h-auto p-0 text-xs"
         >
           Retry
         </Button>
@@ -523,7 +549,7 @@ function UsageStaleBanner({ error, onRetry }) {
   return (
     <div
       role="alert"
-      className="mb-2 flex flex-wrap items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200"
+      className="mb-2 flex flex-wrap items-center gap-1 rounded-md border bg-muted px-2 py-1 text-[11px] text-muted-foreground"
     >
       <span>
         Usage refresh failed ({error?.message || 'unknown error'}) — showing last-known
@@ -534,7 +560,7 @@ function UsageStaleBanner({ error, onRetry }) {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto px-0 text-[11px] text-amber-200 underline decoration-dotted hover:decoration-solid"
+          className="h-auto px-0 text-[11px]"
         >
           Retry
         </Button>
