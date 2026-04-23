@@ -1,7 +1,7 @@
 ---
 name: plan
 description: Edit an agent's free-form planning markdown, adjust weekly tasks, and approve pending weekly plans from a single entry point
-trigger: aweek plan, adjust plan, edit plan, update plan, approve plan, review plan, approve weekly plan, reject plan, plan markdown
+trigger: aweek plan, adjust plan, edit plan, update plan, approve plan, review plan, approve weekly plan, reject plan, plan markdown, aweek add task, aweek add new task, aweek new task, aweek edit task, aweek update task, aweek change task, aweek remove task, aweek delete task, aweek drop task, aweek reschedule, aweek reschedule task, aweek reschedule everything, aweek move task, aweek change priority, aweek change prompt, aweek update prompt, aweek edit prompt, aweek tasks
 ---
 
 # aweek:plan
