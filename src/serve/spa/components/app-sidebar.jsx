@@ -33,7 +33,13 @@
 
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Users } from 'lucide-react';
+import {
+  Activity,
+  Calendar,
+  ListChecks,
+  User,
+  Users,
+} from 'lucide-react';
 
 import { ThemeToggle } from './theme-toggle.jsx';
 import {
@@ -48,6 +54,27 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from './ui/sidebar.jsx';
+
+const AGENT_TABS = Object.freeze([
+  { tab: 'calendar', label: 'Calendar', icon: Calendar },
+  { tab: 'activity', label: 'Activity', icon: Activity },
+  { tab: 'strategy', label: 'Strategy', icon: ListChecks },
+  { tab: 'profile', label: 'Profile', icon: User },
+]);
+
+/**
+ * Parse an agent-detail pathname into `{ slug, tab }`. Returns `null`
+ * when the current path is not under `/agents/:slug/`.
+ *
+ * @param {string} pathname
+ * @returns {{ slug: string, tab: string } | null}
+ */
+export function parseAgentDetailRoute(pathname) {
+  if (typeof pathname !== 'string') return null;
+  const match = pathname.match(/^\/agents\/([^/]+)(?:\/([^/]+))?\/?$/);
+  if (!match) return null;
+  return { slug: match[1], tab: match[2] || 'calendar' };
+}
 
 /**
  * @typedef {object} AppNavItem
@@ -100,6 +127,7 @@ export function isAppNavItemActive(item, pathname) {
 export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) {
   const location = useLocation();
   const pathname = location?.pathname ?? '/';
+  const detail = parseAgentDetailRoute(pathname);
 
   return (
     <Sidebar
@@ -154,6 +182,35 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        {detail ? (
+          <SidebarGroup data-agent-detail-group={detail.slug}>
+            <SidebarGroupLabel className="truncate" title={detail.slug}>
+              {detail.slug}
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {AGENT_TABS.map(({ tab, label, icon: Icon }) => {
+                  const to = `/agents/${detail.slug}/${tab}`;
+                  const active = detail.tab === tab;
+                  return (
+                    <SidebarMenuItem key={tab}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={active}
+                        data-nav-item={to}
+                      >
+                        <Link to={to}>
+                          <Icon className="h-4 w-4" aria-hidden="true" />
+                          <span>{label}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : null}
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center justify-between gap-2 px-2 py-1.5 group-data-[collapsible=icon]/sidebar:justify-center group-data-[collapsible=icon]/sidebar:px-0">

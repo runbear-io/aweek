@@ -192,14 +192,6 @@ export function AgentDetailPage({
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <TabsList aria-label={`${profile.name || slug} tabs`}>
-          {AGENT_DETAIL_TABS.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
         <TabsContent value="calendar">
           <AgentCalendarPage
             slug={slug}
