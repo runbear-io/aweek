@@ -10,6 +10,8 @@ import {
 } from './pages/index.js';
 import './styles/globals.css';
 
+document.documentElement.classList.add('dark');
+
 function AgentDetailRoute() {
   const { slug, tab } = useParams();
   const navigate = useNavigate();
