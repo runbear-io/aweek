@@ -30,6 +30,7 @@ describe('dispatcher registry', () => {
       'plan-ambiguity',
       'plan-interview-store',
       'plan-markdown',
+      'run-once',
       'summary',
     ];
     assert.deepEqual(listModules(), expected);

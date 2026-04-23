@@ -22,6 +22,7 @@ import * as hireCreateNewMenu from '../skills/hire-create-new-menu.js';
 import * as hireSelectSome from '../skills/hire-select-some.js';
 import * as plan from '../skills/plan.js';
 import * as manage from '../skills/manage.js';
+import * as runOnce from '../skills/run-once.js';
 import * as summary from '../skills/summary.js';
 import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
@@ -151,6 +152,11 @@ export const REGISTRY = Object.freeze({
       manage.formatPauseResult(input?.result ?? input),
     formatDeleteResult: (input) =>
       manage.formatDeleteResult(input?.result ?? input),
+  },
+  'run-once': {
+    execute: runOnce.execute,
+    buildAdHocTask: (input) =>
+      runOnce.buildAdHocTask({ prompt: input?.prompt, title: input?.title }),
   },
   summary: {
     buildSummary: summary.buildSummary,

@@ -308,6 +308,13 @@ export {
   delegateTask,
   formatDelegationResult,
 } from './skills/delegate-task.js';
+// Run-once skill — manually dispatch an ad-hoc debug task through the same
+// execution path the heartbeat uses (per-agent lock, .env, session executor
+// with dangerouslySkipPermissions, activity log). See src/skills/run-once.js.
+export {
+  buildAdHocTask,
+  execute as runOnceExecute,
+} from './skills/run-once.js';
 // Session executor — CLI session + automatic token usage tracking integration
 export {
   executeSessionWithTracking,
