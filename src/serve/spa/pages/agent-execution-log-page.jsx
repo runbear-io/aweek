@@ -114,7 +114,9 @@ export function AgentExecutionLogPage({ slug, basename, baseUrl, fetch: fetchImp
       ) : lines.length === 0 ? (
         <Card className="border-dashed">
           <CardContent className="py-6 text-sm italic text-muted-foreground">
-            No log lines yet for this execution.
+            No log lines found for this execution. The{' '}
+            <code className="not-italic text-foreground">.jsonl</code> file may
+            have been pruned or never written.
           </CardContent>
         </Card>
       ) : (

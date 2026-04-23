@@ -133,7 +133,6 @@ export function AgentActivityPage({
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
       <ActivityTimeline
         entries={data.entries}
-        executions={data.executions}
         title="Chronological timeline"
         emptyMessage={`No activity in this range for "${data.slug}".`}
         agentSlug={data.slug}

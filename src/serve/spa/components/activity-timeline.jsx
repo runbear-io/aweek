@@ -198,13 +198,13 @@ function TimelineRow({ item, agentSlug }) {
       <SourceRail source={item.source} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         {item.source === 'activity' ? (
-          <ActivityRowBody entry={item.raw} timestamp={item.timestamp} />
-        ) : (
-          <ExecutionRowBody
-            row={item.raw}
+          <ActivityRowBody
+            entry={item.raw}
             timestamp={item.timestamp}
             agentSlug={agentSlug}
           />
+        ) : (
+          <ExecutionRowBody row={item.raw} timestamp={item.timestamp} />
         )}
       </div>
     </li>
@@ -258,7 +258,7 @@ function SourceBadge({ source }) {
   );
 }
 
-function ActivityRowBody({ entry, timestamp }) {
+function ActivityRowBody({ entry, timestamp, agentSlug }) {
   // Field names mirror `createLogEntry` in activity-log-store.js:
   //   { id, timestamp, agentId, status, title, taskId?, duration?, metadata? }
   const status = entry?.status || entry?.kind || entry?.type || 'event';
@@ -266,6 +266,7 @@ function ActivityRowBody({ entry, timestamp }) {
     entry?.title || entry?.message || entry?.summary || entry?.text || '';
   const durationMs = Number.isFinite(entry?.duration) ? entry.duration : null;
   const taskId = entry?.taskId || null;
+  const logBasename = executionLogBasename(entry);
   return (
     <>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -286,6 +287,15 @@ function ActivityRowBody({ entry, timestamp }) {
             {formatDuration(durationMs)}
           </span>
         ) : null}
+        {agentSlug && logBasename ? (
+          <Link
+            to={`/agents/${encodeURIComponent(agentSlug)}/activity/${encodeURIComponent(logBasename)}`}
+            className="ml-auto text-xs text-primary underline-offset-2 hover:underline focus:underline focus:outline-none"
+            data-execution-log-link="true"
+          >
+            View log →
+          </Link>
+        ) : null}
       </div>
       {title ? (
         <div className="text-sm text-foreground">{String(title)}</div>
@@ -294,7 +304,7 @@ function ActivityRowBody({ entry, timestamp }) {
   );
 }
 
-function ExecutionRowBody({ row, timestamp, agentSlug }) {
+function ExecutionRowBody({ row, timestamp }) {
   // Field names mirror `createExecutionRecord` in execution-store.js:
   //   { id, idempotencyKey, agentId, timestamp, windowStart, windowEnd,
   //     status, taskId?, duration?, metadata? }
@@ -348,15 +358,6 @@ function ExecutionRowBody({ row, timestamp, agentSlug }) {
         {cost != null ? (
           <span>${(Number(cost) || 0).toFixed(4)}</span>
         ) : null}
-        {agentSlug && row?.taskId && row?.id ? (
-          <Link
-            to={`/agents/${encodeURIComponent(agentSlug)}/activity/${encodeURIComponent(`${row.taskId}_${row.id}`)}`}
-            className="ml-auto text-xs text-primary underline-offset-2 hover:underline focus:underline focus:outline-none"
-            data-execution-log-link="true"
-          >
-            View log →
-          </Link>
-        ) : null}
       </div>
       {error ? (
         <div className="rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">
@@ -365,6 +366,24 @@ function ExecutionRowBody({ row, timestamp, agentSlug }) {
       ) : null}
     </>
   );
+}
+
+/**
+ * Derive the `<taskId>_<executionId>` basename the execution-log page
+ * routes on from an activity entry. Uses the heartbeat's persisted
+ * `metadata.execution.executionLogPath` (e.g.
+ * `.aweek/agents/<slug>/executions/<taskId>_<executionId>.jsonl`). Returns
+ * null when the entry predates execution-log plumbing or the path is
+ * malformed — the caller suppresses the link in that case.
+ *
+ * @param {object | null | undefined} entry
+ * @returns {string | null}
+ */
+function executionLogBasename(entry) {
+  const path = entry?.metadata?.execution?.executionLogPath;
+  if (typeof path !== 'string' || path.length === 0) return null;
+  const last = path.split(/[/\\]/).pop() || '';
+  return last.endsWith('.jsonl') ? last.slice(0, -'.jsonl'.length) : last || null;
 }
 
 // ── Formatters ───────────────────────────────────────────────────────
