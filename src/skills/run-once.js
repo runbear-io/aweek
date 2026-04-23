@@ -148,13 +148,26 @@ export async function execute(opts = {}) {
     let finalStatus = 'completed';
 
     try {
-      execResult = await executeFn(agentId, subagentRef, task, {
-        cwd: projectDir,
-        usageStore,
-        env: agentEnv,
-        agentsDir,
-        dangerouslySkipPermissions: true,
-      });
+      execResult = await executeFn(
+        agentId,
+        subagentRef,
+        // Executor expects the heartbeat's CLI-shaped task (taskId +
+        // title + prompt), not the weekly-task schema shape. Mirror
+        // the wire at src/heartbeat/run.js:539 so buildRuntimeContext
+        // and the execution-log writer find the fields they need.
+        {
+          taskId: task.id,
+          title: task.title,
+          prompt: task.prompt,
+        },
+        {
+          cwd: projectDir,
+          usageStore,
+          env: agentEnv,
+          agentsDir,
+          dangerouslySkipPermissions: true,
+        },
+      );
     } catch (err) {
       error = err;
       finalStatus = 'failed';
