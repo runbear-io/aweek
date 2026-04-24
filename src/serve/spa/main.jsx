@@ -23,27 +23,31 @@ function AgentsRoute() {
 }
 
 function AgentDetailRoute() {
-  const { slug, tab, basename } = useParams();
+  const { slug, tab, basename, taskId } = useParams();
   const navigate = useNavigate();
-  // The /agents/:slug/activities/:basename route only supplies `slug`
-  // and `basename` via params; there is no `tab` segment to match. Coerce
-  // the effective tab to 'activities' in that case so AgentDetailPage
-  // can thread `activitySelection` + open/close handlers to the
-  // activity tab.
+  // The deep-link routes don't carry a `:tab` segment — coerce the
+  // effective tab from whichever drawer-id is present.
   const effectiveTab = basename
     ? 'activities'
-    : normaliseTab(tab) ?? DEFAULT_AGENT_DETAIL_TAB;
+    : taskId
+      ? 'calendar'
+      : normaliseTab(tab) ?? DEFAULT_AGENT_DETAIL_TAB;
   const slugSegment = encodeURIComponent(slug);
   return (
     <AgentDetailPage
       slug={slug}
       initialTab={effectiveTab}
       activitySelection={basename}
+      calendarSelection={taskId}
       onTabChange={(next) => navigate(`/agents/${slug}/${next}`)}
       onActivityOpen={(b) =>
         navigate(`/agents/${slugSegment}/activities/${encodeURIComponent(b)}`)
       }
       onActivityClose={() => navigate(`/agents/${slugSegment}/activities`)}
+      onCalendarOpen={(t) =>
+        navigate(`/agents/${slugSegment}/calendar/${encodeURIComponent(t)}`)
+      }
+      onCalendarClose={() => navigate(`/agents/${slugSegment}/calendar`)}
     />
   );
 }
@@ -63,6 +67,10 @@ function AppShell() {
         <Route path="/agents/:slug" element={<AgentDetailRoute />} />
         <Route
           path="/agents/:slug/activities/:basename"
+          element={<AgentDetailRoute />}
+        />
+        <Route
+          path="/agents/:slug/calendar/:taskId"
           element={<AgentDetailRoute />}
         />
         <Route path="/agents/:slug/:tab" element={<AgentDetailRoute />} />
