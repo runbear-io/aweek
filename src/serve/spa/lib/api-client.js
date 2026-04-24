@@ -410,21 +410,26 @@ async function getJson(endpoint, opts = {}) {
  * `GET /api/agents` — list every agent with overview data for the
  * dashboard's Overview table.
  *
- * Server envelope `{ agents: [...] }` is unwrapped so consumers get the
- * row array directly.
+ * Server envelope `{ agents: [...], issues: [...] }` is split so
+ * consumers get the rows + a companion list of per-agent load failures
+ * the dashboard surfaces as an inline issues banner instead of silently
+ * dropping invalid records.
  *
  * @param {{
  *   baseUrl?: string,
  *   signal?: AbortSignal,
  *   fetch?: typeof fetch,
  * }} [opts]
- * @returns {Promise<AgentListRow[]>}
+ * @returns {Promise<{ rows: AgentListRow[], issues: Array<{ id: string, message: string }> }>}
  */
 export async function fetchAgentsList(opts = {}) {
-  const body = /** @type {{ agents: AgentListRow[] }} */ (
+  const body = /** @type {{ agents?: AgentListRow[], issues?: Array<{id:string,message:string}> }} */ (
     await getJson('/api/agents', opts)
   );
-  return Array.isArray(body?.agents) ? body.agents : [];
+  return {
+    rows: Array.isArray(body?.agents) ? body.agents : [],
+    issues: Array.isArray(body?.issues) ? body.issues : [],
+  };
 }
 
 /**

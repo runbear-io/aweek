@@ -24,7 +24,7 @@
  */
 
 import { join } from 'node:path';
-import { listAllAgents } from '../../storage/agent-helpers.js';
+import { listAllAgents, listAllAgentsPartial } from '../../storage/agent-helpers.js';
 import { UsageStore, getMondayDate } from '../../storage/usage-store.js';
 import { WeeklyPlanStore } from '../../storage/weekly-plan-store.js';
 import { loadConfig } from '../../storage/config-store.js';
@@ -78,8 +78,12 @@ export async function gatherAgentsList({ projectDir } = {}) {
   if (!projectDir) throw new Error('gatherAgentsList: projectDir is required');
   const dataDir = join(projectDir, '.aweek', 'agents');
 
-  const configs = await listAllAgents({ dataDir });
-  if (configs.length === 0) return [];
+  // Partial load so a single invalid agent JSON doesn't wipe the
+  // dashboard — the caller surfaces `issues` as an error banner.
+  const { agents: configs, errors: issues } = await listAllAgentsPartial({
+    dataDir,
+  });
+  if (configs.length === 0) return { rows: [], issues };
 
   // Monday anchor is timezone-aware; fall back to UTC on config-load errors
   // so a malformed .aweek/config.json can't knock the dashboard offline.
@@ -149,12 +153,13 @@ export async function gatherAgentsList({ projectDir } = {}) {
     }),
   );
 
-  return rows.sort((a, b) => {
+  const sorted = rows.sort((a, b) => {
     const oa = STATUS_ORDER[a.status] ?? 99;
     const ob = STATUS_ORDER[b.status] ?? 99;
     if (oa !== ob) return oa - ob;
     return a.name.localeCompare(b.name);
   });
+  return { rows: sorted, issues };
 }
 
 /**

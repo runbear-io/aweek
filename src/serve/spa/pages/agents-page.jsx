@@ -71,7 +71,8 @@ export function AgentsPage({ onSelectAgent, baseUrl, fetch: fetchImpl } = {}) {
   if (loading && !data) return <AgentsPageSkeleton />;
   if (error && !data) return <AgentsPageError error={error} onRetry={refresh} />;
 
-  const agents = Array.isArray(data) ? data : [];
+  const agents = data?.rows ?? [];
+  const issues = data?.issues ?? [];
   // Every row in a given response shares the same `week` (the gatherer
   // derives it once from the configured time zone). Prefer the first row
   // but fall back to '—' on an empty list so the header copy is safe.
@@ -86,9 +87,10 @@ export function AgentsPage({ onSelectAgent, baseUrl, fetch: fetchImpl } = {}) {
         onRefresh={refresh}
       />
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
-      {agents.length === 0 ? (
+      {issues.length > 0 ? <IssuesBanner issues={issues} /> : null}
+      {agents.length === 0 && issues.length === 0 ? (
         <AgentsPageEmpty />
-      ) : (
+      ) : agents.length === 0 ? null : (
         <AgentsTable rows={agents} onSelect={onSelectAgent} />
       )}
     </section>
@@ -370,6 +372,39 @@ function AgentsPageError({ error, onRetry }) {
         <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Surface per-agent load failures returned by `gatherAgentsList`. The
+ * dashboard used to silently drop agents whose JSON failed schema
+ * validation — a single bad file would wipe the whole table. Now
+ * `listAllAgentsPartial` collects the failures and we render them here
+ * so the user can see which slug went wrong and why.
+ *
+ * @param {{ issues: Array<{ id: string, message: string }> }} props
+ */
+function IssuesBanner({ issues }) {
+  return (
+    <Card role="alert" data-issues-banner="true" className="border-destructive/50">
+      <CardContent className="flex flex-col gap-2 p-4 text-xs">
+        <div className="flex items-center gap-2 text-sm font-semibold text-destructive">
+          ⚠ Could not load {issues.length} agent{issues.length === 1 ? '' : 's'}
+        </div>
+        <ul className="flex flex-col gap-1.5">
+          {issues.map((issue) => (
+            <li key={issue.id || issue.message} className="flex min-w-0 gap-2">
+              <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                {issue.id || '(unknown)'}
+              </code>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-muted-foreground">
+                {issue.message}
+              </span>
+            </li>
+          ))}
+        </ul>
       </CardContent>
     </Card>
   );

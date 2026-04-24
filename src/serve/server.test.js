@@ -1123,7 +1123,7 @@ describe('GET /api/agents (list)', () => {
     // API responses must stay fresh on manual refresh.
     assert.match(res.headers['cache-control'] || '', /no-store/);
     const body = JSON.parse(res.body);
-    assert.deepEqual(body, { agents: [] });
+    assert.deepEqual(body, { agents: [], issues: [] });
   });
 
   it('returns the agent row from fixture data (agent-store → gatherAgentsList)', async () => {
@@ -1158,7 +1158,7 @@ describe('GET /api/agents (list)', () => {
     const res = await httpGet(`${handle.url}api/agents/`);
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
-    assert.deepEqual(body, { agents: [] });
+    assert.deepEqual(body, { agents: [], issues: [] });
   });
 });
 

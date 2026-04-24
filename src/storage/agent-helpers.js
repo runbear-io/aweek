@@ -112,6 +112,31 @@ export async function listAllAgents({ dataDir, agentStore } = {}) {
 }
 
 /**
+ * Like {@link listAllAgents} but tolerates per-agent load failures and
+ * returns the collected errors alongside the successful configs. Used
+ * by the dashboard so drifted / invalid agent JSON surfaces as a
+ * visible issues banner instead of an empty list.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.dataDir]
+ * @param {AgentStore} [opts.agentStore]
+ * @returns {Promise<{ agents: object[], errors: Array<{ id: string, message: string }> }>}
+ */
+export async function listAllAgentsPartial({ dataDir, agentStore } = {}) {
+  const store = agentStore || createAgentStore(dataDir);
+  try {
+    return await store.loadAllPartial();
+  } catch (err) {
+    return {
+      agents: [],
+      errors: [
+        { id: '', message: (err && err.message) || 'Failed to list agents' },
+      ],
+    };
+  }
+}
+
+/**
  * Load a single agent config by id.
  *
  * Unlike {@link listAllAgents} this surfaces "not found" as a descriptive

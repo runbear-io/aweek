@@ -153,6 +153,38 @@ export class AgentStore {
   }
 
   /**
+   * Like `loadAll` but tolerates per-file failures instead of failing
+   * the whole list on the first bad agent. Callers (dashboards) surface
+   * the collected errors in the UI so drifted data stays discoverable
+   * instead of silently disappearing.
+   *
+   * @returns {Promise<{ agents: object[], errors: Array<{ id: string, message: string }> }>}
+   */
+  async loadAllPartial() {
+    const ids = await this.list();
+    const results = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return { ok: true, id, agent: await this.load(id) };
+        } catch (err) {
+          return {
+            ok: false,
+            id,
+            message: (err && err.message) || 'unknown error',
+          };
+        }
+      }),
+    );
+    const agents = [];
+    const errors = [];
+    for (const r of results) {
+      if (r.ok) agents.push(r.agent);
+      else errors.push({ id: r.id, message: r.message });
+    }
+    return { agents, errors };
+  }
+
+  /**
    * Delete an agent config.
    * @param {string} agentId
    */

@@ -35,7 +35,11 @@
 
 import React, { useState } from 'react';
 
-import { ActivityTimeline } from '../components/activity-timeline.jsx';
+import {
+  ActivityTimeline,
+  executionLogBasename,
+} from '../components/activity-timeline.jsx';
+import { ExecutionLogView } from '../components/execution-log-view.jsx';
 import { Badge } from '../components/ui/badge.jsx';
 import { Button } from '../components/ui/button.jsx';
 import {
@@ -45,7 +49,15 @@ import {
   CardHeader,
   CardTitle,
 } from '../components/ui/card.jsx';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '../components/ui/sheet.jsx';
 import { useAgentLogs } from '../hooks/use-agent-logs.js';
+import { useExecutionLog } from '../hooks/use-execution-log.js';
 
 /**
  * @typedef {import('../lib/api-client.js').AgentLogs} AgentLogs
@@ -94,6 +106,7 @@ export function AgentActivityPage({
   // Local UI state — not injected from server. The hook re-runs when
   // `dateRange` changes (via its `deps` array).
   const [dateRange, setDateRange] = useState(initialDateRange);
+  const [selectedEntry, setSelectedEntry] = useState(null);
 
   const { data, error, loading, refresh } = useAgentLogs(slug, {
     dateRange,
@@ -136,6 +149,14 @@ export function AgentActivityPage({
         title="Chronological timeline"
         emptyMessage={`No activity in this range for "${data.slug}".`}
         agentSlug={data.slug}
+        onSelectEntry={(entry) => setSelectedEntry(entry)}
+      />
+      <TaskDetailSheet
+        slug={data.slug}
+        entry={selectedEntry}
+        onClose={() => setSelectedEntry(null)}
+        baseUrl={baseUrl}
+        fetchImpl={fetchImpl}
       />
       <details
         className="group rounded-lg border bg-card text-card-foreground"
@@ -498,4 +519,93 @@ function formatDuration(ms) {
   if (min < 60) return `${min.toFixed(min < 10 ? 1 : 0)}m`;
   const hr = min / 60;
   return `${hr.toFixed(hr < 10 ? 1 : 0)}h`;
+}
+
+/**
+ * Right-side shadcn Sheet surfacing the execution-log summary for the
+ * activity entry the user just clicked. Opens when `entry` is non-null
+ * and fetches the log on mount via `useExecutionLog`. Closing sets
+ * `entry` back to null through the parent-owned `onClose`.
+ *
+ * @param {{
+ *   slug: string,
+ *   entry: object | null,
+ *   onClose: () => void,
+ *   baseUrl?: string,
+ *   fetchImpl?: typeof fetch,
+ * }} props
+ */
+function TaskDetailSheet({ slug, entry, onClose, baseUrl, fetchImpl }) {
+  const basename = entry ? executionLogBasename(entry) : null;
+  const { loading, error, summary } = useExecutionLog({
+    slug,
+    basename: basename || '',
+    enabled: Boolean(entry && basename),
+    baseUrl,
+    fetch: fetchImpl,
+  });
+  const open = entry != null;
+  const status = entry?.status || 'event';
+  const title = entry?.title || entry?.message || 'Task';
+  const taskId = entry?.taskId || null;
+  return (
+    <Sheet open={open} onOpenChange={(next) => (next ? null : onClose())}>
+      <SheetContent className="flex w-full flex-col gap-4 overflow-y-auto sm:max-w-2xl">
+        {entry ? (
+          <>
+            <SheetHeader>
+              <SheetTitle className="flex flex-wrap items-center gap-2">
+                <Badge variant={executionBadgeVariant(status)}>
+                  {String(status).toUpperCase()}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate">{title}</span>
+              </SheetTitle>
+              <SheetDescription className="flex flex-wrap items-center gap-2">
+                {taskId ? (
+                  <Badge variant="outline">
+                    task <code className="ml-1 text-[11px]">{taskId}</code>
+                  </Badge>
+                ) : null}
+                {basename ? (
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                    {basename}
+                  </code>
+                ) : null}
+              </SheetDescription>
+            </SheetHeader>
+
+            {!basename ? (
+              <Card className="border-dashed">
+                <CardContent className="py-6 text-sm italic text-muted-foreground">
+                  This activity entry has no execution log attached.
+                </CardContent>
+              </Card>
+            ) : error ? (
+              <Card>
+                <CardContent className="py-6 text-sm text-destructive">
+                  {error.message || 'Failed to load execution log.'}
+                </CardContent>
+              </Card>
+            ) : loading ? (
+              <Card>
+                <CardContent className="py-6 text-sm italic text-muted-foreground">
+                  Loading execution log…
+                </CardContent>
+              </Card>
+            ) : !summary ? (
+              <Card className="border-dashed">
+                <CardContent className="py-6 text-sm italic text-muted-foreground">
+                  No log lines found for this execution. The{' '}
+                  <code className="not-italic text-foreground">.jsonl</code>{' '}
+                  file may have been pruned or never written.
+                </CardContent>
+              </Card>
+            ) : (
+              <ExecutionLogView summary={summary} variant="drawer" />
+            )}
+          </>
+        ) : null}
+      </SheetContent>
+    </Sheet>
+  );
 }
