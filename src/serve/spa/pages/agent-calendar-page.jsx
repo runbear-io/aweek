@@ -113,13 +113,27 @@ export {
  * }} props
  * @returns {JSX.Element}
  */
-export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
+export function AgentCalendarPage({
+  slug,
+  week,
+  baseUrl,
+  fetch: fetchImpl,
+  selectedTaskId,
+  onOpenTaskId,
+  onCloseTaskId,
+}) {
   const { data, error, loading, refresh } = useAgentCalendar(slug, {
     week,
     baseUrl,
     fetch: fetchImpl,
   });
-  const [selectedTask, setSelectedTask] = useState(null);
+  // Drawer state defaults to local — tests and standalone use cases
+  // never hand over URL-driven open/close. When the router-aware
+  // parent threads `selectedTaskId` + `onOpenTaskId` / `onCloseTaskId`,
+  // the URL becomes the source of truth.
+  const [internalTaskId, setInternalTaskId] = useState(null);
+  const effectiveTaskId =
+    selectedTaskId !== undefined ? selectedTaskId : internalTaskId;
 
   if (!slug) {
     return <CalendarEmpty message="Select an agent to view its calendar." />;
@@ -175,17 +189,32 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
         weekMonday={data.weekMonday}
         timeZone={data.timeZone}
         agentId={data.agentId}
-        onSelectTask={setSelectedTask}
+        onSelectTask={(t) => {
+          if (!t?.id) return;
+          if (typeof onOpenTaskId === 'function') onOpenTaskId(t.id);
+          else setInternalTaskId(t.id);
+        }}
       />
       <Backlog calendar={data} />
       <Legend />
       <TaskDetailSheet
-        task={selectedTask}
+        task={
+          effectiveTaskId
+            ? data.tasks?.find((t) => t.id === effectiveTaskId) || {
+                id: effectiveTaskId,
+                title: '',
+                status: 'pending',
+              }
+            : null
+        }
         agentSlug={data.agentId}
         activity={
-          selectedTask ? data.activityByTask?.[selectedTask.id] || [] : []
+          effectiveTaskId ? data.activityByTask?.[effectiveTaskId] || [] : []
         }
-        onClose={() => setSelectedTask(null)}
+        onClose={() => {
+          if (typeof onCloseTaskId === 'function') onCloseTaskId();
+          else setInternalTaskId(null);
+        }}
       />
     </section>
   );

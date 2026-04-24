@@ -130,6 +130,9 @@ export function AgentDetailPage({
   activitySelection,
   onActivityOpen,
   onActivityClose,
+  calendarSelection,
+  onCalendarOpen,
+  onCalendarClose,
 }) {
   const [activeTab, setActiveTab] = useState(() => normaliseTab(initialTab));
 
@@ -200,6 +203,9 @@ export function AgentDetailPage({
             slug={slug}
             baseUrl={baseUrl}
             fetch={fetchImpl}
+            selectedTaskId={calendarSelection}
+            onOpenTaskId={onCalendarOpen}
+            onCloseTaskId={onCalendarClose}
           />
         </TabsContent>
         <TabsContent value="activities">
