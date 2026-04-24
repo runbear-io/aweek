@@ -59,7 +59,7 @@ import {
 
 const AGENT_TABS = Object.freeze([
   { tab: 'calendar', label: 'Calendar', icon: Calendar },
-  { tab: 'activity', label: 'Activity', icon: Activity },
+  { tab: 'activities', label: 'Activity', icon: Activity },
   { tab: 'strategy', label: 'Strategy', icon: ListChecks },
   { tab: 'profile', label: 'Profile', icon: User },
 ]);

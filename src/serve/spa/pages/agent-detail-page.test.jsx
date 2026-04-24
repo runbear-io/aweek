@@ -276,78 +276,57 @@ describe('AgentDetailPage — identity header', () => {
 // ── Tab navigation scaffolding ───────────────────────────────────────
 
 describe('AgentDetailPage — tab navigation scaffolding', () => {
-  it('renders exactly four tabs in the Calendar/Activity/Strategy/Profile order', async () => {
-    renderDetail(ALICE);
-    const tablist = await screen.findByRole('tablist');
-    const tabs = within(tablist).getAllByRole('tab');
-    expect(tabs).toHaveLength(4);
-    expect(tabs.map((t) => t.textContent.trim())).toEqual([
-      'Calendar',
-      'Activity',
-      'Strategy',
-      'Profile',
-    ]);
-  });
+  // The inline TabsList was removed when per-agent tabs moved into the
+  // secondary AppSidebar. Tab switching is now URL-driven — `initialTab`
+  // selects the Radix Tabs value and the matching `<TabsContent>`
+  // renders the corresponding page. These tests verify the contract
+  // without asserting on a tablist element that no longer lives inside
+  // the detail page.
 
   it('defaults to the Calendar tab when no initialTab is provided', async () => {
     const { container } = renderDetail(ALICE);
-    await screen.findByRole('tablist');
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-page="agent-detail"]'),
+      ).not.toBeNull();
+    });
     const wrapper = container.querySelector('[data-page="agent-detail"]');
     expect(wrapper).toHaveAttribute('data-active-tab', 'calendar');
-
-    const calendar = await screen.findByRole('tab', { name: 'Calendar' });
-    expect(calendar).toHaveAttribute('aria-selected', 'true');
-
-    // Calendar body is rendered by <AgentCalendarPage/> (Sub-AC 2). The
-    // Calendar hook's default fetch-stub resolves with an empty calendar
-    // payload (noPlan or otherwise) so the panel must be present; we
-    // only assert on the stable `data-tab-body="calendar"` marker so we
-    // don't couple the shell test to the Calendar page's internal state.
-    const calendarBody = container.querySelector('[data-tab-body="calendar"]');
-    expect(calendarBody).not.toBeNull();
+    expect(
+      container.querySelector('[data-tab-body="calendar"]'),
+    ).not.toBeNull();
   });
 
   it('honours initialTab to deep-link directly to a non-default tab', async () => {
-    const { container } = renderDetail(ALICE, { initialTab: 'activity' });
-    await screen.findByRole('tablist');
+    const { container } = renderDetail(ALICE, { initialTab: 'activities' });
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-page="agent-detail"]'),
+      ).not.toBeNull();
+    });
     const wrapper = container.querySelector('[data-page="agent-detail"]');
-    expect(wrapper).toHaveAttribute('data-active-tab', 'activity');
+    expect(wrapper).toHaveAttribute('data-active-tab', 'activities');
   });
 
   it('normalises an unknown initialTab back to the default (Calendar)', async () => {
     const { container } = renderDetail(ALICE, { initialTab: 'not-a-real-tab' });
-    await screen.findByRole('tablist');
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-page="agent-detail"]'),
+      ).not.toBeNull();
+    });
     const wrapper = container.querySelector('[data-page="agent-detail"]');
     expect(wrapper).toHaveAttribute('data-active-tab', 'calendar');
   });
 
-  it('clicking a tab switches the active panel and fires onTabChange', async () => {
-    const onTabChange = vi.fn();
-    const { container } = renderDetail(ALICE, { onTabChange });
-    await screen.findByRole('tablist');
-
-    const profileTab = screen.getByRole('tab', { name: 'Profile' });
-    await act(async () => {
-      profileTab.click();
-    });
-
-    await waitFor(() => {
-      expect(profileTab).toHaveAttribute('aria-selected', 'true');
-    });
-    const wrapper = container.querySelector('[data-page="agent-detail"]');
-    expect(wrapper).toHaveAttribute('data-active-tab', 'profile');
-    expect(onTabChange).toHaveBeenCalledWith('profile');
-  });
-
-  it('only the active tabpanel is rendered — inactive panels are unmounted', async () => {
+  it('only the active tab panel is rendered — inactive panels are unmounted', async () => {
     const { container } = renderDetail(ALICE);
-    await screen.findByRole('tablist');
-
-    // Calendar is active by default — its placeholder should be in the DOM…
-    expect(container.querySelector('[data-tab-body="calendar"]')).not.toBeNull();
-    // …but the other tab panels should not be mounted (avoids firing
-    // their nested hook fetches until the user asks for that tab).
-    expect(container.querySelector('[data-tab="activity"]')).toBeNull();
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-tab-body="calendar"]'),
+      ).not.toBeNull();
+    });
+    expect(container.querySelector('[data-tab="activities"]')).toBeNull();
     expect(container.querySelector('[data-tab="strategy"]')).toBeNull();
     expect(container.querySelector('[data-tab="profile"]')).toBeNull();
   });
@@ -416,7 +395,7 @@ describe('AgentDetailPage — exported helpers', () => {
     expect(Object.isFrozen(AGENT_DETAIL_TABS)).toBe(true);
     expect(AGENT_DETAIL_TABS.map((t) => t.value)).toEqual([
       'calendar',
-      'activity',
+      'activities',
       'strategy',
       'profile',
     ]);

@@ -52,7 +52,7 @@ export function AgentExecutionLogPage({ slug, basename, baseUrl, fetch: fetchImp
     >
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <Button asChild variant="ghost" size="sm">
-          <Link to={`/agents/${slug}/activity`}>
+          <Link to={`/agents/${slug}/activities`}>
             <ArrowLeft className="mr-1 h-4 w-4" aria-hidden="true" />
             Back to activity
           </Link>
