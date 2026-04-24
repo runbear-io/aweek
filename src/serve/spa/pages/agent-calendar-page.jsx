@@ -56,6 +56,7 @@
  */
 
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Badge } from '../components/ui/badge.jsx';
 import { Button } from '../components/ui/button.jsx';
@@ -180,6 +181,10 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
       <Legend />
       <TaskDetailSheet
         task={selectedTask}
+        agentSlug={data.agentId}
+        activity={
+          selectedTask ? data.activityByTask?.[selectedTask.id] || [] : []
+        }
         onClose={() => setSelectedTask(null)}
       />
     </section>
@@ -191,9 +196,18 @@ export function AgentCalendarPage({ slug, week, baseUrl, fetch: fetchImpl }) {
  * Opens when a `TaskChip` is clicked and the parent page sets `task` to a
  * non-null value. Closing sets `task` back to `null` via `onClose`.
  *
- * @param {{ task: CalendarTask | null, onClose: () => void }} props
+ * `activity` is the pre-fetched array of activity-log entries bucketed
+ * for this task by the calendar endpoint. Each entry may carry an
+ * `executionLogBasename` so we can deep-link to the full NDJSON log page.
+ *
+ * @param {{
+ *   task: CalendarTask | null,
+ *   agentSlug?: string,
+ *   activity?: Array<object>,
+ *   onClose: () => void
+ * }} props
  */
-function TaskDetailSheet({ task, onClose }) {
+function TaskDetailSheet({ task, agentSlug, activity = [], onClose }) {
   const open = task != null;
   const review = task ? isReviewTask(task) : false;
   const icon = task
@@ -208,7 +222,7 @@ function TaskDetailSheet({ task, onClose }) {
     : '';
   return (
     <Sheet open={open} onOpenChange={(next) => (next ? null : onClose())}>
-      <SheetContent className="w-full sm:max-w-md">
+      <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
         {task ? (
           <>
             <SheetHeader>
@@ -262,12 +276,89 @@ function TaskDetailSheet({ task, onClose }) {
                   </code>
                 </TaskField>
               ) : null}
+              <TaskActivityList
+                activity={activity}
+                agentSlug={agentSlug}
+              />
             </div>
           </>
         ) : null}
       </SheetContent>
     </Sheet>
   );
+}
+
+/**
+ * Chronological list of activity-log entries belonging to the selected
+ * task. Each entry renders its timestamp + status and, when the
+ * heartbeat recorded an `executionLogBasename`, a "View log" link that
+ * routes to `/agents/:slug/activity/:basename` (same surface the
+ * ActivityTimeline's link uses).
+ *
+ * Hidden entirely when the task has no logged activity yet so the sheet
+ * doesn't show an empty section.
+ *
+ * @param {{ activity: Array<object>, agentSlug?: string }} props
+ */
+function TaskActivityList({ activity, agentSlug }) {
+  if (!activity || activity.length === 0) return null;
+  return (
+    <TaskField label={`Activity (${activity.length})`}>
+      <ul
+        role="list"
+        className="flex flex-col gap-2"
+        data-task-activity-list="true"
+      >
+        {activity.map((entry, idx) => (
+          <li
+            key={entry.id || entry.timestamp || idx}
+            className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs"
+            data-activity-id={entry.id || ''}
+          >
+            <time
+              dateTime={entry.timestamp || undefined}
+              className="tabular-nums text-muted-foreground"
+            >
+              {formatActivityDate(entry.timestamp)}
+            </time>
+            <Badge variant="outline" className="capitalize">
+              {entry.status || 'event'}
+            </Badge>
+            {entry.title ? (
+              <span className="min-w-0 flex-1 truncate text-foreground">
+                {entry.title}
+              </span>
+            ) : (
+              <span className="flex-1" />
+            )}
+            {agentSlug && entry.executionLogBasename ? (
+              <Link
+                to={`/agents/${encodeURIComponent(agentSlug)}/activity/${encodeURIComponent(entry.executionLogBasename)}`}
+                onClick={(e) => e.stopPropagation()}
+                className="text-xs text-primary underline-offset-2 hover:underline focus:underline focus:outline-none"
+                data-task-activity-link="true"
+              >
+                View log →
+              </Link>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </TaskField>
+  );
+}
+
+function formatActivityDate(iso) {
+  if (!iso) return '—';
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return String(iso);
+  return new Date(ms).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
 function TaskField({ label, children }) {

@@ -550,7 +550,7 @@ function TaskDetailSheet({ slug, entry, onClose, baseUrl, fetchImpl }) {
   const taskId = entry?.taskId || null;
   return (
     <Sheet open={open} onOpenChange={(next) => (next ? null : onClose())}>
-      <SheetContent className="flex w-full flex-col gap-4 overflow-y-auto sm:max-w-2xl">
+      <SheetContent className="flex w-full flex-col gap-4 overflow-y-auto sm:max-w-4xl">
         {entry ? (
           <>
             <SheetHeader>

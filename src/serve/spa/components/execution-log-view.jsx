@@ -11,6 +11,8 @@
  */
 
 import React, { useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import { Badge } from './ui/badge.jsx';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card.jsx';
@@ -118,17 +120,107 @@ function FinalOutput({ text, dense }) {
         <CardTitle className="text-sm">Final output</CardTitle>
       </CardHeader>
       <CardContent className="p-0">
-        <pre
+        <div
           className={cn(
-            'overflow-auto whitespace-pre-wrap break-words',
-            'rounded-b-lg bg-muted/40 p-4 font-mono text-xs leading-relaxed text-foreground',
+            'overflow-auto rounded-b-lg bg-muted/40 p-4',
             dense ? 'max-h-[280px]' : 'max-h-[400px]',
           )}
         >
-          {text}
-        </pre>
+          <Markdown source={text} />
+        </div>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Render a markdown string with the small set of shadcn-token classes
+ * that match the rest of the SPA. Uses GitHub-flavored extensions so
+ * agents' tables, task-lists, and autolinks render the way they do in
+ * the upstream markdown that generated them.
+ *
+ * @param {{ source: string }} props
+ */
+function Markdown({ source }) {
+  return (
+    <div className="prose-sm max-w-none space-y-3 text-sm leading-relaxed text-foreground">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: (props) => (
+            <h3 className="text-base font-semibold text-foreground" {...props} />
+          ),
+          h2: (props) => (
+            <h4 className="text-sm font-semibold text-foreground" {...props} />
+          ),
+          h3: (props) => (
+            <h5 className="text-sm font-semibold text-foreground" {...props} />
+          ),
+          p: (props) => <p className="text-sm leading-relaxed" {...props} />,
+          ul: (props) => (
+            <ul className="list-disc space-y-1 pl-5 text-sm" {...props} />
+          ),
+          ol: (props) => (
+            <ol className="list-decimal space-y-1 pl-5 text-sm" {...props} />
+          ),
+          li: (props) => <li className="text-sm" {...props} />,
+          blockquote: (props) => (
+            <blockquote
+              className="border-l-2 border-border pl-3 text-muted-foreground"
+              {...props}
+            />
+          ),
+          // react-markdown v10 drops the `inline` prop — branch on
+          // whether the parent is a <pre> (block) by letting the `pre`
+          // component below own block rendering and keeping `code` as
+          // the inline-only styling.
+          code: ({ className, children, ...props }) => (
+            <code
+              className={cn(
+                'rounded bg-muted px-1.5 py-0.5 font-mono text-[12px] text-foreground',
+                className,
+              )}
+              {...props}
+            >
+              {children}
+            </code>
+          ),
+          pre: ({ children, ...props }) => (
+            <pre
+              className="overflow-auto rounded-md border bg-background p-3 font-mono text-[12px] leading-relaxed text-foreground"
+              {...props}
+            >
+              {children}
+            </pre>
+          ),
+          a: (props) => (
+            <a
+              className="text-primary underline underline-offset-2 hover:no-underline"
+              target="_blank"
+              rel="noreferrer"
+              {...props}
+            />
+          ),
+          table: (props) => (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs" {...props} />
+            </div>
+          ),
+          thead: (props) => (
+            <thead className="border-b bg-muted/60 text-left" {...props} />
+          ),
+          th: (props) => (
+            <th className="px-2 py-1.5 font-semibold text-foreground" {...props} />
+          ),
+          td: (props) => (
+            <td className="border-t px-2 py-1.5 align-top" {...props} />
+          ),
+          hr: () => <hr className="my-3 border-border" />,
+        }}
+      >
+        {typeof source === 'string' ? source : String(source ?? '')}
+      </ReactMarkdown>
+    </div>
   );
 }
 
