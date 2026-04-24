@@ -36,7 +36,6 @@ import { Link, useLocation } from 'react-router-dom';
 import {
   Activity,
   Calendar,
-  CircleUser,
   ListChecks,
   User,
   Users,
@@ -72,6 +71,26 @@ const AGENT_TABS = Object.freeze([
  * @param {string} pathname
  * @returns {{ slug: string, tab: string } | null}
  */
+/**
+ * Derive a short two-letter token for an agent's avatar. Splits on
+ * whitespace first (so "Marketer Jamie" → "MJ"), falling back to
+ * hyphen/underscore separators so slug-style names like
+ * "marketer-jamie" → "MJ" or "content_writer" → "CW" still work.
+ * Single-token names collapse to the first two letters of the token.
+ *
+ * @param {string | null | undefined} text
+ * @returns {string}
+ */
+export function agentInitials(text) {
+  const raw = typeof text === 'string' ? text.trim() : '';
+  if (raw.length === 0) return '??';
+  const parts = raw.split(/[\s\-_]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return parts[0].slice(0, 2).toUpperCase();
+}
+
 export function parseAgentDetailRoute(pathname) {
   if (typeof pathname !== 'string') return null;
   const match = pathname.match(/^\/agents\/([^/]+)(?:\/([^/]+))?(?:\/.*)?$/);
@@ -207,6 +226,7 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
                 {agentRows.map((row) => {
                   const to = `/agents/${row.slug}`;
                   const active = detail?.slug === row.slug;
+                  const initials = agentInitials(row.name || row.slug);
                   return (
                     <SidebarMenuItem key={row.slug}>
                       <SidebarMenuButton
@@ -216,7 +236,12 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
                         tooltip={row.name || row.slug}
                       >
                         <Link to={to}>
-                          <CircleUser className="h-4 w-4" aria-hidden="true" />
+                          <span
+                            aria-hidden="true"
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold tabular-nums text-foreground"
+                          >
+                            {initials}
+                          </span>
                           <span className="truncate">{row.name || row.slug}</span>
                         </Link>
                       </SidebarMenuButton>
