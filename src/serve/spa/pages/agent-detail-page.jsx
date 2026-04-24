@@ -127,6 +127,9 @@ export function AgentDetailPage({
   onBack,
   baseUrl,
   fetch: fetchImpl,
+  activitySelection,
+  onActivityOpen,
+  onActivityClose,
 }) {
   const [activeTab, setActiveTab] = useState(() => normaliseTab(initialTab));
 
@@ -204,6 +207,9 @@ export function AgentDetailPage({
             slug={slug}
             baseUrl={baseUrl}
             fetch={fetchImpl}
+            selectedBasename={activitySelection}
+            onOpenBasename={onActivityOpen}
+            onCloseBasename={onActivityClose}
           />
         </TabsContent>
         <TabsContent value="strategy">
