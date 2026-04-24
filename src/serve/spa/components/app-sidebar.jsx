@@ -36,11 +36,13 @@ import { Link, useLocation } from 'react-router-dom';
 import {
   Activity,
   Calendar,
+  CircleUser,
   ListChecks,
   User,
   Users,
 } from 'lucide-react';
 
+import { useAgents } from '../hooks/use-agents.js';
 import { ThemeToggle } from './theme-toggle.jsx';
 import {
   Sidebar,
@@ -130,6 +132,12 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
   const pathname = location?.pathname ?? '/';
   const detail = parseAgentDetailRoute(pathname);
   const { setOpen } = useSidebar();
+  // Pull the agent list into the sidebar so every scheduled agent is
+  // one click away from any route, not just from the Overview table.
+  // `useAgents` de-duplicates its in-flight request across consumers
+  // (the primary sidebar + the Overview page hit it together).
+  const { data: agentsData } = useAgents();
+  const agentRows = agentsData?.rows ?? [];
 
   // When an agent is selected, collapse the primary rail to its
   // icon-only strip so the secondary (detail) sidebar becomes the
@@ -191,6 +199,34 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        {agentRows.length > 0 ? (
+          <SidebarGroup data-agents-group="true">
+            <SidebarGroupLabel>Agents</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {agentRows.map((row) => {
+                  const to = `/agents/${row.slug}`;
+                  const active = detail?.slug === row.slug;
+                  return (
+                    <SidebarMenuItem key={row.slug}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={active}
+                        data-nav-item={to}
+                        tooltip={row.name || row.slug}
+                      >
+                        <Link to={to}>
+                          <CircleUser className="h-4 w-4" aria-hidden="true" />
+                          <span className="truncate">{row.name || row.slug}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : null}
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center justify-between gap-2 px-2 py-1.5 group-data-[collapsible=icon]/sidebar:justify-center group-data-[collapsible=icon]/sidebar:px-0">
