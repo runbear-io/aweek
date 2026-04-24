@@ -72,7 +72,7 @@ import { AgentProfilePage } from './agent-profile-page.jsx';
 
 /**
  * @typedef {import('../lib/api-client.js').AgentProfile} AgentProfile
- * @typedef {'calendar' | 'activity' | 'strategy' | 'profile'} AgentTabValue
+ * @typedef {'calendar' | 'activities' | 'strategy' | 'profile'} AgentTabValue
  */
 
 /**
@@ -84,7 +84,7 @@ import { AgentProfilePage } from './agent-profile-page.jsx';
  */
 export const AGENT_DETAIL_TABS = Object.freeze([
   { value: 'calendar', label: 'Calendar' },
-  { value: 'activity', label: 'Activity' },
+  { value: 'activities', label: 'Activity' },
   { value: 'strategy', label: 'Strategy' },
   { value: 'profile', label: 'Profile' },
 ]);
@@ -199,7 +199,7 @@ export function AgentDetailPage({
             fetch={fetchImpl}
           />
         </TabsContent>
-        <TabsContent value="activity">
+        <TabsContent value="activities">
           <AgentActivityPage
             slug={slug}
             baseUrl={baseUrl}

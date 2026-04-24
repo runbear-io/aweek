@@ -333,7 +333,7 @@ function TaskActivityList({ activity, agentSlug }) {
             )}
             {agentSlug && entry.executionLogBasename ? (
               <Link
-                to={`/agents/${encodeURIComponent(agentSlug)}/activity/${encodeURIComponent(entry.executionLogBasename)}`}
+                to={`/agents/${encodeURIComponent(agentSlug)}/activities/${encodeURIComponent(entry.executionLogBasename)}`}
                 onClick={(e) => e.stopPropagation()}
                 className="text-xs text-primary underline-offset-2 hover:underline focus:underline focus:outline-none"
                 data-task-activity-link="true"

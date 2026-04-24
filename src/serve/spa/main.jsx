@@ -55,12 +55,12 @@ function AppShell() {
         <Route path="/agents" element={<AgentsRoute />} />
         <Route path="/agents/:slug" element={<AgentDetailRoute />} />
         <Route
-          path="/agents/:slug/activity/:basename"
+          path="/agents/:slug/activities/:basename"
           element={<AgentExecutionLogRoute />}
         />
         <Route path="/agents/:slug/:tab" element={<AgentDetailRoute />} />
         <Route path="/calendar" element={<Navigate to="/agents" replace />} />
-        <Route path="/activity" element={<Navigate to="/agents" replace />} />
+        <Route path="/activities" element={<Navigate to="/agents" replace />} />
         <Route path="/strategy" element={<Navigate to="/agents" replace />} />
         <Route path="/profile" element={<Navigate to="/agents" replace />} />
         <Route path="*" element={<Navigate to="/agents" replace />} />

@@ -249,12 +249,13 @@ describe('AgentActivityPage — baseline parity with activity + execution stores
     const entryLists = container.querySelectorAll('[role="list"]');
     expect(entryLists.length).toBe(3);
 
-    // The timeline (first list) is chronologically merged — newest-first
-    // interleaves the 14:30 activity row and the 14:00 execution row.
+    // The timeline (first list) shows activity entries only —
+    // heartbeat execution rows were dropped from the primary feed (too
+    // verbose); they remain in the "By source" breakdown below. Order
+    // is newest-first, so the 14:30 entry precedes the 09:00 one.
     const timelineItems = entryLists[0].querySelectorAll('li');
     expect(timelineItems[0]).toHaveTextContent('Wednesday planning');
-    expect(timelineItems[1]).toHaveTextContent(/task-a/); // exec-xxx, 14:00
-    expect(timelineItems[2]).toHaveTextContent('Kickoff review');
+    expect(timelineItems[1]).toHaveTextContent('Kickoff review');
 
     // Per-source drill-down retains the two-section contract.
     const activityItems = entryLists[1].querySelectorAll('li');
@@ -289,15 +290,14 @@ describe('AgentActivityPage — baseline parity with activity + execution stores
     const timeline = container.querySelector(
       '[data-component="activity-timeline"]',
     );
-    // 2 + 2 = 4 merged rows in the timeline.
-    expect(timeline.getAttribute('data-row-count')).toBe('4');
-    // Timeline carries one row per source tag so both stores are visible.
+    // Activity-only timeline (heartbeat rows dropped): 2 entry rows.
+    expect(timeline.getAttribute('data-row-count')).toBe('2');
     expect(
       timeline.querySelectorAll('[data-timeline-source="activity"]').length,
     ).toBe(2);
     expect(
       timeline.querySelectorAll('[data-timeline-source="execution"]').length,
-    ).toBe(2);
+    ).toBe(0);
   });
 });
 
