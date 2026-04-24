@@ -417,14 +417,14 @@ describe('aweek serve CLI — JSON endpoints', () => {
     assert.equal(body.projectDir, projectDir);
   });
 
-  it('GET /api/agents returns { agents: [] } for an empty project', async () => {
+  it('GET /api/agents returns an empty agents list with no issues for an empty project', async () => {
     projectDir = await makeProject();
     handle = await startCliServer({ projectDir });
     const res = await httpGet(`${handle.url}api/agents`);
     assert.equal(res.statusCode, 200);
     assert.match(res.headers['content-type'] || '', /application\/json/);
     assert.match(res.headers['cache-control'] || '', /no-store/);
-    assert.deepEqual(JSON.parse(res.body), { agents: [] });
+    assert.deepEqual(JSON.parse(res.body), { agents: [], issues: [] });
   });
 
   it('GET /api/agents returns the fixture agent when one is hired', async () => {

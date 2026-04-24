@@ -30,7 +30,6 @@
  */
 
 import React from 'react';
-import { Link } from 'react-router-dom';
 
 /**
  * @typedef {import('../lib/api-client.js').ActivityEntry} ActivityEntry
@@ -132,6 +131,7 @@ export function ActivityTimeline({
   title = 'Timeline',
   className,
   agentSlug,
+  onSelectEntry,
 }) {
   const items = buildTimeline(entries, executions);
   const totalRows = items.length;
@@ -170,7 +170,12 @@ export function ActivityTimeline({
           className="relative divide-y divide-border"
         >
           {items.map((item) => (
-            <TimelineRow key={item.key} item={item} agentSlug={agentSlug} />
+            <TimelineRow
+              key={item.key}
+              item={item}
+              agentSlug={agentSlug}
+              onSelectEntry={onSelectEntry}
+            />
           ))}
         </ol>
       )}
@@ -188,21 +193,39 @@ export default ActivityTimeline;
  *
  * @param {{ item: TimelineItem }} props
  */
-function TimelineRow({ item, agentSlug }) {
+function TimelineRow({ item, agentSlug, onSelectEntry }) {
+  const clickable =
+    item.source === 'activity' &&
+    typeof onSelectEntry === 'function' &&
+    !!executionLogBasename(item.raw);
+  const handleClick = clickable ? () => onSelectEntry(item.raw) : undefined;
+  const handleKeyDown = clickable
+    ? (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelectEntry(item.raw);
+        }
+      }
+    : undefined;
   return (
     <li
-      className="flex items-start gap-3 px-4 py-2.5"
+      className={`flex items-start gap-3 px-4 py-2.5 ${
+        clickable
+          ? 'cursor-pointer transition-colors hover:bg-muted/50 focus-within:bg-muted/50'
+          : ''
+      }`}
       data-timeline-source={item.source}
       data-timeline-timestamp={item.timestamp || ''}
+      data-timeline-clickable={clickable ? 'true' : undefined}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
     >
       <SourceRail source={item.source} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         {item.source === 'activity' ? (
-          <ActivityRowBody
-            entry={item.raw}
-            timestamp={item.timestamp}
-            agentSlug={agentSlug}
-          />
+          <ActivityRowBody entry={item.raw} timestamp={item.timestamp} />
         ) : (
           <ExecutionRowBody row={item.raw} timestamp={item.timestamp} />
         )}
@@ -258,7 +281,7 @@ function SourceBadge({ source }) {
   );
 }
 
-function ActivityRowBody({ entry, timestamp, agentSlug }) {
+function ActivityRowBody({ entry, timestamp }) {
   // Field names mirror `createLogEntry` in activity-log-store.js:
   //   { id, timestamp, agentId, status, title, taskId?, duration?, metadata? }
   const status = entry?.status || entry?.kind || entry?.type || 'event';
@@ -266,7 +289,6 @@ function ActivityRowBody({ entry, timestamp, agentSlug }) {
     entry?.title || entry?.message || entry?.summary || entry?.text || '';
   const durationMs = Number.isFinite(entry?.duration) ? entry.duration : null;
   const taskId = entry?.taskId || null;
-  const logBasename = executionLogBasename(entry);
   return (
     <>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -286,15 +308,6 @@ function ActivityRowBody({ entry, timestamp, agentSlug }) {
           <span className="text-[11px] text-muted-foreground">
             {formatDuration(durationMs)}
           </span>
-        ) : null}
-        {agentSlug && logBasename ? (
-          <Link
-            to={`/agents/${encodeURIComponent(agentSlug)}/activity/${encodeURIComponent(logBasename)}`}
-            className="ml-auto text-xs text-primary underline-offset-2 hover:underline focus:underline focus:outline-none"
-            data-execution-log-link="true"
-          >
-            View log →
-          </Link>
         ) : null}
       </div>
       {title ? (
@@ -379,7 +392,7 @@ function ExecutionRowBody({ row, timestamp }) {
  * @param {object | null | undefined} entry
  * @returns {string | null}
  */
-function executionLogBasename(entry) {
+export function executionLogBasename(entry) {
   const path = entry?.metadata?.execution?.executionLogPath;
   if (typeof path !== 'string' || path.length === 0) return null;
   const last = path.split(/[/\\]/).pop() || '';

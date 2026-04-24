@@ -530,8 +530,10 @@ async function handleSummary(res, ctx) {
  */
 async function handleAgentsList(res, ctx) {
   try {
-    const agents = await gatherAgentsList({ projectDir: ctx.projectDir });
-    sendJson(res, 200, { agents });
+    const { rows, issues } = await gatherAgentsList({
+      projectDir: ctx.projectDir,
+    });
+    sendJson(res, 200, { agents: rows, issues });
   } catch (err) {
     sendJson(res, 500, {
       error: err && err.message ? err.message : 'Failed to load agents',
