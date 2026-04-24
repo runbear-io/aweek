@@ -33,7 +33,7 @@
  * @module serve/spa/pages/agent-activity-page
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 
 import {
   ActivityTimeline,
@@ -102,17 +102,49 @@ export function AgentActivityPage({
   initialDateRange = 'all',
   baseUrl,
   fetch: fetchImpl,
+  selectedBasename,
+  onOpenBasename,
+  onCloseBasename,
 }) {
   // Local UI state — not injected from server. The hook re-runs when
   // `dateRange` changes (via its `deps` array).
   const [dateRange, setDateRange] = useState(initialDateRange);
-  const [selectedEntry, setSelectedEntry] = useState(null);
+  // Drawer state defaults to local — tests and standalone use cases
+  // never hand over URL-driven open/close. When the router-aware
+  // parent threads `selectedBasename` + `onOpenBasename` /
+  // `onCloseBasename`, the URL becomes the source of truth.
+  const [internalBasename, setInternalBasename] = useState(null);
+  const effectiveBasename =
+    selectedBasename !== undefined ? selectedBasename : internalBasename;
 
   const { data, error, loading, refresh } = useAgentLogs(slug, {
     dateRange,
     baseUrl,
     fetch: fetchImpl,
   });
+
+  const selectedEntry = useMemo(() => {
+    if (!effectiveBasename) return null;
+    const entries = data?.entries || [];
+    return (
+      entries.find((e) => executionLogBasename(e) === effectiveBasename) ||
+      // The entry might be filtered out of the date range — fall back
+      // to a synthetic placeholder so the drawer still renders the log
+      // for deep-linked URLs.
+      { id: effectiveBasename, taskId: '', metadata: {} }
+    );
+  }, [effectiveBasename, data]);
+
+  function openEntry(entry) {
+    const basename = executionLogBasename(entry);
+    if (!basename) return;
+    if (typeof onOpenBasename === 'function') onOpenBasename(basename);
+    else setInternalBasename(basename);
+  }
+  function closeEntry() {
+    if (typeof onCloseBasename === 'function') onCloseBasename();
+    else setInternalBasename(null);
+  }
 
   if (!slug) return <ActivityEmpty message="Select an agent to view activity." />;
   if (loading && !data) return <ActivitySkeleton dateRange={dateRange} onRange={setDateRange} />;
@@ -149,12 +181,12 @@ export function AgentActivityPage({
         title="Chronological timeline"
         emptyMessage={`No activity in this range for "${data.slug}".`}
         agentSlug={data.slug}
-        onSelectEntry={(entry) => setSelectedEntry(entry)}
+        onSelectEntry={openEntry}
       />
       <TaskDetailSheet
         slug={data.slug}
         entry={selectedEntry}
-        onClose={() => setSelectedEntry(null)}
+        onClose={closeEntry}
         baseUrl={baseUrl}
         fetchImpl={fetchImpl}
       />

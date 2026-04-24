@@ -5,7 +5,6 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from '
 import {
   AgentsPage,
   AgentDetailPage,
-  AgentExecutionLogPage,
   DEFAULT_AGENT_DETAIL_TAB,
   normaliseTab,
 } from './pages/index.js';
@@ -24,21 +23,29 @@ function AgentsRoute() {
 }
 
 function AgentDetailRoute() {
-  const { slug, tab } = useParams();
+  const { slug, tab, basename } = useParams();
   const navigate = useNavigate();
-  const initialTab = normaliseTab(tab) ?? DEFAULT_AGENT_DETAIL_TAB;
+  // The /agents/:slug/activities/:basename route only supplies `slug`
+  // and `basename` via params; there is no `tab` segment to match. Coerce
+  // the effective tab to 'activities' in that case so AgentDetailPage
+  // can thread `activitySelection` + open/close handlers to the
+  // activity tab.
+  const effectiveTab = basename
+    ? 'activities'
+    : normaliseTab(tab) ?? DEFAULT_AGENT_DETAIL_TAB;
+  const slugSegment = encodeURIComponent(slug);
   return (
     <AgentDetailPage
       slug={slug}
-      initialTab={initialTab}
+      initialTab={effectiveTab}
+      activitySelection={basename}
       onTabChange={(next) => navigate(`/agents/${slug}/${next}`)}
+      onActivityOpen={(b) =>
+        navigate(`/agents/${slugSegment}/activities/${encodeURIComponent(b)}`)
+      }
+      onActivityClose={() => navigate(`/agents/${slugSegment}/activities`)}
     />
   );
-}
-
-function AgentExecutionLogRoute() {
-  const { slug, basename } = useParams();
-  return <AgentExecutionLogPage slug={slug} basename={basename} />;
 }
 
 /**
@@ -56,7 +63,7 @@ function AppShell() {
         <Route path="/agents/:slug" element={<AgentDetailRoute />} />
         <Route
           path="/agents/:slug/activities/:basename"
-          element={<AgentExecutionLogRoute />}
+          element={<AgentDetailRoute />}
         />
         <Route path="/agents/:slug/:tab" element={<AgentDetailRoute />} />
         <Route path="/calendar" element={<Navigate to="/agents" replace />} />
