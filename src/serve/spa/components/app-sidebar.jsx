@@ -91,6 +91,29 @@ export function agentInitials(text) {
   return parts[0].slice(0, 2).toUpperCase();
 }
 
+/**
+ * Map an agent overview-row status onto the Tailwind utility string for
+ * the sidebar avatar chip. Active agents read as a subtle emerald tint
+ * (the same scale the execution-log view already uses for `tool_result`
+ * rows); paused and unknown agents fade back to the stock shadcn muted
+ * token; exhausted budgets reuse the destructive surface. Keeping the
+ * mapping here — rather than inside the JSX — means the visual tone is
+ * a single-token decision a designer can tweak without re-hunting it
+ * across the render tree.
+ *
+ * @param {string | undefined | null} status
+ * @returns {string}
+ */
+export function agentAvatarTone(status) {
+  if (status === 'active') {
+    return 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
+  }
+  if (status === 'budget-exhausted') {
+    return 'border-destructive/40 bg-destructive/15 text-destructive';
+  }
+  return 'border-border bg-muted text-muted-foreground';
+}
+
 export function parseAgentDetailRoute(pathname) {
   if (typeof pathname !== 'string') return null;
   const match = pathname.match(/^\/agents\/([^/]+)(?:\/([^/]+))?(?:\/.*)?$/);
@@ -227,6 +250,7 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
                   const to = `/agents/${row.slug}`;
                   const active = detail?.slug === row.slug;
                   const initials = agentInitials(row.name || row.slug);
+                  const statusTone = agentAvatarTone(row.status);
                   return (
                     <SidebarMenuItem key={row.slug}>
                       <SidebarMenuButton
@@ -234,11 +258,13 @@ export function AppSidebar({ items = APP_NAV_ITEMS, className, ...props } = {}) 
                         isActive={active}
                         data-nav-item={to}
                         tooltip={row.name || row.slug}
+                        className="h-auto group-data-[collapsible=icon]/sidebar:!size-9 group-data-[collapsible=icon]/sidebar:!p-0"
                       >
                         <Link to={to}>
                           <span
                             aria-hidden="true"
-                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold tabular-nums text-foreground"
+                            data-agent-status={row.status}
+                            className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[9px] font-semibold tracking-wider tabular-nums ${statusTone}`}
                           >
                             {initials}
                           </span>
