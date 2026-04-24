@@ -67,8 +67,13 @@ export const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 export const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /** Default visible hour window — matches the terminal grid (9am–6pm). */
-export const DEFAULT_START_HOUR = 9;
-export const DEFAULT_END_HOUR = 18;
+// Full-day window by default. The calendar used to narrow to 9–18 but
+// that silently clamped tasks scheduled outside office hours onto the
+// edge rows, which read as placement bugs. 0–24 keeps every runAt in
+// its real slot. Callers that want a tighter window can still override
+// via props.
+export const DEFAULT_START_HOUR = 0;
+export const DEFAULT_END_HOUR = 24;
 
 /**
  * Reserved `objectiveId` values indicating an advisor-mode review slot.
