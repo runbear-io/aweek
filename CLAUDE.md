@@ -31,6 +31,8 @@ pnpm dev:spa            # Vite dev only (for when you already run aweek serve)
 
 Local development: `claude --plugin-dir .` loads the plugin from this directory, and `/reload-plugins` picks up markdown edits without restarting. For dashboard work, `pnpm dev -- --project-dir ~/some/project` opens `http://localhost:5173` with HMR against that project's `.aweek/` data.
 
+The SPA build output (`src/serve/spa/dist/`) is **gitignored** — `aweek serve` reads from it at runtime, so contributors should run `pnpm build` once after clone before invoking `aweek serve` directly. `pnpm dev` doesn't need it (Vite serves from source). The npm publish flow rebuilds via `prepublishOnly`, so released tarballs always carry a fresh bundle.
+
 ## Skills
 
 Skill markdown lives in `skills/<name>/SKILL.md`. Each step shells out to `aweek exec <module> <fn>` via the registry in `src/cli/dispatcher.js`. All persistence and validation lives in `src/skills/*.js` — never write `.aweek/` JSON or `.claude/agents/<slug>.md` files directly.
@@ -168,7 +170,7 @@ src/
       hooks/                    # use-agents, use-agent-calendar, use-agent-plan, use-agent-logs, …
       lib/                      # api-client, cn, utils
       styles/globals.css        # Tailwind directives + shadcn HSL tokens (light + dark)
-      dist/                     # Vite build output (committed for release convenience)
+      dist/                     # Vite build output (gitignored; rebuilt by `pnpm build` and the `prepublishOnly` hook)
 vite.config.js                  # Vite root = src/serve/spa/, outDir = src/serve/spa/dist/
 tailwind.config.js              # Dark class mode, shadcn color tokens
 postcss.config.js               # Tailwind + autoprefixer
