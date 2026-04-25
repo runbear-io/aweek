@@ -86,32 +86,48 @@ const BANNED_INLINE_DATA_PROPS = [
  */
 const CASES = [
   {
+    // AgentsPage was migrated to TypeScript (AC 101 sub-AC 1) and now
+    // lives at `agents-page.tsx`. The remaining pages in this list stay
+    // .jsx until later migration sub-ACs.
     name: 'AgentsPage',
-    file: 'agents-page.jsx',
+    file: 'agents-page.tsx',
     hook: 'useAgents',
     // slug/dateRange/onSelectAgent/baseUrl/fetch are the orchestration
     // props this page is allowed to receive.
     allowedProps: ['onSelectAgent', 'baseUrl', 'fetch'],
   },
   {
+    // Migrated to `.tsx` per AC 103 sub-AC 3.
     name: 'AgentProfilePage',
-    file: 'agent-profile-page.jsx',
+    file: 'agent-profile-page.tsx',
     hook: 'useAgentProfile',
     allowedProps: ['slug', 'baseUrl', 'fetch'],
   },
   {
+    // Migrated to `.tsx` per AC 103 sub-AC 3.
     name: 'AgentPlanPage',
-    file: 'agent-plan-page.jsx',
+    file: 'agent-plan-page.tsx',
     hook: 'useAgentPlan',
     allowedProps: ['slug', 'baseUrl', 'fetch'],
   },
   {
+    // Migrated to `.tsx` per AC 103 sub-AC 3.
     name: 'AgentCalendarPage',
-    file: 'agent-calendar-page.jsx',
+    file: 'agent-calendar-page.tsx',
     hook: 'useAgentCalendar',
-    // `week` is an orchestration prop that narrows the API query, not a
-    // pre-resolved domain payload — the hook still fetches via `fetch`.
-    allowedProps: ['slug', 'week', 'baseUrl', 'fetch'],
+    // `week` narrows the API query; `selectedTaskId` / `onOpenTaskId` /
+    // `onCloseTaskId` are URL-driven drawer orchestration props threaded
+    // through by the parent route. None of them encode server-rendered
+    // domain data — the hook still owns the fetch.
+    allowedProps: [
+      'slug',
+      'week',
+      'baseUrl',
+      'fetch',
+      'selectedTaskId',
+      'onOpenTaskId',
+      'onCloseTaskId',
+    ],
   },
   {
     name: 'AgentUsagePage',
@@ -120,10 +136,22 @@ const CASES = [
     allowedProps: ['slug', 'baseUrl', 'fetch'],
   },
   {
+    // Migrated to `.tsx` per AC 103 sub-AC 3.
     name: 'AgentActivityPage',
-    file: 'agent-activity-page.jsx',
+    file: 'agent-activity-page.tsx',
     hook: 'useAgentLogs',
-    allowedProps: ['slug', 'initialDateRange', 'baseUrl', 'fetch'],
+    // `selectedBasename` / `onOpenBasename` / `onCloseBasename` are
+    // URL-driven drawer orchestration props threaded through by the
+    // parent route — same exemption rationale as AgentCalendarPage.
+    allowedProps: [
+      'slug',
+      'initialDateRange',
+      'baseUrl',
+      'fetch',
+      'selectedBasename',
+      'onOpenBasename',
+      'onCloseBasename',
+    ],
   },
 ];
 

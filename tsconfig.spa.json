@@ -1,0 +1,177 @@
+{
+  // -----------------------------------------------------------------------
+  // tsconfig.spa.json
+  //
+  // Type-checker configuration for the React SPA under `src/serve/spa/`.
+  // This config is intentionally narrow — it covers only the browser-side
+  // tree (pages, components, hooks, lib) plus its colocated tests. The
+  // backend (Node CLI / heartbeat / storage / serve handlers) stays as
+  // raw `.js` in this migration phase and is excluded here.
+  //
+  // Roles:
+  //   - tsc runs as a TYPE-CHECKER ONLY (`noEmit: true`). Vite owns the
+  //     actual SPA bundling via `vite.config.js`; TypeScript never writes
+  //     any output to disk from this config.
+  //   - Strict mode is enabled (`strict: true`) per the migration plan,
+  //     but two strictness flags are intentionally OFF for this phase to
+  //     keep the conversion tractable:
+  //       * `noUncheckedIndexedAccess` — would force `T | undefined` on
+  //         every array/object index access; deferred to a later phase.
+  //       * `exactOptionalPropertyTypes` — would forbid assigning
+  //         `undefined` to properties typed as `?: T`; deferred to a
+  //         later phase.
+  //
+  // Coexistence with `.js`:
+  //   - `allowJs: true` lets converted `.ts`/`.tsx` files import
+  //     unconverted `.js`/`.jsx` siblings during the incremental
+  //     migration. Cross-boundary imports of unconverted backend modules
+  //     are handled per-call-site via `@ts-expect-error` or local `.d.ts`
+  //     shims (see migration plan).
+  //   - `checkJs: false` so the (still-large) untyped `.js` surface
+  //     doesn't drown the type-checker in noise. Once the SPA is fully
+  //     `.ts`/`.tsx`, this can flip on as a final tightening pass.
+  //
+  // Out of scope (excluded explicitly):
+  //   - `components/ui/*` — shadcn/ui primitives stay `.jsx` for this
+  //     phase per the migration plan.
+  //   - Anything outside `src/serve/spa/` (backend modules, CLI, etc.).
+  // -----------------------------------------------------------------------
+  "compilerOptions": {
+    // ----- Output discipline -----
+    // Pure type-checking: never emit JS/declarations. Vite handles the
+    // actual bundle.
+    "noEmit": true,
+
+    // ----- Module / target -----
+    // Modern evergreen browser baseline — matches `vite.config.js`
+    // (`build.target: 'es2020'`) so the type-checker and the bundler
+    // agree on what syntax is legal.
+    "target": "ES2020",
+    // The SPA is ESM-only and uses `import.meta`, dynamic imports, and
+    // Vite's HMR client — `ESNext` keeps those working under `Bundler`
+    // resolution.
+    "module": "ESNext",
+    // Vite (and any modern bundler) resolves modules with the "bundler"
+    // strategy: no mandatory file extensions on imports, package.json
+    // `exports` honored, `paths` aliases supported. This is the
+    // recommended setting for Vite + TS projects.
+    "moduleResolution": "Bundler",
+    // Allow `import x from 'json-file.json'` if/when the SPA needs it
+    // (Vite supports JSON imports natively).
+    "resolveJsonModule": true,
+    // Treat each source file as an isolated module — this is what
+    // bundlers (Vite, esbuild, swc) actually do, and it forbids a few
+    // TS-only constructs (e.g. `const enum`) that don't survive the
+    // bundler's per-file transform.
+    "isolatedModules": true,
+    // Force every file to be a module (no global script files). Pairs
+    // with `isolatedModules` to guarantee bundler-safe semantics.
+    "moduleDetection": "force",
+    // Permit default imports from CJS modules without an `* as` wrapper
+    // (e.g. `import React from 'react'`). Required for the React 19 +
+    // automatic-runtime mix the SPA already uses.
+    "esModuleInterop": true,
+    // Enforce that file references match on-disk casing — catches bugs
+    // that only surface on case-sensitive filesystems (Linux CI).
+    "forceConsistentCasingInFileNames": true,
+    // Allow `import x from 'mod'` against modules that only have a
+    // default export shape — required by some of the third-party SPA
+    // dependencies (e.g. older `react-markdown` plugins).
+    "allowSyntheticDefaultImports": true,
+
+    // ----- DOM / browser libs -----
+    // The SPA targets the browser: pull in the standard DOM lib + the
+    // iterable DOM types so `for...of` over `NodeList` etc. type-checks.
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+
+    // ----- React / JSX -----
+    // React 17+ automatic runtime — matches `vite.config.js`
+    // (`esbuild.jsx: 'automatic'`). Components don't need to
+    // `import React` for plain JSX; explicit React imports still work
+    // where `React.forwardRef` etc. is needed.
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+
+    // ----- JS / TS interop during incremental migration -----
+    // Allow `.js`/`.jsx` imports from `.ts`/`.tsx` siblings. This is the
+    // load-bearing flag for the incremental conversion: without it, the
+    // first converted `.tsx` would fail to import every other unconverted
+    // sibling.
+    "allowJs": true,
+    // Don't type-check the still-untyped `.js` files. Once the SPA is
+    // fully `.ts`/`.tsx`, this can flip to `true`.
+    "checkJs": false,
+    // Allow import paths to include explicit `.ts`/`.tsx` extensions.
+    // This is valid only when `noEmit: true` (already set above) because
+    // the bundler (Vite/esbuild) — not tsc — handles resolution at build
+    // time.  Without this flag, tsc raises TS5097 for any in-source import
+    // that spells out the `.tsx` extension (e.g. test files importing
+    // co-located page components like `'./agents-page.tsx'`).
+    "allowImportingTsExtensions": true,
+
+    // ----- Strictness (per migration plan) -----
+    // Master switch: enables strictNullChecks, noImplicitAny,
+    // strictFunctionTypes, strictBindCallApply, strictPropertyInitialization,
+    // alwaysStrict, useUnknownInCatchVariables, noImplicitThis.
+    "strict": true,
+    // Explicitly DISABLED per the migration plan — these two are deferred
+    // so the conversion stays tractable. Listing them keeps the intent
+    // visible if someone later flips `strict` off and on.
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+
+    // ----- Quality-of-life linting via tsc -----
+    // Catch unreachable code in `switch` statements.
+    "noFallthroughCasesInSwitch": true,
+    // Catch return-paths that fall off the end of a function whose
+    // signature promises a value.
+    "noImplicitReturns": true,
+
+    // ----- Path aliases -----
+    // Mirror the `'@'` alias from `vite.config.js`
+    // (`resolve.alias['@'] = './src/serve/spa/'`) so shadcn-style imports
+    // like `@/components/ui/button` resolve identically for tsc and Vite.
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/serve/spa/*"]
+    },
+    // TypeScript 6.0 marks `baseUrl` as deprecated (slated for removal in
+    // TS 7.0). The flag silences that diagnostic so the type-check stays
+    // green; the `paths` alias above still works without `baseUrl` once
+    // the project moves past TS 6 (paths become repo-root-relative).
+    "ignoreDeprecations": "6.0",
+
+    // ----- Build performance -----
+    // Skip type-checking of `.d.ts` files in `node_modules`. Standard
+    // optimization; safe when relying on well-typed published packages.
+    "skipLibCheck": true,
+
+    // Cache incremental type-check state under `node_modules/.cache/`
+    // so subsequent `tsc --noEmit` invocations on CI / dev are fast.
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsc/tsconfig.spa.tsbuildinfo"
+  },
+
+  // SPA tree only. The backend (`src/cli/`, `src/heartbeat/`,
+  // `src/storage/`, `src/serve/server.js`, `src/serve/data/*`, etc.)
+  // stays raw `.js` in this migration phase and is type-checked by a
+  // separate config (or not at all) in a follow-up.
+  "include": [
+    "src/serve/spa/**/*.ts",
+    "src/serve/spa/**/*.tsx",
+    "src/serve/spa/**/*.js",
+    "src/serve/spa/**/*.jsx"
+  ],
+
+  // Carve-outs:
+  //   - `node_modules` — never type-check vendored sources.
+  //   - `dist` — Vite's build output; transient and already-checked.
+  //   - `components/ui/**` — shadcn primitives stay `.jsx` for this
+  //     migration phase (per the plan), so they're excluded from the
+  //     type-checker until we tackle them in a later phase.
+  "exclude": [
+    "node_modules",
+    "src/serve/spa/dist",
+    "src/serve/spa/components/ui/**"
+  ]
+}
