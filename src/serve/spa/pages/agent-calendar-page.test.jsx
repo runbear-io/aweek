@@ -256,20 +256,24 @@ describe('AgentCalendarPage — loading / empty / error states', () => {
 // ── Header / counts / grid ───────────────────────────────────────────
 
 describe('AgentCalendarPage — header + counts + grid rendering', () => {
-  it('renders the agent/week header with the approved badge and TZ', async () => {
+  it('renders a tight week/approval/TZ meta strip (agent identity lives in the breadcrumb, not here)', async () => {
     const { container } = renderCalendar(FULL_CALENDAR);
     const header = await waitFor(() => {
       const el = container.querySelector('[data-calendar-header="true"]');
       expect(el).not.toBeNull();
       return el;
     });
-    expect(header).toHaveTextContent(/alice/);
+    // The agent's name/slug appears in the shell's breadcrumb; the calendar
+    // meta strip is intentionally slug-free so the chrome above the grid
+    // stays one line.
+    expect(header).not.toHaveTextContent(/alice/);
     expect(header).toHaveTextContent(WEEK);
     expect(header).toHaveTextContent(/approved/i);
     expect(header).toHaveTextContent(/UTC/);
-    // 3 work tasks + 1 review slot → expected copy
-    expect(header).toHaveTextContent(/3 tasks/);
-    expect(header).toHaveTextContent(/1 review/);
+    // Per-status counts live in the separate StatusLegend row below —
+    // header should not repeat that info.
+    expect(header).not.toHaveTextContent(/tasks/i);
+    expect(header).not.toHaveTextContent(/review/i);
   });
 
   it('renders a pending badge for unapproved plans', async () => {
@@ -284,22 +288,53 @@ describe('AgentCalendarPage — header + counts + grid rendering', () => {
     expect(header).not.toHaveTextContent(/approved/i);
   });
 
-  it('renders the counts strip with per-status totals', async () => {
+  it('renders the status legend with per-status counts alongside each glyph', async () => {
     const { container } = renderCalendar(FULL_CALENDAR);
-    const counts = await waitFor(() => {
-      const el = container.querySelector('[data-calendar-counts="true"]');
+    const legend = await waitFor(() => {
+      const el = container.querySelector('[data-calendar-legend="true"]');
       expect(el).not.toBeNull();
       return el;
     });
+    // Each glyph + label pair carries its task count as a `data-count-value`
+    // attribute so the chip is independently selectable in tests.
+    expect(legend.querySelector('[data-count-key="pending"]')).toHaveAttribute(
+      'data-count-value',
+      '3',
+    );
     expect(
-      counts.querySelector('[data-count-key="pending"]'),
-    ).toHaveAttribute('data-count-value', '3');
-    expect(
-      counts.querySelector('[data-count-key="completed"]'),
+      legend.querySelector('[data-count-key="completed"]'),
     ).toHaveAttribute('data-count-value', '1');
+    expect(legend.querySelector('[data-count-key="failed"]')).toHaveAttribute(
+      'data-count-value',
+      '0',
+    );
+    // Review-slot count is derived from tasks (not the counts envelope).
+    expect(legend.querySelector('[data-count-key="review"]')).toHaveAttribute(
+      'data-count-value',
+      '1',
+    );
+    // All seven status glyphs show up in the legend.
+    expect(legend).toHaveTextContent('○');
+    expect(legend).toHaveTextContent('►');
+    expect(legend).toHaveTextContent('✓');
+    expect(legend).toHaveTextContent('✗');
+    expect(legend).toHaveTextContent('⊘');
+    expect(legend).toHaveTextContent('→');
+    expect(legend).toHaveTextContent('◆');
+  });
+
+  it('positions the status legend above the calendar grid', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR);
+    await waitFor(() => {
+      expect(container.querySelector('[data-calendar-grid="true"]')).not.toBeNull();
+    });
+    const legend = container.querySelector('[data-calendar-legend="true"]');
+    const grid = container.querySelector('[data-calendar-grid="true"]');
+    expect(legend).not.toBeNull();
+    expect(grid).not.toBeNull();
     expect(
-      counts.querySelector('[data-count-key="failed"]'),
-    ).toHaveAttribute('data-count-value', '0');
+      legend.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('places scheduled tasks at their slot day/hour', async () => {
@@ -389,25 +424,9 @@ describe('AgentCalendarPage — header + counts + grid rendering', () => {
   });
 });
 
-// ── Refresh wiring ───────────────────────────────────────────────────
+// ── Endpoint wiring ──────────────────────────────────────────────────
 
-describe('AgentCalendarPage — refresh wiring', () => {
-  it('clicking Refresh re-invokes the calendar fetch', async () => {
-    const { fetch, container } = renderCalendar(FULL_CALENDAR);
-    await waitFor(() => {
-      expect(container.querySelector('[data-calendar-header="true"]')).not.toBeNull();
-    });
-    const initialCalls = fetch.mock.calls.length;
-    const header = container.querySelector('[data-calendar-header="true"]');
-    const refresh = within(header).getByRole('button', { name: /refresh/i });
-    await act(async () => {
-      refresh.click();
-    });
-    await waitFor(() => {
-      expect(fetch.mock.calls.length).toBeGreaterThan(initialCalls);
-    });
-  });
-
+describe('AgentCalendarPage — endpoint wiring', () => {
   it('passes ?week=YYYY-Www through to the endpoint when supplied', async () => {
     const { calls } = renderCalendar(FULL_CALENDAR, {}, { week: '2026-W17' });
     await waitFor(() => {

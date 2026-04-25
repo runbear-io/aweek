@@ -40,7 +40,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Badge } from '../components/ui/badge.jsx';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -60,8 +59,6 @@ import {
 import {
   Tabs,
   TabsContent,
-  TabsList,
-  TabsTrigger,
 } from '../components/ui/tabs.jsx';
 import { useAgentProfile } from '../hooks/use-agent-profile.js';
 
@@ -114,7 +111,6 @@ export function normaliseTab(raw) {
  *   slug: string,
  *   initialTab?: AgentTabValue,
  *   onTabChange?: (tab: AgentTabValue) => void,
- *   onBack?: () => void,
  *   baseUrl?: string,
  *   fetch?: typeof fetch,
  * }} props
@@ -124,7 +120,6 @@ export function AgentDetailPage({
   slug,
   initialTab,
   onTabChange,
-  onBack,
   baseUrl,
   fetch: fetchImpl,
   activitySelection,
@@ -179,7 +174,7 @@ export function AgentDetailPage({
 
   return (
     <section
-      className="flex flex-col gap-4"
+      className="flex flex-col gap-3"
       data-page="agent-detail"
       data-agent-slug={slug}
       data-active-tab={activeTab}
@@ -188,12 +183,6 @@ export function AgentDetailPage({
         slug={slug}
         tab={activeTab}
         tabLabel={activeTabLabel}
-      />
-      <DetailHeader
-        profile={profile}
-        loading={loading}
-        onRefresh={refresh}
-        onBack={onBack}
       />
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
 
@@ -264,120 +253,6 @@ function DetailBreadcrumb({ slug, tab, tabLabel }) {
       </BreadcrumbList>
     </Breadcrumb>
   );
-}
-
-// ── Header ───────────────────────────────────────────────────────────
-
-/**
- * Top identity + status strip rendered above the tab row. Kept thin —
- * each embedded child page carries its own refresh button for its
- * specific resource; this one refreshes the profile so the header
- * status badge stays in sync.
- *
- * @param {{
- *   profile: AgentProfile,
- *   loading: boolean,
- *   onRefresh: () => void,
- *   onBack?: () => void,
- * }} props
- */
-function DetailHeader({ profile, loading, onRefresh, onBack }) {
-  const label = resolveStatusLabel(profile);
-  const variant = resolveStatusVariant(profile);
-  return (
-    <header
-      className="flex flex-col gap-2 border-b pb-3"
-      data-agent-detail-header="true"
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          {typeof onBack === 'function' ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onBack}
-              aria-label="Back to agent list"
-            >
-              ← Agents
-            </Button>
-          ) : null}
-          <div className="flex flex-col">
-            <h1 className="text-base font-semibold tracking-tight text-foreground">
-              {profile.name || profile.slug}
-              {profile.missing ? (
-                <Badge variant="destructive" className="ml-2">
-                  subagent missing
-                </Badge>
-              ) : null}
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
-                {profile.slug}
-              </code>
-              {profile.description ? (
-                <span className="ml-2 truncate">· {profile.description}</span>
-              ) : null}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <StatusBadge label={label} variant={variant} />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onRefresh}
-            disabled={loading}
-          >
-            {loading ? 'Refreshing…' : 'Refresh'}
-          </Button>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function StatusBadge({ label, variant }) {
-  return (
-    <Badge
-      data-agent-status={label}
-      variant={variant}
-      className="tracking-widest"
-    >
-      {label}
-    </Badge>
-  );
-}
-
-/**
- * Map an `AgentProfile` onto a stock shadcn Badge variant. Mirrors the
- * Overview page's `StatusBadge` mapping so the two surfaces agree on
- * how a given status reads: `default` for healthy, `outline` for the
- * advisory paused state, and `destructive` for missing / over-budget.
- *
- * @param {AgentProfile} profile
- * @returns {'default' | 'outline' | 'destructive'}
- */
-function resolveStatusVariant(profile) {
-  if (profile?.missing) return 'destructive';
-  if (profile?.pausedReason === 'budget_exhausted' || profile?.overBudget) {
-    return 'destructive';
-  }
-  if (profile?.paused) return 'outline';
-  return 'default';
-}
-
-/**
- * Derive the status label from an `AgentProfile`. Matches the
- * terminal's uppercase convention (ACTIVE / PAUSED / BUDGET EXHAUSTED
- * / SUBAGENT MISSING).
- */
-function resolveStatusLabel(profile) {
-  if (profile?.missing) return 'SUBAGENT MISSING';
-  if (profile?.pausedReason === 'budget_exhausted' || profile?.overBudget) {
-    return 'BUDGET EXHAUSTED';
-  }
-  if (profile?.paused) return 'PAUSED';
-  return 'ACTIVE';
 }
 
 // ── Empty / loading / error ──────────────────────────────────────────
