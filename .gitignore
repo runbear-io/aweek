@@ -12,3 +12,11 @@ node_modules/
 .claude/*.lock
 .claude/worktrees/
 .env
+
+# SPA build output — Vite writes the production bundle into
+# `src/serve/spa/dist/`. Keeping it out of git stops every rebuild from
+# churning the diff. The npm publish flow rebuilds it via the
+# `prepublishOnly` script in package.json, so the published tarball
+# still ships a fresh bundle. Local contributors should run
+# `pnpm build` once after clone before `aweek serve`.
+src/serve/spa/dist/
