@@ -77,6 +77,8 @@ import {
 } from '../components/ui/sheet.jsx';
 import { cn } from '../lib/cn.js';
 import { useAgentCalendar } from '../hooks/use-agent-calendar.js';
+import { useExecutionLog } from '../hooks/use-execution-log.js';
+import { Markdown } from '../components/execution-log-view.jsx';
 import {
   CalendarGrid,
   DEFAULT_END_HOUR,
@@ -210,6 +212,8 @@ export function AgentCalendarPage({
         activity={
           effectiveTaskId ? data.activityByTask?.[effectiveTaskId] || [] : []
         }
+        baseUrl={baseUrl}
+        fetchImpl={fetchImpl}
         onClose={() => {
           if (typeof onCloseTaskId === 'function') onCloseTaskId();
           else setInternalTaskId(null);
@@ -235,7 +239,7 @@ export function AgentCalendarPage({
  *   onClose: () => void
  * }} props
  */
-function TaskDetailSheet({ task, agentSlug, activity = [], onClose }) {
+function TaskDetailSheet({ task, agentSlug, activity = [], baseUrl, fetchImpl, onClose }) {
   const open = task != null;
   const review = task ? isReviewTask(task) : false;
   const icon = task
@@ -307,6 +311,8 @@ function TaskDetailSheet({ task, agentSlug, activity = [], onClose }) {
               <TaskActivityList
                 activity={activity}
                 agentSlug={agentSlug}
+                baseUrl={baseUrl}
+                fetchImpl={fetchImpl}
               />
             </div>
           </>
@@ -318,17 +324,23 @@ function TaskDetailSheet({ task, agentSlug, activity = [], onClose }) {
 
 /**
  * Chronological list of activity-log entries belonging to the selected
- * task. Each entry renders its timestamp + status and, when the
- * heartbeat recorded an `executionLogBasename`, a "View log" link that
- * routes to `/agents/:slug/activity/:basename` (same surface the
- * ActivityTimeline's link uses).
+ * task. Each entry is rendered as a full-row link to
+ * `/agents/:slug/activities/:basename` (the activity drawer route) when
+ * a heartbeat recorded an `executionLogBasename`. The execution log's
+ * final output is fetched lazily and previewed inline below each row so
+ * users can scan results without leaving the calendar drawer.
  *
  * Hidden entirely when the task has no logged activity yet so the sheet
  * doesn't show an empty section.
  *
- * @param {{ activity: Array<object>, agentSlug?: string }} props
+ * @param {{
+ *   activity: Array<object>,
+ *   agentSlug?: string,
+ *   baseUrl?: string,
+ *   fetchImpl?: typeof fetch,
+ * }} props
  */
-function TaskActivityList({ activity, agentSlug }) {
+function TaskActivityList({ activity, agentSlug, baseUrl, fetchImpl }) {
   if (!activity || activity.length === 0) return null;
   return (
     <TaskField label={`Activity (${activity.length})`}>
@@ -338,41 +350,110 @@ function TaskActivityList({ activity, agentSlug }) {
         data-task-activity-list="true"
       >
         {activity.map((entry, idx) => (
-          <li
+          <ActivityRow
             key={entry.id || entry.timestamp || idx}
-            className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs"
-            data-activity-id={entry.id || ''}
-          >
-            <time
-              dateTime={entry.timestamp || undefined}
-              className="tabular-nums text-muted-foreground"
-            >
-              {formatActivityDate(entry.timestamp)}
-            </time>
-            <Badge variant="outline" className="capitalize">
-              {entry.status || 'event'}
-            </Badge>
-            {entry.title ? (
-              <span className="min-w-0 flex-1 truncate text-foreground">
-                {entry.title}
-              </span>
-            ) : (
-              <span className="flex-1" />
-            )}
-            {agentSlug && entry.executionLogBasename ? (
-              <Link
-                to={`/agents/${encodeURIComponent(agentSlug)}/activities/${encodeURIComponent(entry.executionLogBasename)}`}
-                onClick={(e) => e.stopPropagation()}
-                className="text-xs text-primary underline-offset-2 hover:underline focus:underline focus:outline-none"
-                data-task-activity-link="true"
-              >
-                View log →
-              </Link>
-            ) : null}
-          </li>
+            entry={entry}
+            agentSlug={agentSlug}
+            baseUrl={baseUrl}
+            fetchImpl={fetchImpl}
+          />
         ))}
       </ul>
     </TaskField>
+  );
+}
+
+/**
+ * One row in `TaskActivityList`. Wraps the metadata in a `<Link>` when
+ * the entry has an `executionLogBasename`, so the entire row navigates
+ * to the activity drawer route. Renders a `FinalOutputPreview` directly
+ * underneath so users see the run's outcome inline.
+ */
+function ActivityRow({ entry, agentSlug, baseUrl, fetchImpl }) {
+  const basename = entry.executionLogBasename;
+  const linkable = Boolean(agentSlug && basename);
+  const meta = (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <time
+        dateTime={entry.timestamp || undefined}
+        className="tabular-nums text-muted-foreground"
+      >
+        {formatActivityDate(entry.timestamp)}
+      </time>
+      <Badge variant="outline" className="capitalize">
+        {entry.status || 'event'}
+      </Badge>
+      {entry.title ? (
+        <span className="min-w-0 flex-1 truncate text-foreground">
+          {entry.title}
+        </span>
+      ) : (
+        <span className="flex-1" />
+      )}
+    </div>
+  );
+  return (
+    <li
+      className="flex flex-col gap-2 rounded-md border bg-muted/30 px-2.5 py-1.5"
+      data-activity-id={entry.id || ''}
+    >
+      {linkable ? (
+        <Link
+          to={`/agents/${encodeURIComponent(agentSlug)}/activities/${encodeURIComponent(basename)}`}
+          className="block rounded-sm hover:bg-muted/40 focus:bg-muted/40 focus:outline-none"
+          data-task-activity-link="true"
+        >
+          {meta}
+        </Link>
+      ) : (
+        meta
+      )}
+      {linkable ? (
+        <FinalOutputPreview
+          slug={agentSlug}
+          basename={basename}
+          baseUrl={baseUrl}
+          fetchImpl={fetchImpl}
+        />
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * Lazy-fetch the execution log for one activity row and render the
+ * `finalResult` markdown if any. Stays silent when the log has no final
+ * result, while still surfacing load + error states distinctly.
+ */
+function FinalOutputPreview({ slug, basename, baseUrl, fetchImpl }) {
+  const { loading, error, summary } = useExecutionLog({
+    slug,
+    basename,
+    baseUrl,
+    fetch: fetchImpl,
+  });
+  if (loading) {
+    return (
+      <p className="text-[11px] italic text-muted-foreground">
+        Loading final output…
+      </p>
+    );
+  }
+  if (error) {
+    return (
+      <p className="text-[11px] italic text-destructive/80">
+        Failed to load final output ({error.message || 'unknown error'}).
+      </p>
+    );
+  }
+  if (!summary?.finalResult) return null;
+  return (
+    <div
+      className="max-h-[220px] overflow-auto rounded-sm border bg-background/60 px-2 py-1.5"
+      data-task-activity-final-output="true"
+    >
+      <Markdown source={summary.finalResult} />
+    </div>
   );
 }
 

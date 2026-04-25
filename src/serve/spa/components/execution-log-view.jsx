@@ -141,7 +141,7 @@ function FinalOutput({ text, dense }) {
  *
  * @param {{ source: string }} props
  */
-function Markdown({ source }) {
+export function Markdown({ source }) {
   return (
     <div className="prose-sm max-w-none space-y-3 text-sm leading-relaxed text-foreground">
       <ReactMarkdown
