@@ -4,5 +4,10 @@ node_modules/
 .ouroboros*
 *.log
 .DS_Store
+# Claude Code local artifacts — per-user settings, lock files, and
+# worktree checkouts. Shared state (.claude/agents/, .claude/commands/,
+# .claude/settings.json) stays tracked so the plugin/subagent surface
+# travels with the repo.
 .claude/settings.local.json
 .claude/*.lock
+.claude/worktrees/
