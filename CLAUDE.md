@@ -42,6 +42,7 @@ Skill markdown lives in `skills/<name>/SKILL.md`. Each step shells out to `aweek
 | `/aweek:plan` | `skills/plan/SKILL.md` | Single entry point for goal/monthly/weekly adjustments **and** pending weekly plan approval (replaces the old `/aweek:adjust-goal` and `/aweek:approve-plan`) |
 | `/aweek:manage` | `skills/manage/SKILL.md` | Lifecycle ops: resume, top-up, pause, delete (replaces `/aweek:resume-agent`). Identity edits go through the `.claude/agents/<slug>.md` file directly |
 | `/aweek:summary` | `skills/summary/SKILL.md` | Compact dashboard table across all agents with optional drill-down |
+| `/aweek:query` | `skills/query/SKILL.md` | Filter the roster by role / status / persona keyword / budget and return the matching slug list for downstream skills |
 | `/aweek:calendar` | `skills/calendar/SKILL.md` | Interactive weekly-plan calendar grid for one agent (numbered task selection, view options, inline status edits) |
 | `/aweek:delegate-task` | `skills/delegate-task/SKILL.md` | Async inter-agent task delegation through the recipient's inbox queue |
 
