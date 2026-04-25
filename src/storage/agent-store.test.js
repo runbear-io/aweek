@@ -188,7 +188,7 @@ describe('AgentStore', () => {
 
     // The weekly plan round-trips through the file store.
     const reloadedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(reloadedPlan.approved, false);
+    assert.equal(reloadedPlan.approved, true);
     assert.equal(reloadedPlan.tasks.length, 1);
   });
 

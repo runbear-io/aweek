@@ -1395,6 +1395,9 @@ describe('GET /api/agents/:slug/plan', () => {
     const pending = createWeeklyPlan('2026-W16', '2026-04', [
       createTask({ title: 'Draft essay', prompt: 'Draft next essay' }, 'obj-2'),
     ]);
+    // `createWeeklyPlan` now defaults to `approved: true`; flip back to
+    // preserve the approved/pending split this endpoint test inspects.
+    pending.approved = false;
     await store.save('writer', pending);
 
     buildDir = await makeBuildDir();
