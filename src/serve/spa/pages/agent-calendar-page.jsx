@@ -156,7 +156,7 @@ export function AgentCalendarPage({
         data-agent-slug={data.agentId}
         data-state="no-plan"
       >
-        <CalendarHeader calendar={data} loading={loading} onRefresh={refresh} />
+        <CalendarHeader calendar={data} />
         {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
         <Card className="border-dashed" data-state="no-plan">
           <CardContent className="p-6 text-sm italic text-muted-foreground">
@@ -175,15 +175,15 @@ export function AgentCalendarPage({
 
   return (
     <section
-      className="flex flex-col gap-4"
+      className="flex flex-col gap-3"
       data-page="agent-calendar"
       data-tab-body="calendar"
       data-agent-slug={data.agentId}
       data-week={data.week}
     >
-      <CalendarHeader calendar={data} loading={loading} onRefresh={refresh} />
+      <CalendarHeader calendar={data} />
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
-      <CountsStrip counts={data.counts} />
+      <StatusLegend tasks={data.tasks} counts={data.counts} />
       <CalendarGrid
         tasks={data.tasks}
         weekMonday={data.weekMonday}
@@ -196,7 +196,6 @@ export function AgentCalendarPage({
         }}
       />
       <Backlog calendar={data} />
-      <Legend />
       <TaskDetailSheet
         task={
           effectiveTaskId
@@ -405,56 +404,33 @@ export default AgentCalendarPage;
 
 // ── Subcomponents ────────────────────────────────────────────────────
 
-/** @param {{ calendar: AgentCalendar, loading: boolean, onRefresh: () => void }} props */
-function CalendarHeader({ calendar, loading, onRefresh }) {
-  const workTaskCount = calendar.tasks.filter(
-    (t) => !isReviewTask(t),
-  ).length;
-  const reviewSlotCount = calendar.tasks.length - workTaskCount;
+/**
+ * One-line meta strip above the calendar grid. Agent identity lives in the
+ * breadcrumb + sidebar, so this row only carries the fields that vary
+ * per-week: the ISO week, the plan's approval state, and the render time
+ * zone. The per-status counts + legend live in `StatusLegend` directly
+ * below so the legend doubles as a "what's in this week" summary.
+ *
+ * @param {{ calendar: AgentCalendar }} props
+ */
+function CalendarHeader({ calendar }) {
   return (
     <header
-      className="flex flex-col gap-2 border-b pb-3 sm:flex-row sm:items-center sm:justify-between"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
       data-calendar-header="true"
     >
-      <div>
-        <h1 className="text-base font-semibold tracking-tight text-foreground">
-          {calendar.agentId} — Calendar
-          {calendar.week ? (
-            <span className="ml-2 text-xs font-normal text-muted-foreground">
-              Week{' '}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
-                {calendar.week}
-              </code>
-            </span>
-          ) : null}
-        </h1>
-        <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <ApprovalBadge approved={calendar.approved} />
-          <span>
-            {workTaskCount} task{workTaskCount === 1 ? '' : 's'}
-          </span>
-          {reviewSlotCount > 0 ? (
-            <span>
-              · {reviewSlotCount} review{reviewSlotCount === 1 ? '' : 's'}
-            </span>
-          ) : null}
-          <span>
-            · TZ{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-[10px] text-foreground">
-              {calendar.timeZone || 'UTC'}
-            </code>
-          </span>
-        </p>
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={onRefresh}
-        disabled={loading}
-        className="self-start sm:self-auto"
-      >
-        {loading ? 'Refreshing…' : 'Refresh'}
-      </Button>
+      {calendar.week ? (
+        <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+          {calendar.week}
+        </code>
+      ) : null}
+      <ApprovalBadge approved={calendar.approved} />
+      <span>
+        · TZ{' '}
+        <code className="rounded bg-muted px-1 py-0.5 text-[10px] text-foreground">
+          {calendar.timeZone || 'UTC'}
+        </code>
+      </span>
     </header>
   );
 }
@@ -476,60 +452,124 @@ function ApprovalBadge({ approved }) {
   );
 }
 
-/** @param {{ counts: AgentCalendar['counts'] }} props */
-function CountsStrip({ counts }) {
-  // Tone map keyed on tokens only — no hardcoded per-status hues. The
-  // only semantic callouts stock shadcn exposes are `foreground` (default),
-  // `muted-foreground` (de-emphasised), and `destructive` (failure).
+/**
+ * Inline legend-with-counts row placed above the calendar grid. Merges what
+ * used to be the per-status `CountsStrip` (separate Card) and the bottom-of-
+ * page `Legend` into a single tight strip — one glyph + label + count per
+ * status so users scan "who's done what" without a secondary table.
+ *
+ * Counts are primarily sourced from `calendar.counts`, with a fallback to
+ * counting `tasks` directly so an outdated envelope (no `counts` field) still
+ * renders a useful summary. Review-slot count is derived from `tasks`
+ * regardless, since the server envelope doesn't surface it as its own bucket.
+ *
+ * @param {{ tasks: AgentCalendar['tasks'], counts: AgentCalendar['counts'] }} props
+ */
+function StatusLegend({ tasks, counts }) {
+  const derived = countsFromTasks(tasks);
+  const safe = counts || derived;
+  const reviewCount = tasks.filter((t) => isReviewTask(t)).length;
   const items = [
-    { key: 'pending', label: 'Pending', value: counts.pending },
-    { key: 'inProgress', label: 'In progress', value: counts.inProgress },
-    { key: 'completed', label: 'Completed', value: counts.completed },
+    { key: 'pending', label: 'pending', icon: '○', value: safe.pending ?? derived.pending },
+    {
+      key: 'inProgress',
+      label: 'in-progress',
+      icon: '►',
+      value: safe.inProgress ?? derived.inProgress,
+    },
+    {
+      key: 'completed',
+      label: 'completed',
+      icon: '✓',
+      value: safe.completed ?? derived.completed,
+    },
     {
       key: 'failed',
-      label: 'Failed',
-      value: counts.failed,
+      label: 'failed',
+      icon: '✗',
+      value: safe.failed ?? derived.failed,
       tone: 'text-destructive',
     },
-    { key: 'delegated', label: 'Delegated', value: counts.delegated },
     {
       key: 'skipped',
-      label: 'Skipped',
-      value: counts.skipped,
+      label: 'skipped',
+      icon: '⊘',
+      value: safe.skipped ?? derived.skipped,
       tone: 'text-muted-foreground',
     },
+    {
+      key: 'delegated',
+      label: 'delegated',
+      icon: '→',
+      value: safe.delegated ?? derived.delegated,
+    },
+    { key: 'review', label: 'review', icon: '◆', value: reviewCount },
   ];
   return (
-    <Card data-calendar-card="counts">
-      <CardContent className="p-3">
-        <dl
-          className="grid grid-cols-3 gap-2 text-xs sm:grid-cols-6"
-          data-calendar-counts="true"
+    <p
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground"
+      data-calendar-legend="true"
+    >
+      {items.map((item) => (
+        <span
+          key={item.key}
+          className="inline-flex items-center gap-1"
+          data-count-key={item.key}
+          data-count-value={item.value}
         >
-          {items.map((item) => (
-            <div
-              key={item.key}
-              className="flex flex-col"
-              data-count-key={item.key}
-              data-count-value={item.value}
-            >
-              <dt className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                {item.label}
-              </dt>
-              <dd
-                className={cn(
-                  'text-sm font-semibold tabular-nums',
-                  item.tone || 'text-foreground',
-                )}
-              >
-                {item.value}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </CardContent>
-    </Card>
+          <span className="font-mono text-foreground" aria-hidden="true">
+            {item.icon}
+          </span>
+          <span>{item.label}</span>
+          <span className={cn('tabular-nums', item.tone || 'text-foreground')}>
+            {item.value}
+          </span>
+        </span>
+      ))}
+    </p>
   );
+}
+
+/**
+ * Derive per-status task counts from a task array. Used as a fallback when
+ * the calendar envelope's `counts` field is missing or stale.
+ *
+ * @param {AgentCalendar['tasks']} tasks
+ */
+function countsFromTasks(tasks) {
+  const out = {
+    pending: 0,
+    inProgress: 0,
+    completed: 0,
+    failed: 0,
+    skipped: 0,
+    delegated: 0,
+  };
+  for (const t of tasks || []) {
+    switch (t.status) {
+      case 'pending':
+        out.pending++;
+        break;
+      case 'in-progress':
+        out.inProgress++;
+        break;
+      case 'completed':
+        out.completed++;
+        break;
+      case 'failed':
+        out.failed++;
+        break;
+      case 'skipped':
+        out.skipped++;
+        break;
+      case 'delegated':
+        out.delegated++;
+        break;
+      default:
+        break;
+    }
+  }
+  return out;
 }
 
 /** @param {{ calendar: AgentCalendar }} props */
@@ -590,34 +630,6 @@ function Backlog({ calendar }) {
         </ScrollArea>
       </CardContent>
     </Card>
-  );
-}
-
-function Legend() {
-  const items = [
-    ['○', 'pending'],
-    ['►', 'in-progress'],
-    ['✓', 'completed'],
-    ['✗', 'failed'],
-    ['⊘', 'skipped'],
-    ['→', 'delegated'],
-    ['◆', 'review slot'],
-  ];
-  return (
-    <p
-      className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground"
-      data-calendar-legend="true"
-    >
-      <span className="font-semibold uppercase tracking-widest">Legend</span>
-      {items.map(([icon, label]) => (
-        <span key={label} className="inline-flex items-center gap-1">
-          <span className="font-mono text-foreground" aria-hidden="true">
-            {icon}
-          </span>
-          {label}
-        </span>
-      ))}
-    </p>
   );
 }
 

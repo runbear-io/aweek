@@ -174,9 +174,14 @@ afterEach(() => {
 // ── Route wiring ─────────────────────────────────────────────────────
 
 describe('AgentDetailPage — route wiring', () => {
-  it('is addressable by slug — renders the matching agent name in the header', async () => {
-    renderDetail(ALICE);
-    expect(await screen.findByRole('banner')).toHaveTextContent('Alice');
+  it('is addressable by slug — renders the matching slug in the breadcrumb', async () => {
+    const { container } = renderDetail(ALICE);
+    const crumb = await waitFor(() => {
+      const el = container.querySelector('[data-agent-detail-breadcrumb]');
+      expect(el).not.toBeNull();
+      return el;
+    });
+    expect(crumb).toHaveTextContent(ALICE.slug);
   });
 
   it('shows a loading skeleton until the first profile fetch resolves', async () => {
@@ -211,65 +216,6 @@ describe('AgentDetailPage — route wiring', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveAttribute('data-error', 'true');
     expect(within(alert).getByRole('button', { name: /retry/i })).toBeInTheDocument();
-  });
-});
-
-// ── Identity header ──────────────────────────────────────────────────
-
-describe('AgentDetailPage — identity header', () => {
-  it('renders the agent name, slug, and ACTIVE status badge for a healthy agent', async () => {
-    renderDetail(ALICE);
-    const header = await screen.findByRole('banner');
-    expect(header).toHaveTextContent('Alice');
-    expect(header).toHaveTextContent('alice');
-    expect(within(header).getByText('ACTIVE')).toBeInTheDocument();
-  });
-
-  it('renders PAUSED / BUDGET EXHAUSTED tone when paused for budget', async () => {
-    renderDetail(PAUSED_BUDGET);
-    const header = await screen.findByRole('banner');
-    // pausedReason=budget_exhausted → BUDGET EXHAUSTED
-    expect(within(header).getByText(/budget exhausted/i)).toBeInTheDocument();
-  });
-
-  it('renders the subagent-missing marker and SUBAGENT MISSING status for an orphan', async () => {
-    renderDetail(ORPHAN);
-    const header = await screen.findByRole('banner');
-    expect(within(header).getAllByText(/subagent missing/i).length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('surfaces a Back button only when onBack is provided', async () => {
-    const onBack = vi.fn();
-    const { rerender, fetch } = renderDetail(ALICE, { onBack });
-    const back = await screen.findByRole('button', { name: /back to agent list/i });
-    back.click();
-    expect(onBack).toHaveBeenCalledTimes(1);
-
-    // No onBack → no Back button.
-    cleanup();
-    renderWithRouter(<AgentDetailPage slug={ALICE.slug} fetch={fetch} />, {
-      initialEntries: [`/agents/${ALICE.slug}`],
-    });
-    await screen.findByRole('banner');
-    expect(
-      screen.queryByRole('button', { name: /back to agent list/i }),
-    ).toBeNull();
-  });
-
-  it('Refresh button triggers a refetch of the profile', async () => {
-    const { fetch } = renderDetail(ALICE);
-    // The detail shell + the embedded Calendar tab body each render a
-    // Refresh button. Scope the lookup to the shell's <header> banner so
-    // we test the one that re-fetches the profile (not the calendar).
-    const header = await screen.findByRole('banner');
-    const initialCalls = fetch.mock.calls.length;
-    const refresh = within(header).getByRole('button', { name: /refresh/i });
-    await act(async () => {
-      refresh.click();
-    });
-    await waitFor(() => {
-      expect(fetch.mock.calls.length).toBeGreaterThan(initialCalls);
-    });
   });
 });
 
@@ -373,16 +319,20 @@ describe('AgentDetailPage — breadcrumb trail', () => {
     );
   });
 
-  it('sits above the identity header in the document order', async () => {
+  it('sits above the tab content in the document order', async () => {
     const { container } = renderDetail(ALICE);
-    await screen.findByRole('banner');
-    const section = container.querySelector('[data-page="agent-detail"]');
-    const crumb = section.querySelector('[data-agent-detail-breadcrumb]');
-    const header = section.querySelector('[data-agent-detail-header]');
-    expect(crumb).not.toBeNull();
-    expect(header).not.toBeNull();
+    const crumb = await waitFor(() => {
+      const el = container.querySelector('[data-agent-detail-breadcrumb]');
+      expect(el).not.toBeNull();
+      return el;
+    });
+    const calendar = await waitFor(() => {
+      const el = container.querySelector('[data-page="agent-calendar"]');
+      expect(el).not.toBeNull();
+      return el;
+    });
     expect(
-      crumb.compareDocumentPosition(header) &
+      crumb.compareDocumentPosition(calendar) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
