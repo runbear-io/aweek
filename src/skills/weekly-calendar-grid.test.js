@@ -10,9 +10,11 @@ import {
   mondayFromISOWeek,
   renderGrid,
   renderMarkdownGrid,
+  resolveWeekKey,
   REVIEW_SLOT_ICON,
   REVIEW_DISPLAY_NAMES,
 } from './weekly-calendar-grid.js';
+import { currentWeekKey } from '../time/zone.js';
 import {
   DAILY_REVIEW_OBJECTIVE_ID,
   WEEKLY_REVIEW_OBJECTIVE_ID,
@@ -733,5 +735,81 @@ describe('renderMarkdownGrid — pipe-table output', () => {
     const hourRows = text.split('\n').filter((l) => /^\| \d\d:00 \|/.test(l));
     // Every working hour produces exactly one row (9..17 → 9 rows).
     assert.equal(hourRows.length, 9);
+  });
+});
+
+describe('resolveWeekKey', () => {
+  it('returns null for empty input so callers fall back to latest plan', () => {
+    assert.equal(resolveWeekKey(null), null);
+    assert.equal(resolveWeekKey(undefined), null);
+    assert.equal(resolveWeekKey(''), null);
+    assert.equal(resolveWeekKey('   '), null);
+  });
+
+  it('passes a canonical ISO week through', () => {
+    assert.equal(resolveWeekKey('2026-W17'), '2026-W17');
+  });
+
+  it('zero-pads single-digit week numbers in canonical input', () => {
+    assert.equal(resolveWeekKey('2026-W7'), '2026-W07');
+  });
+
+  it('accepts lowercase `w`', () => {
+    assert.equal(resolveWeekKey('2026-w17'), '2026-W17');
+  });
+
+  it('derives the ISO week from a YYYY-MM-DD date', () => {
+    // 2026-04-20 is Monday of ISO week 2026-W17.
+    assert.equal(resolveWeekKey('2026-04-20'), '2026-W17');
+    // 2026-04-26 (Sunday) is still 2026-W17.
+    assert.equal(resolveWeekKey('2026-04-26'), '2026-W17');
+    // 2026-04-27 is Monday of 2026-W18.
+    assert.equal(resolveWeekKey('2026-04-27'), '2026-W18');
+  });
+
+  it('treats a bare week number as the current ISO year', () => {
+    const year = currentWeekKey('UTC').split('-W')[0];
+    assert.equal(resolveWeekKey('17'), `${year}-W17`);
+    assert.equal(resolveWeekKey('W17'), `${year}-W17`);
+    assert.equal(resolveWeekKey('w7'), `${year}-W07`);
+  });
+
+  it('resolves the `current` alias to the current week in tz', () => {
+    assert.equal(resolveWeekKey('current', 'UTC'), currentWeekKey('UTC'));
+    assert.equal(resolveWeekKey('this'), currentWeekKey('UTC'));
+    assert.equal(resolveWeekKey('now'), currentWeekKey('UTC'));
+  });
+
+  it('shifts the current week by ±1 for next/prev aliases', () => {
+    const cur = currentWeekKey('UTC');
+    const next = resolveWeekKey('next', 'UTC');
+    const prev = resolveWeekKey('prev', 'UTC');
+    assert.notEqual(next, cur);
+    assert.notEqual(prev, cur);
+    // 'last' and 'previous' alias to 'prev'.
+    assert.equal(resolveWeekKey('last'), prev);
+    assert.equal(resolveWeekKey('previous'), prev);
+  });
+
+  it('rejects week numbers outside 1..53', () => {
+    assert.throws(() => resolveWeekKey('2026-W00'), /Invalid week number/);
+    assert.throws(() => resolveWeekKey('2026-W54'), /Invalid week number/);
+    assert.throws(() => resolveWeekKey('99'), /Invalid week number|Unrecognized/);
+  });
+
+  it('rejects unrecognized inputs with a helpful message', () => {
+    assert.throws(
+      () => resolveWeekKey('not-a-week'),
+      /Unrecognized week input/,
+    );
+    assert.throws(
+      () => resolveWeekKey('2026/04/20'),
+      /Unrecognized week input/,
+    );
+  });
+
+  it('falls back to UTC when given an invalid time zone', () => {
+    // Should not throw — invalid tz silently degrades to UTC.
+    assert.equal(resolveWeekKey('current', 'Not/A_Real_Zone'), currentWeekKey('UTC'));
   });
 });

@@ -12,12 +12,17 @@ import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { getAgentChoices } from '../storage/agent-helpers.js';
 import { loadConfig } from '../storage/config-store.js';
 import {
+  currentWeekKey,
   isValidTimeZone,
   localDayOffset,
   localHour,
   localParts,
   mondayOfWeek,
 } from '../time/zone.js';
+import {
+  dateToISOWeek,
+  isoWeekToMondayDate,
+} from '../services/daily-review-writer.js';
 import {
   isReviewObjectiveId,
   DAILY_REVIEW_OBJECTIVE_ID,
@@ -746,6 +751,93 @@ function escapePipe(s) {
 }
 
 // ---------------------------------------------------------------------------
+// Week-input resolver
+// ---------------------------------------------------------------------------
+
+/**
+ * Shift an ISO week key by a number of weeks (positive or negative).
+ *
+ * @param {string} weekKey - YYYY-Www
+ * @param {number} weeks
+ * @returns {string} shifted YYYY-Www
+ */
+function shiftWeekKey(weekKey, weeks) {
+  const monday = isoWeekToMondayDate(weekKey); // YYYY-MM-DD
+  const d = new Date(monday + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + weeks * 7);
+  return dateToISOWeek(d.toISOString().slice(0, 10));
+}
+
+/**
+ * Normalize a user-supplied week reference into the canonical YYYY-Www key
+ * used by the weekly-plan store.
+ *
+ * Accepted shapes:
+ *   - `null` / `undefined` / empty → returns `null` (caller should fall back
+ *     to the latest approved plan)
+ *   - Full ISO week: `2026-W17` (case-insensitive `W`)
+ *   - Bare week number: `17` or `W17` (uses the current ISO year for `tz`)
+ *   - ISO date: `2026-04-20` (any date — derives the ISO week containing it)
+ *   - Aliases: `current` / `this` / `now`, `next`, `prev` / `previous` / `last`
+ *
+ * @param {string|number|null|undefined} input
+ * @param {string} [tz='UTC'] - IANA zone used for relative aliases & bare-week year
+ * @returns {string|null} Canonical `YYYY-Www` or `null` when input is empty
+ * @throws {Error} when input doesn't match any accepted shape
+ */
+export function resolveWeekKey(input, tz = 'UTC') {
+  if (input == null) return null;
+  const str = String(input).trim();
+  if (str === '') return null;
+
+  const zone = isValidTimeZone(tz) ? tz : 'UTC';
+  const lower = str.toLowerCase();
+
+  if (lower === 'current' || lower === 'this' || lower === 'now') {
+    return currentWeekKey(zone);
+  }
+  if (lower === 'next') {
+    return shiftWeekKey(currentWeekKey(zone), 1);
+  }
+  if (lower === 'prev' || lower === 'previous' || lower === 'last') {
+    return shiftWeekKey(currentWeekKey(zone), -1);
+  }
+
+  // Full ISO week key: YYYY-Www (1- or 2-digit week tolerated, padded out)
+  let m = /^(\d{4})-W(\d{1,2})$/i.exec(str);
+  if (m) {
+    const week = parseInt(m[2], 10);
+    if (week < 1 || week > 53) {
+      throw new Error(`Invalid week number ${week} (must be 1-53)`);
+    }
+    return `${m[1]}-W${String(week).padStart(2, '0')}`;
+  }
+
+  // ISO date YYYY-MM-DD → derive containing ISO week.
+  m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
+  if (m) {
+    return dateToISOWeek(str);
+  }
+
+  // Bare week number (W17 or 17) — assume the current ISO year for `tz`.
+  m = /^W?(\d{1,2})$/i.exec(str);
+  if (m) {
+    const week = parseInt(m[1], 10);
+    if (week < 1 || week > 53) {
+      throw new Error(`Invalid week number ${week} (must be 1-53)`);
+    }
+    const year = currentWeekKey(zone).split('-W')[0];
+    return `${year}-W${String(week).padStart(2, '0')}`;
+  }
+
+  throw new Error(
+    `Unrecognized week input ${JSON.stringify(input)}. ` +
+      'Use YYYY-Www (e.g. 2026-W17), a date (YYYY-MM-DD), a week number ' +
+      '(17 or W17), or one of: current, next, prev.',
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Load and render
 // ---------------------------------------------------------------------------
 
@@ -754,7 +846,10 @@ function escapePipe(s) {
  *
  * @param {object} params
  * @param {string} params.agentId - Agent ID
- * @param {string} [params.week] - ISO week (default: latest approved plan)
+ * @param {string} [params.week] - Week reference. Accepts canonical
+ *   `YYYY-Www`, an ISO date `YYYY-MM-DD`, a bare week number `17`/`W17`, or
+ *   the aliases `current` / `next` / `prev`. Resolved through
+ *   {@link resolveWeekKey}. Default: latest approved plan.
  * @param {string} [params.dataDir] - Data directory
  * @param {object} [params.opts] - Render options
  * @param {'box'|'markdown'} [params.opts.format='box'] - Picks the renderer.
@@ -775,9 +870,41 @@ export async function loadAndRenderGrid(params) {
 
     const agent = await agentStore.load(agentId);
 
+    // Auto-resolve the user's time zone from `.aweek/config.json` unless
+    // the caller already provided one in opts. We need this *before* the
+    // week resolver runs so relative aliases like `current`/`next` and
+    // bare week numbers settle in the user's zone.
+    const resolvedOpts = { ...opts };
+    if (resolvedOpts.tz == null) {
+      try {
+        const config = await loadConfig(dataDir);
+        if (config?.timeZone) resolvedOpts.tz = config.timeZone;
+      } catch {
+        // Config read failures are non-fatal — fall back to UTC rendering.
+      }
+    }
+
+    let resolvedWeek;
+    try {
+      resolvedWeek = resolveWeekKey(week, resolvedOpts.tz);
+    } catch (err) {
+      return { success: false, errors: [err.message] };
+    }
+
     let plan;
-    if (week) {
-      plan = await weeklyPlanStore.load(agentId, week);
+    if (resolvedWeek) {
+      try {
+        plan = await weeklyPlanStore.load(agentId, resolvedWeek);
+      } catch {
+        const available = await weeklyPlanStore.list(agentId).catch(() => []);
+        const hint = available.length
+          ? ` Available weeks: ${available.join(', ')}.`
+          : '';
+        return {
+          success: false,
+          errors: [`No weekly plan found for week ${resolvedWeek}.${hint}`],
+        };
+      }
     } else {
       plan = await weeklyPlanStore.loadLatestApproved(agentId);
       if (!plan) {
@@ -789,20 +916,6 @@ export async function loadAndRenderGrid(params) {
 
     if (!plan) {
       return { success: false, errors: ['No weekly plan found for this agent'] };
-    }
-
-    // Auto-resolve the user's time zone from `.aweek/config.json` unless
-    // the caller already provided one in opts. Keeping the default
-    // loader here (rather than pushing it into renderGrid) means unit
-    // tests of renderGrid stay filesystem-free.
-    const resolvedOpts = { ...opts };
-    if (resolvedOpts.tz == null) {
-      try {
-        const config = await loadConfig(dataDir);
-        if (config?.timeZone) resolvedOpts.tz = config.timeZone;
-      } catch {
-        // Config read failures are non-fatal — fall back to UTC rendering.
-      }
     }
 
     const render = resolvedOpts.format === 'markdown' ? renderMarkdownGrid : renderGrid;

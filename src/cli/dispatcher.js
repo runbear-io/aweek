@@ -180,6 +180,11 @@ export const REGISTRY = Object.freeze({
     listAgentsForCalendar: (input) =>
       calendar.listAgentsForCalendar(input?.dataDir),
     loadAndRenderGrid: calendar.loadAndRenderGrid,
+    // Normalize a free-form week reference (ISO week, date, bare number, or
+    // alias) into the canonical YYYY-Www key. Useful for the skill markdown
+    // to surface a friendly error before invoking loadAndRenderGrid.
+    resolveWeekKey: (input) =>
+      calendar.resolveWeekKey(input?.input, input?.tz),
   },
   'delegate-task': {
     delegateTask: delegateTask.delegateTask,
