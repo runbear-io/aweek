@@ -27,7 +27,34 @@ empty array as the no-agents case.
 - If only one agent exists, auto-select it.
 - If multiple agents exist, ask the user to pick one using AskUserQuestion.
 
-### Step 2: Render the Calendar Grid
+### Step 2: Resolve the Week (optional)
+
+If the user **didn't** mention a specific week, skip this step and go to Step 3 —
+the renderer defaults to the agent's latest approved plan.
+
+If the user mentioned a week (e.g. *"week 17"*, *"the week of April 20"*, *"next
+week"*, *"2026-W14"*), pass that string verbatim to `loadAndRenderGrid` as a
+`week` field — it accepts every shape below — or pre-resolve it to the
+canonical `YYYY-Www` so you can confirm the choice in your reply:
+
+```bash
+echo '{ "input": "next" }' | aweek exec calendar resolveWeekKey --input-json -
+```
+
+Accepted shapes:
+
+| Input | Meaning |
+|-------|---------|
+| `2026-W17` | Canonical ISO week (case-insensitive `W`) |
+| `2026-04-20` | Any ISO date — derives the ISO week containing it |
+| `17` or `W17` | Bare week number — uses the current ISO year (in the project time zone) |
+| `current`, `this`, `now` | Current week |
+| `next` | Next ISO week |
+| `prev`, `previous`, `last` | Previous ISO week |
+
+Invalid input throws — the skill should surface the error message and re-ask.
+
+### Step 3: Render the Calendar Grid
 
 The default output is a **GitHub-flavored markdown table** (`format: "markdown"`).
 Claude Code's terminal UI re-flows pipe tables to the available width, so the
@@ -36,11 +63,13 @@ calendar expands / contracts with the window instead of sitting in a fixed
 tables (e.g. raw log tails) — the Unicode box-drawing grid still works but its
 columns are fixed.
 
-Run the grid renderer to get the calendar text and task index:
+Run the grid renderer to get the calendar text and task index. Add a `week`
+field when targeting a specific week (omit for the latest approved plan):
 
 ```bash
 echo '{
   "agentId": "<AGENT_ID>",
+  "week": "<WEEK_OR_DATE_OR_ALIAS>",
   "opts": {
     "format": "markdown",
     "startHour": 9,
@@ -53,6 +82,8 @@ echo '{
 
 The response JSON contains `success`, `output` (the rendered grid text),
 `taskIndex` (the numbered task list), and `errors` when `success === false`.
+When the requested week has no plan on disk, `errors` lists every available
+week so you can prompt the user to pick one of them.
 
 **IMPORTANT — Not collapsed display:** After running the command, you MUST
 output the calendar text as direct text in your response — for `format: "markdown"`,
@@ -62,7 +93,7 @@ block so the Unicode borders don't reflow. Do NOT just reference the bash
 output — copy `result.output` and display it yourself so it appears expanded,
 not collapsed inside a bash result.
 
-### Step 3: Stop (no follow-up question)
+### Step 4: Stop (no follow-up question)
 
 The rendered grid already ends with `Select a task number (1-N) to see details.`
 — that is the only prompt the user needs. Do **not** emit an `AskUserQuestion`,
