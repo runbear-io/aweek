@@ -1,0 +1,161 @@
+{
+  // -----------------------------------------------------------------------
+  // tsconfig.node.json
+  //
+  // Type-checker configuration for Node-context build/tooling config files
+  // that live at the repo root and execute under Node (not in the browser):
+  //
+  //     vite.config.js     — Vite dev server + build config
+  //     vitest.config.js   — Vitest SPA test runner config
+  //     postcss.config.js  — PostCSS plugin chain (tailwind + autoprefixer)
+  //     tailwind.config.js — Tailwind theme + content globs
+  //
+  // These files are ESM modules (the package is `"type": "module"`) and
+  // are executed by Node directly — they are NOT bundled by Vite, NOT run
+  // in jsdom, and NOT shipped to the browser. They need their own
+  // tsc-as-type-checker config because their host environment (Node ESM,
+  // server-side `process` / `node:*` imports, no DOM) is fundamentally
+  // different from the SPA tree covered by `tsconfig.spa.json`.
+  //
+  // Roles (mirrors `tsconfig.spa.json`):
+  //   - tsc runs as a TYPE-CHECKER ONLY (`noEmit: true`). Node executes
+  //     these files directly via its native ESM loader; nothing in this
+  //     config writes JS output.
+  //   - Strict mode is enabled (`strict: true`) per the migration plan,
+  //     with the same two flags intentionally OFF for this phase:
+  //       * `noUncheckedIndexedAccess`
+  //       * `exactOptionalPropertyTypes`
+  //
+  // Coexistence with `.js`:
+  //   - The four config files are still authored as `.js` in this phase
+  //     (the migration's SPA-first scope explicitly leaves repo-root
+  //     tooling alone). `allowJs: true` + `checkJs: false` lets tsc
+  //     load them without drowning the type-checker in noise from
+  //     untyped Node globals (`process`, `__dirname`, etc.).
+  //   - If/when these files are converted to `.ts` in a follow-up phase,
+  //     flip `checkJs` on (or just rely on the native `.ts` parsing).
+  //
+  // Out of scope (excluded explicitly):
+  //   - The SPA tree (`src/serve/spa/**`) — covered by `tsconfig.spa.json`.
+  //   - Backend modules (`src/cli/`, `src/heartbeat/`, `src/storage/`,
+  //     `src/serve/server.js`, etc.) — these stay raw `.js` in this phase
+  //     and are not type-checked by either config.
+  //   - `scripts/*.mjs` — dev orchestration scripts; out of scope for
+  //     this phase, can be folded in via a sibling config later.
+  // -----------------------------------------------------------------------
+  "compilerOptions": {
+    // ----- Output discipline -----
+    // Pure type-checking: never emit JS/declarations. Node runs the
+    // source files directly.
+    "noEmit": true,
+
+    // ----- Module / target -----
+    // Modern Node baseline. Node 20+ (the project's effective floor for
+    // Vite 6 + Vitest 4) speaks ES2022 natively.
+    "target": "ES2022",
+    // The package is `"type": "module"`, so these config files load
+    // through Node's native ESM resolver. `NodeNext` accurately models
+    // Node's loader semantics (subpath imports, `package.json` `exports`,
+    // `node:` builtins) — pairing it with `moduleResolution: NodeNext`
+    // is required.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    // Allow `import x from './data.json'` if/when a tooling config needs
+    // it. (Vite already supports JSON imports natively at runtime.)
+    "resolveJsonModule": true,
+    // Treat each source file as an isolated module — a bundler-friendly
+    // discipline that also catches a few TS-only constructs that don't
+    // survive transpile-per-file.
+    "isolatedModules": true,
+    // Force every file to be a module (no global script files). Pairs
+    // with `isolatedModules` to guarantee ESM-safe semantics.
+    "moduleDetection": "force",
+    // Permit `import x from 'cjs-module'` against CJS deps without an
+    // `* as` wrapper — required by some PostCSS / Tailwind plugins that
+    // still ship CJS-only entry points.
+    "esModuleInterop": true,
+    // Enforce that file references match on-disk casing — catches bugs
+    // that only surface on case-sensitive filesystems (Linux CI).
+    "forceConsistentCasingInFileNames": true,
+    // Allow `import x from 'mod'` against modules that only have a
+    // default export shape — required by some of the older PostCSS /
+    // Tailwind plugin entry points.
+    "allowSyntheticDefaultImports": true,
+
+    // ----- Server libs (NO DOM) -----
+    // These configs run under Node — pulling in `DOM` would let typos
+    // like `window.foo` slip past the type-checker. Restrict to the
+    // language lib only.
+    "lib": ["ES2022"],
+
+    // ----- Ambient typings -----
+    // Don't auto-include every `@types/*` package the workspace happens
+    // to have installed. The four config files use only Node builtins
+    // (`node:url`, `process.env`) and library types that arrive via
+    // their own `import` statements (Vite's `defineConfig`, Vitest's
+    // `defineConfig`). An empty `types` array keeps the global ambient
+    // surface predictable. (If/when these files are converted to `.ts`
+    // and need explicit Node typings, add `"node"` here once
+    // `@types/node` is added as a devDependency.)
+    "types": [],
+
+    // ----- JS / TS interop during incremental migration -----
+    // Allow loading the still-`.js` config files. Without this, tsc
+    // would skip them entirely and the `include` glob below would
+    // silently match nothing.
+    "allowJs": true,
+    // Don't type-check the `.js` config files in this phase — they
+    // reference Node globals (`process`, etc.) and lack `@types/node`,
+    // so deep checking would generate noise without catching real bugs.
+    // Once these files are converted to `.ts` (or `@types/node` is
+    // added), this can flip to `true`.
+    "checkJs": false,
+
+    // ----- Strictness (per migration plan) -----
+    // Master switch — same as `tsconfig.spa.json`.
+    "strict": true,
+    // Explicitly DISABLED per the migration plan, mirroring the SPA
+    // config so the two type-checker passes stay in lockstep.
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+
+    // ----- Quality-of-life linting via tsc -----
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+
+    // ----- Build performance -----
+    // Skip type-checking of `.d.ts` files in `node_modules`. Standard
+    // optimization; safe when relying on well-typed published packages
+    // (Vite / Vitest / PostCSS / Tailwind all ship their own types).
+    "skipLibCheck": true,
+
+    // Cache incremental type-check state under `node_modules/.cache/`
+    // alongside the SPA buildinfo so `tsc --noEmit -p tsconfig.node.json`
+    // is fast on subsequent runs (CI + local dev).
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsc/tsconfig.node.tsbuildinfo"
+  },
+
+  // Just the four Node-context config files at the repo root. Anything
+  // else in the repo is covered by `tsconfig.spa.json` (SPA tree) or
+  // intentionally left untyped in this migration phase (backend `.js`).
+  "include": [
+    "vite.config.js",
+    "vitest.config.js",
+    "postcss.config.js",
+    "tailwind.config.js"
+  ],
+
+  // Carve-outs:
+  //   - `node_modules` — never type-check vendored sources.
+  //   - `src/**` — the SPA tree is `tsconfig.spa.json`'s job; the
+  //     backend is intentionally untyped in this phase.
+  //   - `dist`-style output dirs — none at the repo root today, but
+  //     listed for parity with the SPA config in case a future tool
+  //     emits there.
+  "exclude": [
+    "node_modules",
+    "src",
+    "dist"
+  ]
+}

@@ -7,8 +7,17 @@
  * and a DOM, neither of which `node --test` provides.
  *
  * Scope:
- *   - Only picks up `.test.jsx` files so the existing `.test.js` suite
- *     under `node --test` keeps running untouched.
+ *   - Picks up `.test.jsx`, `.test.tsx`, and `.test.ts` files. The
+ *     `.test.ts` extension was added during AC 403 (sub-AC 5.3) when
+ *     `src/serve/spa/lib/api-client.js` was promoted to TypeScript —
+ *     its colocated test (and the sibling `use-agents.test.ts`, which
+ *     imports `api-client.js`) had to migrate from `node --test` to
+ *     vitest because Node's ESM resolver can't follow `.js → .ts`
+ *     transparently. Vitest's bundler-style resolver handles the
+ *     indirection cleanly.
+ *   - The legacy `.test.js` suite continues to run under `pnpm test`
+ *     (`node --test`); none of those backend tests are routed through
+ *     vitest.
  *   - `jsdom` environment so `@testing-library/react` can render.
  *   - Loads `./vitest.setup.js` for `jest-dom` matchers.
  */
@@ -20,7 +29,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: false,
     setupFiles: ['./vitest.setup.js'],
-    include: ['src/**/*.test.jsx'],
+    include: [
+      'src/**/*.test.jsx',
+      'src/**/*.test.tsx',
+      'src/**/*.test.ts',
+    ],
   },
   // Vitest 4 uses `oxc` for JS/JSX transforms by default (not esbuild).
   // The automatic JSX runtime is the default in oxc, so no explicit

@@ -1,0 +1,83 @@
+# ---------------------------------------------------------------------------
+# spa.yml — SPA TypeScript migration gate
+#
+# Enforces, on every push to `main` and every pull request, the two checks
+# the SPA → TypeScript migration introduces:
+#
+#   1. `tsc --noEmit -p tsconfig.spa.json` — type-check the converted SPA
+#      tree under `src/serve/spa/` (strict mode; see `tsconfig.spa.json`
+#      for the full strictness profile and intentionally-deferred flags).
+#      Vite owns bundling; tsc here is type-checker only (`noEmit: true`).
+#
+#   2. `pnpm test:spa` — Vitest run for the SPA component / hook tests
+#      under `jsdom` (configured in `vitest.config.js`).
+#
+# Why a dedicated workflow (rather than folding into `test.yml`)?
+#   - `test.yml` runs the legacy `node --test` backend suite + `pnpm lint`
+#     across a Node matrix. Keeping the SPA gate in its own file makes
+#     branch-protection rule names cleaner ("spa / typecheck", "spa / test")
+#     and lets each gate fail / re-run independently.
+#   - The migration plan calls out a "new CI gate" as a deliverable
+#     (AC 7); a separate workflow file makes that gate explicit in the
+#     repo and easy to remove / fold back later once the migration phase
+#     is complete.
+#
+# Compatibility with `test.yml`:
+#   - Both workflows trigger on `push: branches: [main]` and `pull_request`
+#     so PRs see all gates simultaneously.
+#   - Both pin `pnpm@10.7.0` (matches `package.json#packageManager`) and
+#     reuse pnpm's lockfile cache via `actions/setup-node`'s `cache: pnpm`.
+#   - Runner kept on `macos-latest` to mirror `test.yml`. The SPA gate is
+#     OS-agnostic (pure TypeScript + jsdom) so dropping to `ubuntu-latest`
+#     would be a fine, faster follow-up if cost matters.
+# ---------------------------------------------------------------------------
+
+name: spa
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  spa:
+    name: typecheck + test
+    runs-on: macos-latest
+    strategy:
+      # Don't short-circuit one Node version's failure — surfacing both
+      # versions' diagnostics in a single PR is more useful than a partial
+      # report.
+      fail-fast: false
+      matrix:
+        # Same Node matrix as `test.yml` so the SPA gate exercises the
+        # same supported runtimes as the backend tests.
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      # `--frozen-lockfile` so the gate fails loudly if `pnpm-lock.yaml`
+      # is out of sync with `package.json` (matches `test.yml`).
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Gate 1: type-check the SPA. `tsc --noEmit` walks
+      # `tsconfig.spa.json`'s include glob (src/serve/spa/**/*.{ts,tsx,js,jsx}
+      # minus the carve-outs for components/ui and dist) under `strict: true`.
+      # Driven through the `typecheck:spa` script so local + CI invocations
+      # stay in lockstep.
+      - name: Type-check SPA (tsc --noEmit)
+        run: pnpm typecheck:spa
+
+      # Gate 2: SPA test suite (Vitest under jsdom + Testing Library).
+      # `vitest run` (no watch) is wrapped in the `test:spa` script.
+      - name: Run SPA tests (Vitest)
+        run: pnpm test:spa

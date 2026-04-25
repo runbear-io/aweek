@@ -21,15 +21,20 @@
  * @module serve/spa/pages
  */
 
-export { AgentsPage } from './agents-page.jsx';
+// SPA pages converted to TypeScript per AC 101 (agents), AC 102 (detail
+// shell), and AC 103 (per-tab pages: calendar, activity, strategy, profile).
+// `agent-usage-page` stays `.jsx` for now — it isn't reachable from the
+// current router and is slated for removal once the Profile tab fully
+// supersedes it. Vite + Vitest both resolve the .tsx extension natively.
+export { AgentsPage } from './agents-page.tsx';
 export {
   AgentDetailPage,
   AGENT_DETAIL_TABS,
   DEFAULT_AGENT_DETAIL_TAB,
   normaliseTab,
-} from './agent-detail-page.jsx';
-export { AgentProfilePage } from './agent-profile-page.jsx';
-export { AgentPlanPage } from './agent-plan-page.jsx';
-export { AgentCalendarPage } from './agent-calendar-page.jsx';
+} from './agent-detail-page.tsx';
+export { AgentProfilePage } from './agent-profile-page.tsx';
+export { AgentPlanPage } from './agent-plan-page.tsx';
+export { AgentCalendarPage } from './agent-calendar-page.tsx';
 export { AgentUsagePage } from './agent-usage-page.jsx';
-export { AgentActivityPage } from './agent-activity-page.jsx';
+export { AgentActivityPage } from './agent-activity-page.tsx';

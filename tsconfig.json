@@ -1,0 +1,60 @@
+{
+  // -----------------------------------------------------------------------
+  // tsconfig.json (root, solution-style)
+  //
+  // This file is the *entry point* TypeScript and editors look for at the
+  // repo root. It owns no source files of its own — it only delegates to
+  // two narrower configs that each cover a distinct host environment:
+  //
+  //     ./tsconfig.spa.json   — Browser SPA tree (src/serve/spa/**),
+  //                              DOM lib, react-jsx, Bundler resolution.
+  //     ./tsconfig.node.json  — Node-context build/tooling configs at the
+  //                              repo root (vite.config.js, vitest.config.js,
+  //                              postcss.config.js, tailwind.config.js),
+  //                              ES2022 + NodeNext, no DOM lib.
+  //
+  // Why solution-style (vs. one big tsconfig)?
+  //   The two trees have *incompatible* compiler options — DOM vs. no DOM,
+  //   Bundler vs. NodeNext resolution, ES2020 vs. ES2022 target, react-jsx
+  //   vs. plain. A single config can't express that without lying to one
+  //   of the two environments. References + per-context configs is the
+  //   recommended Vite + Vitest pattern (mirrors the official Vite + TS
+  //   starter).
+  //
+  // What this file actually does:
+  //   - `files: []` — tell tsc this root has zero source files of its own,
+  //     so plain `tsc --noEmit` here is a no-op rather than picking up
+  //     stray `.ts` it shouldn't see.
+  //   - `references: [...]` — point editors (VSCode's TS server, JetBrains,
+  //     Cursor, etc.) and `tsc --build` at the two real configs. Editors
+  //     will route each open file to whichever referenced config matches
+  //     its `include` glob, applying the correct DOM/Node + JSX settings.
+  //
+  // How it's invoked:
+  //   - CI / type-check gate: `tsc --noEmit -p tsconfig.spa.json` (the
+  //     SPA-first phase only enforces SPA type-safety) and, in a follow-up,
+  //     `tsc --noEmit -p tsconfig.node.json` for tooling. The root config
+  //     is for editor routing, not for the CI command line in this phase.
+  //   - Editors: opening any `.ts` / `.tsx` / `.jsx` file picks up its
+  //     correct context automatically via the references below.
+  //
+  // Out of scope (intentional):
+  //   - The repo's backend `.js` modules (src/cli/, src/heartbeat/,
+  //     src/storage/, src/serve/server.js, src/serve/data/*) — they stay
+  //     raw `.js` in this migration phase and are not type-checked by
+  //     either referenced config.
+  //   - shadcn/ui primitives under src/serve/spa/components/ui/ — excluded
+  //     by `tsconfig.spa.json` for this phase.
+  // -----------------------------------------------------------------------
+
+  // Zero source files at this level — this config is purely a router for
+  // the two referenced configs below.
+  "files": [],
+
+  // Two project references — order is not significant. Each path resolves
+  // to a sibling tsconfig at the repo root.
+  "references": [
+    { "path": "./tsconfig.spa.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}
