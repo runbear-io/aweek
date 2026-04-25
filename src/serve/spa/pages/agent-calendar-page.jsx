@@ -177,7 +177,10 @@ export function AgentCalendarPage({
 
   return (
     <section
-      className="flex flex-col gap-3"
+      // `flex-1 min-h-0` plumbs the layout's flex chain into the calendar
+      // tab so the inner CalendarGrid fills the viewport vertically and
+      // scrolls internally instead of pushing the page past the fold.
+      className="flex min-h-0 flex-1 flex-col gap-3"
       data-page="agent-calendar"
       data-tab-body="calendar"
       data-agent-slug={data.agentId}
@@ -191,6 +194,15 @@ export function AgentCalendarPage({
         weekMonday={data.weekMonday}
         timeZone={data.timeZone}
         agentId={data.agentId}
+        // Take the remaining vertical space inside the calendar tab and own
+        // both-axis scrolling. The flex-1 + min-h-0 chain runs from
+        // `<Layout>`'s main container down through the agent-detail section,
+        // the Tabs primitive, the active TabsContent, and the agent-calendar
+        // section, so this element fills exactly the leftover viewport
+        // height (no calc heuristics) and scrolls internally when content
+        // overflows. The grid's existing sticky header row + sticky hour
+        // column anchor to this scroll container.
+        className="min-h-0 flex-1 overflow-auto"
         onSelectTask={(t) => {
           if (!t?.id) return;
           if (typeof onOpenTaskId === 'function') onOpenTaskId(t.id);

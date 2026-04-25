@@ -50,7 +50,7 @@
  * @module serve/spa/components/calendar-grid
  */
 
-import React, { useMemo } from 'react';
+import React, { useLayoutEffect, useMemo, useRef } from 'react';
 
 import { cn } from '../lib/cn.js';
 
@@ -176,8 +176,52 @@ export function CalendarGrid({
 
   const weekMondayMs = weekMonday ? Date.parse(weekMonday) : NaN;
 
+  // Earliest hour anywhere across the week's placed tasks. Used to seed
+  // the grid's default scroll position so users land on the busy stretch
+  // of their day instead of midnight when the visible window is 0–24.
+  const earliestTaskHour = useMemo(() => {
+    let min = null;
+    for (const task of safeTasks) {
+      const h = task?.slot?.hour;
+      if (typeof h !== 'number' || Number.isNaN(h)) continue;
+      if (h < startHour || h >= endHour) continue;
+      if (min === null || h < min) min = h;
+    }
+    return min;
+  }, [safeTasks, startHour, endHour]);
+
+  const sectionRef = useRef(null);
+
+  // Position the scroll one hour above the earliest task on first render
+  // (and whenever the earliest hour changes — e.g. switching weeks). Uses
+  // useLayoutEffect so the user never sees the grid flash at 00:00 before
+  // jumping. The sticky header row would otherwise overlap the target row,
+  // so we subtract its height before setting scrollTop.
+  useLayoutEffect(() => {
+    if (earliestTaskHour == null) return;
+    const section = sectionRef.current;
+    if (!section) return;
+    const targetHour = Math.max(startHour, earliestTaskHour - 1);
+    const row = section.querySelector(
+      `[role="rowheader"][data-hour="${targetHour}"]`,
+    );
+    if (!row) return;
+    const sectionRect = section.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const headerCorner = section.querySelector(
+      '[role="columnheader"]',
+    );
+    const headerHeight = headerCorner
+      ? headerCorner.getBoundingClientRect().height
+      : 0;
+    const offset =
+      rowRect.top - sectionRect.top + section.scrollTop - headerHeight;
+    section.scrollTop = Math.max(0, offset);
+  }, [earliestTaskHour, startHour]);
+
   return (
     <section
+      ref={sectionRef}
       className={cn(
         'overflow-x-auto rounded-md border border-border bg-muted/20',
         className,
@@ -196,10 +240,14 @@ export function CalendarGrid({
             : 'Weekly calendar'
         }
       >
-        {/* Header row: blank corner + day headings */}
+        {/* Header row: blank corner + day headings. The corner cell is
+            pinned to both axes (top-left), the day cells are pinned to the
+            top so they stay visible while scrolling the grid vertically.
+            `z-20` on the corner keeps it above the row headers (z-10) and
+            day-header cells (z-10) where they meet. */}
         <div
           role="columnheader"
-          className="sticky left-0 z-10 border-b border-r border-border bg-muted/60 px-2 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+          className="sticky left-0 top-0 z-20 border-b border-r border-border bg-muted/60 px-2 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
         >
           Hour
         </div>
@@ -208,7 +256,7 @@ export function CalendarGrid({
             key={dayKey}
             role="columnheader"
             data-day={dayKey}
-            className="border-b border-r border-border bg-muted/40 px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-foreground"
+            className="sticky top-0 z-10 border-b border-r border-border bg-muted/40 px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-foreground"
           >
             <div>{dayLabels[idx]}</div>
             <div className="text-[10px] font-normal text-muted-foreground">
@@ -222,6 +270,7 @@ export function CalendarGrid({
           <React.Fragment key={hour}>
             <div
               role="rowheader"
+              data-hour={hour}
               className="sticky left-0 z-10 border-b border-r border-border bg-muted/60 px-2 py-2 text-right text-[11px] tabular-nums text-muted-foreground"
             >
               {String(hour).padStart(2, '0')}:00
