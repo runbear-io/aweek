@@ -11,3 +11,4 @@ node_modules/
 .claude/settings.local.json
 .claude/*.lock
 .claude/worktrees/
+.env
