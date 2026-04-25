@@ -50,10 +50,10 @@ describe('weekly plan schema', () => {
       assert.equal(result.valid, true);
     });
 
-    it('should default approved to false', () => {
+    it('should default approved to true', () => {
       const { task } = makeTask();
       const plan = createWeeklyPlan('2026-W16', '2026-04', [task]);
-      assert.equal(plan.approved, false);
+      assert.equal(plan.approved, true);
       const result = validateWeeklyPlan(plan);
       assert.equal(result.valid, true);
     });

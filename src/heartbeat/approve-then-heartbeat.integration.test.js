@@ -65,7 +65,9 @@ async function seedAgentWithPendingPlan({ agentsDir, week = '2026-W17', month = 
     priority: 'high',
   });
   const plan = createWeeklyPlan(week, month, [task]);
-  // plan.approved defaults to false (pending) — exactly what AC 7 needs.
+  // `createWeeklyPlan` now defaults to `approved: true`; flip back to pending
+  // so this AC-7 seed exercises the approve-then-heartbeat handoff.
+  plan.approved = false;
 
   const agentStore = new AgentStore(agentsDir);
   await agentStore.save(config);

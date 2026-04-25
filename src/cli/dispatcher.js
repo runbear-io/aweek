@@ -215,33 +215,13 @@ export const REGISTRY = Object.freeze({
     listDailyReviews: (input) =>
       dailyReview.listDailyReviews(input?.baseDir ?? '', input?.agentId ?? ''),
     // Main orchestrator — generates and optionally persists the daily review.
-    // When persist=true and adjustments exist, also enqueues a pending
-    // weeklyAdjustment batch for approval through /aweek:plan Branch B.
+    // When persist=true and adjustments exist, also applies the proposed
+    // weeklyAdjustment ops directly to the live plan via `adjustGoals`.
     generateDailyReview: dailyReview.generateDailyReview,
-    // ── Pending daily-review adjustment batches ─────────────────────────────
-    // After generateDailyReview runs, a batch of proposed weeklyAdjustments is
-    // saved under .aweek/agents/<slug>/pending-daily-adjustments/<date>.json.
-    // /aweek:plan Branch B checks for these at B1 and presents them in the
-    // same "confirm the batch" gate (B3) used for all weekly task adjustments.
-    // They are applied via adjustGoals only after the user explicitly approves.
-    enqueueDailyReviewAdjustments: dailyReviewAdj.enqueueDailyReviewAdjustments,
-    loadPendingAdjustmentBatch: (input) =>
-      dailyReviewAdj.loadPendingAdjustmentBatch(
-        input?.baseDir ?? '',
-        input?.agentId ?? '',
-        input?.date ?? '',
-      ),
-    listPendingAdjustmentDates: (input) =>
-      dailyReviewAdj.listPendingAdjustmentDates(
-        input?.baseDir ?? '',
-        input?.agentId ?? '',
-      ),
-    clearPendingAdjustmentBatch: (input) =>
-      dailyReviewAdj.clearPendingAdjustmentBatch(
-        input?.baseDir ?? '',
-        input?.agentId ?? '',
-        input?.date ?? '',
-      ),
+    // Apply daily-review adjustment records to the weekly plan. New /
+    // rescheduled / retried tasks land as `pending` and are immediately
+    // eligible for the heartbeat — there is no pending-approval queue.
+    applyDailyReviewAdjustments: dailyReviewAdj.applyDailyReviewAdjustments,
   },
   // Context assembler for the autonomous next-week planner.
   // Reads plan.md, the just-written weekly retrospective, and the activity log

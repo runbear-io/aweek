@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { isReviewObjectiveId } from '../schemas/weekly-plan.schema.js';
 import { formatDuration } from './weekly-review-generator.js';
 import { localParts } from '../time/zone.js';
-import { enqueueDailyReviewAdjustments } from './daily-review-adjustments.js';
+import { applyDailyReviewAdjustments } from './daily-review-adjustments.js';
 
 // ---------------------------------------------------------------------------
 // Date helpers
@@ -822,15 +822,17 @@ export async function generateDailyReview(deps, agentId, date, opts = {}) {
     paths = await persistDailyReview(baseDir, agentId, date, markdown, metadata);
   }
 
-  // 11. Enqueue the proposed adjustments for approval through /aweek:plan.
-  //     This runs only when the review was persisted — skip-persist mode (used
-  //     by tests and dry-run callers) never writes a pending batch either.
-  //     Failures are captured and returned rather than thrown so a storage
-  //     error never prevents the caller from seeing the generated review.
-  let enqueuedAdjustments = null;
+  // 11. Apply the proposed adjustments directly to the weekly plan.
+  //     New / rescheduled / retried tasks land as `pending` and become
+  //     eligible for the heartbeat on the next tick. This runs only when the
+  //     review was persisted — skip-persist mode (used by tests and dry-run
+  //     callers) leaves the plan untouched. Failures are captured and
+  //     returned rather than thrown so a write error never prevents the
+  //     caller from seeing the generated review.
+  let appliedAdjustments = null;
   if (persist && adjustments.length > 0) {
     try {
-      enqueuedAdjustments = await enqueueDailyReviewAdjustments({
+      appliedAdjustments = await applyDailyReviewAdjustments({
         baseDir,
         agentId,
         date,
@@ -839,15 +841,14 @@ export async function generateDailyReview(deps, agentId, date, opts = {}) {
         weeklyPlan,
       });
     } catch (err) {
-      // Non-fatal: return error context so callers can surface it, but never
-      // let a batch-write failure suppress the successfully generated review.
-      enqueuedAdjustments = {
-        enqueued: false,
+      appliedAdjustments = {
+        applied: false,
+        opsCount: 0,
         skippedCount: adjustments.length,
         errors: [err.message || String(err)],
       };
     }
   }
 
-  return { markdown, metadata, paths, enqueuedAdjustments };
+  return { markdown, metadata, paths, appliedAdjustments };
 }

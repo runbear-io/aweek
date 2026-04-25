@@ -323,6 +323,9 @@ test('gatherAgentPlan includes weekly plan data from weekly-plan-store', async (
 
     const t2 = createTask({ title: 'Second', prompt: 'Do second' }, 'obj-2');
     const pendingPlan = createWeeklyPlan('2026-W16', '2026-04', [t2]);
+    // `createWeeklyPlan` now defaults to `approved: true`; flip back to
+    // preserve the approved/unapproved split this assertion inspects.
+    pendingPlan.approved = false;
     await store.save(agentId, pendingPlan);
 
     const plan = await dataIndex.gatherAgentPlan({

@@ -340,9 +340,9 @@ describe('createWeeklyPlan — construction', () => {
 });
 
 describe('createWeeklyPlan — defaults', () => {
-  it('defaults approved to false', () => {
+  it('defaults approved to true', () => {
     const plan = createWeeklyPlan('2026-W16', '2026-04', []);
-    assert.equal(plan.approved, false);
+    assert.equal(plan.approved, true);
   });
 
   it('does not include approvedAt by default', () => {

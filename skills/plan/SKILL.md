@@ -46,7 +46,7 @@ Ask via `AskUserQuestion`:
 
 1. **Edit planning markdown** — open / show / replace the agent's `plan.md`.
 2. **Adjust weekly plan** — create a weekly plan, add tasks, update task status, etc.
-3. **Review pending plan** — approve / reject / edit a pending weekly plan (only offer when Step 1 found one).
+3. **Review pending plan** — approve / reject / edit a pending weekly plan (only offer when Step 1 found one). New plans auto-approve on creation; this branch is a rescue path for legacy unapproved plans.
 4. **Done**
 
 Route to the matching branch. After each branch finishes, loop back to Step 2 until the user picks **Done**.
@@ -109,63 +109,11 @@ Throughput budget: at `*/15` cron (4 ticks/hour), each track fires up to **4 tas
 
 Load existing weekly plans and show the active week with its tasks: `id · description · track · status · runAt`. If no weekly plans exist, tell the user and route them to the `create` action below — this is the bootstrap path for a freshly-hired agent.
 
-### B1b: Check for pending daily-review adjustment batches
-
-After displaying the current week, check whether any daily-review adjustment batches are waiting for approval:
-
-```bash
-echo '{"baseDir":".aweek/agents","agentId":"<AGENT_ID>"}' \
-  | aweek exec daily-review listPendingAdjustmentDates --input-json -
-```
-
-Returns a sorted array of `YYYY-MM-DD` date strings. If the array is **empty**, skip to B2.
-
-**If one or more dates are returned**, load and present each batch in chronological order. For each date:
-
-```bash
-echo '{"baseDir":".aweek/agents","agentId":"<AGENT_ID>","date":"<DATE>"}' \
-  | aweek exec daily-review loadPendingAdjustmentBatch --input-json -
-```
-
-The batch has shape `{ date, week, source, createdAt, weeklyAdjustments: [...] }`.
-
-Display the batch to the user in a format like:
-
-```
-📋 Pending daily-review adjustments from <date>
-   Source: daily review  |  Week: <week>
-
-   1. UPDATE task-abc1234 → runAt: 2026-04-15T09:00:00.000Z   (carry-over: rescheduled for tomorrow)
-   2. UPDATE task-def5678 → status: pending, runAt: 2026-04-15T09:00:00.000Z  (retry after failure)
-   3. ADD    "Follow up on delegated task: Write docs"  (objectiveId: obj-lead01)
-```
-
-Then ask via `AskUserQuestion`:
-
-> **Apply these N adjustment(s) from the daily review?**
->
-> 1. **Apply all** — queue these into Branch B3 for immediate confirmation and execution.
-> 2. **Skip this batch** — dismiss without applying (the batch file will be cleared).
-> 3. **Edit before applying** — add these to the B2 queue so you can modify them first.
-
-- **Apply all**: merge the `weeklyAdjustments` array from the batch into the pending B3 queue, clear the batch file, then proceed directly to B3.
-- **Skip this batch**: clear the batch file and continue to B2.
-- **Edit before applying**: pre-populate the B2 queue with the batch ops so the user can modify them before B3 confirmation; clear the batch file.
-
-Clear the batch regardless of the user's decision (apply, skip, or edit) — the batch is consumed at B1b and must not persist beyond this point:
-
-```bash
-echo '{"baseDir":".aweek/agents","agentId":"<AGENT_ID>","date":"<DATE>"}' \
-  | aweek exec daily-review clearPendingAdjustmentBatch --input-json -
-```
-
-Repeat for each pending date before proceeding to B2.
-
 ### B2: Collect one adjustment at a time
 
 Use `AskUserQuestion` to pick the action, then collect required fields. Loop until done.
 
-- **`create`** → week (`YYYY-Www`, must NOT already exist on this agent), optional `month` (`YYYY-MM`, free-form tag linking the week to a monthly section of `plan.md`), optional seed tasks. Each task: description (required), optional `objectiveId` (free-form string, typically the monthly section heading it traces to), priority (`critical` / `high` / `medium` / `low`, default `medium`), `estimatedMinutes` (1-480), `track`, `runAt`. Freshly-created weekly plans start `approved: false` and activate the heartbeat only after Branch C approval.
+- **`create`** → week (`YYYY-Www`, must NOT already exist on this agent), optional `month` (`YYYY-MM`, free-form tag linking the week to a monthly section of `plan.md`), optional seed tasks. Each task: description (required), optional `objectiveId` (free-form string, typically the monthly section heading it traces to), priority (`critical` / `high` / `medium` / `low`, default `medium`), `estimatedMinutes` (1-480), `track`, `runAt`. Newly created weekly plans land `approved: true` — tasks are immediately eligible for the heartbeat with no Branch C approval gate.
 - **`add`** → week (must exist), description (required), optional `objectiveId`, optional `track`, optional `runAt`.
 - **`update`** → week, taskId, then at least one of: description, status (`pending` / `in-progress` / `completed` / `failed` / `delegated` / `skipped`), `track` (pass `null` to fall back to objectiveId pacing), `runAt` (pass `null` to clear).
 

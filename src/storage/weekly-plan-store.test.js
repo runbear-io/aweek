@@ -22,12 +22,21 @@ describe('WeeklyPlanStore', () => {
   let tmpDir;
   const agentId = 'agent-wplan-test-abc12345';
 
-  /** Helper: create a valid weekly plan with one task */
+  /**
+   * Helper: create a valid weekly plan with one task.
+   *
+   * Plans start unapproved so the legacy approval-flow tests in this file
+   * (approve, loadLatestApproved, pending-plan lookup) can exercise the
+   * approve path. Production callers go through `createWeeklyPlan` directly
+   * which now defaults to `approved: true` — that change is covered by
+   * `goal-plan.test.js`.
+   */
   function makeTestPlan(week = '2026-W16', month = '2026-04') {
     const goal = createGoal('Test goal');
     const obj = createObjective('Test objective', goal.id);
     const task = createTask({ title: 'Test task', prompt: 'Test task' }, obj.id);
     const plan = createWeeklyPlan(week, month, [task]);
+    plan.approved = false;
     return { goal, obj, task, plan };
   }
 

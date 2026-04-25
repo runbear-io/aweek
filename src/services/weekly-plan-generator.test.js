@@ -551,7 +551,7 @@ describe('generateWeeklyPlan — plan structure', () => {
     assert.equal(plan.month, '2026-04');
   });
 
-  it('plan starts unapproved', () => {
+  it('plan starts auto-approved so tasks are immediately pending for the heartbeat', () => {
     const { goals, monthlyPlan } = buildFixture();
     const { plan } = generateWeeklyPlan({
       week: '2026-W16',
@@ -559,7 +559,7 @@ describe('generateWeeklyPlan — plan structure', () => {
       goals,
       monthlyPlan,
     });
-    assert.equal(plan.approved, false);
+    assert.equal(plan.approved, true);
   });
 
   it('plan has createdAt and updatedAt timestamps', () => {
@@ -887,7 +887,7 @@ describe('generateAndSaveWeeklyPlan — store integration', () => {
     );
     // 1 work task + REVIEW_TASKS_COUNT review tasks
     assert.equal(meta.totalTasks, 1 + REVIEW_TASKS_COUNT);
-    assert.equal(plan.approved, false);
+    assert.equal(plan.approved, true);
 
     // Verify persisted
     const loaded = await store.load('agent-test-abc123', '2026-W16');

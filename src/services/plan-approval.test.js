@@ -93,6 +93,10 @@ function buildTestAgent({ subagentRef = TEST_SLUG } = {}) {
   const task1 = createTask({ title: 'Design database schema', prompt: 'Design database schema' }, obj.id, { priority: 'high', estimatedMinutes: 60 });
   const task2 = createTask({ title: 'Write API endpoints', prompt: 'Write API endpoints' }, obj.id, { priority: 'medium', estimatedMinutes: 120 });
   const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
+  // The approval-flow tests in this file expect a pending plan so they can
+  // exercise the approve/reject/edit gate. `createWeeklyPlan` now defaults
+  // plans to `approved: true`; flip it back here to preserve test intent.
+  weeklyPlan.approved = false;
   const weeklyPlans = [weeklyPlan];
 
   return { config, weeklyPlans, goal, obj, monthlyPlan, weeklyPlan, task1, task2 };
