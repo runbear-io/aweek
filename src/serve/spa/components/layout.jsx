@@ -68,12 +68,21 @@ export function Layout({
       <AgentDetailSidebar />
       <SidebarInset
         data-component="layout"
-        className={cn('min-w-0 antialiased', className)}
+        // `h-svh` (small-viewport-height) bounds the inset to the visible
+        // viewport so flex-1 children don't push the page past the fold.
+        // The previous `min-h-screen` only set a floor — content taller than
+        // viewport grew the inset and forced document-level scroll. Tabs
+        // that previously relied on document scroll (Activity / Strategy /
+        // Profile) now scroll inside the `<main>` container below.
+        className={cn('h-svh min-w-0 antialiased', className)}
       >
         <Header title={title} subtitle={subtitle} actions={actions} />
         <div
           data-component="main"
-          className="flex min-w-0 flex-1 flex-col gap-4 overflow-x-auto p-4 md:gap-6 md:p-6"
+          // `min-h-0` enables the inner flex chain to constrain children;
+          // `overflow-auto` lets pages that don't opt into the chain scroll
+          // naturally inside main rather than at the document level.
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-auto p-4 md:gap-6 md:p-6"
         >
           {children}
         </div>

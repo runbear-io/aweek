@@ -60,6 +60,7 @@ import {
   Tabs,
   TabsContent,
 } from '../components/ui/tabs.jsx';
+import { cn } from '../lib/cn.js';
 import { useAgentProfile } from '../hooks/use-agent-profile.js';
 
 import { AgentActivityPage } from './agent-activity-page.jsx';
@@ -172,9 +173,18 @@ export function AgentDetailPage({
   const activeTabLabel =
     AGENT_DETAIL_TABS.find((t) => t.value === activeTab)?.label ?? activeTab;
 
+  // The Calendar tab uses an internal flex-1 chain so its grid fills
+  // viewport height and owns its own scroll; every other tab flows
+  // naturally and keeps document-level scroll behaviour. We pick the
+  // matching className for the active TabsContent so we never have to
+  // force a flex layout on tabs that don't want one.
+  const isCalendar = activeTab === 'calendar';
   return (
     <section
-      className="flex flex-col gap-3"
+      // `flex-1 min-h-0` lets the calendar tab plumb a flex chain down to
+      // its internal CalendarGrid. Non-calendar tabs are unaffected — their
+      // children flow at content height inside this section.
+      className="flex min-h-0 flex-1 flex-col gap-3"
       data-page="agent-detail"
       data-agent-slug={slug}
       data-active-tab={activeTab}
@@ -186,8 +196,15 @@ export function AgentDetailPage({
       />
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
 
-      <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <TabsContent value="calendar">
+      <Tabs
+        value={activeTab}
+        onValueChange={handleTabChange}
+        className={cn('flex flex-col gap-4', isCalendar && 'min-h-0 flex-1')}
+      >
+        <TabsContent
+          value="calendar"
+          className={cn('mt-2', isCalendar && 'flex min-h-0 flex-1 flex-col')}
+        >
           <AgentCalendarPage
             slug={slug}
             baseUrl={baseUrl}
