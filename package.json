@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "bin": {
-    "aweek": "./bin/aweek.js"
+    "aweek": "bin/aweek.js"
   },
   "files": [
     "bin",

@@ -6,3 +6,6 @@ node_modules/
 .DS_Store
 .claude/settings.local.json
 .claude/*.lock
+.env
+.env.*
+!.env.example
