@@ -9,6 +9,7 @@ import {
   distributeTasks,
   mondayFromISOWeek,
   renderGrid,
+  renderMarkdownGrid,
   REVIEW_SLOT_ICON,
   REVIEW_DISPLAY_NAMES,
 } from './weekly-calendar-grid.js';
@@ -609,5 +610,128 @@ describe('renderGrid — advisor-mode review slot rendering', () => {
   it('REVIEW_DISPLAY_NAMES covers both reserved objectiveIds', () => {
     assert.equal(REVIEW_DISPLAY_NAMES[DAILY_REVIEW_OBJECTIVE_ID], 'Daily Review');
     assert.equal(REVIEW_DISPLAY_NAMES[WEEKLY_REVIEW_OBJECTIVE_ID], 'Weekly Review');
+  });
+});
+
+describe('renderMarkdownGrid — pipe-table output', () => {
+  const baseAgent = { id: 'a1', identity: { name: 'Agent One' } };
+
+  it('emits a header, separator, and per-hour rows with task numbering', () => {
+    const plan = {
+      week: '2026-W17',
+      approved: true,
+      tasks: [
+        { id: 't1', title: 'Outline', prompt: 'Outline', status: 'pending' },
+        { id: 't2', title: 'Draft', prompt: 'Draft', status: 'in-progress' },
+      ],
+    };
+    const { text, taskIndex } = renderMarkdownGrid({ agent: baseAgent, plan });
+    const lines = text.split('\n');
+
+    // Meta paragraph
+    assert.equal(lines[0], '**Agent One — Week 2026-W17**');
+    assert.match(lines[1], /Status: Approved \| Tasks: 2 \| TZ: UTC/);
+    // Header + separator
+    const headerIdx = lines.findIndex((l) => l.startsWith('| Hour |'));
+    assert.ok(headerIdx > 0, 'expected header row');
+    assert.match(lines[headerIdx + 1], /^\| --- \|/);
+    // First data row starts with `| 09:00 |`
+    const firstRow = lines[headerIdx + 2];
+    assert.match(firstRow, /^\| 09:00 \|/);
+    // Task numbering is column-major: Mon 9 = #1, Mon 10 = #2
+    assert.equal(taskIndex.length, 2);
+    assert.equal(taskIndex[0].id, 't1');
+    assert.equal(taskIndex[1].id, 't2');
+    assert.match(firstRow, /○ 1\. Outline/);
+  });
+
+  it('stacks multiple tasks in one cell with <br>', () => {
+    const plan = {
+      week: '2026-W17',
+      approved: true,
+      tasks: [
+        {
+          id: 'a', title: 'First', prompt: 'First', status: 'pending',
+          runAt: '2026-04-20T10:00:00Z',
+        },
+        {
+          id: 'b', title: 'Second', prompt: 'Second', status: 'pending',
+          runAt: '2026-04-20T10:30:00Z',
+        },
+      ],
+    };
+    const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
+    const row = text.split('\n').find((l) => l.startsWith('| 10:00 |'));
+    assert.ok(row, 'expected 10:00 row');
+    assert.match(row, /First.*<br>.*Second/);
+  });
+
+  it('escapes literal pipe characters in task titles', () => {
+    const plan = {
+      week: '2026-W17',
+      approved: true,
+      tasks: [
+        {
+          id: 'a', title: 'Alpha | Beta', prompt: 'Alpha | Beta',
+          status: 'pending',
+        },
+      ],
+    };
+    const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
+    const row = text.split('\n').find((l) => /^\| 09:00 \|/.test(l));
+    assert.match(row, /Alpha \\\| Beta/);
+  });
+
+  it('renders review slots with REVIEW_SLOT_ICON and display name', () => {
+    const plan = {
+      week: '2026-W17',
+      approved: true,
+      tasks: [
+        {
+          id: 'r1',
+          title: 'EOD reflection',
+          prompt: 'EOD reflection',
+          status: 'pending',
+          objectiveId: DAILY_REVIEW_OBJECTIVE_ID,
+          runAt: '2026-04-20T17:00:00Z',
+        },
+      ],
+    };
+    const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
+    const row = text.split('\n').find((l) => l.startsWith('| 17:00 |'));
+    assert.ok(row, 'expected 17:00 row');
+    assert.match(row, new RegExp(`${REVIEW_SLOT_ICON} 1\\. Daily Review`));
+  });
+
+  it('emits weekend columns when showWeekend is true', () => {
+    const plan = {
+      week: '2026-W17', approved: true, tasks: [],
+    };
+    const { text } = renderMarkdownGrid({
+      agent: baseAgent,
+      plan,
+      opts: { showWeekend: true },
+    });
+    const header = text.split('\n').find((l) => l.startsWith('| Hour |'));
+    assert.match(header, /Sat/);
+    assert.match(header, /Sun/);
+  });
+
+  it('never exceeds a single line per hour (markdown tables disallow multi-line cells)', () => {
+    const plan = {
+      week: '2026-W17',
+      approved: true,
+      tasks: Array.from({ length: 4 }, (_, i) => ({
+        id: `t${i}`,
+        title: `Task ${i}`,
+        prompt: `Task ${i}`,
+        status: 'pending',
+        runAt: `2026-04-20T10:${String(i * 15).padStart(2, '0')}:00Z`,
+      })),
+    };
+    const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
+    const hourRows = text.split('\n').filter((l) => /^\| \d\d:00 \|/.test(l));
+    // Every working hour produces exactly one row (9..17 → 9 rows).
+    assert.equal(hourRows.length, 9);
   });
 });
