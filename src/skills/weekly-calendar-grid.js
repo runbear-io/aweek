@@ -540,6 +540,212 @@ export function renderGrid({ agent, plan, opts = {} }) {
 }
 
 // ---------------------------------------------------------------------------
+// Markdown-table renderer (responsive)
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum visible characters per task entry in the markdown renderer.
+ * Matches the box renderer's `TASK_CONTENT_MAX` so task numbering + titles
+ * read identically in both formats. Long titles collapse to `…` past this.
+ */
+export const MD_TASK_CONTENT_MAX = 40;
+
+/**
+ * Default maximum tasks visibly stacked in a single (hour × day) cell before
+ * the remainder collapses to a `+N more` trailer. Prevents crowded cells
+ * from blowing past terminal table-layout thresholds. Override via
+ * `renderMarkdownGrid({ opts: { maxTasksPerCell } })`.
+ */
+export const MD_DEFAULT_MAX_TASKS_PER_CELL = 3;
+
+/**
+ * Render the weekly calendar as a GitHub-flavored markdown table.
+ *
+ * The pipe-table layout re-flows automatically in Claude Code's terminal UI
+ * (and any other markdown renderer) since the renderer picks column widths
+ * from the longest cell — no hand-rolled box-drawing, no `terminalWidth`
+ * guess. Multi-task cells stack their entries with `<br>` so wrapping keeps
+ * tasks on distinct visual lines.
+ *
+ * Output shape:
+ *
+ *   **<agent> — Week <iso>**
+ *   Status: <status> | Tasks: <n>[ | Reviews: <m>] | TZ: <tz>
+ *
+ *   | Hour  | Mon 4/20 | Tue 4/21 | … |
+ *   | ----- | -------- | -------- | … |
+ *   | 09:00 | ○ 1. Foo | ○ 3. Baz | … |
+ *   | 10:00 | ○ 2. Bar |          | … |
+ *   | …     |          |          | … |
+ *
+ *   Legend: ○ pending …
+ *   Select a task number (1-N) to see details.
+ *
+ * Shares numbering + task-distribution semantics with `renderGrid` so the
+ * returned `taskIndex` and "Select task N" prompt are interchangeable
+ * between the two renderers.
+ *
+ * @param {object} params
+ * @param {object} params.agent - Agent config
+ * @param {object} params.plan - Weekly plan
+ * @param {object} [params.opts]
+ * @param {number} [params.opts.startHour=9]
+ * @param {number} [params.opts.endHour=18]
+ * @param {boolean} [params.opts.showWeekend=false]
+ * @param {'pack'|'spread'} [params.opts.spread='pack']
+ * @param {string} [params.opts.tz] - IANA zone for day/hour bucketing.
+ * @returns {{ text: string, taskIndex: object[] }}
+ */
+export function renderMarkdownGrid({ agent, plan, opts = {} }) {
+  const {
+    startHour = 9,
+    endHour = 18,
+    showWeekend = false,
+    spread = 'pack',
+    tz,
+    maxTasksPerCell = MD_DEFAULT_MAX_TASKS_PER_CELL,
+  } = opts;
+
+  const useLocalTz = typeof tz === 'string' && tz !== 'UTC' && isValidTimeZone(tz);
+  const daysCount = showWeekend ? 7 : 5;
+  const dayLabels = DAY_LABELS.slice(0, daysCount);
+  const dayKeys = DAY_KEYS.slice(0, daysCount);
+
+  const monday = mondayFromISOWeek(plan.week, tz);
+  const dateLabels = dayKeys.map((_, i) => {
+    if (useLocalTz) {
+      const parts = localParts(monday.getTime() + i * 86400000, tz);
+      return `${parts.month}/${parts.day}`;
+    }
+    const d = new Date(monday);
+    d.setUTCDate(d.getUTCDate() + i);
+    return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  });
+
+  const grid = distributeTasks(plan.tasks || [], {
+    startHour,
+    endHour,
+    daysCount,
+    tz,
+    spread,
+    weekMonday: monday,
+  });
+
+  // Shared column-major numbering so numbers agree with `renderGrid`.
+  const taskIndex = [];
+  const taskNumMap = new Map();
+  for (const dayKey of dayKeys) {
+    for (let h = startHour; h < endHour; h++) {
+      const bucket = grid.get(dayKey)?.get(h);
+      if (!bucket) continue;
+      for (const entry of bucket) {
+        if (entry.isStart && !taskNumMap.has(entry.task.id)) {
+          const num = taskIndex.length + 1;
+          taskNumMap.set(entry.task.id, num);
+          taskIndex.push(entry.task);
+        }
+      }
+    }
+  }
+  for (const task of plan.tasks || []) {
+    if (!taskNumMap.has(task.id)) {
+      const num = taskIndex.length + 1;
+      taskNumMap.set(task.id, num);
+      taskIndex.push(task);
+    }
+  }
+
+  // Markdown tables don't wrap within a cell — a single long line forces the
+  // whole column to that width and can push Claude Code's terminal UI past
+  // its table-layout threshold, which drops the table to a list view. Cap
+  // every cell's visible content at `MD_TASK_CONTENT_MAX` chars (matching the
+  // box renderer's TASK_CONTENT_MAX so numbering + titles read the same) and
+  // collapse any overflow beyond `maxTasksPerCell` into a `+N more` trailer.
+  const formatTask = (entry) => {
+    const { task, isStart } = entry;
+    if (!isStart) return null;
+    const num = taskNumMap.get(task.id);
+    if (isReviewObjectiveId(task.objectiveId)) {
+      const displayName = REVIEW_DISPLAY_NAMES[task.objectiveId] ?? 'Review';
+      const prefix = num != null ? `${REVIEW_SLOT_ICON} ${num}. ` : `${REVIEW_SLOT_ICON} `;
+      return escapePipe(trunc(`${prefix}${displayName}`, MD_TASK_CONTENT_MAX));
+    }
+    const icon = STATUS_ICONS[task.status] || '?';
+    const prefix = `${icon} ${num}. `;
+    return escapePipe(trunc(`${prefix}${task.title}`, MD_TASK_CONTENT_MAX));
+  };
+
+  const headerCells = ['Hour', ...dayKeys.map((_, i) => `${dayLabels[i]} ${dateLabels[i]}`)];
+  const lines = [];
+
+  // Meta paragraph above the table
+  const title = `${agent.identity?.name || agent.id} — Week ${plan.week}`;
+  const status = plan.approved ? 'Approved' : 'Pending';
+  const displayTz = useLocalTz ? tz : 'UTC';
+  const allPlanTasks = plan.tasks || [];
+  const workTaskCount = allPlanTasks.filter((t) => !isReviewObjectiveId(t.objectiveId)).length;
+  const reviewSlotCount = allPlanTasks.length - workTaskCount;
+  const reviewSuffix = reviewSlotCount > 0 ? ` | Reviews: ${reviewSlotCount}` : '';
+  lines.push(`**${title}**`);
+  lines.push(`Status: ${status} | Tasks: ${workTaskCount}${reviewSuffix} | TZ: ${displayTz}`);
+  lines.push('');
+
+  // Table header + separator
+  lines.push(`| ${headerCells.join(' | ')} |`);
+  lines.push(`| ${headerCells.map(() => '---').join(' | ')} |`);
+
+  // One row per hour. Each day cell lists every task in that bucket (joined
+  // by `<br>` so crowded cells render on multiple lines without widening the
+  // column). The hour label in the first column is always present so the
+  // renderer can compute row height independently.
+  for (let h = startHour; h < endHour; h++) {
+    const hourLabel = `${String(h).padStart(2, '0')}:00`;
+    const row = [hourLabel];
+    for (const dayKey of dayKeys) {
+      const bucket = grid.get(dayKey)?.get(h);
+      if (!bucket || bucket.length === 0) {
+        row.push(' ');
+        continue;
+      }
+      const entries = bucket.map(formatTask).filter(Boolean);
+      if (entries.length === 0) {
+        row.push(' ');
+        continue;
+      }
+      // Cap visible stack height so crowded cells don't blow past the
+      // terminal UI's table-width budget and fall back to a list view.
+      // The overflow trailer points at the backlog-style numbered index
+      // which always carries the full set.
+      const cap = Math.max(1, maxTasksPerCell);
+      const visible = entries.slice(0, cap);
+      const hidden = entries.length - visible.length;
+      if (hidden > 0) visible.push(`+${hidden} more`);
+      row.push(visible.join('<br>'));
+    }
+    lines.push(`| ${row.join(' | ')} |`);
+  }
+
+  lines.push('');
+  lines.push(
+    'Legend: ○ pending  ► in-progress  ✓ completed  ✗ failed  ⊘ skipped  → delegated  ◆ review slot',
+  );
+  lines.push(`Select a task number (1-${taskIndex.length}) to see details.`);
+
+  return { text: lines.join('\n'), taskIndex };
+}
+
+/**
+ * Escape literal `|` characters so they don't terminate a markdown table
+ * cell. Everything else passes through unchanged.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function escapePipe(s) {
+  return String(s).replace(/\|/g, '\\|');
+}
+
+// ---------------------------------------------------------------------------
 // Load and render
 // ---------------------------------------------------------------------------
 
@@ -551,6 +757,12 @@ export function renderGrid({ agent, plan, opts = {} }) {
  * @param {string} [params.week] - ISO week (default: latest approved plan)
  * @param {string} [params.dataDir] - Data directory
  * @param {object} [params.opts] - Render options
+ * @param {'box'|'markdown'} [params.opts.format='box'] - Picks the renderer.
+ *   `'box'` keeps the fixed-width Unicode box-drawing grid. `'markdown'` emits
+ *   a GitHub-flavored pipe table so the host (e.g. Claude Code's terminal UI)
+ *   can reflow columns to the available width. Numbering + task index stay
+ *   identical between the two so downstream callers can swap formats without
+ *   changing task selection logic.
  * @returns {Promise<{success: boolean, output?: string, errors?: string[]}>}
  */
 export async function loadAndRenderGrid(params) {
@@ -593,7 +805,8 @@ export async function loadAndRenderGrid(params) {
       }
     }
 
-    const { text, taskIndex } = renderGrid({ agent, plan, opts: resolvedOpts });
+    const render = resolvedOpts.format === 'markdown' ? renderMarkdownGrid : renderGrid;
+    const { text, taskIndex } = render({ agent, plan, opts: resolvedOpts });
     return { success: true, output: text, taskIndex };
   } catch (err) {
     return { success: false, errors: [err.message] };

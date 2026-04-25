@@ -29,12 +29,12 @@ empty array as the no-agents case.
 
 ### Step 2: Render the Calendar Grid
 
-The grid fits into `terminalWidth` columns (default 120). Day columns are
-sized so the whole grid lands within that width. Each task is capped at 30
-visible characters and wraps across multiple lines inside its cell, so
-narrow columns just take more vertical room. If the user explicitly asks
-for a wider/narrower grid, pass a different `terminalWidth` on the next
-run.
+The default output is a **GitHub-flavored markdown table** (`format: "markdown"`).
+Claude Code's terminal UI re-flows pipe tables to the available width, so the
+calendar expands / contracts with the window instead of sitting in a fixed
+120-column box. Pass `format: "box"` only when the host cannot render markdown
+tables (e.g. raw log tails) — the Unicode box-drawing grid still works but its
+columns are fixed.
 
 Run the grid renderer to get the calendar text and task index:
 
@@ -42,9 +42,9 @@ Run the grid renderer to get the calendar text and task index:
 echo '{
   "agentId": "<AGENT_ID>",
   "opts": {
+    "format": "markdown",
     "startHour": 9,
     "endHour": 18,
-    "terminalWidth": 120,
     "showWeekend": false,
     "spread": "spread"
   }
@@ -55,10 +55,12 @@ The response JSON contains `success`, `output` (the rendered grid text),
 `taskIndex` (the numbered task list), and `errors` when `success === false`.
 
 **IMPORTANT — Not collapsed display:** After running the command, you MUST
-output the calendar grid text as direct text in your response (inside a
-markdown code block). Do NOT just show the bash output — copy `result.output`
-and display it yourself so it appears expanded, not collapsed inside a bash
-result.
+output the calendar text as direct text in your response — for `format: "markdown"`,
+paste the markdown table itself (no surrounding code block, so the UI renders
+it as a table); for `format: "box"`, wrap `result.output` in a fenced code
+block so the Unicode borders don't reflow. Do NOT just reference the bash
+output — copy `result.output` and display it yourself so it appears expanded,
+not collapsed inside a bash result.
 
 ### Step 3: Stop (no follow-up question)
 
@@ -75,10 +77,11 @@ respond with its details. Do not volunteer that lookup until asked.
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `format` | `markdown` | `markdown` (responsive pipe table — default) or `box` (fixed-width Unicode grid) |
 | `startHour` | 9 | First hour row (0-23) |
 | `endHour` | 18 | Last hour row exclusive (1-24) |
-| `terminalWidth` | — | Available terminal columns; auto-fits `cellWidth` when set |
-| `cellWidth` | auto | Explicit per-day column width. Overrides `terminalWidth` |
+| `terminalWidth` | — | **Box format only.** Available terminal columns; auto-fits `cellWidth` when set |
+| `cellWidth` | auto | **Box format only.** Explicit per-day column width. Overrides `terminalWidth` |
 | `showWeekend` | false | Include Saturday and Sunday columns |
 | `spread` | `pack` | Distribution: `pack` (fill days) or `spread` (round-robin) |
 
