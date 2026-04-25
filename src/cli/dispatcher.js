@@ -24,6 +24,7 @@ import * as plan from '../skills/plan.js';
 import * as manage from '../skills/manage.js';
 import * as runOnce from '../skills/run-once.js';
 import * as summary from '../skills/summary.js';
+import * as query from '../skills/query.js';
 import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
 import * as execution from '../skills/execution.js';
@@ -162,6 +163,17 @@ export const REGISTRY = Object.freeze({
     buildSummary: summary.buildSummary,
     getAgentDrillDownChoices: summary.getAgentDrillDownChoices,
     buildAgentDrillDown: summary.buildAgentDrillDown,
+  },
+  // Agent filter/selection surface. Takes optional role / keyword / status /
+  // budget filters and returns the matching slugs + a rendered table. Used
+  // directly by the /aweek:query skill and intended as the entry point for
+  // future multi-agent skills that need an "active marketers"-style slug list.
+  query: {
+    queryAgents: query.queryAgents,
+    formatQueryResult: (input) =>
+      query.formatQueryResult(input?.result ?? input),
+    buildQueryChoices: (input) =>
+      query.buildQueryChoices(input?.result ?? input),
   },
   calendar: {
     // listAgentsForCalendar takes a positional dataDir string.

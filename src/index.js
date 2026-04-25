@@ -564,6 +564,19 @@ export {
   formatAgentStatus,
   formatStatusReport,
 } from './skills/status.js';
+// Query skill — filter the agent roster by role, status, keyword, or budget
+// so downstream skills can operate on subsets like "active marketers".
+export {
+  normalizeStatusFilter,
+  matchesRole,
+  matchesKeyword,
+  matchesStatus,
+  matchesBudget,
+  queryAgents,
+  formatQueryResult,
+  buildQueryRow,
+  buildQueryChoices,
+} from './skills/query.js';
 // Init skill (Sub-AC 2, 3, 4) — bootstrap primitives (`pnpm install`,
 // `.aweek/` tree), heartbeat crontab scaffolding, and the /aweek:hire
 // handoff wiring that runs as init's final interactive step.
