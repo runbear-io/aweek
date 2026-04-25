@@ -293,7 +293,7 @@ function TaskDetailSheet({ task, agentSlug, activity = [], baseUrl, fetchImpl, o
               </TaskField>
               {task.runAt ? (
                 <TaskField label="Run at">
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                  <code className="break-all rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
                     {task.runAt}
                   </code>
                 </TaskField>
@@ -308,14 +308,14 @@ function TaskDetailSheet({ task, agentSlug, activity = [], baseUrl, fetchImpl, o
               ) : null}
               {task.prompt ? (
                 <TaskField label="Prompt">
-                  <pre className="whitespace-pre-wrap rounded-md border bg-muted/40 p-3 font-mono text-xs text-foreground">
+                  <pre className="whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 font-mono text-xs text-foreground">
                     {task.prompt}
                   </pre>
                 </TaskField>
               ) : null}
               {task.id ? (
                 <TaskField label="Task ID">
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                  <code className="break-all rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
                     {task.id}
                   </code>
                 </TaskField>
