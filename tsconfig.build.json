@@ -1,0 +1,53 @@
+{
+  // -----------------------------------------------------------------------
+  // tsconfig.build.json
+  //
+  // Emit-only config used by `pnpm build` and `prepublishOnly` to compile
+  // the runtime backend (`bin/`, `src/` minus the SPA tree) into `dist/`
+  // for npm publishing. The companion `tsconfig.node.json` stays the
+  // type-checker config (`tsc --noEmit`); this one is the bundler.
+  //
+  // Why a separate config:
+  //   - `tsconfig.node.json` excludes 5 heartbeat files whose strict-mode
+  //     errors are tracked as follow-ups. They still need to be emitted
+  //     to `dist/` so the published CLI can load them at runtime — so
+  //     this config drops those exclusions and sets `noEmitOnError: false`
+  //     to ship even when the type-checker is unhappy.
+  //   - `tsconfig.node.json` has `incremental: true` writing buildinfo
+  //     under `node_modules/.cache/`. The build pass disables that so
+  //     `dist/` stays deterministic across CI runs.
+  //
+  // Output layout (mirrors source paths under `dist/`):
+  //   src/foo.ts    → dist/src/foo.js
+  //   src/bar.js    → dist/src/bar.js  (passed through under allowJs)
+  //   bin/aweek.js  → dist/bin/aweek.js (shebang preserved)
+  //
+  // The SPA tree is built by Vite, not tsc — `vite build` writes to
+  // `dist/spa/` and is invoked alongside this config from `pnpm build`.
+  // -----------------------------------------------------------------------
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "noEmitOnError": false,
+    "outDir": "./dist",
+    "rootDir": "./",
+    "declaration": false,
+    "sourceMap": false,
+    "incremental": false
+  },
+  "include": [
+    "bin/**/*.ts",
+    "bin/**/*.js",
+    "src/**/*.ts",
+    "src/**/*.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/serve/spa",
+    "src/**/*.test.ts",
+    "src/**/*.test.js",
+    "src/**/*.integration.test.ts",
+    "src/**/*.integration.test.js",
+    "dist"
+  ]
+}
