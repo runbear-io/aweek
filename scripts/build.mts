@@ -30,8 +30,12 @@ const VITE_OUT = resolve(ROOT, 'src/serve/spa/dist');
 const SPA_TARGET = resolve(DIST, 'src/serve/spa/dist');
 const BIN_TARGET = resolve(DIST, 'bin/aweek.js');
 
-function run(cmd, args, { tolerateExitCode = false } = {}) {
-  return new Promise((resolveRun, rejectRun) => {
+interface RunOptions {
+  tolerateExitCode?: boolean;
+}
+
+function run(cmd: string, args: string[], { tolerateExitCode = false }: RunOptions = {}): Promise<void> {
+  return new Promise<void>((resolveRun, rejectRun) => {
     const child = spawn(cmd, args, { cwd: ROOT, stdio: 'inherit' });
     child.once('error', rejectRun);
     child.once('exit', (code) => {
@@ -41,7 +45,7 @@ function run(cmd, args, { tolerateExitCode = false } = {}) {
   });
 }
 
-async function main() {
+async function main(): Promise<void> {
   await rm(DIST, { recursive: true, force: true });
   // `tsc -p tsconfig.build.json` is wider than `tsconfig.node.json` —
   // it picks up the five heartbeat files temporarily excluded from the
@@ -66,7 +70,7 @@ async function main() {
   console.log('build: dist/ ready');
 }
 
-main().catch((err) => {
+main().catch((err: Error) => {
   console.error(err.message);
   process.exit(1);
 });

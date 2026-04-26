@@ -12,6 +12,11 @@
  * object are registered by direct reference; functions with multi-argument
  * or nested-slice signatures get thin adapters so the CLI input shape stays
  * a plain JSON object.
+ *
+ * TypeScript migration note (seed-10 glue-final): mechanical rename from
+ * `.js` → `.ts`. Adapter call sites stay loose (`(input: any)`) because the
+ * underlying skill modules accept disparate JSON-object shapes — tightening
+ * each one belongs to a follow-up typing pass.
  */
 import * as init from '../skills/init.js';
 import * as initHireMenu from '../skills/init-hire-menu.js';
@@ -36,14 +41,39 @@ import * as dailyReview from '../services/daily-review-writer.js';
 import * as dailyReviewAdj from '../services/daily-review-adjustments.js';
 import * as nextWeekContextAssembler from '../services/next-week-context-assembler.js';
 
+/** Codes thrown by `dispatchExec` so callers can branch on the failure mode. */
+export type DispatchErrorCode = 'EUSAGE' | 'EUNKNOWN_MODULE' | 'EUNKNOWN_FN';
+
 export class DispatchError extends Error {
-  constructor(code, message) {
+  code: DispatchErrorCode;
+  constructor(code: DispatchErrorCode, message: string) {
     super(message);
     this.code = code;
   }
 }
 
-export const REGISTRY = Object.freeze({
+/**
+ * Loose callable shape for every registry entry. The CLI surface always
+ * passes a single JSON-object input, so adapters and direct references
+ * normalize to a `(input?: any) => any` callable at the type level —
+ * underlying skills have wildly different parameter shapes (some require
+ * a destructured `{baseDir, agentId, …}`, others accept a free-form
+ * options bag), so the registry index signature is intentionally
+ * permissive. Tightening per-entry typing is tracked as a follow-up.
+ */
+export type DispatchFn = (input?: any) => any;
+
+/** Registry shape: module key → fn name → callable. */
+export type DispatchRegistry = Readonly<Record<string, Readonly<Record<string, DispatchFn>>>>;
+
+// Build the literal registry first (so editor go-to-def still resolves to
+// the underlying skill exports), then publish it through the loose
+// `DispatchRegistry` index signature. The cast is necessary because some
+// direct references (e.g. `dailyReview.applyDailyReviewAdjustments`)
+// declare required destructured parameters that don't structurally match
+// `(input?: any) => any` even though the runtime call site always passes
+// a JSON object.
+const REGISTRY_LITERAL = Object.freeze({
   init: {
     detectInitState: init.detectInitState,
     ensureDataDir: init.ensureDataDir,
@@ -57,13 +87,13 @@ export const REGISTRY = Object.freeze({
   'init-hire-menu': {
     buildInitHireMenu: initHireMenu.buildInitHireMenu,
     resolveInitHireMenu: initHireMenu.resolveInitHireMenu,
-    routeInitHireMenuChoice: (input) =>
+    routeInitHireMenuChoice: (input: any) =>
       initHireMenu.routeInitHireMenuChoice(input ?? {}),
-    formatInitHireMenuPrompt: (input) =>
+    formatInitHireMenuPrompt: (input: any) =>
       initHireMenu.formatInitHireMenuPrompt(input?.menu ?? input),
-    validateInitHireMenuChoice: (input) =>
+    validateInitHireMenuChoice: (input: any) =>
       initHireMenu.validateInitHireMenuChoice(input?.choice, input?.menu),
-    validateSelectedSlugs: (input) =>
+    validateSelectedSlugs: (input: any) =>
       initHireMenu.validateSelectedSlugs(input?.selected, input?.menu),
   },
   'hire-route': {
@@ -73,21 +103,21 @@ export const REGISTRY = Object.freeze({
   'hire-create-new-menu': {
     buildCreateNewLaunchInstruction: hireCreateNewMenu.buildCreateNewLaunchInstruction,
     runCreateNewHire: hireCreateNewMenu.runCreateNewHire,
-    formatCreateNewResult: (input) =>
+    formatCreateNewResult: (input: any) =>
       hireCreateNewMenu.formatCreateNewResult(input?.result ?? input),
   },
   'hire-select-some': {
-    buildSelectSomeChoices: (input) =>
+    buildSelectSomeChoices: (input: any) =>
       hireSelectSome.buildSelectSomeChoices(input?.menu, {
         projectDir: input?.projectDir,
       }),
     runSelectSomeHire: hireSelectSome.runSelectSomeHire,
-    formatSelectSomeResult: (input) =>
+    formatSelectSomeResult: (input: any) =>
       hireSelectSome.formatSelectSomeResult(input?.result ?? input),
   },
   'hire-all': {
     hireAllSubagents: hireAll.hireAllSubagents,
-    formatHireAllSummary: (input) =>
+    formatHireAllSummary: (input: any) =>
       hireAll.formatHireAllSummary(input?.result ?? input),
   },
   hire: {
@@ -113,17 +143,17 @@ export const REGISTRY = Object.freeze({
     // checkInterviewTriggers, produces a best-guess assumption for each one
     // so the skill can surface them to the user instead of running the
     // full inline interview. The user then approves or declines the block.
-    generateSkipAssumptions: (input) =>
+    generateSkipAssumptions: (input: any) =>
       plan.generateSkipAssumptions(input?.triggers ?? []),
     // Format the assumptions array returned by generateSkipAssumptions into
     // a clearly-labelled markdown block for direct display in skill output.
-    formatAssumptionsBlock: (input) =>
+    formatAssumptionsBlock: (input: any) =>
       plan.formatAssumptionsBlock(input?.assumptions ?? []),
-    formatAdjustmentResult: (input) =>
+    formatAdjustmentResult: (input: any) =>
       plan.formatAdjustmentResult(input?.results ?? input),
     // formatApprovalResult takes (result, action). Adapter unpacks the
     // JSON object into positional args so the CLI input stays a plain object.
-    formatApprovalResult: (input) =>
+    formatApprovalResult: (input: any) =>
       plan.formatApprovalResult(input?.result, input?.action),
     // Autonomous approval — used exclusively by the weekly-review → next-week
     // planner chain. Immediately sets approved:true, skips AskUserQuestion, and
@@ -134,7 +164,7 @@ export const REGISTRY = Object.freeze({
     listPausedAgents: manage.listPausedAgents,
     // getPausedAgentDetails takes (agentId, opts). Adapter promotes agentId
     // to a top-level key in the input object.
-    getPausedAgentDetails: (input) =>
+    getPausedAgentDetails: (input: any) =>
       manage.getPausedAgentDetails(input?.agentId, {
         dataDir: input?.dataDir,
         weekMonday: input?.weekMonday,
@@ -143,20 +173,20 @@ export const REGISTRY = Object.freeze({
     topUp: manage.topUp,
     pause: manage.pause,
     deleteAgent: manage.deleteAgent,
-    formatPausedAgentsList: (input) =>
+    formatPausedAgentsList: (input: any) =>
       manage.formatPausedAgentsList(input?.result ?? input),
-    formatPausedAgentDetails: (input) =>
+    formatPausedAgentDetails: (input: any) =>
       manage.formatPausedAgentDetails(input?.details ?? input),
-    formatActionResult: (input) =>
+    formatActionResult: (input: any) =>
       manage.formatActionResult(input?.result ?? input),
-    formatPauseResult: (input) =>
+    formatPauseResult: (input: any) =>
       manage.formatPauseResult(input?.result ?? input),
-    formatDeleteResult: (input) =>
+    formatDeleteResult: (input: any) =>
       manage.formatDeleteResult(input?.result ?? input),
   },
   'run-once': {
     execute: runOnce.execute,
-    buildAdHocTask: (input) =>
+    buildAdHocTask: (input: any) =>
       runOnce.buildAdHocTask({ prompt: input?.prompt, title: input?.title }),
   },
   summary: {
@@ -170,25 +200,25 @@ export const REGISTRY = Object.freeze({
   // future multi-agent skills that need an "active marketers"-style slug list.
   query: {
     queryAgents: query.queryAgents,
-    formatQueryResult: (input) =>
+    formatQueryResult: (input: any) =>
       query.formatQueryResult(input?.result ?? input),
-    buildQueryChoices: (input) =>
+    buildQueryChoices: (input: any) =>
       query.buildQueryChoices(input?.result ?? input),
   },
   calendar: {
     // listAgentsForCalendar takes a positional dataDir string.
-    listAgentsForCalendar: (input) =>
+    listAgentsForCalendar: (input: any) =>
       calendar.listAgentsForCalendar(input?.dataDir),
     loadAndRenderGrid: calendar.loadAndRenderGrid,
     // Normalize a free-form week reference (ISO week, date, bare number, or
     // alias) into the canonical YYYY-Www key. Useful for the skill markdown
     // to surface a friendly error before invoking loadAndRenderGrid.
-    resolveWeekKey: (input) =>
+    resolveWeekKey: (input: any) =>
       calendar.resolveWeekKey(input?.input, input?.tz),
   },
   'delegate-task': {
     delegateTask: delegateTask.delegateTask,
-    formatDelegationResult: (input) =>
+    formatDelegationResult: (input: any) =>
       delegateTask.formatDelegationResult(input?.message ?? input),
   },
   // Free-form per-agent plan.md — authored by the user, read by skills as
@@ -196,16 +226,16 @@ export const REGISTRY = Object.freeze({
   // positional (agentsDir, agentId, ...) signature of the underlying
   // store into the JSON-object surface `aweek exec` uses everywhere else.
   'plan-markdown': {
-    read: (input) => planMarkdown.readPlan(input?.agentsDir, input?.agentId),
-    write: (input) =>
+    read: (input: any) => planMarkdown.readPlan(input?.agentsDir, input?.agentId),
+    write: (input: any) =>
       planMarkdown.writePlan(input?.agentsDir, input?.agentId, input?.body ?? ''),
-    exists: (input) => planMarkdown.exists(input?.agentsDir, input?.agentId),
-    path: (input) => planMarkdown.planPath(input?.agentsDir, input?.agentId),
-    buildInitial: (input) => planMarkdown.buildInitialPlan(input ?? {}),
-    buildFromInterview: (input) => planMarkdown.buildPlanFromInterview(input ?? {}),
-    buildFromLegacy: (input) => planMarkdown.buildPlanFromLegacy(input ?? {}),
-    parse: (input) => planMarkdown.parsePlanMarkdownSections(input?.body ?? ''),
-    migrateLegacy: (input) => planMarkdown.migrateLegacyPlan(input ?? {}),
+    exists: (input: any) => planMarkdown.exists(input?.agentsDir, input?.agentId),
+    path: (input: any) => planMarkdown.planPath(input?.agentsDir, input?.agentId),
+    buildInitial: (input: any) => planMarkdown.buildInitialPlan(input ?? {}),
+    buildFromInterview: (input: any) => planMarkdown.buildPlanFromInterview(input ?? {}),
+    buildFromLegacy: (input: any) => planMarkdown.buildPlanFromLegacy(input ?? {}),
+    parse: (input: any) => planMarkdown.parsePlanMarkdownSections(input?.body ?? ''),
+    migrateLegacy: (input: any) => planMarkdown.migrateLegacyPlan(input ?? {}),
   },
   'agent-helpers': {
     listAllAgents: agentHelpers.listAllAgents,
@@ -216,20 +246,20 @@ export const REGISTRY = Object.freeze({
   // All functions accept a single JSON-object input so the CLI surface stays flat.
   'daily-review': {
     // Pure helpers exposed for skill-markdown inspection / testing
-    utcToLocalDate: (input) =>
+    utcToLocalDate: (input: any) =>
       dailyReview.utcToLocalDate(input?.isoString, input?.tz),
-    weekdayName: (input) => dailyReview.weekdayName(input?.date ?? ''),
-    tomorrowWeekdayName: (input) => dailyReview.tomorrowWeekdayName(input?.date ?? ''),
-    dateToISOWeek: (input) => dailyReview.dateToISOWeek(input?.date ?? ''),
-    isoWeekToMondayDate: (input) => dailyReview.isoWeekToMondayDate(input?.week ?? ''),
+    weekdayName: (input: any) => dailyReview.weekdayName(input?.date ?? ''),
+    tomorrowWeekdayName: (input: any) => dailyReview.tomorrowWeekdayName(input?.date ?? ''),
+    dateToISOWeek: (input: any) => dailyReview.dateToISOWeek(input?.date ?? ''),
+    isoWeekToMondayDate: (input: any) => dailyReview.isoWeekToMondayDate(input?.week ?? ''),
     // Path helpers
-    dailyReviewDir: (input) => dailyReview.dailyReviewDir(input?.baseDir ?? '', input?.agentId ?? ''),
-    dailyReviewPaths: (input) =>
+    dailyReviewDir: (input: any) => dailyReview.dailyReviewDir(input?.baseDir ?? '', input?.agentId ?? ''),
+    dailyReviewPaths: (input: any) =>
       dailyReview.dailyReviewPaths(input?.baseDir ?? '', input?.agentId ?? '', input?.date ?? ''),
     // Persistence helpers
-    loadDailyReview: (input) =>
+    loadDailyReview: (input: any) =>
       dailyReview.loadDailyReview(input?.baseDir ?? '', input?.agentId ?? '', input?.date ?? ''),
-    listDailyReviews: (input) =>
+    listDailyReviews: (input: any) =>
       dailyReview.listDailyReviews(input?.baseDir ?? '', input?.agentId ?? ''),
     // Main orchestrator — generates and optionally persists the daily review.
     // When persist=true and adjustments exist, also applies the proposed
@@ -250,7 +280,7 @@ export const REGISTRY = Object.freeze({
   // `olderThanWeeks` (default 4). Invoked directly by users via
   // `aweek exec execution prune --input-json -`.
   execution: {
-    prune: (input) =>
+    prune: (input: any) =>
       execution.pruneExecutionLogs({
         projectDir: input?.projectDir,
         olderThanWeeks: input?.olderThanWeeks,
@@ -262,55 +292,55 @@ export const REGISTRY = Object.freeze({
   // builder / response parser / state store so the markdown can drive
   // the whole loop via `aweek exec`.
   'plan-ambiguity': {
-    buildScoringPrompt: (input) =>
+    buildScoringPrompt: (input: any) =>
       planAmbiguity.buildScoringPrompt({
         initialContext: input?.initialContext,
         transcript: input?.transcript,
       }),
-    parseScoreResponse: (input) => planAmbiguity.parseScoreResponse(input?.raw),
-    qualifiesForCompletion: (input) =>
+    parseScoreResponse: (input: any) => planAmbiguity.parseScoreResponse(input?.raw),
+    qualifiesForCompletion: (input: any) =>
       planAmbiguity.qualifiesForCompletion({
         breakdown: input?.breakdown,
         streak: input?.streak,
       }),
-    updateStreak: (input) =>
+    updateStreak: (input: any) =>
       planAmbiguity.updateStreak(input?.prevStreak ?? 0, input?.breakdown),
-    buildAmbiguitySnapshot: (input) =>
+    buildAmbiguitySnapshot: (input: any) =>
       planAmbiguity.buildAmbiguitySnapshot({
         breakdown: input?.breakdown,
         streak: input?.streak,
       }),
-    weakestDimension: (input) => planAmbiguity.weakestDimension(input?.breakdown),
-    isFullBreakdown: (input) => planAmbiguity.isFullBreakdown(input?.breakdown),
-    ambiguityFromBreakdown: (input) =>
+    weakestDimension: (input: any) => planAmbiguity.weakestDimension(input?.breakdown),
+    isFullBreakdown: (input: any) => planAmbiguity.isFullBreakdown(input?.breakdown),
+    ambiguityFromBreakdown: (input: any) =>
       planAmbiguity.ambiguityFromBreakdown(input?.breakdown),
-    milestoneFromScore: (input) => planAmbiguity.milestoneFromScore(input?.score),
+    milestoneFromScore: (input: any) => planAmbiguity.milestoneFromScore(input?.score),
   },
   'plan-interview-store': {
-    createInterviewState: (input) =>
+    createInterviewState: (input: any) =>
       planInterviewStore.createInterviewState({
         agentId: input?.agentId,
         initialContext: input?.initialContext,
       }),
-    loadInterviewState: (input) =>
+    loadInterviewState: (input: any) =>
       planInterviewStore.loadInterviewState(input?.agentsDir, input?.agentId),
-    saveInterviewState: (input) =>
+    saveInterviewState: (input: any) =>
       planInterviewStore.saveInterviewState(
         input?.agentsDir,
         input?.agentId,
         input?.state,
       ),
-    clearInterviewState: (input) =>
+    clearInterviewState: (input: any) =>
       planInterviewStore.clearInterviewState(input?.agentsDir, input?.agentId),
-    interviewExists: (input) =>
+    interviewExists: (input: any) =>
       planInterviewStore.interviewExists(input?.agentsDir, input?.agentId),
-    appendTurn: (input) => planInterviewStore.appendTurn(input?.state, input?.turn),
+    appendTurn: (input: any) => planInterviewStore.appendTurn(input?.state, input?.turn),
   },
   'next-week-context': {
     // Pure helpers exposed for testing and skill inspection.
-    extractRetrospectiveSummary: (input) =>
+    extractRetrospectiveSummary: (input: any) =>
       nextWeekContextAssembler.extractRetrospectiveSummary(input?.reviewMarkdown ?? ''),
-    summariseActivityLog: (input) =>
+    summariseActivityLog: (input: any) =>
       nextWeekContextAssembler.summariseActivityLog(input?.entries ?? []),
     // Main assembler — requires agentsDir, baseDir, agentId, week, and an
     // optional activityLogStore instance. The store is not JSON-serialisable so
@@ -320,31 +350,36 @@ export const REGISTRY = Object.freeze({
   },
 });
 
-export function listModules() {
+export const REGISTRY: DispatchRegistry = REGISTRY_LITERAL as unknown as DispatchRegistry;
+
+export function listModules(): string[] {
   return Object.keys(REGISTRY).sort();
 }
 
-export function listFunctions(moduleKey) {
+export function listFunctions(moduleKey: string): string[] | null {
   const entry = REGISTRY[moduleKey];
   if (!entry) return null;
   return Object.keys(entry).sort();
 }
 
+/** Parameter shape for `dispatchExec`. */
+export interface DispatchExecParams {
+  moduleKey?: string;
+  fnName?: string;
+  input?: unknown;
+}
+
 /**
  * Invoke a registered skill export with a JSON-serializable input.
- *
- * @param {object} params
- * @param {string} params.moduleKey - Top-level REGISTRY key, e.g. "init".
- * @param {string} params.fnName    - Function name within that module.
- * @param {object} [params.input]   - Single options object passed to the fn.
- * @returns {Promise<any>} Whatever the underlying fn returns (awaited).
  *
  * @throws {DispatchError} with `code` of:
  *   - `EUSAGE`           — missing moduleKey / fnName
  *   - `EUNKNOWN_MODULE`  — moduleKey not in REGISTRY
  *   - `EUNKNOWN_FN`      — fnName not exposed for that module
  */
-export async function dispatchExec({ moduleKey, fnName, input } = {}) {
+export async function dispatchExec(
+  { moduleKey, fnName, input }: DispatchExecParams = {},
+): Promise<unknown> {
   if (!moduleKey) {
     throw new DispatchError('EUSAGE', 'module name is required');
   }
@@ -362,7 +397,7 @@ export async function dispatchExec({ moduleKey, fnName, input } = {}) {
   if (typeof fn !== 'function') {
     throw new DispatchError(
       'EUNKNOWN_FN',
-      `Module "${moduleKey}" does not expose "${fnName}". Available: ${listFunctions(moduleKey).join(', ')}`,
+      `Module "${moduleKey}" does not expose "${fnName}". Available: ${listFunctions(moduleKey)!.join(', ')}`,
     );
   }
   return await fn(input ?? {});

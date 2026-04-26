@@ -17,14 +17,20 @@
  * can tell which is which, and tears them both down on SIGINT/SIGTERM.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function parseArgs(argv) {
-  const out = { projectDir: process.cwd(), apiPort: 3000, vitePort: 5173 };
+interface DevArgs {
+  projectDir: string;
+  apiPort: number;
+  vitePort: number;
+}
+
+function parseArgs(argv: string[]): DevArgs {
+  const out: DevArgs = { projectDir: process.cwd(), apiPort: 3000, vitePort: 5173 };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if ((a === '--project-dir' || a === '--cwd') && argv[i + 1]) {
@@ -43,14 +49,18 @@ function parseArgs(argv) {
   return out;
 }
 
-function prefix(name, color) {
+function prefix(name: string, color: string): (line: string) => string {
   const reset = '\x1b[0m';
-  return (line) => `${color}[${name}]${reset} ${line}`;
+  return (line: string) => `${color}[${name}]${reset} ${line}`;
 }
 
-function pipe(child, tag, color) {
+function pipe(
+  child: ChildProcessWithoutNullStreams,
+  tag: string,
+  color: string,
+): void {
   const fmt = prefix(tag, color);
-  const forward = (chunk) => {
+  const forward = (chunk: Buffer | string): void => {
     for (const line of chunk.toString().split(/\r?\n/)) {
       if (line) process.stdout.write(`${fmt(line)}\n`);
     }
@@ -71,7 +81,7 @@ const backend = spawn(
   [
     '--import',
     'tsx',
-    resolve(ROOT, 'bin/aweek.js'),
+    resolve(ROOT, 'bin/aweek.ts'),
     'serve',
     '--port',
     String(apiPort),
@@ -108,21 +118,21 @@ console.log(
 );
 
 let shuttingDown = false;
-function shutdown(signal) {
+function shutdown(signal?: NodeJS.Signals | string): void {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const child of [backend, vite]) {
-    if (!child.killed) child.kill(signal || 'SIGTERM');
+    if (!child.killed) child.kill((signal as NodeJS.Signals) || 'SIGTERM');
   }
   setTimeout(() => process.exit(0), 500).unref();
 }
 
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(sig, () => shutdown(sig));
 }
 
-function onChildExit(name) {
-  return (code) => {
+function onChildExit(name: string): (code: number | null) => void {
+  return (code: number | null) => {
     if (shuttingDown) return;
     console.error(`\n[dev] ${name} exited (code ${code}). Shutting down.`);
     shutdown('SIGTERM');

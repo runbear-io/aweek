@@ -166,6 +166,7 @@
     "src/services/**/*.ts",
     "src/storage/**/*.ts",
     "src/skills/**/*.ts",
+    "src/cli/**/*.ts",
     "src/serve/data/**/*.ts",
     "src/serve/errors.ts",
     "src/serve/server.ts"
@@ -173,7 +174,6 @@
 
   // Carve-outs:
   //   - `node_modules` — never type-check vendored sources.
-  //   - `src/cli/` — still raw `.js`, untyped in this phase.
   //   - `src/serve/spa/**` — owned by `tsconfig.spa.json` (browser env).
   //   - `src/**/*.test.ts` / `*.integration.test.ts` — tests need a
   //     follow-up typing pass; production code is the priority here.
@@ -189,7 +189,6 @@
   "exclude": [
     "node_modules",
     "src/skills/summary.d.ts",
-    "src/cli",
     "src/serve/spa",
     "src/**/*.test.ts",
     "src/**/*.integration.test.ts",

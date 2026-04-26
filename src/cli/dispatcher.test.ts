@@ -87,21 +87,21 @@ describe('dispatchExec usage errors', () => {
 describe('dispatchExec routing', () => {
   it('invokes a whitelisted function with the input object as the single arg', async () => {
     // detectInitState is pure-read; safe to exercise on the live FS.
-    const result = await dispatchExec({
+    const result = (await dispatchExec({
       moduleKey: 'init',
       fnName: 'detectInitState',
       input: { projectDir: process.cwd() },
-    });
+    })) as { fullyInitialized: boolean; dataDir: { exists: boolean } };
     assert.equal(typeof result, 'object');
     assert.equal(typeof result.fullyInitialized, 'boolean');
     assert.equal(typeof result.dataDir.exists, 'boolean');
   });
 
   it('defaults input to an empty object when omitted', async () => {
-    const result = await dispatchExec({
+    const result = (await dispatchExec({
       moduleKey: 'init',
       fnName: 'detectInitState',
-    });
+    })) as { projectDir: string };
     // Should not throw and should default projectDir to cwd.
     assert.equal(typeof result, 'object');
     assert.equal(typeof result.projectDir, 'string');
@@ -119,7 +119,7 @@ describe('argument adapters', () => {
         tasks: [{ id: 't1', description: 'demo' }],
       },
     };
-    const text = REGISTRY.plan.formatApprovalResult({ result, action: 'approve' });
+    const text = REGISTRY.plan!.formatApprovalResult!({ result, action: 'approve' }) as string;
     assert.equal(typeof text, 'string');
     assert.match(text, /approve/i);
   });
@@ -130,8 +130,8 @@ describe('argument adapters', () => {
       monthly: [],
       weekly: [],
     };
-    const viaWrapper = REGISTRY.plan.formatAdjustmentResult({ results });
-    const viaRaw = REGISTRY.plan.formatAdjustmentResult(results);
+    const viaWrapper = REGISTRY.plan!.formatAdjustmentResult!({ results }) as string;
+    const viaRaw = REGISTRY.plan!.formatAdjustmentResult!(results) as string;
     assert.equal(typeof viaWrapper, 'string');
     assert.equal(typeof viaRaw, 'string');
     assert.equal(viaWrapper, viaRaw);
@@ -147,8 +147,8 @@ describe('argument adapters', () => {
       ],
       promptText: 'How do you want to proceed?',
     };
-    const viaWrapper = REGISTRY['init-hire-menu'].formatInitHireMenuPrompt({ menu });
-    const viaRaw = REGISTRY['init-hire-menu'].formatInitHireMenuPrompt(menu);
+    const viaWrapper = REGISTRY['init-hire-menu']!.formatInitHireMenuPrompt!({ menu }) as string;
+    const viaRaw = REGISTRY['init-hire-menu']!.formatInitHireMenuPrompt!(menu) as string;
     assert.equal(typeof viaWrapper, 'string');
     assert.equal(viaWrapper, viaRaw);
   });
@@ -156,9 +156,9 @@ describe('argument adapters', () => {
   it('calendar.listAgentsForCalendar adapter forwards dataDir as a positional arg', async () => {
     // Pass an unlikely-to-exist data dir so the underlying fn returns []
     // rather than hitting real agent JSON.
-    const result = await REGISTRY.calendar.listAgentsForCalendar({
+    const result = (await REGISTRY.calendar!.listAgentsForCalendar!({
       dataDir: '/tmp/aweek-nonexistent-xyz',
-    });
+    })) as unknown[];
     assert.ok(Array.isArray(result));
     assert.equal(result.length, 0);
   });

@@ -39,17 +39,18 @@ import { tmpdir } from 'node:os';
 import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
-// Absolute path to the aweek CLI entry point. `bin/aweek.js` is an ES
+// Absolute path to the aweek CLI entry point. `bin/aweek.ts` is an ES
 // module with a shebang; we invoke it via `process.execPath` so the
 // integration tests do not depend on the user's `$PATH` or on the bin
 // being installed via `npm link`.
-const BIN_PATH = fileURLToPath(new URL('../../bin/aweek.js', import.meta.url));
+const BIN_PATH = fileURLToPath(new URL('../../bin/aweek.ts', import.meta.url));
 
-// `bin/aweek.js` imports backend modules (e.g. `src/heartbeat/run.js`)
-// that have been migrated to `.ts`. Until the build pipeline ships a
-// compiled `dist/bin/aweek.js`, child invocations must register the
-// `tsx` ESM loader so Node's resolver can map the `.js` import paths
-// to their `.ts` source files. Prepend these flags to every spawn.
+// `bin/aweek.ts` is TypeScript source; the production CLI ships as a
+// compiled `dist/bin/aweek.js`, but the integration tests run against
+// the source so changes don't require a rebuild. Child invocations
+// register the `tsx` ESM loader so Node's resolver can both consume
+// the `.ts` entry point and map `.js` import paths inside it to their
+// `.ts` source files. Prepend these flags to every spawn.
 const NODE_PREFIX_ARGS = ['--import', 'tsx'];
 
 // Absolute path to the Vite build directory the CLI will probe. Matches
