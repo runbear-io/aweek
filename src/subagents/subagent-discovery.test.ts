@@ -1,5 +1,5 @@
 /**
- * Tests for `subagent-discovery.js` — the combined project + user scope
+ * Tests for `subagent-discovery.ts` — the combined project + user scope
  * scanner used by the `/aweek:hire` wizard when offering existing subagents
  * to wrap.
  *
@@ -28,6 +28,7 @@ import {
 import { writeSubagentFile } from './subagent-file.js';
 import { AgentStore } from '../storage/agent-store.js';
 import { createAgentConfig } from '../models/agent.js';
+import type { Agent } from '../schemas/agent.js';
 
 /**
  * Write a user-level subagent .md file under `<userHome>/.claude/agents/`.
@@ -35,7 +36,11 @@ import { createAgentConfig } from '../models/agent.js';
  * public helper (aweek never writes to user-level at runtime — this is a
  * test fixture only).
  */
-async function writeUserSubagent(userHome, slug, description = 'Test') {
+async function writeUserSubagent(
+  userHome: string,
+  slug: string,
+  description: string = 'Test',
+): Promise<void> {
   const dir = join(userHome, '.claude', 'agents');
   await mkdir(dir, { recursive: true });
   const body = `---\nname: ${slug}\ndescription: ${description}\n---\n\nHi.\n`;
@@ -46,7 +51,10 @@ async function writeUserSubagent(userHome, slug, description = 'Test') {
  * Write a hired aweek JSON for `slug` under `<projectDir>/.aweek/agents/`.
  * Uses the minimum viable schema-valid config shape.
  */
-async function writeHiredAgent(projectDir, slug) {
+async function writeHiredAgent(
+  projectDir: string,
+  slug: string,
+): Promise<Agent> {
   const config = createAgentConfig({
     subagentRef: slug,
     weeklyTokenLimit: 500000,
@@ -80,7 +88,7 @@ describe('subagent-discovery — resolveUserSubagentsDir + userSubagentFilePath'
 });
 
 describe('subagent-discovery — listUserSubagentSlugs', () => {
-  let userHome;
+  let userHome: string;
 
   before(async () => {
     userHome = await mkdtemp(join(tmpdir(), 'aweek-subagent-discovery-user-'));
@@ -125,8 +133,8 @@ describe('subagent-discovery — listUserSubagentSlugs', () => {
 });
 
 describe('subagent-discovery — discoverSubagents', () => {
-  let projectDir;
-  let userHome;
+  let projectDir: string;
+  let userHome: string;
 
   before(async () => {
     projectDir = await mkdtemp(join(tmpdir(), 'aweek-subagent-discovery-proj-'));
