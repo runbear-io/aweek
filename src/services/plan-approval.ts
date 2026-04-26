@@ -534,7 +534,14 @@ export async function processApproval({
     plan.approved = true;
     plan.approvedAt = new Date().toISOString();
     plan.updatedAt = new Date().toISOString();
-    await weeklyPlanStore.save(agentId, plan);
+    // The local `AgentWeeklyPlanShape` type allows a wider month/null
+    // shape than the canonical `WeeklyPlan` exposed by
+    // `WeeklyPlanStore.save`; AJV's `assertValid` inside save() rejects
+    // any actual violations at runtime.
+    await weeklyPlanStore.save(
+      agentId,
+      plan as unknown as Parameters<typeof weeklyPlanStore.save>[1],
+    );
     config.updatedAt = new Date().toISOString();
     await store.save(config as unknown as Parameters<typeof store.save>[0]);
 
@@ -584,7 +591,12 @@ export async function processApproval({
       plan.approvedAt = new Date().toISOString();
     }
 
-    await weeklyPlanStore.save(agentId, plan);
+    // See the matching cast on the approve branch above — AJV inside
+    // `WeeklyPlanStore.save` enforces the canonical shape at runtime.
+    await weeklyPlanStore.save(
+      agentId,
+      plan as unknown as Parameters<typeof weeklyPlanStore.save>[1],
+    );
     config.updatedAt = new Date().toISOString();
     await store.save(config as unknown as Parameters<typeof store.save>[0]);
 

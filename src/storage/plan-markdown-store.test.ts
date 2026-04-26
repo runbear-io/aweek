@@ -22,7 +22,12 @@ import {
   writePlan,
 } from './plan-markdown-store.js';
 
-async function tempAgentsDir() {
+interface TempAgentsDir {
+  base: string;
+  agentsDir: string;
+}
+
+async function tempAgentsDir(): Promise<TempAgentsDir> {
   const base = await mkdtemp(join(tmpdir(), 'aweek-plan-md-'));
   return { base, agentsDir: join(base, 'agents') };
 }
@@ -41,7 +46,9 @@ describe('plan-markdown-store — path resolution', () => {
   });
 
   it('planPath throws without the required args', () => {
-    assert.throws(() => planPath(null, 'slug'), /agentsDir is required/);
+    // Cast through `unknown` so we can probe the runtime guard with
+    // intentionally invalid inputs the type system would otherwise reject.
+    assert.throws(() => planPath(null as unknown as string, 'slug'), /agentsDir is required/);
     assert.throws(() => planPath('/tmp/agents', ''), /agentId is required/);
   });
 });
@@ -86,7 +93,9 @@ describe('plan-markdown-store — read / write / exists', () => {
     const { base, agentsDir } = await tempAgentsDir();
     try {
       await assert.rejects(
-        () => writePlan(agentsDir, 'a', { not: 'a string' }),
+        // Cast through `unknown` so we can probe the runtime guard with
+        // an intentionally non-string body.
+        () => writePlan(agentsDir, 'a', { not: 'a string' } as unknown as string),
         /must be a string/,
       );
     } finally {
@@ -162,7 +171,7 @@ describe('plan-markdown-store — parsePlanMarkdownSections', () => {
       '- Start a podcast',
     ].join('\n');
     const parsed = parsePlanMarkdownSections(body);
-    const monthly = parsed.byTitle['Monthly plans'];
+    const monthly = parsed.byTitle['Monthly plans'] ?? '';
     assert.ok(monthly.includes('### 2026-04'));
     assert.ok(monthly.includes('### 2026-05'));
     assert.ok(monthly.includes('Start a podcast'));
@@ -195,7 +204,7 @@ describe('plan-markdown-store — buildPlanFromLegacy', () => {
       ],
     });
     const parsed = parsePlanMarkdownSections(body);
-    const longTerm = parsed.byTitle['Long-term goals'];
+    const longTerm = parsed.byTitle['Long-term goals'] ?? '';
     assert.ok(longTerm.includes('(3mo) Publish weekly'));
     // Paused status gets an explicit tag.
     assert.ok(longTerm.includes('(1yr) Retire ads [paused]'));
@@ -215,7 +224,7 @@ describe('plan-markdown-store — buildPlanFromLegacy', () => {
       ],
     });
     const parsed = parsePlanMarkdownSections(body);
-    const monthly = parsed.byTitle['Monthly plans'];
+    const monthly = parsed.byTitle['Monthly plans'] ?? '';
     assert.ok(monthly.includes('### 2026-04'));
     assert.ok(monthly.includes('- Ship 4 posts'));
     assert.ok(monthly.includes('- Start podcast [in-progress]'));
@@ -243,6 +252,7 @@ describe('plan-markdown-store — migrateLegacyPlan', () => {
       });
       assert.equal(result.outcome, 'migrated');
       const body = await readPlan(agentsDir, 'writer');
+      assert.ok(body);
       assert.ok(body.includes('Publish weekly'));
     } finally {
       await rm(base, { recursive: true, force: true });
@@ -259,7 +269,7 @@ describe('plan-markdown-store — migrateLegacyPlan', () => {
         config: { goals: [{ description: 'x', horizon: '3mo' }] },
       });
       assert.equal(result.outcome, 'skipped');
-      assert.match(result.reason, /already exists/);
+      assert.match(result.reason ?? '', /already exists/);
       // Untouched.
       assert.equal(await readPlan(agentsDir, 'writer'), '# Existing\n');
     } finally {
@@ -276,7 +286,7 @@ describe('plan-markdown-store — migrateLegacyPlan', () => {
         config: { goals: [], monthlyPlans: [] },
       });
       assert.equal(result.outcome, 'skipped');
-      assert.match(result.reason, /no legacy/);
+      assert.match(result.reason ?? '', /no legacy/);
       assert.equal(await exists(agentsDir, 'writer'), false);
     } finally {
       await rm(base, { recursive: true, force: true });
@@ -297,10 +307,10 @@ describe('plan-markdown-store — buildPlanFromInterview', () => {
     assert.match(body, /^# Writer bot/);
     assert.ok(body.includes('Writes blog posts.'));
     const parsed = parsePlanMarkdownSections(body);
-    assert.match(parsed.byTitle['Long-term goals'], /50 posts/);
-    assert.match(parsed.byTitle['Monthly plans'], /### 2026-04/);
-    assert.match(parsed.byTitle['Strategies'], /draft over polish/);
-    assert.match(parsed.byTitle['Notes'], /plain, direct/);
+    assert.match(parsed.byTitle['Long-term goals'] ?? '', /50 posts/);
+    assert.match(parsed.byTitle['Monthly plans'] ?? '', /### 2026-04/);
+    assert.match(parsed.byTitle['Strategies'] ?? '', /draft over polish/);
+    assert.match(parsed.byTitle['Notes'] ?? '', /plain, direct/);
   });
 
   it('falls back to placeholder comments for empty / missing answers', () => {
@@ -309,7 +319,7 @@ describe('plan-markdown-store — buildPlanFromInterview', () => {
     // Every canonical section exists even without answers.
     for (const title of CANONICAL_SECTIONS) {
       assert.ok(title in parsed.byTitle, `missing section ${title}`);
-      assert.match(parsed.byTitle[title], /^<!--/);
+      assert.match(parsed.byTitle[title] ?? '', /^<!--/);
     }
   });
 

@@ -896,7 +896,16 @@ export async function adjustGoals({
   await store.save(config as unknown as Parameters<typeof store.save>[0]);
   for (const week of touchedWeeks) {
     const plan = weeklyPlans.find((p) => p.week === week);
-    if (plan) await weeklyPlanStore.save(agentId, plan);
+    if (plan) {
+      // The local `AgentWeeklyPlan` type permits a wider month/null
+      // shape than the canonical `WeeklyPlan` exposed by
+      // `WeeklyPlanStore.save`; AJV runs `assertValid` inside save() to
+      // catch any actual violations at runtime.
+      await weeklyPlanStore.save(
+        agentId,
+        plan as unknown as Parameters<typeof weeklyPlanStore.save>[1],
+      );
+    }
   }
 
   return { success: true, results };

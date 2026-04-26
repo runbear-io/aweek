@@ -3,20 +3,26 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { MonthlyPlanStore } from './monthly-plan-store.js';
+import { MonthlyPlanStore, type MonthlyObjective, type MonthlyPlan } from './monthly-plan-store.js';
 import { createGoal, createObjective, createMonthlyPlan } from '../models/agent.js';
 import { validateMonthlyPlan } from '../schemas/validator.js';
 
+interface TestPlanFixture {
+  goal: ReturnType<typeof createGoal>;
+  obj: MonthlyObjective;
+  plan: MonthlyPlan;
+}
+
 describe('MonthlyPlanStore', () => {
-  let store;
-  let tmpDir;
+  let store: MonthlyPlanStore;
+  let tmpDir: string;
   const agentId = 'agent-plan-test-abc12345';
 
   /** Helper: create a valid monthly plan with one objective */
-  function makeTestPlan(month = '2026-04') {
+  function makeTestPlan(month = '2026-04'): TestPlanFixture {
     const goal = createGoal('Test goal');
-    const obj = createObjective('Test objective', goal.id);
-    const plan = createMonthlyPlan(month, [obj]);
+    const obj = createObjective('Test objective', goal.id) as MonthlyObjective;
+    const plan = createMonthlyPlan(month, [obj]) as MonthlyPlan;
     return { goal, obj, plan };
   }
 
@@ -43,9 +49,12 @@ describe('MonthlyPlanStore', () => {
   });
 
   it('should reject invalid plan on save', async () => {
+    // Cast through `unknown` so the test can probe the runtime validator
+    // without the type system rejecting the malformed shape ahead of AJV.
+    const bad = { month: 'bad', objectives: [], status: 'active' } as unknown as MonthlyPlan;
     await assert.rejects(
-      () => store.save(agentId, { month: 'bad', objectives: [], status: 'active' }),
-      /Schema validation failed/
+      () => store.save(agentId, bad),
+      /Schema validation failed/,
     );
   });
 
@@ -151,6 +160,7 @@ describe('MonthlyPlanStore', () => {
     // Verify persisted
     const loaded = await store.load(agentId, '2025-01');
     const loadedObj = loaded.objectives.find((o) => o.id === obj.id);
+    assert.ok(loadedObj);
     assert.equal(loadedObj.status, 'completed');
   });
 
@@ -167,7 +177,7 @@ describe('MonthlyPlanStore', () => {
     const { plan } = makeTestPlan('2025-03');
     await store.save(agentId, plan);
 
-    const newObj = createObjective('New objective', goal.id);
+    const newObj = createObjective('New objective', goal.id) as MonthlyObjective;
     await store.addObjective(agentId, '2025-03', newObj);
 
     const loaded = await store.load(agentId, '2025-03');
@@ -179,12 +189,12 @@ describe('MonthlyPlanStore', () => {
     const freshAgent = 'agent-trace-goal-00000005';
     const goal = createGoal('Traced goal');
 
-    const obj1 = createObjective('Obj in March', goal.id);
-    const plan1 = createMonthlyPlan('2025-03', [obj1]);
+    const obj1 = createObjective('Obj in March', goal.id) as MonthlyObjective;
+    const plan1 = createMonthlyPlan('2025-03', [obj1]) as MonthlyPlan;
 
-    const obj2 = createObjective('Obj in April', goal.id);
-    const otherObj = createObjective('Unrelated obj', 'goal-other-00000000');
-    const plan2 = createMonthlyPlan('2025-04', [obj2, otherObj]);
+    const obj2 = createObjective('Obj in April', goal.id) as MonthlyObjective;
+    const otherObj = createObjective('Unrelated obj', 'goal-other-00000000') as MonthlyObjective;
+    const plan2 = createMonthlyPlan('2025-04', [obj2, otherObj]) as MonthlyPlan;
 
     await store.save(freshAgent, plan1);
     await store.save(freshAgent, plan2);
@@ -206,7 +216,7 @@ describe('MonthlyPlanStore', () => {
   it('should throw on load of nonexistent plan', async () => {
     await assert.rejects(
       () => store.load(agentId, '1999-01'),
-      { code: 'ENOENT' }
+      { code: 'ENOENT' },
     );
   });
 
