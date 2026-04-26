@@ -799,7 +799,7 @@ export async function adjustGoals({
   const store = createAgentStore(dataDir);
   let config: AgentConfigShape;
   try {
-    config = (await store.load(agentId)) as AgentConfigShape;
+    config = (await store.load(agentId)) as unknown as AgentConfigShape;
   } catch {
     return { success: false, errors: [`Agent not found: ${agentId}`] };
   }
@@ -893,7 +893,7 @@ export async function adjustGoals({
 
   // Persist the agent config and every touched weekly plan atomically
   // from the caller's perspective (we fail fast on the first error).
-  await store.save(config);
+  await store.save(config as unknown as Parameters<typeof store.save>[0]);
   for (const week of touchedWeeks) {
     const plan = weeklyPlans.find((p) => p.week === week);
     if (plan) await weeklyPlanStore.save(agentId, plan);

@@ -1,0 +1,262 @@
+orchestrator_id: orch_dc5868477e5d
+goal: |
+  Migrate all remaining .js backend files to TypeScript via sub-batched
+  orchestrator seeds (~10-15 files each), sequentially ordered by dependency
+  layer (storage -> subagents -> skills -> serve -> glue), with foundation
+  directories getting rich types and glue directories getting mechanical
+  renames.
+
+# This is the orchestrator-level manifest. It does NOT directly enumerate any
+# .js source files. Instead, it lists sub-seeds in strict execution order. Each
+# sub-seed carries its own file manifest and its own AC clause (e) which is
+# what actually verifies "no .js file in seed manifest exists on disk" against
+# that specific sub-batch.
+#
+# Therefore the orchestrator-level AC 5 ("Every .js file listed in seed
+# manifest no longer exists on disk") is vacuously satisfied at this level:
+# the source-file list is empty here. Each sub-seed below is independently
+# responsible for verifying its own file manifest is consumed.
+
+source_files: []   # orchestrator-level manifest contains no direct file entries
+
+execution_mode: strictly_sequential
+
+verbatim_acceptance_criteria_per_subseed:
+  - id: a
+    text: "`pnpm typecheck` exit 0"
+  - id: b
+    text: "`pnpm test` exit 0"
+  - id: c
+    text: "`pnpm test:spa` exit 0"
+  - id: d
+    text: "`pnpm build` exit 0"
+  - id: e
+    text: "Every `.js` file in the seed's manifest no longer exists on disk"
+  - id: f_foundation_only
+    text: "Zero NEW `as any` introduced (grep the seed's diff) — applies to foundation seeds (storage / subagents / models / time)"
+
+global_constraints:
+  - "tsc --noEmit -p tsconfig.node.json must stay green at end of each seed"
+  - "pnpm test + pnpm test:spa + pnpm build all green at end of each seed"
+  - "No widening of strict flags"
+  - "Do not touch src/serve/spa/components/ui/*"
+  - "10-15 files per seed (counting source + colocated .test as 2 files)"
+  - "Target <100 tsc errors mid-run per seed"
+  - "Foundation seeds: zero new `as any`"
+  - "Glue seeds: mechanical rename"
+  - "Strictly sequential execution"
+  - "Each .test.js migrates with source sibling (same seed)"
+  - "Heartbeat re-inclusion folded into the final storage seed"
+  - "Entry points (bin/aweek.js, scripts/dev.mjs, scripts/build.mjs, src/index.js) in final glue seed"
+  - "AC listed verbatim in every sub-seed prompt"
+
+subseeds:
+  - order: 1
+    id: seed-01-storage-A
+    layer: storage
+    typing_depth: rich
+    file_count: 10
+    rationale: "Foundation storage modules: agents, helpers, env, config, goals."
+    files:
+      - src/storage/agent-store.js
+      - src/storage/agent-store.test.js
+      - src/storage/agent-helpers.js
+      - src/storage/agent-helpers.test.js
+      - src/storage/agent-env-store.js
+      - src/storage/agent-env-store.test.js
+      - src/storage/config-store.js
+      - src/storage/config-store.test.js
+      - src/storage/goal-store.js
+      - src/storage/goal-store.test.js
+
+  - order: 2
+    id: seed-02-storage-B
+    layer: storage
+    typing_depth: rich
+    file_count: 10
+    rationale: "Foundation storage modules: inbox + plan family."
+    files:
+      - src/storage/inbox-store.js
+      - src/storage/inbox-store.test.js
+      - src/storage/weekly-plan-store.js
+      - src/storage/weekly-plan-store.test.js
+      - src/storage/monthly-plan-store.js
+      - src/storage/monthly-plan-store.test.js
+      - src/storage/plan-markdown-store.js
+      - src/storage/plan-markdown-store.test.js
+      - src/storage/plan-interview-store.js
+      - src/storage/plan-interview-store.test.js
+
+  - order: 3
+    id: seed-03-storage-C-final
+    layer: storage
+    typing_depth: rich
+    file_count: 10
+    rationale: |
+      FINAL storage seed: usage / activity-log / execution / execution-log /
+      artifact stores. Also re-includes the 5 heartbeat files in
+      tsconfig.node.json (signature drift resolved once storage is fully
+      typed).
+    files:
+      - src/storage/usage-store.js
+      - src/storage/usage-store.test.js
+      - src/storage/activity-log-store.js
+      - src/storage/activity-log-store.test.js
+      - src/storage/execution-store.js
+      - src/storage/execution-store.test.js
+      - src/storage/execution-log-store.js
+      - src/storage/execution-log-store.test.js
+      - src/storage/artifact-store.js
+      - src/storage/artifact-store.test.js
+    extra_acceptance_criteria:
+      - "5 heartbeat files removed from tsconfig.node.json `exclude` list"
+
+  - order: 4
+    id: seed-04-subagents-models-time
+    layer: foundations_other
+    typing_depth: rich
+    file_count: 9
+    rationale: |
+      Subagents (.claude/agents identity primitives shared with hire/init),
+      models/agent (agent/goal/plan builders), and time/zone (TZ primitives).
+    files:
+      - src/subagents/subagent-discovery.js
+      - src/subagents/subagent-discovery.test.js
+      - src/subagents/subagent-file.js
+      - src/subagents/subagent-file.test.js
+      - src/models/agent.js
+      - src/models/agent.test.js
+      - src/models/goal-plan.test.js
+      - src/time/zone.js
+      - src/time/zone.test.js
+
+  - order: 5
+    id: seed-05-skills-A-hire
+    layer: skills
+    typing_depth: mechanical
+    file_count: 13
+    rationale: "Skill modules in the hire/init flow."
+    files:
+      - src/skills/init.js
+      - src/skills/init.test.js
+      - src/skills/init-hire-menu.js
+      - src/skills/init-hire-menu.test.js
+      - src/skills/hire.js
+      - src/skills/hire-route.js
+      - src/skills/hire-route.test.js
+      - src/skills/hire-all.js
+      - src/skills/hire-all.test.js
+      - src/skills/hire-select-some.js
+      - src/skills/hire-select-some.test.js
+      - src/skills/hire-create-new.js
+      - src/skills/hire-create-new.test.js
+
+  - order: 6
+    id: seed-06-skills-B-plan-manage
+    layer: skills
+    typing_depth: mechanical
+    file_count: 14
+    rationale: "Skill modules: hire-create-new-menu, manage, plan family, resume, launchd, run-once."
+    files:
+      - src/skills/hire-create-new-menu.js
+      - src/skills/hire-create-new-menu.test.js
+      - src/skills/manage.js
+      - src/skills/manage.test.js
+      - src/skills/plan.js
+      - src/skills/plan.test.js
+      - src/skills/plan-ambiguity.js
+      - src/skills/plan-ambiguity.test.js
+      - src/skills/plan-interview-triggers.js
+      - src/skills/plan-interview-triggers.test.js
+      - src/skills/resume-agent.js
+      - src/skills/resume-agent.test.js
+      - src/skills/launchd.js
+      - src/skills/launchd.test.js
+
+  - order: 7
+    id: seed-07-skills-C-runtime
+    layer: skills
+    typing_depth: mechanical
+    file_count: 14
+    rationale: "Remaining skill modules: run-once + delegation + execution + reporting + calendar grid."
+    files:
+      - src/skills/run-once.js
+      - src/skills/run-once.test.js
+      - src/skills/delegate-task.js
+      - src/skills/delegate-task.test.js
+      - src/skills/execution.js
+      - src/skills/execution.test.js
+      - src/skills/query.js
+      - src/skills/query.test.js
+      - src/skills/status.js
+      - src/skills/status.test.js
+      - src/skills/summary.js
+      - src/skills/summary.test.js
+      - src/skills/weekly-calendar-grid.js
+      - src/skills/weekly-calendar-grid.test.js
+
+  - order: 8
+    id: seed-08-serve-A-data-errors
+    layer: serve
+    typing_depth: mechanical
+    file_count: 11
+    rationale: "Serve data endpoint handlers + serve errors module."
+    files:
+      - src/serve/data/index.js
+      - src/serve/data/agents.js
+      - src/serve/data/calendar.js
+      - src/serve/data/plan.js
+      - src/serve/data/activity.js
+      - src/serve/data/budget.js
+      - src/serve/data/logs.js
+      - src/serve/data/execution-log.js
+      - src/serve/data/data.test.js
+      - src/serve/errors.js
+      - src/serve/errors.test.js
+
+  - order: 9
+    id: seed-09-serve-B-server-spa-helpers
+    layer: serve
+    typing_depth: mechanical
+    file_count: 8
+    rationale: |
+      Dashboard HTTP server entry + integration tests + remaining SPA hook /
+      lib / page .js helpers (NOT touching components/ui).
+    files:
+      - src/serve/server.js
+      - src/serve/server.test.js
+      - src/serve/serve-cli.integration.test.js
+      - src/serve/spa/hooks/resource-controller.js
+      - src/serve/spa/hooks/resource-controller.test.js
+      - src/serve/spa/lib/execution-log-summary.js
+      - src/serve/spa/pages/index.js
+      - src/serve/spa/pages/pages.contract.test.js
+
+  - order: 10
+    id: seed-10-glue-final
+    layer: glue
+    typing_depth: mechanical
+    file_count: 6
+    rationale: |
+      FINAL glue seed: cli dispatcher + public re-export + entry points.
+      bin/aweek.js -> bin/aweek.ts (emits dist/bin/aweek.js, already wired).
+      scripts/dev.mjs + scripts/build.mjs -> .mts run via tsx (devDep).
+    files:
+      - src/cli/dispatcher.js
+      - src/cli/dispatcher.test.js
+      - src/index.js
+      - bin/aweek.js
+      - scripts/dev.mjs
+      - scripts/build.mjs
+
+verification_orchestrator_ac5:
+  ac: "Every .js file listed in seed manifest no longer exists on disk"
+  scope: orchestrator-level manifest
+  source_file_entries_at_this_level: 0
+  result: vacuously_satisfied
+  note: |
+    The orchestrator-level manifest's `source_files: []` is empty by design.
+    Per AC explicitness ("AC listed verbatim"), each sub-seed independently
+    carries AC clause (e) for its own file list. Sub-seed-level AC 5 is the
+    deterministic, shell-greppable invariant that gets evaluated when each
+    sub-seed runs.

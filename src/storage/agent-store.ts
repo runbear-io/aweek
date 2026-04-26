@@ -7,27 +7,66 @@ import { readFile, writeFile, readdir, mkdir, rm, access } from 'node:fs/promise
 import { join } from 'node:path';
 import { assertValid } from '../schemas/validator.js';
 import { WeeklyPlanStore } from './weekly-plan-store.js';
+import type { Agent } from '../schemas/agent.js';
 
 const SCHEMA_ID = 'aweek://schemas/agent-config';
 
+/**
+ * Minimal shape of a legacy embedded weekly plan that may still appear on
+ * pre-Phase-3 agent JSON documents. The canonical weekly-plan schema lives
+ * in `src/schemas/weekly-plan.schema.js`; this seed only needs the `week`
+ * key for the migration logic, so the rest of the plan is left as
+ * `Record<string, unknown>` to avoid a cross-seed type dependency.
+ */
+interface LegacyWeeklyPlan extends Record<string, unknown> {
+  week: string;
+}
+
+/**
+ * Input shape accepted by `AgentStore.save()`.
+ *
+ * Pre-migration callers (and a handful of tests) may still hand in a config
+ * that carries an embedded `weeklyPlans: [...]` array. Such arrays are
+ * reconciled against the per-week `WeeklyPlanStore` and stripped before the
+ * agent JSON is written to disk, so the persisted shape is always a plain
+ * `Agent`. Modern callers simply pass `Agent` directly — the optional
+ * `weeklyPlans` key is treated as a no-op.
+ */
+export type AgentSaveInput = Agent & { weeklyPlans?: LegacyWeeklyPlan[] };
+
+/**
+ * Outcome of `loadAllPartial()` — same as `loadAll()` but tolerates
+ * per-file failures so dashboards can surface drifted data instead of
+ * disappearing the whole roster on the first bad agent.
+ */
+export interface LoadAllPartialResult {
+  agents: Agent[];
+  errors: Array<{ id: string; message: string }>;
+}
+
+/** Updater function signature accepted by `AgentStore.update()`. */
+export type AgentUpdater = (current: Agent) => Agent;
+
+/** Single per-id outcome used internally by `loadAllPartial()`. */
+type LoadAttempt =
+  | { ok: true; id: string; agent: Agent }
+  | { ok: false; id: string; message: string };
+
 export class AgentStore {
-  /**
-   * @param {string} baseDir - Root directory for agent data (e.g., ./.aweek/agents)
-   */
-  constructor(baseDir) {
+  /** Root directory for agent data (e.g., ./.aweek/agents) */
+  readonly baseDir: string;
+
+  constructor(baseDir: string) {
     this.baseDir = baseDir;
   }
 
   /** Ensure the base directory exists */
-  async init() {
+  async init(): Promise<void> {
     await mkdir(this.baseDir, { recursive: true });
   }
 
-  /**
-   * Path to an agent's config file.
-   * @param {string} agentId
-   */
-  _filePath(agentId) {
+  /** Path to an agent's config file. */
+  _filePath(agentId: string): string {
     return join(this.baseDir, `${agentId}.json`);
   }
 
@@ -44,10 +83,8 @@ export class AgentStore {
    * before serialising so the persisted agent JSON never contains it
    * (the schema's `additionalProperties: false` would reject it
    * anyway).
-   *
-   * @param {object} config - Full agent config object
    */
-  async save(config) {
+  async save(config: AgentSaveInput): Promise<Agent> {
     await this.init();
 
     // Reconcile the per-week file store with any in-memory input.
@@ -56,7 +93,9 @@ export class AgentStore {
     // no-op for them.
     if (Array.isArray(config.weeklyPlans)) {
       const weeklyPlanStore = new WeeklyPlanStore(this.baseDir);
-      const plansToWrite = config.weeklyPlans.filter((p) => p && p.week);
+      const plansToWrite = config.weeklyPlans.filter(
+        (p): p is LegacyWeeklyPlan => Boolean(p && typeof p.week === 'string'),
+      );
       const keepWeeks = new Set(plansToWrite.map((p) => p.week));
       const existingWeeks = await _safeListWeeks(weeklyPlanStore, config.id);
       for (const week of existingWeeks) {
@@ -76,7 +115,9 @@ export class AgentStore {
     const filePath = this._filePath(config.id);
     const data = JSON.stringify(config, null, 2) + '\n';
     await writeFile(filePath, data, 'utf-8');
-    return config;
+    // After the optional `weeklyPlans` strip + schema assertion above,
+    // `config` matches `Agent` exactly — return it as the canonical type.
+    return config as Agent;
   }
 
   /**
@@ -89,14 +130,12 @@ export class AgentStore {
    * `weeklyPlans` — consumers must read weekly plans via
    * `WeeklyPlanStore` directly.
    *
-   * @param {string} agentId
-   * @returns {Promise<object>} The parsed agent config
-   * @throws {Error} If agent not found or invalid
+   * @throws If agent not found or invalid
    */
-  async load(agentId) {
+  async load(agentId: string): Promise<Agent> {
     const filePath = this._filePath(agentId);
     const raw = await readFile(filePath, 'utf-8');
-    const config = JSON.parse(raw);
+    const config = JSON.parse(raw) as AgentSaveInput;
 
     // Migration: move legacy embedded weeklyPlans to the per-week file
     // store, then drop the field. We do this BEFORE schema validation
@@ -114,15 +153,11 @@ export class AgentStore {
     delete config.weeklyPlans;
 
     assertValid(SCHEMA_ID, config);
-    return config;
+    return config as Agent;
   }
 
-  /**
-   * Check if an agent exists.
-   * @param {string} agentId
-   * @returns {Promise<boolean>}
-   */
-  async exists(agentId) {
+  /** Check if an agent exists. */
+  async exists(agentId: string): Promise<boolean> {
     try {
       await access(this._filePath(agentId));
       return true;
@@ -131,11 +166,8 @@ export class AgentStore {
     }
   }
 
-  /**
-   * List all agent IDs.
-   * @returns {Promise<string[]>}
-   */
-  async list() {
+  /** List all agent IDs. */
+  async list(): Promise<string[]> {
     await this.init();
     const entries = await readdir(this.baseDir);
     return entries
@@ -143,11 +175,8 @@ export class AgentStore {
       .map((f) => f.replace(/\.json$/, ''));
   }
 
-  /**
-   * Load all agent configs.
-   * @returns {Promise<object[]>}
-   */
-  async loadAll() {
+  /** Load all agent configs. */
+  async loadAll(): Promise<Agent[]> {
     const ids = await this.list();
     return Promise.all(ids.map((id) => this.load(id)));
   }
@@ -157,26 +186,22 @@ export class AgentStore {
    * the whole list on the first bad agent. Callers (dashboards) surface
    * the collected errors in the UI so drifted data stays discoverable
    * instead of silently disappearing.
-   *
-   * @returns {Promise<{ agents: object[], errors: Array<{ id: string, message: string }> }>}
    */
-  async loadAllPartial() {
+  async loadAllPartial(): Promise<LoadAllPartialResult> {
     const ids = await this.list();
-    const results = await Promise.all(
-      ids.map(async (id) => {
+    const results: LoadAttempt[] = await Promise.all(
+      ids.map(async (id): Promise<LoadAttempt> => {
         try {
           return { ok: true, id, agent: await this.load(id) };
         } catch (err) {
-          return {
-            ok: false,
-            id,
-            message: (err && err.message) || 'unknown error',
-          };
+          const message =
+            err instanceof Error && err.message ? err.message : 'unknown error';
+          return { ok: false, id, message };
         }
       }),
     );
-    const agents = [];
-    const errors = [];
+    const agents: Agent[] = [];
+    const errors: Array<{ id: string; message: string }> = [];
     for (const r of results) {
       if (r.ok) agents.push(r.agent);
       else errors.push({ id: r.id, message: r.message });
@@ -184,22 +209,19 @@ export class AgentStore {
     return { agents, errors };
   }
 
-  /**
-   * Delete an agent config.
-   * @param {string} agentId
-   */
-  async delete(agentId) {
+  /** Delete an agent config. */
+  async delete(agentId: string): Promise<void> {
     const filePath = this._filePath(agentId);
     await rm(filePath, { force: true });
   }
 
   /**
    * Update an agent config (merge-style). Loads, patches, validates, saves.
-   * @param {string} agentId
-   * @param {function(object): object} updater - Receives current config, returns updated config
-   * @returns {Promise<object>} Updated config
+   * The `updater` receives the current config and must return the updated
+   * config — typically the same object after mutation, in line with the
+   * legacy `.js` callers.
    */
-  async update(agentId, updater) {
+  async update(agentId: string, updater: AgentUpdater): Promise<Agent> {
     const current = await this.load(agentId);
     const updated = updater(current);
     updated.updatedAt = new Date().toISOString();
@@ -213,12 +235,11 @@ export class AgentStore {
  * the per-week file store against an in-memory `weeklyPlans` array —
  * we need the existing week list to know which per-week files to
  * delete when a caller drops a week from the array.
- *
- * @param {WeeklyPlanStore} store
- * @param {string} agentId
- * @returns {Promise<string[]>}
  */
-async function _safeListWeeks(store, agentId) {
+async function _safeListWeeks(
+  store: WeeklyPlanStore,
+  agentId: string,
+): Promise<string[]> {
   try {
     return await store.list(agentId);
   } catch {

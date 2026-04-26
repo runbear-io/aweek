@@ -10,7 +10,7 @@
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentStore } from './agent-store.js';
@@ -24,11 +24,20 @@ import {
   createWeeklyPlan,
 } from '../models/agent.js';
 import { validateAgentConfig } from '../schemas/validator.js';
-import { writeFile, mkdir } from 'node:fs/promises';
+import type { Agent } from '../schemas/agent.js';
+
+/**
+ * Loose loaded-config alias used in regression assertions for fields that
+ * the canonical `Agent` shape intentionally drops (legacy `identity`,
+ * `name`, `role`, `systemPrompt`, `weeklyPlans`). Indexing through this
+ * record lets us probe for "did a banned field sneak back onto disk?"
+ * without forcing the test surface to widen the canonical interface.
+ */
+type LoadedAgent = Agent & Record<string, unknown>;
 
 describe('AgentStore', () => {
-  let store;
-  let tmpDir;
+  let store: AgentStore;
+  let tmpDir: string;
 
   before(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'aweek-test-'));
@@ -52,7 +61,7 @@ describe('AgentStore', () => {
   it('persists only scheduling fields — no identity ever hits disk', async () => {
     const config = createAgentConfig({ subagentRef: 'schedbot' });
     await store.save(config);
-    const loaded = await store.load(config.id);
+    const loaded = (await store.load(config.id)) as LoadedAgent;
 
     // Scheduling-only contract: identity lives in .claude/agents/SLUG.md,
     // never in the aweek JSON. Guard against regressions that might sneak
@@ -148,24 +157,24 @@ describe('AgentStore', () => {
     await new Promise((r) => setTimeout(r, 5));
 
     const updated = await store.update(config.id, (current) => {
-      current.goals.push(createGoal('Learn to test'));
+      (current.goals ??= []).push(createGoal('Learn to test'));
       return current;
     });
 
-    assert.equal(updated.goals.length, 1);
-    assert.equal(updated.goals[0].description, 'Learn to test');
-    assert.ok(updated.updatedAt >= config.updatedAt);
+    assert.equal(updated.goals?.length, 1);
+    assert.equal((updated.goals?.[0] as { description?: string })?.description, 'Learn to test');
+    assert.ok((updated.updatedAt ?? '') >= (config.updatedAt ?? ''));
   });
 
   it('should save agent with full monthly and weekly plans', async () => {
     const config = createAgentConfig({ subagentRef: 'planner' });
 
     const goal = createGoal('Ship v1');
-    config.goals.push(goal);
+    (config.goals ??= []).push(goal);
 
     const obj = createObjective('Build core module', goal.id);
     const monthlyPlan = createMonthlyPlan('2026-04', [obj]);
-    config.monthlyPlans.push(monthlyPlan);
+    (config.monthlyPlans ??= []).push(monthlyPlan);
 
     const task = createTask({ title: 'Write unit tests', prompt: 'Write unit tests' }, obj.id);
     const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
@@ -179,12 +188,12 @@ describe('AgentStore', () => {
     const weeklyPlanStore = new WeeklyPlanStore(tmpDir);
     await weeklyPlanStore.save(config.id, weeklyPlan);
 
-    const loaded = await store.load(config.id);
-    assert.equal(loaded.goals.length, 1);
-    assert.equal(loaded.monthlyPlans.length, 1);
+    const loaded = (await store.load(config.id)) as LoadedAgent;
+    assert.equal(loaded.goals?.length, 1);
+    assert.equal(loaded.monthlyPlans?.length, 1);
     // `weeklyPlans` is no longer embedded on the agent JSON.
     assert.equal(loaded.weeklyPlans, undefined);
-    assert.equal(loaded.inbox.length, 0);
+    assert.equal(loaded.inbox?.length, 0);
 
     // The weekly plan round-trips through the file store.
     const reloadedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
@@ -242,8 +251,8 @@ describe('AgentStore', () => {
     const legacyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
 
     const base = createAgentConfig({ subagentRef: 'legacy-bot' });
-    base.goals.push(goal);
-    base.monthlyPlans.push(createMonthlyPlan('2026-04', [obj]));
+    (base.goals ??= []).push(goal);
+    (base.monthlyPlans ??= []).push(createMonthlyPlan('2026-04', [obj]));
 
     // Write the JSON file directly so we can embed the legacy
     // `weeklyPlans` field that the new schema no longer permits.
@@ -255,7 +264,7 @@ describe('AgentStore', () => {
       'utf-8',
     );
 
-    const loaded = await migrateStore.load(base.id);
+    const loaded = (await migrateStore.load(base.id)) as LoadedAgent;
     assert.equal(loaded.weeklyPlans, undefined, 'weeklyPlans must be stripped from the loaded config');
     assert.equal(loaded.id, base.id);
 

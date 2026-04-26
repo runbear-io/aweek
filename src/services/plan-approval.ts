@@ -503,7 +503,7 @@ export async function processApproval({
   const store = createAgentStore(dataDir);
   let config: AgentConfigShape;
   try {
-    config = (await store.load(agentId)) as AgentConfigShape;
+    config = (await store.load(agentId)) as unknown as AgentConfigShape;
   } catch {
     return { success: false, errors: [`Agent not found: ${agentId}`] };
   }
@@ -536,7 +536,7 @@ export async function processApproval({
     plan.updatedAt = new Date().toISOString();
     await weeklyPlanStore.save(agentId, plan);
     config.updatedAt = new Date().toISOString();
-    await store.save(config);
+    await store.save(config as unknown as Parameters<typeof store.save>[0]);
 
     return {
       success: true,
@@ -549,7 +549,7 @@ export async function processApproval({
   if (decision === 'reject') {
     await weeklyPlanStore.delete(agentId, plan.week);
     config.updatedAt = new Date().toISOString();
-    await store.save(config);
+    await store.save(config as unknown as Parameters<typeof store.save>[0]);
 
     return {
       success: true,
@@ -586,7 +586,7 @@ export async function processApproval({
 
     await weeklyPlanStore.save(agentId, plan);
     config.updatedAt = new Date().toISOString();
-    await store.save(config);
+    await store.save(config as unknown as Parameters<typeof store.save>[0]);
 
     return {
       success: true,
@@ -759,7 +759,7 @@ export async function loadPlanForReview(
   const store = createAgentStore(dataDir);
   let config: AgentConfigShape;
   try {
-    config = (await store.load(agentId)) as AgentConfigShape;
+    config = (await store.load(agentId)) as unknown as AgentConfigShape;
   } catch {
     return { success: false, errors: [`Agent not found: ${agentId}`] };
   }

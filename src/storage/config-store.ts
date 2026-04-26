@@ -15,12 +15,28 @@ import { DEFAULT_TZ, isValidTimeZone } from '../time/zone.js';
 const CONFIG_FILENAME = 'config.json';
 
 /**
+ * Shape of the persisted aweek-wide config document.
+ *
+ * Currently a single field — the IANA time zone — but extra knobs can be
+ * appended here without breaking older callers. New optional fields should
+ * be folded into both `AweekConfig` and the defaults map in `loadConfig`.
+ */
+export interface AweekConfig {
+  timeZone: string;
+}
+
+/**
+ * Partial / user-facing input to `saveConfig`. All fields are optional so
+ * callers can patch a single knob without re-stating the rest of the
+ * document; missing fields are filled in from the on-disk current value.
+ */
+export type AweekConfigInput = Partial<AweekConfig>;
+
+/**
  * Resolve the path to the config file given a data dir (usually
  * `.aweek/agents` — the config lives one level up at `.aweek/config.json`).
- * @param {string} dataDir
- * @returns {string}
  */
-export function configPath(dataDir) {
+export function configPath(dataDir: string): string {
   // The rest of the codebase passes dataDir as `.aweek/agents`. The config
   // itself belongs in `.aweek/`, so walk up one level.
   return join(dirname(dataDir), CONFIG_FILENAME);
@@ -30,20 +46,17 @@ export function configPath(dataDir) {
  * Load the config object. Missing file → defaults. Invalid `timeZone` in
  * the file → defaults (plus a warning on stderr) so a typo can't brick
  * scheduling.
- *
- * @param {string} dataDir
- * @returns {Promise<{timeZone: string}>}
  */
-export async function loadConfig(dataDir) {
-  const defaults = { timeZone: DEFAULT_TZ };
-  let raw;
+export async function loadConfig(dataDir: string): Promise<AweekConfig> {
+  const defaults: AweekConfig = { timeZone: DEFAULT_TZ };
+  let raw: string;
   try {
     raw = await readFile(configPath(dataDir), 'utf8');
   } catch (err) {
-    if (err.code === 'ENOENT') return defaults;
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return defaults;
     throw err;
   }
-  let parsed;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
@@ -52,14 +65,17 @@ export async function loadConfig(dataDir) {
     );
     return defaults;
   }
-  const out = { ...defaults };
-  if (typeof parsed.timeZone === 'string') {
-    if (isValidTimeZone(parsed.timeZone)) {
-      out.timeZone = parsed.timeZone;
-    } else {
-      process.stderr.write(
-        `aweek: ${CONFIG_FILENAME} has invalid timeZone ${JSON.stringify(parsed.timeZone)}; falling back to ${DEFAULT_TZ}\n`,
-      );
+  const out: AweekConfig = { ...defaults };
+  if (parsed && typeof parsed === 'object') {
+    const candidate = (parsed as { timeZone?: unknown }).timeZone;
+    if (typeof candidate === 'string') {
+      if (isValidTimeZone(candidate)) {
+        out.timeZone = candidate;
+      } else {
+        process.stderr.write(
+          `aweek: ${CONFIG_FILENAME} has invalid timeZone ${JSON.stringify(candidate)}; falling back to ${DEFAULT_TZ}\n`,
+        );
+      }
     }
   }
   return out;
@@ -68,12 +84,11 @@ export async function loadConfig(dataDir) {
 /**
  * Write the config object. Creates parent dirs if needed, validates
  * `timeZone` before writing.
- *
- * @param {string} dataDir
- * @param {{timeZone?: string}} config
- * @returns {Promise<void>}
  */
-export async function saveConfig(dataDir, config) {
+export async function saveConfig(
+  dataDir: string,
+  config: AweekConfigInput,
+): Promise<void> {
   if (!config || typeof config !== 'object') {
     throw new TypeError('saveConfig expects a config object');
   }
@@ -86,6 +101,6 @@ export async function saveConfig(dataDir, config) {
   await mkdir(dirname(path), { recursive: true });
   // Round-trip through loadConfig's defaults to keep shape stable.
   const current = await loadConfig(dataDir);
-  const merged = { ...current, ...config };
+  const merged: AweekConfig = { ...current, ...config };
   await writeFile(path, JSON.stringify(merged, null, 2) + '\n', 'utf8');
 }

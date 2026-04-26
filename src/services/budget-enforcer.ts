@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { getMondayDate } from '../storage/usage-store.js';
 import type { AgentStore } from '../storage/agent-store.js';
 import type { UsageStore } from '../storage/usage-store.js';
+import type { Agent } from '../schemas/agent.js';
 
 /**
  * @typedef {object} EnforcementResult
@@ -183,7 +184,13 @@ export async function enforceBudget(
   const monday = weekMonday || getMondayDate();
 
   // Load agent config to get budget limit
-  const config = (await agentStore.load(agentId)) as BudgetAgentConfig;
+  // Cast through `unknown`: AgentStore.load returns the strict `Agent`
+  // shape (post-storage-seed), and `BudgetAgentConfig` is a deliberately
+  // loose local mirror with index signatures so this enforcer can read
+  // legacy agents that still carry extra keys. The runtime invariants
+  // (validated by the agent schema before save) make the structural
+  // cast safe.
+  const config = (await agentStore.load(agentId)) as unknown as BudgetAgentConfig;
   const budgetLimit = config.weeklyTokenBudget || config.budget?.weeklyTokenLimit || 0;
 
   if (budgetLimit <= 0) {
@@ -236,7 +243,7 @@ export async function enforceBudget(
       cfg.budget.paused = true;
       cfg.budget.currentUsage = used;
       return cfg;
-    }) as (cfg: object) => object);
+    }) as unknown as (cfg: Agent) => Agent);
     result.paused = true;
   }
 
@@ -300,7 +307,7 @@ export async function isAgentPaused(
   if (!deps?.agentStore) {
     throw new Error('agentStore dependency is required');
   }
-  const config = (await deps.agentStore.load(agentId)) as BudgetAgentConfig;
+  const config = (await deps.agentStore.load(agentId)) as unknown as BudgetAgentConfig;
   return config.budget?.paused === true;
 }
 
@@ -323,7 +330,7 @@ export async function resumeAgent(
   return deps.agentStore.update(agentId, ((cfg: BudgetAgentConfig) => {
     cfg.budget.paused = false;
     return cfg;
-  }) as (cfg: object) => object) as Promise<BudgetAgentConfig>;
+  }) as unknown as (cfg: Agent) => Agent) as unknown as Promise<BudgetAgentConfig>;
 }
 
 /**
@@ -388,7 +395,7 @@ export async function topUpResume(
     }
   }
 
-  const config = (await deps.agentStore.load(agentId)) as BudgetAgentConfig;
+  const config = (await deps.agentStore.load(agentId)) as unknown as BudgetAgentConfig;
   const wasPaused = config.budget?.paused === true;
   const previousUsage = config.budget?.currentUsage || 0;
   const previousLimit = config.weeklyTokenBudget || config.budget?.weeklyTokenLimit || 0;
@@ -409,7 +416,7 @@ export async function topUpResume(
       cfg.weeklyTokenBudget = newLimit;
     }
     return cfg;
-  }) as (cfg: object) => object);
+  }) as unknown as (cfg: Agent) => Agent);
 
   return {
     agentId,

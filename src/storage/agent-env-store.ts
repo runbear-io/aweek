@@ -22,16 +22,22 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+/** Filename of an agent's per-agent dotenv file inside its slug directory. */
 export const AGENT_ENV_FILENAME = '.env';
+
+/**
+ * Parsed env-file map. Values are always strings — the dotenv subset this
+ * module understands has no notion of typed scalars.
+ */
+export type AgentEnvMap = Record<string, string>;
 
 /**
  * Absolute path to an agent's env file.
  *
- * @param {string} agentsDir - `.aweek/agents` root.
- * @param {string} agentId
- * @returns {string}
+ * @param agentsDir - `.aweek/agents` root.
+ * @param agentId - Agent slug.
  */
-export function envPath(agentsDir, agentId) {
+export function envPath(agentsDir: string, agentId: string): string {
   if (!agentsDir) throw new TypeError('agentsDir is required');
   if (!agentId) throw new TypeError('agentId is required');
   return join(agentsDir, agentId, AGENT_ENV_FILENAME);
@@ -40,11 +46,12 @@ export function envPath(agentsDir, agentId) {
 /**
  * Parse a dotenv-style string into a plain object.
  *
- * @param {string} text
- * @returns {Record<string, string>}
+ * Accepts `unknown` so that callers passing values of uncertain type
+ * (legacy JS callers, JSON-derived blobs) do not need to pre-cast — we
+ * defensively return `{}` for any non-string input.
  */
-export function parseEnvFile(text) {
-  const result = {};
+export function parseEnvFile(text: unknown): AgentEnvMap {
+  const result: AgentEnvMap = {};
   if (typeof text !== 'string' || text.length === 0) return result;
 
   const lines = text.split(/\r?\n/);
@@ -67,14 +74,14 @@ export function parseEnvFile(text) {
   return result;
 }
 
-function stripExport(line) {
+function stripExport(line: string): string {
   if (line.startsWith('export ') || line.startsWith('export\t')) {
     return line.slice(7).trimStart();
   }
   return line;
 }
 
-function parseValue(rest) {
+function parseValue(rest: string): string | null {
   const trimmed = rest.trim();
   if (trimmed.length === 0) return '';
 
@@ -92,7 +99,7 @@ function parseValue(rest) {
   return value.trim();
 }
 
-function findClosingQuote(s, quote) {
+function findClosingQuote(s: string, quote: string): number {
   for (let i = 1; i < s.length; i++) {
     const ch = s[i];
     if (ch === '\\' && quote === '"') {
@@ -104,15 +111,15 @@ function findClosingQuote(s, quote) {
   return -1;
 }
 
-function findInlineCommentStart(s) {
+function findInlineCommentStart(s: string): number {
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '#' && (i === 0 || /\s/.test(s[i - 1]))) return i;
+    if (s[i] === '#' && (i === 0 || /\s/.test(s[i - 1] as string))) return i;
   }
   return -1;
 }
 
-function unescapeDoubleQuoted(s) {
-  return s.replace(/\\(.)/g, (_m, ch) => {
+function unescapeDoubleQuoted(s: string): string {
+  return s.replace(/\\(.)/g, (_m, ch: string) => {
     switch (ch) {
       case 'n': return '\n';
       case 'r': return '\r';
@@ -126,17 +133,16 @@ function unescapeDoubleQuoted(s) {
 
 /**
  * Load and parse the agent's `.env`. Returns `{}` when the file is absent.
- *
- * @param {string} agentsDir
- * @param {string} agentId
- * @returns {Promise<Record<string, string>>}
  */
-export async function loadAgentEnv(agentsDir, agentId) {
-  let text;
+export async function loadAgentEnv(
+  agentsDir: string,
+  agentId: string,
+): Promise<AgentEnvMap> {
+  let text: string;
   try {
     text = await readFile(envPath(agentsDir, agentId), 'utf8');
   } catch (err) {
-    if (err && err.code === 'ENOENT') return {};
+    if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return {};
     throw err;
   }
   return parseEnvFile(text);

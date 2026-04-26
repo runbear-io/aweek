@@ -1,5 +1,11 @@
 /**
  * Tests for the shared agent selection / storage helpers.
+ *
+ * Migrated to TypeScript as part of seed-01-storage-A. The test file is
+ * excluded from `tsc --noEmit -p tsconfig.node.json` (see the
+ * `src/**\/*.test.ts` glob in that config's `exclude` block), so this
+ * module is parsed by `tsx` at test time but does not participate in the
+ * type-check pass — keeping the type surface lightweight is fine here.
  */
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,8 +27,20 @@ import {
   findAgentByQuery,
   formatAgentChoice,
 } from './agent-helpers.js';
+import type { Agent } from '../schemas/agent.js';
 
-let tmpDir;
+/**
+ * Loose stand-in for the historical "agent config" shape used by
+ * `findAgentByQuery`. The helper accepts the canonical `Agent` shape
+ * AND legacy shapes that still carry an `identity: { name, role }` blob,
+ * so the test fixtures can keep using the legacy form for matching
+ * scenarios without reaching for an unsafe escape hatch.
+ */
+type AgentLike = Pick<Agent, 'id'> & {
+  identity?: { name?: string; role?: string };
+};
+
+let tmpDir: string;
 
 before(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), 'aweek-helpers-'));
@@ -169,7 +187,7 @@ describe('getAgentChoices', () => {
 });
 
 describe('findAgentByQuery', () => {
-  const configs = [
+  const configs: AgentLike[] = [
     { id: 'abc-123', identity: { name: 'Ada', role: 'engineer' } },
     { id: 'def-456', identity: { name: 'Bob', role: 'writer' } },
     { id: 'ghi-789', identity: { name: 'Adam', role: 'ops' } },
@@ -177,17 +195,17 @@ describe('findAgentByQuery', () => {
 
   it('matches on exact id', () => {
     const match = findAgentByQuery('def-456', configs);
-    assert.equal(match.identity.name, 'Bob');
+    assert.equal(match?.identity?.name, 'Bob');
   });
 
   it('matches on case-insensitive exact name', () => {
     const match = findAgentByQuery('ADA', configs);
-    assert.equal(match.id, 'abc-123');
+    assert.equal(match?.id, 'abc-123');
   });
 
   it('returns the single prefix match', () => {
     const match = findAgentByQuery('def', configs);
-    assert.equal(match.id, 'def-456');
+    assert.equal(match?.id, 'def-456');
   });
 
   it('returns null on ambiguous prefix', () => {
