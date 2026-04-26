@@ -104,7 +104,16 @@ export class AgentStore {
         }
       }
       for (const plan of plansToWrite) {
-        await weeklyPlanStore.save(config.id, plan);
+        // Legacy embedded plans are typed as `LegacyWeeklyPlan` (only the
+        // `week` key is required at the agent-config layer); the per-week
+        // `WeeklyPlanStore.save` enforces the full canonical shape via
+        // its AJV-backed `assertValid` call. Cast through `unknown` so
+        // the type-checker accepts the legacy shape — schema validation
+        // remains the source of truth at runtime.
+        await weeklyPlanStore.save(
+          config.id,
+          plan as unknown as Parameters<typeof weeklyPlanStore.save>[1],
+        );
       }
       // Strip the field before schema validation / serialisation — the
       // agent schema (additionalProperties: false) no longer permits it.
@@ -146,7 +155,13 @@ export class AgentStore {
       for (const plan of config.weeklyPlans) {
         if (!plan?.week) continue;
         if (await weeklyPlanStore.exists(agentId, plan.week)) continue;
-        await weeklyPlanStore.save(agentId, plan);
+        // See comment on the corresponding cast in `save()` above —
+        // `LegacyWeeklyPlan` is intentionally permissive; the canonical
+        // shape is enforced by AJV inside `WeeklyPlanStore.save`.
+        await weeklyPlanStore.save(
+          agentId,
+          plan as unknown as Parameters<typeof weeklyPlanStore.save>[1],
+        );
       }
     }
     // Always strip — even an empty array must not reach the validator.

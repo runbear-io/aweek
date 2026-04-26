@@ -29,14 +29,69 @@ import { dirname, join } from 'node:path';
 
 export const PLAN_FILENAME = 'plan.md';
 
+/** Section emitted under each canonical H2 heading by the parser. */
+export interface PlanMarkdownSection {
+  title: string;
+  body: string;
+}
+
+/** Output of `parsePlanMarkdownSections`. */
+export interface ParsedPlanMarkdown {
+  /** Text after `# ` on the first H1, or null when absent. */
+  heading: string | null;
+  /** Body between H1 and the first H2. */
+  preamble: string;
+  /** Sections in document order. */
+  sections: PlanMarkdownSection[];
+  /** Title → body, latest-wins on duplicate titles. */
+  byTitle: Record<string, string>;
+}
+
+/** Result of `writePlan`. */
+export interface WritePlanResult {
+  path: string;
+  bytes: number;
+}
+
+/** Outcome of the legacy plan migration. */
+export interface MigrateLegacyPlanResult {
+  outcome: 'migrated' | 'skipped';
+  path: string;
+  reason?: string;
+}
+
+/** Minimal shape of a legacy goal entry on `config.goals`. */
+interface LegacyGoal {
+  id?: string;
+  description?: string;
+  horizon?: string;
+  status?: string;
+}
+
+/** Minimal shape of a legacy monthly plan entry on `config.monthlyPlans`. */
+interface LegacyMonthlyObjective {
+  id?: string;
+  description?: string;
+  status?: string;
+}
+
+interface LegacyMonthlyPlan {
+  month?: string;
+  summary?: string;
+  objectives?: LegacyMonthlyObjective[];
+}
+
+/** Minimal shape of a legacy agent config consumed by the migrator. */
+interface LegacyAgentConfig {
+  identity?: { name?: string; description?: string };
+  goals?: LegacyGoal[];
+  monthlyPlans?: LegacyMonthlyPlan[];
+}
+
 /**
  * Resolve the absolute path to an agent's plan markdown.
- *
- * @param {string} agentsDir - `.aweek/agents` root.
- * @param {string} agentId
- * @returns {string}
  */
-export function planPath(agentsDir, agentId) {
+export function planPath(agentsDir: string, agentId: string): string {
   if (!agentsDir) throw new TypeError('agentsDir is required');
   if (!agentId) throw new TypeError('agentId is required');
   return join(agentsDir, agentId, PLAN_FILENAME);
@@ -44,17 +99,13 @@ export function planPath(agentsDir, agentId) {
 
 /**
  * Return true if the agent's plan.md exists.
- *
- * @param {string} agentsDir
- * @param {string} agentId
- * @returns {Promise<boolean>}
  */
-export async function exists(agentsDir, agentId) {
+export async function exists(agentsDir: string, agentId: string): Promise<boolean> {
   try {
     const s = await stat(planPath(agentsDir, agentId));
     return s.isFile();
   } catch (err) {
-    if (err && err.code === 'ENOENT') return false;
+    if (isErrnoException(err) && err.code === 'ENOENT') return false;
     throw err;
   }
 }
@@ -62,16 +113,12 @@ export async function exists(agentsDir, agentId) {
 /**
  * Read the plan markdown. Returns `null` when the file is absent so
  * callers can branch on "first-time agent" vs "existing".
- *
- * @param {string} agentsDir
- * @param {string} agentId
- * @returns {Promise<string|null>}
  */
-export async function readPlan(agentsDir, agentId) {
+export async function readPlan(agentsDir: string, agentId: string): Promise<string | null> {
   try {
     return await readFile(planPath(agentsDir, agentId), 'utf8');
   } catch (err) {
-    if (err && err.code === 'ENOENT') return null;
+    if (isErrnoException(err) && err.code === 'ENOENT') return null;
     throw err;
   }
 }
@@ -80,13 +127,12 @@ export async function readPlan(agentsDir, agentId) {
  * Write the plan markdown verbatim. Creates the parent agent directory
  * if it doesn't exist yet. Trailing newline is appended when missing so
  * editors that rely on POSIX-end-of-file semantics don't trip.
- *
- * @param {string} agentsDir
- * @param {string} agentId
- * @param {string} body
- * @returns {Promise<{path: string, bytes: number}>}
  */
-export async function writePlan(agentsDir, agentId, body) {
+export async function writePlan(
+  agentsDir: string,
+  agentId: string,
+  body: string,
+): Promise<WritePlanResult> {
   if (typeof body !== 'string') {
     throw new TypeError('writePlan body must be a string');
   }
@@ -95,6 +141,17 @@ export async function writePlan(agentsDir, agentId, body) {
   const withNewline = body.endsWith('\n') ? body : `${body}\n`;
   await writeFile(path, withNewline, 'utf8');
   return { path, bytes: withNewline.length };
+}
+
+/** Arguments for `migrateLegacyPlan`. */
+export interface MigrateLegacyPlanArgs {
+  agentsDir: string;
+  agentId: string;
+  config: LegacyAgentConfig;
+  /** Optional override for the H1; falls back to identity.name or agentId. */
+  name?: string;
+  /** Optional preamble override. */
+  description?: string;
 }
 
 /**
@@ -107,16 +164,6 @@ export async function writePlan(agentsDir, agentId, body) {
  * This is the only sanctioned path for bringing pre-markdown agents up
  * to the new layout — UI surfaces call it once at the top of `/aweek:plan`
  * (Branch A) so the user never has to remember.
- *
- * @param {object} params
- * @param {string} params.agentsDir - `.aweek/agents` root.
- * @param {string} params.agentId
- * @param {object} params.config - The agent JSON (needs identity + goals
- *   + monthlyPlans to render anything useful).
- * @param {string} [params.name] - Optional override for the H1; falls
- *   back to `config.identity?.name` or the agent id.
- * @param {string} [params.description] - Optional preamble override.
- * @returns {Promise<{outcome:'migrated'|'skipped', path:string, reason?:string}>}
  */
 export async function migrateLegacyPlan({
   agentsDir,
@@ -124,7 +171,7 @@ export async function migrateLegacyPlan({
   config,
   name,
   description,
-} = {}) {
+}: MigrateLegacyPlanArgs = {} as MigrateLegacyPlanArgs): Promise<MigrateLegacyPlanResult> {
   const path = planPath(agentsDir, agentId);
   if (await exists(agentsDir, agentId)) {
     return { outcome: 'skipped', path, reason: 'plan.md already exists' };
@@ -156,7 +203,7 @@ export const CANONICAL_SECTIONS = Object.freeze([
   'Monthly plans',
   'Strategies',
   'Notes',
-]);
+] as const);
 
 /**
  * Parse a plan.md body into labeled sections. The parser is intentionally
@@ -165,31 +212,20 @@ export const CANONICAL_SECTIONS = Object.freeze([
  * subsections (`### 2026-04`) live *inside* their parent section's text
  * blob, which is what the weekly-plan flow wants anyway: it passes the
  * whole blob to the model rather than trying to pick out structure.
- *
- * Returned shape:
- *   {
- *     heading: string|null,        // text after `# ` on the first H1
- *     preamble: string,            // body between H1 and first H2
- *     sections: [{ title, body }], // preserves order as written
- *     byTitle: Record<string,string>, // title → body, latest-wins on dup
- *   }
- *
- * @param {string} markdown
- * @returns {{heading: string|null, preamble: string, sections: Array<{title: string, body: string}>, byTitle: Record<string, string>}}
  */
-export function parsePlanMarkdownSections(markdown) {
-  const empty = { heading: null, preamble: '', sections: [], byTitle: {} };
+export function parsePlanMarkdownSections(markdown: string | null | undefined): ParsedPlanMarkdown {
+  const empty: ParsedPlanMarkdown = { heading: null, preamble: '', sections: [], byTitle: {} };
   if (typeof markdown !== 'string' || markdown.length === 0) return empty;
 
   const lines = markdown.split(/\r?\n/);
-  let heading = null;
-  const preambleLines = [];
-  const sections = [];
-  let currentTitle = null;
-  let currentBody = [];
+  let heading: string | null = null;
+  const preambleLines: string[] = [];
+  const sections: PlanMarkdownSection[] = [];
+  let currentTitle: string | null = null;
+  let currentBody: string[] = [];
   let sawH2 = false;
 
-  const flush = () => {
+  const flush = (): void => {
     if (currentTitle == null) return;
     sections.push({
       title: currentTitle,
@@ -206,13 +242,13 @@ export function parsePlanMarkdownSections(markdown) {
     const h1 = /^#\s+(.+)$/.exec(line);
     const h2 = /^##\s+(.+)$/.exec(line);
     if (h1 && heading == null && !sawH2) {
-      heading = h1[1].trim();
+      heading = h1[1]!.trim();
       continue;
     }
     if (h2) {
       sawH2 = true;
       flush();
-      currentTitle = h2[1].trim();
+      currentTitle = h2[1]!.trim();
       continue;
     }
     if (currentTitle != null) {
@@ -223,7 +259,7 @@ export function parsePlanMarkdownSections(markdown) {
   }
   flush();
 
-  const byTitle = {};
+  const byTitle: Record<string, string> = {};
   for (const s of sections) byTitle[s.title] = s.body;
 
   return {
@@ -232,6 +268,16 @@ export function parsePlanMarkdownSections(markdown) {
     sections,
     byTitle,
   };
+}
+
+/** Arguments for `buildPlanFromLegacy`. */
+export interface BuildPlanFromLegacyArgs {
+  /** Agent display name for the H1. */
+  name?: string;
+  /** Optional preamble (subagent description). */
+  description?: string;
+  goals?: LegacyGoal[];
+  monthlyPlans?: LegacyMonthlyPlan[];
 }
 
 /**
@@ -246,21 +292,14 @@ export function parsePlanMarkdownSections(markdown) {
  * plans` with its objectives as bullets ("- <description>"). Status
  * suffixes (`[completed]`, `[dropped]`, ...) are appended only when not
  * the default — keeps the output tidy for the common case.
- *
- * @param {object} opts
- * @param {string} [opts.name] - Agent display name for the H1.
- * @param {string} [opts.description] - Optional preamble (subagent description).
- * @param {Array} [opts.goals] - Legacy `config.goals`.
- * @param {Array} [opts.monthlyPlans] - Legacy `config.monthlyPlans`.
- * @returns {string}
  */
 export function buildPlanFromLegacy({
   name = 'Agent',
   description,
   goals = [],
   monthlyPlans = [],
-} = {}) {
-  const lines = [`# ${name}`];
+}: BuildPlanFromLegacyArgs = {}): string {
+  const lines: string[] = [`# ${name}`];
   if (description && typeof description === 'string' && description.trim()) {
     lines.push('', description.trim());
   }
@@ -323,6 +362,22 @@ export function buildPlanFromLegacy({
   return lines.join('\n');
 }
 
+/** Arguments for `buildPlanFromInterview`. */
+export interface BuildPlanFromInterviewArgs {
+  /** Agent display name for the H1. */
+  name?: string;
+  /** Optional preamble (usually the subagent description). */
+  description?: string;
+  /** Body for the `## Long-term goals` section. */
+  longTermGoals?: string;
+  /** Body for `## Monthly plans`. */
+  monthlyPlans?: string;
+  /** Body for `## Strategies`. */
+  strategies?: string;
+  /** Body for `## Notes`. */
+  notes?: string;
+}
+
 /**
  * Render a plan.md body from answers collected during `/aweek:hire`'s
  * interview flow. Every section is a free-form string that the user
@@ -333,15 +388,6 @@ export function buildPlanFromLegacy({
  * The caller (the hire skill) is responsible for asking the questions;
  * this helper only handles the assembly so the rendering logic stays in
  * one place and is easy to unit-test.
- *
- * @param {object} opts
- * @param {string} [opts.name='Agent'] - Agent display name for the H1.
- * @param {string} [opts.description] - Optional preamble (usually the subagent description).
- * @param {string} [opts.longTermGoals] - Body for the `## Long-term goals` section.
- * @param {string} [opts.monthlyPlans] - Body for `## Monthly plans`.
- * @param {string} [opts.strategies] - Body for `## Strategies`.
- * @param {string} [opts.notes] - Body for `## Notes`.
- * @returns {string}
  */
 export function buildPlanFromInterview({
   name = 'Agent',
@@ -350,8 +396,8 @@ export function buildPlanFromInterview({
   monthlyPlans,
   strategies,
   notes,
-} = {}) {
-  const section = (title, body, placeholder) => {
+}: BuildPlanFromInterviewArgs = {}): string {
+  const section = (title: string, body: string | undefined, placeholder: string): string[] => {
     const trimmed = typeof body === 'string' ? body.trim() : '';
     return [
       `## ${title}`,
@@ -361,7 +407,7 @@ export function buildPlanFromInterview({
     ];
   };
 
-  const lines = [`# ${name}`];
+  const lines: string[] = [`# ${name}`];
   if (description && typeof description === 'string' && description.trim()) {
     lines.push('', description.trim());
   }
@@ -391,20 +437,23 @@ export function buildPlanFromInterview({
   return lines.join('\n');
 }
 
+/** Arguments for `buildInitialPlan`. */
+export interface BuildInitialPlanArgs {
+  /** Agent display name for the H1. */
+  name?: string;
+  /** Optional short preamble. */
+  description?: string;
+}
+
 /**
  * Produce the starter template for a brand-new agent. `/aweek:hire` calls
  * this once after creating the subagent `.md` so the user has a ready-
  * to-edit shell instead of a blank file. The conventions mirror what the
  * weekly-plan generator looks for (H2 section names) but are NOT
  * enforced — the user can restructure without breaking anything.
- *
- * @param {object} [opts]
- * @param {string} [opts.name] - Agent display name for the H1.
- * @param {string} [opts.description] - Optional short preamble.
- * @returns {string}
  */
-export function buildInitialPlan({ name = 'Agent', description } = {}) {
-  const lines = [`# ${name}`];
+export function buildInitialPlan({ name = 'Agent', description }: BuildInitialPlanArgs = {}): string {
+  const lines: string[] = [`# ${name}`];
   if (description && typeof description === 'string' && description.trim()) {
     lines.push('', description.trim());
   }
@@ -428,4 +477,9 @@ export function buildInitialPlan({ name = 'Agent', description } = {}) {
     '',
   );
   return lines.join('\n');
+}
+
+/** Narrow `unknown` to a Node `ErrnoException` so we can read the `code` field. */
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && typeof (err as NodeJS.ErrnoException).code === 'string';
 }

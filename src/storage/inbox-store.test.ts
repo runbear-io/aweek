@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { InboxStore } from './inbox-store.js';
+import { InboxStore, type InboxMessage, type InboxMessagePriority, type InboxMessageType } from './inbox-store.js';
 import { createInboxMessage } from '../models/agent.js';
 
 const AGENT_A = 'agent-alice-11111111';
@@ -17,21 +17,33 @@ const AGENT_B = 'agent-bob-22222222';
 const AGENT_C = 'agent-carol-33333333';
 
 /** Create a temp dir for each test */
-let tmpDir;
-let store;
+let tmpDir: string;
+let store: InboxStore;
 
-async function setup() {
+async function setup(): Promise<void> {
   tmpDir = await mkdtemp(join(tmpdir(), 'inbox-store-test-'));
   store = new InboxStore(tmpDir);
 }
 
-async function teardown() {
+async function teardown(): Promise<void> {
   await rm(tmpDir, { recursive: true, force: true });
 }
 
+interface MsgOpts {
+  type?: InboxMessageType;
+  priority?: InboxMessagePriority;
+  context?: string;
+  sourceTaskId?: string;
+}
+
 /** Helper: build a valid message via the factory */
-function msg(from = AGENT_A, to = AGENT_B, desc = 'Do something', opts = {}) {
-  return createInboxMessage(from, to, desc, opts);
+function msg(
+  from: string = AGENT_A,
+  to: string = AGENT_B,
+  desc: string = 'Do something',
+  opts: MsgOpts = {},
+): InboxMessage {
+  return createInboxMessage(from, to, desc, opts) as InboxMessage;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,9 +80,9 @@ describe('InboxStore — enqueue', () => {
 
     // Verify on disk
     const raw = await readFile(store._filePath(AGENT_B), 'utf-8');
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as InboxMessage[];
     assert.equal(parsed.length, 1);
-    assert.equal(parsed[0].id, m.id);
+    assert.equal(parsed[0]?.id, m.id);
   });
 
   it('enqueues multiple messages in order', async () => {
@@ -81,8 +93,8 @@ describe('InboxStore — enqueue', () => {
 
     const loaded = await store.load(AGENT_B);
     assert.equal(loaded.length, 2);
-    assert.equal(loaded[0].id, m1.id);
-    assert.equal(loaded[1].id, m2.id);
+    assert.equal(loaded[0]?.id, m1.id);
+    assert.equal(loaded[1]?.id, m2.id);
   });
 
   it('is idempotent — duplicate enqueue is a no-op', async () => {
@@ -95,9 +107,12 @@ describe('InboxStore — enqueue', () => {
   });
 
   it('rejects invalid message (schema validation)', async () => {
+    // Cast through `unknown` so the test can probe the runtime validator
+    // without the type system rejecting the malformed shape ahead of AJV.
+    const bad = { id: 'bad', status: 'pending' } as unknown as InboxMessage;
     await assert.rejects(
-      () => store.enqueue(AGENT_B, { id: 'bad', status: 'pending' }),
-      /Schema validation failed/
+      () => store.enqueue(AGENT_B, bad),
+      /Schema validation failed/,
     );
   });
 
@@ -122,6 +137,7 @@ describe('InboxStore — get', () => {
     const m = msg();
     await store.enqueue(AGENT_B, m);
     const found = await store.get(AGENT_B, m.id);
+    assert.ok(found);
     assert.equal(found.id, m.id);
     assert.equal(found.taskDescription, m.taskDescription);
   });
@@ -161,13 +177,13 @@ describe('InboxStore — update', () => {
 
     // Verify persisted
     const loaded = await store.load(AGENT_B);
-    assert.equal(loaded[0].status, 'accepted');
+    assert.equal(loaded[0]?.status, 'accepted');
   });
 
   it('throws on nonexistent message', async () => {
     await assert.rejects(
       () => store.update(AGENT_B, 'msg-nonexistent', (m) => m),
-      /Message not found/
+      /Message not found/,
     );
   });
 
@@ -177,10 +193,12 @@ describe('InboxStore — update', () => {
 
     await assert.rejects(
       () => store.update(AGENT_B, m.id, (current) => {
-        current.status = 'invalid-status';
+        // Force an invalid status to exercise the validator at the
+        // runtime boundary; the type system would otherwise reject it.
+        (current as { status: string }).status = 'invalid-status';
         return current;
       }),
-      /Schema validation failed/
+      /Schema validation failed/,
     );
   });
 
@@ -190,7 +208,7 @@ describe('InboxStore — update', () => {
 
     try {
       await store.update(AGENT_B, m.id, (current) => {
-        current.status = 'invalid-status';
+        (current as { status: string }).status = 'invalid-status';
         return current;
       });
     } catch {
@@ -199,7 +217,7 @@ describe('InboxStore — update', () => {
 
     // Original should be unchanged
     const loaded = await store.load(AGENT_B);
-    assert.equal(loaded[0].status, 'pending');
+    assert.equal(loaded[0]?.status, 'pending');
   });
 });
 
@@ -326,7 +344,7 @@ describe('InboxStore — remove', () => {
     await store.remove(AGENT_B, m1.id);
     const loaded = await store.load(AGENT_B);
     assert.equal(loaded.length, 1);
-    assert.equal(loaded[0].id, m2.id);
+    assert.equal(loaded[0]?.id, m2.id);
   });
 });
 
@@ -347,7 +365,7 @@ describe('InboxStore — pending', () => {
 
     const pending = await store.pending(AGENT_B);
     assert.equal(pending.length, 1);
-    assert.equal(pending[0].id, m2.id);
+    assert.equal(pending[0]?.id, m2.id);
   });
 
   it('sorts by priority: critical > high > medium > low', async () => {
@@ -363,10 +381,10 @@ describe('InboxStore — pending', () => {
 
     const pending = await store.pending(AGENT_B);
     assert.equal(pending.length, 4);
-    assert.equal(pending[0].priority, 'critical');
-    assert.equal(pending[1].priority, 'high');
-    assert.equal(pending[2].priority, 'medium');
-    assert.equal(pending[3].priority, 'low');
+    assert.equal(pending[0]?.priority, 'critical');
+    assert.equal(pending[1]?.priority, 'high');
+    assert.equal(pending[2]?.priority, 'medium');
+    assert.equal(pending[3]?.priority, 'low');
   });
 
   it('returns empty array when no pending messages', async () => {
@@ -409,7 +427,7 @@ describe('InboxStore — query', () => {
 
     const results = await store.query(AGENT_B, { status: 'accepted' });
     assert.equal(results.length, 1);
-    assert.equal(results[0].id, m1.id);
+    assert.equal(results[0]?.id, m1.id);
   });
 
   it('filters by type', async () => {
@@ -420,7 +438,7 @@ describe('InboxStore — query', () => {
 
     const results = await store.query(AGENT_B, { type: 'status-update' });
     assert.equal(results.length, 1);
-    assert.equal(results[0].type, 'status-update');
+    assert.equal(results[0]?.type, 'status-update');
   });
 
   it('filters by sender (from)', async () => {
@@ -429,7 +447,7 @@ describe('InboxStore — query', () => {
 
     const results = await store.query(AGENT_B, { from: AGENT_C });
     assert.equal(results.length, 1);
-    assert.equal(results[0].from, AGENT_C);
+    assert.equal(results[0]?.from, AGENT_C);
   });
 
   it('filters by priority', async () => {
@@ -438,7 +456,7 @@ describe('InboxStore — query', () => {
 
     const results = await store.query(AGENT_B, { priority: 'high' });
     assert.equal(results.length, 1);
-    assert.equal(results[0].priority, 'high');
+    assert.equal(results[0]?.priority, 'high');
   });
 
   it('combines multiple filters', async () => {
@@ -448,8 +466,8 @@ describe('InboxStore — query', () => {
 
     const results = await store.query(AGENT_B, { priority: 'high', type: 'task-delegation' });
     assert.equal(results.length, 1);
-    assert.equal(results[0].taskDescription, 'Task');
-    assert.equal(results[0].from, AGENT_A);
+    assert.equal(results[0]?.taskDescription, 'Task');
+    assert.equal(results[0]?.from, AGENT_A);
   });
 
   it('returns empty array when no matches', async () => {
@@ -581,8 +599,8 @@ describe('InboxStore — agent isolation', () => {
 
     assert.equal(aInbox.length, 1);
     assert.equal(bInbox.length, 1);
-    assert.equal(aInbox[0].taskDescription, 'For A');
-    assert.equal(bInbox[0].taskDescription, 'For B');
+    assert.equal(aInbox[0]?.taskDescription, 'For A');
+    assert.equal(bInbox[0]?.taskDescription, 'For B');
   });
 
   it('operations on one agent inbox do not affect another', async () => {

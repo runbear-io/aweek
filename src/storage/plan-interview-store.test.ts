@@ -13,9 +13,10 @@ import {
   saveInterviewState,
   clearInterviewState,
   appendTurn,
+  type PlanInterviewState,
 } from './plan-interview-store.js';
 
-async function makeAgentsDir() {
+async function makeAgentsDir(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'aweek-plan-interview-'));
   const agentsDir = join(root, 'agents');
   await mkdir(agentsDir, { recursive: true });
@@ -54,7 +55,12 @@ describe('plan-interview-store — createInterviewState', () => {
   });
 
   it('throws when agentId is missing', () => {
-    assert.throws(() => createInterviewState({ initialContext: 'x' }), /agentId is required/);
+    // Cast through `unknown` so the test can probe the runtime guard with
+    // an intentionally invalid input the type system would reject.
+    assert.throws(
+      () => createInterviewState({ initialContext: 'x' } as unknown as { agentId: string }),
+      /agentId is required/,
+    );
   });
 });
 
@@ -76,7 +82,7 @@ describe('plan-interview-store — save/load/exists/clear', () => {
 
     assert.equal(await interviewExists(agentsDir, 'writer'), true);
     const raw = await readFile(planInterviewPath(agentsDir, 'writer'), 'utf8');
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as PlanInterviewState;
     assert.equal(parsed.agentId, 'writer');
     assert.equal(parsed.initialContext, 'ctx');
   });
@@ -113,10 +119,11 @@ describe('plan-interview-store — save/load/exists/clear', () => {
     await saveInterviewState(agentsDir, 'writer', state);
 
     const loaded = await loadInterviewState(agentsDir, 'writer');
+    assert.ok(loaded);
     assert.equal(loaded.turns.length, 1);
-    assert.equal(loaded.turns[0].question, 'What outcomes?');
-    assert.equal(loaded.turns[0].breakdownAfter.goalClarity.score, 0.6);
-    assert.equal(loaded.lastBreakdown.goalClarity.score, 0.6);
+    assert.equal(loaded.turns[0]?.question, 'What outcomes?');
+    assert.equal(loaded.turns[0]?.breakdownAfter?.goalClarity?.score, 0.6);
+    assert.equal(loaded.lastBreakdown?.goalClarity?.score, 0.6);
   });
 
   it('clearInterviewState removes the file (idempotent)', async () => {
@@ -145,9 +152,9 @@ describe('plan-interview-store — appendTurn', () => {
 
     assert.equal(state.turns.length, 0, 'input must not be mutated');
     assert.equal(next.turns.length, 1);
-    assert.equal(next.turns[0].question, 'q1');
-    assert.equal(next.turns[0].answer, 'a1');
-    assert.equal(next.turns[0].askedAt, '2026-04-21T00:00:00Z');
+    assert.equal(next.turns[0]?.question, 'q1');
+    assert.equal(next.turns[0]?.answer, 'a1');
+    assert.equal(next.turns[0]?.askedAt, '2026-04-21T00:00:00Z');
   });
 
   it('updates lastBreakdown + streak when provided on the turn', () => {
@@ -159,15 +166,21 @@ describe('plan-interview-store — appendTurn', () => {
       streakAfter: 1,
     });
     assert.equal(next.streak, 1);
-    assert.equal(next.lastBreakdown.goalClarity.score, 0.8);
+    assert.equal(next.lastBreakdown?.goalClarity?.score, 0.8);
   });
 
   it('throws on invalid input', () => {
     const state = createInterviewState({ agentId: 'writer' });
-    assert.throws(() => appendTurn(null, { question: 'q', answer: 'a' }), /state is required/);
-    assert.throws(() => appendTurn(state, null), /turn is required/);
     assert.throws(
-      () => appendTurn(state, { question: 1, answer: 'a' }),
+      () => appendTurn(null as unknown as PlanInterviewState, { question: 'q', answer: 'a' }),
+      /state is required/,
+    );
+    assert.throws(
+      () => appendTurn(state, null as unknown as { question: string; answer: string }),
+      /turn is required/,
+    );
+    assert.throws(
+      () => appendTurn(state, { question: 1 as unknown as string, answer: 'a' }),
       /question and turn\.answer must be strings/,
     );
   });
