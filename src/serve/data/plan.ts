@@ -19,7 +19,24 @@ import { join } from 'node:path';
 import { listAllAgents } from '../../storage/agent-helpers.js';
 import { readPlan } from '../../storage/plan-markdown-store.js';
 import { WeeklyPlanStore } from '../../storage/weekly-plan-store.js';
+import type { WeeklyPlan } from '../../storage/weekly-plan-store.js';
 import { readSubagentIdentity } from '../../subagents/subagent-file.js';
+
+/** Options accepted by {@link gatherAgentPlan}. */
+export interface GatherAgentPlanOptions {
+  projectDir?: string;
+  slug?: string;
+}
+
+/** Plan payload returned to the SPA. */
+export interface AgentPlanPayload {
+  slug: string;
+  name: string;
+  hasPlan: boolean;
+  markdown: string;
+  weeklyPlans: WeeklyPlan[];
+  latestApproved: WeeklyPlan | null;
+}
 
 /**
  * Gather a single agent's plan.md body + weekly plan data.
@@ -32,20 +49,10 @@ import { readSubagentIdentity } from '../../subagents/subagent-file.js';
  * Errors from the weekly plan store are absorbed (a malformed week file
  * never knocks the plan view offline) — the caller sees the remaining
  * well-formed weeks or an empty list.
- *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {string} opts.slug
- * @returns {Promise<{
- *   slug: string,
- *   name: string,
- *   hasPlan: boolean,
- *   markdown: string,
- *   weeklyPlans: Array<object>,
- *   latestApproved: object | null,
- * } | null>}
  */
-export async function gatherAgentPlan({ projectDir, slug } = {}) {
+export async function gatherAgentPlan(
+  { projectDir, slug }: GatherAgentPlanOptions = {},
+): Promise<AgentPlanPayload | null> {
   if (!projectDir) throw new Error('gatherAgentPlan: projectDir is required');
   if (!slug) throw new Error('gatherAgentPlan: slug is required');
   const agentsDir = join(projectDir, '.aweek', 'agents');
@@ -67,7 +74,9 @@ export async function gatherAgentPlan({ projectDir, slug } = {}) {
   // single week file is malformed; we catch so a bad row doesn't null
   // out the whole response. `loadAll` already sorts by week key.
   const weeklyPlanStore = new WeeklyPlanStore(agentsDir);
-  const weeklyPlans = await weeklyPlanStore.loadAll(slug).catch(() => []);
+  const weeklyPlans = await weeklyPlanStore
+    .loadAll(slug)
+    .catch(() => [] as WeeklyPlan[]);
   const latestApproved = await weeklyPlanStore
     .loadLatestApproved(slug)
     .catch(() => null);

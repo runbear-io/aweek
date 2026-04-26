@@ -164,13 +164,18 @@
     "src/queue/**/*.ts",
     "src/services/**/*.ts",
     "src/storage/**/*.ts",
-    "src/skills/**/*.ts"
+    "src/skills/**/*.ts",
+    "src/serve/data/**/*.ts",
+    "src/serve/errors.ts"
   ],
 
   // Carve-outs:
   //   - `node_modules` — never type-check vendored sources.
-  //   - `src/storage/`, `src/skills/`, `src/cli/`, `src/serve/` —
-  //     still raw `.js`, untyped in this phase.
+  //   - `src/cli/` — still raw `.js`, untyped in this phase.
+  //   - `src/serve/spa/**` — owned by `tsconfig.spa.json` (browser env).
+  //   - `src/serve/server.js`, `src/serve/server.test.js`,
+  //     `src/serve/serve-cli.integration.test.js` — still raw `.js`,
+  //     migrated in a follow-up seed.
   //   - `src/**/*.test.ts` / `*.integration.test.ts` — tests need a
   //     follow-up typing pass; production code is the priority here.
   //   - Five heartbeat production files with unresolved migration
@@ -182,7 +187,10 @@
     "node_modules",
     "src/skills/summary.d.ts",
     "src/cli",
-    "src/serve",
+    "src/serve/spa",
+    "src/serve/server.js",
+    "src/serve/server.test.js",
+    "src/serve/serve-cli.integration.test.js",
     "src/**/*.test.ts",
     "src/**/*.integration.test.ts",
     "dist"

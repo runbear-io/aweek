@@ -31,20 +31,36 @@ import { loadConfig } from '../../storage/config-store.js';
 import { readSubagentIdentity } from '../../subagents/subagent-file.js';
 import { currentWeekKey } from '../../time/zone.js';
 
+/** Tri-state agent status surfaced in the SPA agents list. */
+export type AgentStatus = 'active' | 'paused' | 'budget-exhausted';
+
+/** Loose config shape consumed by {@link deriveAgentStatus}. */
+interface AgentStatusConfig {
+  budget?: { paused?: boolean; weeklyTokenLimit?: number };
+  weeklyTokenBudget?: number;
+}
+
+/** Loose usage shape consumed by {@link deriveAgentStatus}. */
+interface AgentStatusUsage {
+  totalTokens?: number;
+}
+
 /** Status sort order — active first, exhausted last. */
-const STATUS_ORDER = { active: 0, paused: 1, 'budget-exhausted': 2 };
+const STATUS_ORDER: Record<AgentStatus, number> = {
+  active: 0,
+  paused: 1,
+  'budget-exhausted': 2,
+};
 
 /**
  * Derive a tri-state status for an agent from its config + current-week
  * usage total. Exported so callers (and tests) can reuse the derivation
  * without touching the filesystem.
- *
- * @param {{ budget?: { paused?: boolean, weeklyTokenLimit?: number },
- *           weeklyTokenBudget?: number }} config
- * @param {{ totalTokens?: number }} usage
- * @returns {'active' | 'paused' | 'budget-exhausted'}
  */
-export function deriveAgentStatus(config, usage) {
+export function deriveAgentStatus(
+  config: AgentStatusConfig | null | undefined,
+  usage: AgentStatusUsage | null | undefined,
+): AgentStatus {
   const paused = !!config?.budget?.paused;
   const limit = config?.weeklyTokenBudget || config?.budget?.weeklyTokenLimit || 0;
   const used = usage?.totalTokens || 0;
@@ -54,27 +70,42 @@ export function deriveAgentStatus(config, usage) {
   return 'active';
 }
 
+/** Options accepted by {@link gatherAgentsList}. */
+export interface GatherAgentsListOptions {
+  projectDir?: string;
+}
+
+/** A single row in the SPA agents-list payload. */
+export interface AgentsListRow {
+  slug: string;
+  name: string;
+  description: string;
+  missing: boolean;
+  status: AgentStatus;
+  tokensUsed: number;
+  tokenLimit: number;
+  utilizationPct: number | null;
+  week: string;
+  tasksTotal: number;
+  tasksCompleted: number;
+}
+
+/** Result shape returned by {@link gatherAgentsList}. */
+export interface AgentsListResult {
+  rows: AgentsListRow[];
+  issues: Array<{ id: string; message: string }>;
+}
+
 /**
  * Gather every agent's row for the SPA agents list / overview table.
  *
  * Per-agent failures (missing .md, malformed usage) are absorbed so the
  * dashboard degrades to "partial list" rather than 500ing. The result
  * is sorted: active agents first, then by display name.
- *
- * @param {object} opts
- * @param {string} opts.projectDir - Project root (contains `.aweek/`).
- * @returns {Promise<Array<{
- *   slug: string,
- *   name: string,
- *   description: string,
- *   missing: boolean,
- *   status: 'active' | 'paused' | 'budget-exhausted',
- *   tokensUsed: number,
- *   tokenLimit: number,
- *   utilizationPct: number | null,
- * }>>}
  */
-export async function gatherAgentsList({ projectDir } = {}) {
+export async function gatherAgentsList(
+  { projectDir }: GatherAgentsListOptions = {},
+): Promise<AgentsListResult> {
   if (!projectDir) throw new Error('gatherAgentsList: projectDir is required');
   const dataDir = join(projectDir, '.aweek', 'agents');
 
@@ -87,7 +118,7 @@ export async function gatherAgentsList({ projectDir } = {}) {
 
   // Monday anchor is timezone-aware; fall back to UTC on config-load errors
   // so a malformed .aweek/config.json can't knock the dashboard offline.
-  let timeZone;
+  let timeZone: string | undefined;
   try {
     ({ timeZone } = await loadConfig(dataDir));
   } catch {
@@ -103,7 +134,7 @@ export async function gatherAgentsList({ projectDir } = {}) {
   const weeklyPlanStore = new WeeklyPlanStore(dataDir);
 
   const rows = await Promise.all(
-    configs.map(async (config) => {
+    configs.map(async (config): Promise<AgentsListRow> => {
       const [identity, usage, tasksCount] = await Promise.all([
         readSubagentIdentity(config.id, projectDir).catch(() => ({
           missing: true,
@@ -162,6 +193,33 @@ export async function gatherAgentsList({ projectDir } = {}) {
   return { rows: sorted, issues };
 }
 
+/** Options accepted by {@link gatherAgentProfile}. */
+export interface GatherAgentProfileOptions {
+  projectDir?: string;
+  slug?: string;
+}
+
+/** Profile payload for a single agent. */
+export interface AgentProfile {
+  slug: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  missing: boolean;
+  identityPath: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  paused: boolean;
+  pausedReason: string | null;
+  periodStart: string | null;
+  tokenLimit: number;
+  tokensUsed: number;
+  remaining: number;
+  overBudget: boolean;
+  utilizationPct: number | null;
+  weekMonday: string;
+}
+
 /**
  * Gather a single agent's profile payload for the SPA Profile tab.
  *
@@ -171,30 +229,10 @@ export async function gatherAgentsList({ projectDir } = {}) {
  *
  * Returns `null` when the slug is not present on disk so the HTTP layer
  * can map it to 404.
- *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {string} opts.slug
- * @returns {Promise<{
- *   slug: string,
- *   name: string,
- *   description: string,
- *   missing: boolean,
- *   identityPath: string,
- *   createdAt: string | null,
- *   updatedAt: string | null,
- *   paused: boolean,
- *   pausedReason: string | null,
- *   periodStart: string | null,
- *   tokenLimit: number,
- *   tokensUsed: number,
- *   remaining: number,
- *   overBudget: boolean,
- *   utilizationPct: number | null,
- *   weekMonday: string,
- * } | null>}
  */
-export async function gatherAgentProfile({ projectDir, slug } = {}) {
+export async function gatherAgentProfile(
+  { projectDir, slug }: GatherAgentProfileOptions = {},
+): Promise<AgentProfile | null> {
   if (!projectDir) throw new Error('gatherAgentProfile: projectDir is required');
   if (!slug) throw new Error('gatherAgentProfile: slug is required');
   const dataDir = join(projectDir, '.aweek', 'agents');
@@ -203,7 +241,7 @@ export async function gatherAgentProfile({ projectDir, slug } = {}) {
   const config = configs.find((c) => c.id === slug);
   if (!config) return null;
 
-  let timeZone;
+  let timeZone: string | undefined;
   try {
     ({ timeZone } = await loadConfig(dataDir));
   } catch {

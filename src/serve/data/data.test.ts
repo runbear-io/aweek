@@ -87,8 +87,13 @@ const ALLOWED_IMPORT_PREFIXES = [
 
 async function listDataModules() {
   const entries = await readdir(DATA_DIR);
-  return entries
-    .filter((f) => f.endsWith('.js') && !f.endsWith('.test.js'));
+  return entries.filter(
+    (f) =>
+      (f.endsWith('.js') || f.endsWith('.ts')) &&
+      !f.endsWith('.test.js') &&
+      !f.endsWith('.test.ts') &&
+      !f.endsWith('.d.ts'),
+  );
 }
 
 test('data layer: every production module has allowlisted imports only', async () => {
