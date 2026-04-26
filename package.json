@@ -3,13 +3,12 @@
   "version": "0.1.0",
   "description": "Claude Code plugin for managing multiple AI agents on scheduled weekly plans. Each agent is a 1-to-1 wrapper around a Claude Code subagent with its own goals, objectives, tasks, and token budget.",
   "type": "module",
-  "main": "src/index.js",
+  "main": "dist/src/index.js",
   "bin": {
-    "aweek": "bin/aweek.js"
+    "aweek": "dist/bin/aweek.js"
   },
   "files": [
-    "bin",
-    "src",
+    "dist",
     "skills",
     ".claude-plugin",
     "README.md",
@@ -20,11 +19,12 @@
     "test:verbose": "node --import tsx --test --test-reporter=spec \"src/cli/**/*.test.@(js|ts)\" \"src/execution/**/*.test.@(js|ts)\" \"src/heartbeat/**/*.test.@(js|ts)\" \"src/lock/**/*.test.@(js|ts)\" \"src/models/**/*.test.@(js|ts)\" \"src/queue/**/*.test.@(js|ts)\" \"src/schemas/**/*.test.@(js|ts)\" \"src/services/**/*.test.@(js|ts)\" \"src/serve/data/**/*.test.@(js|ts)\" \"src/serve/*.test.@(js|ts)\" \"src/skills/**/*.test.@(js|ts)\" \"src/storage/**/*.test.@(js|ts)\" \"src/subagents/**/*.test.@(js|ts)\" \"src/time/**/*.test.@(js|ts)\"",
     "test:spa": "vitest run --config vitest.config.js",
     "test:spa:watch": "vitest --config vitest.config.js",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:spa": "tsc --noEmit -p tsconfig.spa.json",
     "dev": "node scripts/dev.mjs",
     "dev:spa": "vite --config vite.config.js",
     "lint": "node --check src/**/*.js",
-    "build": "vite build --config vite.config.js && node --check src/index.js",
+    "build": "node scripts/build.mjs",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [

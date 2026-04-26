@@ -20,3 +20,8 @@ node_modules/
 # still ships a fresh bundle. Local contributors should run
 # `pnpm build` once after clone before `aweek serve`.
 src/serve/spa/dist/
+
+# Top-level build output — `pnpm build` compiles `bin/` + `src/` to
+# `dist/` for the npm tarball, and copies the SPA bundle in. Same
+# publish-time-only rationale as the SPA dist above.
+dist/
