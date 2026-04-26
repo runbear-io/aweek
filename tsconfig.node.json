@@ -140,16 +140,17 @@
   // backend module trees that have been migrated to TypeScript and
   // currently type-check cleanly: `src/schemas/`, `src/models/`,
   // `src/time/`, `src/execution/`, `src/heartbeat/`, `src/lock/`,
-  // `src/queue/`, `src/services/`. Tests are excluded for now (their
+  // `src/queue/`, `src/services/`, plus the Node-side `src/serve/`
+  // entry (`server.ts`, `errors.ts`) and the read-only data layer
+  // under `src/serve/data/`. Tests are excluded for now (their
   // mocking patterns need a separate typing pass); five heartbeat
   // production files with unresolved migration errors are also
   // excluded below — they're tracked as follow-up work and will be
   // re-included once their signatures are reconciled.
   //
-  // Out of scope (still raw `.js`): `src/storage/`, `src/subagents/`,
-  // `src/skills/` (except `summary.d.ts`), `src/cli/`, `src/serve/`,
-  // `src/index.js`, `bin/`, `scripts/`. The SPA tree (`src/serve/spa/`)
-  // belongs to `tsconfig.spa.json`.
+  // Out of scope (still raw `.js`): `src/cli/`, `src/index.js`,
+  // `bin/`, `scripts/`. The SPA tree (`src/serve/spa/`) belongs to
+  // `tsconfig.spa.json`.
   "include": [
     "vite.config.js",
     "vitest.config.js",
@@ -166,18 +167,20 @@
     "src/storage/**/*.ts",
     "src/skills/**/*.ts",
     "src/serve/data/**/*.ts",
-    "src/serve/errors.ts"
+    "src/serve/errors.ts",
+    "src/serve/server.ts"
   ],
 
   // Carve-outs:
   //   - `node_modules` — never type-check vendored sources.
   //   - `src/cli/` — still raw `.js`, untyped in this phase.
   //   - `src/serve/spa/**` — owned by `tsconfig.spa.json` (browser env).
-  //   - `src/serve/server.js`, `src/serve/server.test.js`,
-  //     `src/serve/serve-cli.integration.test.js` — still raw `.js`,
-  //     migrated in a follow-up seed.
   //   - `src/**/*.test.ts` / `*.integration.test.ts` — tests need a
   //     follow-up typing pass; production code is the priority here.
+  //     This excludes `src/serve/server.test.ts` and
+  //     `src/serve/serve-cli.integration.test.ts` which were renamed
+  //     from `.js` in seed-09 sub-seed B alongside the production
+  //     module.
   //   - Five heartbeat production files with unresolved migration
   //     errors (signature mismatches against still-`.js` storage/
   //     services collaborators). Re-include once the surrounding
@@ -188,9 +191,6 @@
     "src/skills/summary.d.ts",
     "src/cli",
     "src/serve/spa",
-    "src/serve/server.js",
-    "src/serve/server.test.js",
-    "src/serve/serve-cli.integration.test.js",
     "src/**/*.test.ts",
     "src/**/*.integration.test.ts",
     "dist"

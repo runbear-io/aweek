@@ -39,6 +39,14 @@ export default defineConfig({
       'src/serve/spa/**/*.test.tsx',
       'src/serve/spa/**/*.test.ts',
     ],
+    // `pages.contract.test.ts` is JSX-free and uses `node:test` (not
+    // vitest's globals) so it can run under the backend runner without
+    // a JSX transform. Vitest would otherwise import it and bail with
+    // "No test suite found".
+    exclude: [
+      'node_modules/**',
+      'src/serve/spa/pages/pages.contract.test.ts',
+    ],
   },
   // Vitest 4 uses `oxc` for JS/JSX transforms by default (not esbuild).
   // The automatic JSX runtime is the default in oxc, so no explicit

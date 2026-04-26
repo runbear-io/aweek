@@ -227,12 +227,12 @@ describe('SPA pages — Sub-AC 3.3 data contract', () => {
   }
 
   it('barrel re-exports every page', () => {
-    const src = readFileSync(join(HERE, 'index.js'), 'utf8');
+    const src = readFileSync(join(HERE, 'index.ts'), 'utf8');
     for (const c of CASES) {
       assert.match(
         src,
         new RegExp(`\\b${c.name}\\b`),
-        `pages/index.js must re-export ${c.name}`,
+        `pages/index.ts must re-export ${c.name}`,
       );
     }
   });

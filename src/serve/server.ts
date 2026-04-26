@@ -18,14 +18,18 @@
  * the server serves a friendly HTML stub with build instructions instead
  * of a hard 404. This keeps the CLI runnable during development and in
  * CI smoke tests that never run the frontend build.
+ *
+ * TypeScript migration note (seed-09 sub-seed B): mechanical rename from
+ * `.js` → `.ts`. JSDoc parameter annotations have been promoted to
+ * lightweight TS signatures; the runtime behaviour is unchanged.
  */
 
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
-import { spawn as nodeSpawn } from 'node:child_process';
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { platform as nodePlatform } from 'node:process';
 import { networkInterfaces as nodeNetworkInterfaces } from 'node:os';
 
@@ -118,11 +122,8 @@ const CLIENT_ROUTE_PATTERNS = [
  * client-side routes. Used by the static-file server to decide whether
  * to fall back to `index.html` (whitelisted) or emit a 404 JSON body
  * (non-whitelisted).
- *
- * @param {string} pathname
- * @returns {boolean}
  */
-export function isWhitelistedClientRoute(pathname) {
+export function isWhitelistedClientRoute(pathname: string): boolean {
   if (typeof pathname !== 'string') return false;
   return CLIENT_ROUTE_PATTERNS.some((rx) => rx.test(pathname));
 }
@@ -134,7 +135,7 @@ export function isWhitelistedClientRoute(pathname) {
  * extensions that prevents accidental script-injection via mislabelled
  * content types.
  */
-const MIME_TYPES = {
+const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.mjs': 'application/javascript; charset=utf-8',
@@ -162,10 +163,8 @@ const MIME_TYPES = {
  * `src/serve/spa/dist/` — one directory over from this file — matching the
  * `build.outDir` in `vite.config.js`. Exported so tests and any future CLI
  * flag can override it via the `buildDir` option of `startServer`.
- *
- * @returns {string} absolute path to the default build directory
  */
-export function resolveDefaultBuildDir() {
+export function resolveDefaultBuildDir(): string {
   return fileURLToPath(new URL(`./spa/${DEFAULT_BUILD_DIR_NAME}/`, import.meta.url));
 }
 
@@ -175,28 +174,36 @@ export function resolveDefaultBuildDir() {
  * it — when the user (or default config) passed `0.0.0.0` or an IPv6
  * equivalent. Exposed as a helper so both `startServer` consumers and
  * the CLI layer stay in sync about what "LAN-reachable" means.
- *
- * @param {string} host
- * @returns {boolean}
  */
-export function isWildcardHost(host) {
+export function isWildcardHost(host: string): boolean {
   return WILDCARD_HOSTS.has(host);
+}
+
+/** Raw input shape accepted by {@link normaliseServeOptions}. */
+export interface RawServeOptions {
+  port?: number | string | null;
+  host?: string;
+  open?: boolean;
+  projectDir?: string;
+  /** Override the Vite build output directory. */
+  buildDir?: string;
+}
+
+/** Normalised options returned by {@link normaliseServeOptions}. */
+export interface ServeOptions {
+  port: number;
+  host: string;
+  open: boolean;
+  projectDir: string;
+  buildDir: string;
 }
 
 /**
  * Normalise and validate CLI flags for `aweek serve`. Returns an options
  * object with sensible defaults applied and invalid inputs coerced into
  * errors with `code: 'EUSAGE'` so the CLI prints a clean usage message.
- *
- * @param {object} raw
- * @param {number|string} [raw.port]
- * @param {string} [raw.host]
- * @param {boolean} [raw.open]
- * @param {string} [raw.projectDir]
- * @param {string} [raw.buildDir] — override the Vite build output directory
- * @returns {{ port: number, host: string, open: boolean, projectDir: string, buildDir: string }}
  */
-export function normaliseServeOptions(raw = {}) {
+export function normaliseServeOptions(raw: RawServeOptions = {}): ServeOptions {
   const projectDir = raw.projectDir ? resolve(raw.projectDir) : process.cwd();
 
   let port = DEFAULT_PORT;
@@ -222,16 +229,30 @@ export function normaliseServeOptions(raw = {}) {
  * (`0.0.0.0`, `::`) are displayed as `localhost` since that is what the
  * user should actually click; the LAN address is surfaced separately
  * by the CLI layer.
- *
- * @param {string} host
- * @param {number} port
- * @returns {string}
  */
-export function formatDashboardUrl(host, port) {
+export function formatDashboardUrl(host: string, port: number): string {
   const displayHost = WILDCARD_HOSTS.has(host) ? 'localhost' : host;
   // IPv6 literal hosts need square brackets in URLs.
   const bracketed = displayHost.includes(':') ? `[${displayHost}]` : displayHost;
   return `http://${bracketed}:${port}/`;
+}
+
+/** Handle returned by {@link startServer}. */
+export interface ServerHandle {
+  server: Server;
+  port: number;
+  host: string;
+  url: string;
+  projectDir: string;
+  buildDir: string;
+  close: () => Promise<void>;
+}
+
+/** Per-request context derived from the resolved {@link ServeOptions}. */
+interface RequestContext {
+  projectDir: string;
+  dataDir: string;
+  buildDir: string;
 }
 
 /**
@@ -251,11 +272,8 @@ export function formatDashboardUrl(host, port) {
  *   - GET /<anything-else>  → SPA fallback → index.html
  *
  * JSON data endpoints that feed the SPA are added by subsequent sub-ACs.
- *
- * @param {object} [options] — see `normaliseServeOptions` for shape
- * @returns {Promise<{ server: import('node:http').Server, port: number, host: string, url: string, projectDir: string, buildDir: string, close: () => Promise<void> }>}
  */
-export async function startServer(options = {}) {
+export async function startServer(options: RawServeOptions = {}): Promise<ServerHandle> {
   const { port, host, projectDir, buildDir } = normaliseServeOptions(options);
 
   const dataDir = resolve(projectDir, '.aweek');
@@ -296,7 +314,7 @@ export async function startServer(options = {}) {
     projectDir,
     buildDir,
     close: () =>
-      new Promise((resolveClose, rejectClose) => {
+      new Promise<void>((resolveClose, rejectClose) => {
         server.close((err) => (err ? rejectClose(err) : resolveClose()));
       }),
   };
@@ -306,12 +324,8 @@ export async function startServer(options = {}) {
  * HTTP request router. Method-checks once, routes `/healthz` to a JSON
  * liveness probe, and otherwise hands off to the SPA static-file
  * handler. Data endpoints (`/api/...`) are added in follow-up sub-ACs.
- *
- * @param {import('node:http').IncomingMessage} req
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string, dataDir: string, buildDir: string }} ctx
  */
-async function handleRequest(req, res, ctx) {
+async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: RequestContext): Promise<void> {
   const method = req.method || 'GET';
   const rawUrl = req.url || '/';
   const pathname = rawUrl.split('?')[0];
@@ -427,13 +441,10 @@ async function handleRequest(req, res, ctx) {
  * Decode a URL-encoded slug segment and validate it is safe to pass
  * downstream as a filesystem key (no traversal, no NUL bytes, no
  * path separators). Returns `null` when the segment is malformed.
- *
- * @param {string} raw
- * @returns {string | null}
  */
-function decodeSlug(raw) {
+function decodeSlug(raw: string): string | null {
   if (typeof raw !== 'string' || raw.length === 0) return null;
-  let decoded;
+  let decoded: string;
   try {
     decoded = decodeURIComponent(raw);
   } catch {
@@ -455,12 +466,8 @@ function decodeSlug(raw) {
 /**
  * Send a JSON response with a stable envelope. Always `no-store` so
  * the dashboard reflects the filesystem truth on every manual refresh.
- *
- * @param {import('node:http').ServerResponse} res
- * @param {number} statusCode
- * @param {unknown} body
  */
-function sendJson(res, statusCode, body) {
+function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
@@ -490,11 +497,8 @@ function sendJson(res, statusCode, body) {
  *   - tasks  → "completed/total" for the current week
  *   - budget → "used / limit (pct%)" or "no limit"
  *   - status → label like "ACTIVE" / "PAUSED" / "RUNNING"
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
  */
-async function handleSummary(res, ctx) {
+async function handleSummary(res: ServerResponse, ctx: RequestContext): Promise<void> {
   try {
     // `buildSummary` expects the per-agent data directory (.aweek/agents)
     // and needs the project root separately so it can resolve the
@@ -507,7 +511,7 @@ async function handleSummary(res, ctx) {
     sendJson(res, 200, { rows, week, weekMonday, agentCount });
   } catch (err) {
     sendJson(res, 500, {
-      error: err && err.message ? err.message : 'Failed to load summary',
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load summary',
     });
   }
 }
@@ -524,11 +528,8 @@ async function handleSummary(res, ctx) {
  *   200 { agents: [{ slug, name, description, missing, status,
  *                    tokensUsed, tokenLimit, utilizationPct }, ...] }
  *   500 { error: string }
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
  */
-async function handleAgentsList(res, ctx) {
+async function handleAgentsList(res: ServerResponse, ctx: RequestContext): Promise<void> {
   try {
     const { rows, issues } = await gatherAgentsList({
       projectDir: ctx.projectDir,
@@ -536,7 +537,7 @@ async function handleAgentsList(res, ctx) {
     sendJson(res, 200, { agents: rows, issues });
   } catch (err) {
     sendJson(res, 500, {
-      error: err && err.message ? err.message : 'Failed to load agents',
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load agents',
     });
   }
 }
@@ -555,12 +556,8 @@ async function handleAgentsList(res, ctx) {
  *                  overBudget, utilizationPct, weekMonday } }
  *   404 { error: 'Agent not found: <slug>' }
  *   500 { error: string }
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
- * @param {string} slug
  */
-async function handleAgentDetail(res, ctx, slug) {
+async function handleAgentDetail(res: ServerResponse, ctx: RequestContext, slug: string): Promise<void> {
   try {
     const agent = await gatherAgentProfile({ projectDir: ctx.projectDir, slug });
     if (!agent) {
@@ -570,7 +567,7 @@ async function handleAgentDetail(res, ctx, slug) {
     sendJson(res, 200, { agent });
   } catch (err) {
     sendJson(res, 500, {
-      error: err && err.message ? err.message : 'Failed to load agent',
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load agent',
     });
   }
 }
@@ -591,12 +588,8 @@ async function handleAgentDetail(res, ctx, slug) {
  *                 weeklyPlans: [...], latestApproved: {...}|null } }
  *   404 { error: 'Agent not found: <slug>' }
  *   500 { error: string }
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
- * @param {string} slug
  */
-async function handleAgentPlan(res, ctx, slug) {
+async function handleAgentPlan(res: ServerResponse, ctx: RequestContext, slug: string): Promise<void> {
   try {
     const plan = await gatherAgentPlan({ projectDir: ctx.projectDir, slug });
     if (!plan) {
@@ -606,7 +599,7 @@ async function handleAgentPlan(res, ctx, slug) {
     sendJson(res, 200, { plan });
   } catch (err) {
     sendJson(res, 500, {
-      error: err && err.message ? err.message : 'Failed to load plan',
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load plan',
     });
   }
 }
@@ -633,27 +626,27 @@ async function handleAgentPlan(res, ctx, slug) {
  *   400 { error: 'Invalid agent slug' }
  *   404 { error: 'Agent not found: <slug>' }
  *   500 { error: string }
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
- * @param {string} slug
- * @param {string | undefined} week
  */
-async function handleAgentCalendar(res, ctx, slug, week) {
+async function handleAgentCalendar(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+  week: string | undefined,
+): Promise<void> {
   try {
     const calendar = await gatherAgentCalendar({
       projectDir: ctx.projectDir,
       slug,
       week,
     });
-    if (calendar && calendar.notFound) {
+    if (calendar && (calendar as { notFound?: boolean }).notFound) {
       sendJson(res, 404, { error: `Agent not found: ${slug}` });
       return;
     }
     sendJson(res, 200, { calendar });
   } catch (err) {
     sendJson(res, 500, {
-      error: err && err.message ? err.message : 'Failed to load calendar',
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load calendar',
     });
   }
 }
@@ -677,12 +670,8 @@ async function handleAgentCalendar(res, ctx, slug, week) {
  *                            outputTokens, totalTokens, costUsd }] } }
  *   404 { error: 'Agent not found: <slug>' }
  *   500 { error: string }
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
- * @param {string} slug
  */
-async function handleAgentUsage(res, ctx, slug) {
+async function handleAgentUsage(res: ServerResponse, ctx: RequestContext, slug: string): Promise<void> {
   try {
     const usage = await gatherAgentUsage({ projectDir: ctx.projectDir, slug });
     if (!usage) {
@@ -692,7 +681,7 @@ async function handleAgentUsage(res, ctx, slug) {
     sendJson(res, 200, { usage });
   } catch (err) {
     sendJson(res, 500, {
-      error: err && err.message ? err.message : 'Failed to load usage',
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load usage',
     });
   }
 }
@@ -716,13 +705,13 @@ async function handleAgentUsage(res, ctx, slug) {
  *   400 { error: 'Invalid agent slug' }
  *   404 { error: 'Agent not found: <slug>' }
  *   500 { error: string }
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
- * @param {string} slug
- * @param {string | undefined} dateRange
  */
-async function handleAgentLogs(res, ctx, slug, dateRange) {
+async function handleAgentLogs(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+  dateRange: string | undefined,
+): Promise<void> {
   try {
     const logs = await gatherAgentLogs({
       projectDir: ctx.projectDir,
@@ -736,7 +725,7 @@ async function handleAgentLogs(res, ctx, slug, dateRange) {
     sendJson(res, 200, { logs });
   } catch (err) {
     sendJson(res, 500, {
-      error: err && err.message ? err.message : 'Failed to load logs',
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load logs',
     });
   }
 }
@@ -751,15 +740,15 @@ async function handleAgentLogs(res, ctx, slug, dateRange) {
  *   200 { log: { slug, basename, lines: [...raw NDJSON lines] } }
  *   400 { error: 'Invalid slug or basename' }
  *   500 { error: string }
- *
- * @param {import('node:http').ServerResponse} res
- * @param {{ projectDir: string }} ctx
- * @param {string} slug
- * @param {string} basename — `<taskId>_<executionId>` (no `.jsonl`).
  */
-async function handleAgentExecutionLog(res, ctx, slug, basename) {
+async function handleAgentExecutionLog(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+  basename: string,
+): Promise<void> {
   try {
-    const lines = [];
+    const lines: string[] = [];
     for await (const line of streamExecutionLogLines({
       projectDir: ctx.projectDir,
       slug,
@@ -771,7 +760,7 @@ async function handleAgentExecutionLog(res, ctx, slug, basename) {
   } catch (err) {
     sendJson(res, 500, {
       error:
-        err && err.message ? err.message : 'Failed to read execution log',
+        err && (err as Error).message ? (err as Error).message : 'Failed to read execution log',
     });
   }
 }
@@ -795,13 +784,13 @@ async function handleAgentExecutionLog(res, ctx, slug, basename) {
  *      `index.html` (the SPA fallback). This is what lets the React
  *      router own URLs like `/agents/writer/calendar` without the server
  *      needing to know the route table.
- *
- * @param {import('node:http').IncomingMessage} _req
- * @param {import('node:http').ServerResponse} res
- * @param {string} pathname — decoded pathname portion of the request URL
- * @param {{ buildDir: string }} ctx
  */
-async function serveSpa(_req, res, pathname, ctx) {
+async function serveSpa(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  ctx: RequestContext,
+): Promise<void> {
   const { buildDir } = ctx;
 
   // Static-file lookup first: any real file under `buildDir` (hashed
@@ -870,15 +859,11 @@ async function serveSpa(_req, res, pathname, ctx) {
  * traversal guard for the static file server — any `..` segment, Windows
  * backslash, or null byte is rejected here rather than at `sendFile` time
  * so a malformed URL never reads a file outside the build directory.
- *
- * @param {string} buildDir — absolute path to the Vite build directory
- * @param {string} pathname — raw (possibly percent-encoded) URL pathname
- * @returns {string | null} absolute path inside `buildDir`, or `null`
  */
-export function resolveSafeFile(buildDir, pathname) {
+export function resolveSafeFile(buildDir: string, pathname: string): string | null {
   if (typeof pathname !== 'string') return null;
 
-  let decoded;
+  let decoded: string;
   try {
     decoded = decodeURIComponent(pathname);
   } catch {
@@ -912,11 +897,8 @@ export function resolveSafeFile(buildDir, pathname) {
  * served with long-lived immutable caching; `index.html` must stay
  * fresh so new deploys land immediately; everything else gets a short
  * default cache so repeated dev reloads are cheap.
- *
- * @param {import('node:http').ServerResponse} res
- * @param {string} absPath — absolute path to a file inside the build dir
  */
-async function sendFile(res, absPath) {
+async function sendFile(res: ServerResponse, absPath: string): Promise<void> {
   const ext = extname(absPath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
   const stats = statSync(absPath);
@@ -952,11 +934,8 @@ async function sendFile(res, absPath) {
  * first-run fallback so `aweek serve` is self-explanatory before the
  * frontend has been built. No external assets — the page is readable
  * without the SPA bundle.
- *
- * @param {string} buildDir — absolute path the server looked for
- * @returns {string}
  */
-export function renderBuildMissingHtml(buildDir) {
+export function renderBuildMissingHtml(buildDir: string): string {
   const dir = escapeHtml(buildDir);
   return `<!doctype html>
 <html lang="en">
@@ -1013,11 +992,8 @@ aweek serve</pre>
  * HTML-escape untrusted text for safe interpolation into markup. The
  * build-missing template is the only HTML we render server-side in sub-AC 1,
  * so a local helper keeps this module free of an HTML-rendering dep.
- *
- * @param {string} value
- * @returns {string}
  */
-function escapeHtml(value) {
+function escapeHtml(value: string): string {
   return String(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -1034,12 +1010,11 @@ function escapeHtml(value) {
  *   - darwin:  `open <url>`
  *   - win32:   `cmd /c start "" <url>` (empty title dodges start's quoting quirk)
  *   - other:   `xdg-open <url>` (standard freedesktop.org launcher)
- *
- * @param {string} url
- * @param {NodeJS.Platform} [platform]
- * @returns {{ command: string, args: string[] }}
  */
-export function resolveOpenCommand(url, platform = nodePlatform) {
+export function resolveOpenCommand(
+  url: string,
+  platform: NodeJS.Platform = nodePlatform,
+): { command: string; args: string[] } {
   if (platform === 'darwin') {
     return { command: 'open', args: [url] };
   }
@@ -1052,6 +1027,24 @@ export function resolveOpenCommand(url, platform = nodePlatform) {
   return { command: 'xdg-open', args: [url] };
 }
 
+/** Result returned by {@link openBrowser}. */
+export interface OpenBrowserResult {
+  opened: boolean;
+  error?: Error | unknown;
+  command?: string;
+  args?: string[];
+}
+
+/** Injection points for {@link openBrowser}. */
+export interface OpenBrowserDeps {
+  spawn?: (
+    command: string,
+    args: string[],
+    options: { stdio: string; detached: boolean },
+  ) => ChildProcess;
+  platform?: NodeJS.Platform;
+}
+
 /**
  * Open `url` in the user's default browser. Spawns a detached child so
  * the Node.js process does not wait on the browser; swallows launch
@@ -1062,17 +1055,14 @@ export function resolveOpenCommand(url, platform = nodePlatform) {
  * binary, headless CI environment, permission denial, ...) is reported
  * via the resolved value rather than thrown, so the dashboard stays up
  * even when we cannot open a browser.
- *
- * @param {string} url
- * @param {object} [deps]
- * @param {(command: string, args: string[], options: object) => import('node:child_process').ChildProcess} [deps.spawn]
- * @param {NodeJS.Platform} [deps.platform]
- * @returns {Promise<{ opened: boolean, error?: Error, command?: string, args?: string[] }>}
  */
-export function openBrowser(url, { spawn = nodeSpawn, platform = nodePlatform } = {}) {
+export function openBrowser(
+  url: string,
+  { spawn = nodeSpawn as unknown as NonNullable<OpenBrowserDeps['spawn']>, platform = nodePlatform }: OpenBrowserDeps = {},
+): Promise<OpenBrowserResult> {
   return new Promise((resolvePromise) => {
-    let command;
-    let args;
+    let command: string | undefined;
+    let args: string[] | undefined;
     try {
       ({ command, args } = resolveOpenCommand(url, platform));
     } catch (err) {
@@ -1080,9 +1070,9 @@ export function openBrowser(url, { spawn = nodeSpawn, platform = nodePlatform } 
       return;
     }
 
-    let child;
+    let child: ChildProcess;
     let settled = false;
-    const settle = (result) => {
+    const settle = (result: OpenBrowserResult) => {
       if (settled) return;
       settled = true;
       resolvePromise(result);
@@ -1124,6 +1114,18 @@ export function openBrowser(url, { spawn = nodeSpawn, platform = nodePlatform } 
   });
 }
 
+/** Address record returned by {@link getLanAddresses}. */
+export interface LanAddress {
+  name: string;
+  address: string;
+  family: 'IPv4' | 'IPv6';
+}
+
+/** Injection points for {@link getLanAddresses} / {@link formatLanHints}. */
+export interface NetworkDeps {
+  networkInterfaces?: typeof nodeNetworkInterfaces;
+}
+
 /**
  * Enumerate the host machine's LAN-reachable IPv4 and IPv6 addresses
  * so the CLI can print concrete URLs a phone/tablet on the same
@@ -1135,14 +1137,10 @@ export function openBrowser(url, { spawn = nodeSpawn, platform = nodePlatform } 
  * The shape matches Node's `os.networkInterfaces()` entries so callers
  * can format however they like. Injectable `networkInterfaces` dep
  * keeps the function unit-testable on any host.
- *
- * @param {object} [deps]
- * @param {() => Record<string, Array<{ address: string, family: string | number, internal: boolean }> | undefined>} [deps.networkInterfaces]
- * @returns {Array<{ name: string, address: string, family: 'IPv4' | 'IPv6' }>}
  */
-export function getLanAddresses({ networkInterfaces = nodeNetworkInterfaces } = {}) {
+export function getLanAddresses({ networkInterfaces = nodeNetworkInterfaces }: NetworkDeps = {}): LanAddress[] {
   const interfaces = networkInterfaces() || {};
-  const out = [];
+  const out: LanAddress[] = [];
   for (const [name, addrs] of Object.entries(interfaces)) {
     if (!Array.isArray(addrs)) continue;
     for (const addr of addrs) {
@@ -1150,10 +1148,11 @@ export function getLanAddresses({ networkInterfaces = nodeNetworkInterfaces } = 
       // Node 18+ uses the string 'IPv4'/'IPv6'; older node exposed a
       // number (4 / 6). Normalise both so downstream code can branch
       // on a stable value.
-      const family =
-        addr.family === 'IPv4' || addr.family === 4
+      const rawFamily = (addr as { family: string | number }).family;
+      const family: 'IPv4' | 'IPv6' | null =
+        rawFamily === 'IPv4' || rawFamily === 4
           ? 'IPv4'
-          : addr.family === 'IPv6' || addr.family === 6
+          : rawFamily === 'IPv6' || rawFamily === 6
             ? 'IPv6'
             : null;
       if (!family) continue;
@@ -1172,16 +1171,14 @@ export function getLanAddresses({ networkInterfaces = nodeNetworkInterfaces } = 
  * the user is already looking at the canonical URL) and for machines
  * with no external interfaces (e.g. air-gapped laptops). IPv6 hosts
  * are bracketed per RFC 3986.
- *
- * @param {{ host: string, port: number }} bind
- * @param {object} [deps]
- * @param {() => Record<string, Array<{ address: string, family: string | number, internal: boolean }> | undefined>} [deps.networkInterfaces]
- * @returns {string[]}
  */
-export function formatLanHints({ host, port }, deps = {}) {
+export function formatLanHints(
+  { host, port }: { host: string; port: number },
+  deps: NetworkDeps = {},
+): string[] {
   if (!isWildcardHost(host)) return [];
   const addrs = getLanAddresses(deps);
-  const urls = [];
+  const urls: string[] = [];
   for (const { address, family } of addrs) {
     const display = family === 'IPv6' ? `[${address}]` : address;
     urls.push(`http://${display}:${port}/`);
@@ -1193,19 +1190,13 @@ export function formatLanHints({ host, port }, deps = {}) {
  * Bind the server to `host:port`, incrementing the port on EADDRINUSE
  * up to `scanLimit` times before giving up. Returns the port that was
  * successfully bound.
- *
- * @param {import('node:http').Server} server
- * @param {number} port
- * @param {string} host
- * @param {number} scanLimit
- * @returns {Promise<number>}
  */
-function listenWithRetry(server, port, host, scanLimit) {
+function listenWithRetry(server: Server, port: number, host: string, scanLimit: number): Promise<number> {
   return new Promise((resolveBind, rejectBind) => {
     let attempt = 0;
 
-    const tryListen = (candidate) => {
-      const onError = (err) => {
+    const tryListen = (candidate: number): void => {
+      const onError = (err: NodeJS.ErrnoException): void => {
         server.removeListener('listening', onListening);
         if (err && err.code === 'EADDRINUSE' && attempt < scanLimit) {
           attempt += 1;
@@ -1220,7 +1211,7 @@ function listenWithRetry(server, port, host, scanLimit) {
         }
         rejectBind(err);
       };
-      const onListening = () => {
+      const onListening = (): void => {
         server.removeListener('error', onError);
         // When `candidate === 0` the OS picks an ephemeral port; read the
         // actual bound port back from the server address rather than
