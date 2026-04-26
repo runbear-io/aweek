@@ -18,20 +18,22 @@
 import { join } from 'node:path';
 import { listAllAgents } from '../../storage/agent-helpers.js';
 import { ActivityLogStore } from '../../storage/activity-log-store.js';
+import type { ActivityLogEntry } from '../../storage/activity-log-store.js';
 
 /** Valid date-range preset keys. */
-export const DATE_RANGE_PRESETS = ['all', 'this-week', 'last-7-days'];
+export const DATE_RANGE_PRESETS = ['all', 'this-week', 'last-7-days'] as const;
 /** Default preset when none supplied / unknown. */
 export const DEFAULT_DATE_RANGE = 'all';
 
+/** Date-range preset literal. */
+export type DateRangePreset = (typeof DATE_RANGE_PRESETS)[number];
+
 /**
  * Coerce an arbitrary string into a valid preset key.
- * @param {string | undefined} raw
- * @returns {'all' | 'this-week' | 'last-7-days'}
  */
-export function resolveDateRange(raw) {
-  if (typeof raw === 'string' && DATE_RANGE_PRESETS.includes(raw)) {
-    return /** @type {any} */ (raw);
+export function resolveDateRange(raw: string | undefined): DateRangePreset {
+  if (typeof raw === 'string' && (DATE_RANGE_PRESETS as readonly string[]).includes(raw)) {
+    return raw as DateRangePreset;
   }
   return DEFAULT_DATE_RANGE;
 }
@@ -39,12 +41,11 @@ export function resolveDateRange(raw) {
 /**
  * Compute the earliest timestamp (ms) that entries must have to be
  * included in the given preset. Returns `{ cutoff: null }` for 'all'.
- *
- * @param {'all' | 'this-week' | 'last-7-days'} preset
- * @param {Date} [now]
- * @returns {{ cutoff: number | null }}
  */
-export function computeDateRangeBounds(preset, now = new Date()) {
+export function computeDateRangeBounds(
+  preset: DateRangePreset,
+  now: Date | number = new Date(),
+): { cutoff: number | null } {
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
   if (preset === 'this-week') {
     const d = new Date(nowMs);
@@ -64,23 +65,29 @@ export function computeDateRangeBounds(preset, now = new Date()) {
 /** Keep the activity feed responsive for agents with years of history. */
 const MAX_ENTRIES = 100;
 
+/** Options accepted by {@link gatherAgentActivity}. */
+export interface GatherAgentActivityOptions {
+  projectDir?: string;
+  slug?: string;
+  /** 'all' | 'this-week' | 'last-7-days'. */
+  dateRange?: string;
+  /** Override the default MAX_ENTRIES cap. */
+  limit?: number;
+  now?: Date | number;
+}
+
+/** Activity feed payload returned to the SPA. */
+export interface AgentActivityPayload {
+  slug: string;
+  dateRange: DateRangePreset;
+  entries: ActivityLogEntry[];
+}
+
 /**
  * Gather the activity feed for a single agent.
  *
  * Returns `null` when the slug is unknown on disk so the HTTP layer
  * can map it to 404.
- *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {string} opts.slug
- * @param {string} [opts.dateRange] - 'all' | 'this-week' | 'last-7-days'.
- * @param {number} [opts.limit] - Override the default MAX_ENTRIES cap.
- * @param {Date}   [opts.now]
- * @returns {Promise<{
- *   slug: string,
- *   dateRange: string,
- *   entries: Array<object>,
- * } | null>}
  */
 export async function gatherAgentActivity({
   projectDir,
@@ -88,7 +95,7 @@ export async function gatherAgentActivity({
   dateRange,
   limit = MAX_ENTRIES,
   now,
-} = {}) {
+}: GatherAgentActivityOptions = {}): Promise<AgentActivityPayload | null> {
   if (!projectDir) throw new Error('gatherAgentActivity: projectDir is required');
   if (!slug) throw new Error('gatherAgentActivity: slug is required');
   const agentsDir = join(projectDir, '.aweek', 'agents');
@@ -100,11 +107,11 @@ export async function gatherAgentActivity({
   const resolved = resolveDateRange(dateRange);
   const store = new ActivityLogStore(agentsDir);
 
-  let entries = [];
+  let entries: ActivityLogEntry[] = [];
   try {
     const weeks = await store.listWeeks(slug);
     const perWeek = await Promise.all(
-      weeks.map((week) => store.load(slug, week).catch(() => [])),
+      weeks.map((week) => store.load(slug, week).catch(() => [] as ActivityLogEntry[])),
     );
     entries = perWeek.flat();
   } catch {

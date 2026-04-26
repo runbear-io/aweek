@@ -19,7 +19,19 @@ import { resolve } from 'node:path';
  * The CLI branches on this code to swap the generic "Serve failed: ..."
  * one-liner for the friendly block produced by `formatNoAweekDirMessage`.
  */
-export const MISSING_AWEEK_DIR_CODE = 'ENOAWEEKDIR';
+export const MISSING_AWEEK_DIR_CODE = 'ENOAWEEKDIR' as const;
+
+/**
+ * Error shape produced by {@link createNoAweekDirError}. Carries the
+ * stable `code` plus both the missing `dataDir` and its parent
+ * `projectDir` so CLI formatters can render a friendly remediation block
+ * without having to re-derive paths.
+ */
+export interface NoAweekDirError extends Error {
+  code: typeof MISSING_AWEEK_DIR_CODE;
+  dataDir: string;
+  projectDir: string;
+}
 
 /**
  * Build the single-line `Error.message` used when `.aweek/` is missing.
@@ -29,10 +41,9 @@ export const MISSING_AWEEK_DIR_CODE = 'ENOAWEEKDIR';
  * assertions. The full multi-line friendly rendering is
  * `formatNoAweekDirMessage`, which the CLI prints separately.
  *
- * @param {string} dataDir — absolute path of the missing `.aweek/` folder
- * @returns {string}
+ * @param dataDir — absolute path of the missing `.aweek/` folder
  */
-export function buildNoAweekDirErrorMessage(dataDir) {
+export function buildNoAweekDirErrorMessage(dataDir: string): string {
   return `No .aweek/ folder found at ${dataDir}. Run "aweek init" first or pass --project-dir.`;
 }
 
@@ -42,11 +53,10 @@ export function buildNoAweekDirErrorMessage(dataDir) {
  * server module and its tests share a single source of truth for both
  * the error code and the message shape.
  *
- * @param {string} dataDir — absolute path of the missing `.aweek/` folder
- * @returns {Error & { code: string, dataDir: string, projectDir: string }}
+ * @param dataDir — absolute path of the missing `.aweek/` folder
  */
-export function createNoAweekDirError(dataDir) {
-  const err = new Error(buildNoAweekDirErrorMessage(dataDir));
+export function createNoAweekDirError(dataDir: string): NoAweekDirError {
+  const err = new Error(buildNoAweekDirErrorMessage(dataDir)) as NoAweekDirError;
   err.code = MISSING_AWEEK_DIR_CODE;
   err.dataDir = dataDir;
   // `projectDir` is the parent of `.aweek/` — the path the user actually
@@ -55,6 +65,12 @@ export function createNoAweekDirError(dataDir) {
   // without having to re-derive from `dataDir`.
   err.projectDir = resolve(dataDir, '..');
   return err;
+}
+
+/** Optional input shape for {@link formatNoAweekDirMessage}. */
+export interface FormatNoAweekDirMessageOptions {
+  dataDir?: string;
+  projectDir?: string;
 }
 
 /**
@@ -78,14 +94,15 @@ export function createNoAweekDirError(dataDir) {
  * `/aweek:init`, so the very first experience hinges on this message
  * being actionable rather than a stack trace.
  *
- * @param {{ dataDir?: string, projectDir?: string }} ctx
+ * @param ctx
  *   Either `dataDir` (absolute `.aweek/` path) or `projectDir` (parent)
  *   may be passed — any one is sufficient. If both are absent the
  *   message falls back to a generic "<cwd>/.aweek/" reference using
  *   `process.cwd()`.
- * @returns {string}
  */
-export function formatNoAweekDirMessage({ dataDir, projectDir } = {}) {
+export function formatNoAweekDirMessage(
+  { dataDir, projectDir }: FormatNoAweekDirMessageOptions = {},
+): string {
   const resolvedDataDir = resolve(
     dataDir ||
       (projectDir ? resolve(projectDir, '.aweek') : resolve(process.cwd(), '.aweek')),
@@ -109,10 +126,9 @@ export function formatNoAweekDirMessage({ dataDir, projectDir } = {}) {
  *
  * Centralising the check here means bin/aweek.js does not need to import
  * the constant directly — it can just ask `isNoAweekDirError(err)`.
- *
- * @param {unknown} err
- * @returns {boolean}
  */
-export function isNoAweekDirError(err) {
-  return Boolean(err) && typeof err === 'object' && err.code === MISSING_AWEEK_DIR_CODE;
+export function isNoAweekDirError(err: unknown): err is NoAweekDirError {
+  return Boolean(err) &&
+    typeof err === 'object' &&
+    (err as { code?: unknown }).code === MISSING_AWEEK_DIR_CODE;
 }

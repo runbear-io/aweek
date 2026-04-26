@@ -19,11 +19,8 @@ import { readExecutionLogLines } from '../../storage/execution-log-store.js';
  * Validate that a path segment is safe to use as part of the on-disk
  * lookup (no separators, no traversal). Exported so the HTTP layer can
  * reuse the same gate before calling into the iterator.
- *
- * @param {string} segment
- * @returns {boolean}
  */
-export function isSafePathSegment(segment) {
+export function isSafePathSegment(segment: unknown): segment is string {
   return (
     typeof segment === 'string' &&
     segment.length > 0 &&
@@ -33,15 +30,20 @@ export function isSafePathSegment(segment) {
   );
 }
 
+/** Output of {@link parseExecutionBasename}. */
+export interface ParsedExecutionBasename {
+  taskId: string;
+  executionId: string;
+}
+
 /**
  * Split a `<taskId>_<executionId>` basename. The heartbeat writes
  * execution logs to `<taskId>_<executionId>.jsonl`; taskId's schema
  * bans underscores, so the first `_` is an unambiguous split point.
- *
- * @param {string} basename
- * @returns {{ taskId: string, executionId: string } | null}
  */
-export function parseExecutionBasename(basename) {
+export function parseExecutionBasename(
+  basename: unknown,
+): ParsedExecutionBasename | null {
   if (!isSafePathSegment(basename)) return null;
   const cutIdx = basename.indexOf('_');
   if (cutIdx <= 0 || cutIdx === basename.length - 1) return null;
@@ -51,19 +53,23 @@ export function parseExecutionBasename(basename) {
   };
 }
 
+/** Options accepted by {@link streamExecutionLogLines}. */
+export interface StreamExecutionLogLinesOptions {
+  projectDir?: string;
+  slug?: string;
+  /** `<taskId>_<executionId>` (no `.jsonl`). */
+  basename?: string;
+}
+
 /**
  * Async iterator over the raw NDJSON lines of a single execution's
  * log file. Yields nothing when the file is missing (the underlying
  * `readExecutionLogLines` treats ENOENT as an empty stream), which the
  * HTTP layer can map to 404.
- *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {string} opts.slug
- * @param {string} opts.basename - `<taskId>_<executionId>` (no `.jsonl`).
- * @returns {AsyncGenerator<string>}
  */
-export async function* streamExecutionLogLines({ projectDir, slug, basename } = {}) {
+export async function* streamExecutionLogLines(
+  { projectDir, slug, basename }: StreamExecutionLogLinesOptions = {},
+): AsyncGenerator<string> {
   if (!projectDir) throw new Error('streamExecutionLogLines: projectDir is required');
   if (!isSafePathSegment(slug)) return;
   const parsed = parseExecutionBasename(basename);
