@@ -184,11 +184,6 @@
     "src/serve",
     "src/**/*.test.ts",
     "src/**/*.integration.test.ts",
-    "src/heartbeat/heartbeat-task-runner.ts",
-    "src/heartbeat/run.ts",
-    "src/heartbeat/locked-session-runner.ts",
-    "src/heartbeat/task-selector.ts",
-    "src/heartbeat/inbox-processor.ts",
     "dist"
   ]
 }

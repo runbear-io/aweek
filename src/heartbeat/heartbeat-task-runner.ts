@@ -19,8 +19,55 @@
  */
 
 import { selectNextTask, getTaskStatusSummary, isAllTasksFinished } from './task-selector.js';
+import type { TaskStatusSummary } from './task-selector.js';
 import { createTickExecutionRecord } from '../storage/execution-store.js';
+import type { ExecutionStore, ExecutionStatus } from '../storage/execution-store.js';
+import type {
+  WeeklyPlanStore,
+  WeeklyTask,
+} from '../storage/weekly-plan-store.js';
+import type { AgentStore } from '../storage/agent-store.js';
 import { resolveSubagentFile } from '../subagents/subagent-file.js';
+
+export interface TickAgentOptions {
+  weeklyPlanStore: WeeklyPlanStore;
+  executionStore?: ExecutionStore;
+  agentStore?: AgentStore;
+  windowMs?: number;
+  projectDir?: string;
+  home?: string;
+}
+
+export type TaskTickOutcome =
+  | 'task_selected'
+  | 'no_pending_tasks'
+  | 'all_tasks_finished'
+  | 'no_approved_plan'
+  | 'no_weekly_plans'
+  | 'skipped'
+  | 'error';
+
+export interface TaskTickResult {
+  outcome: TaskTickOutcome;
+  agentId: string;
+  task?: WeeklyTask;
+  taskIndex?: number;
+  week?: string;
+  summary?: TaskStatusSummary;
+  reason?: string;
+  pausedReason?: string;
+  subagentRef?: string;
+  checkedPaths?: { project: string; user: string };
+  hasWeeklyPlans?: boolean;
+  error?: Error;
+  tickedAt: string;
+}
+
+export type TaskTickCallback = (agentId: string) => Promise<TaskTickResult>;
+
+export interface RunHeartbeatTickOptions extends TickAgentOptions {
+  scheduler: { runHeartbeat: (agentId: string, callback: TaskTickCallback) => Promise<unknown> };
+}
 
 /**
  * @typedef {object} TaskTickResult
@@ -66,11 +113,11 @@ import { resolveSubagentFile } from '../subagents/subagent-file.js';
  * @param {number} [opts.windowMs=3600000] - Time window for idempotency (default 1 hour)
  * @returns {function(string): Promise<TaskTickResult>}
  */
-export function createTaskTickCallback(opts = {}) {
+export function createTaskTickCallback(opts: TickAgentOptions): TaskTickCallback {
+  if (!opts?.weeklyPlanStore) throw new Error('weeklyPlanStore is required');
   const { weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
-  if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
 
-  return async function taskTickCallback(agentId) {
+  return async function taskTickCallback(agentId: string): Promise<TaskTickResult> {
     return tickAgent(agentId, {
       weeklyPlanStore,
       executionStore,
@@ -100,10 +147,13 @@ export function createTaskTickCallback(opts = {}) {
  *   (tests only; defaults to `os.homedir()`).
  * @returns {Promise<TaskTickResult>}
  */
-export async function tickAgent(agentId, opts = {}) {
-  const { weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
-  if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
+export async function tickAgent(
+  agentId: string,
+  opts: TickAgentOptions,
+): Promise<TaskTickResult> {
+  if (!opts?.weeklyPlanStore) throw new Error('weeklyPlanStore is required');
   if (!agentId) throw new Error('agentId is required');
+  const { weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
 
   const now = new Date();
   const tickedAt = now.toISOString();
@@ -260,11 +310,12 @@ export async function tickAgent(agentId, opts = {}) {
   } catch (error) {
     // Record failed execution so we don't retry in the same window
     await _recordExecution(executionStore, agentId, now, 'failed');
+    const errObj = error instanceof Error ? error : new Error(String(error));
     return {
       outcome: 'error',
       agentId,
-      error,
-      reason: `Heartbeat tick error: ${error.message}`,
+      error: errObj,
+      reason: `Heartbeat tick error: ${errObj.message}`,
       tickedAt,
     };
   }
@@ -289,7 +340,13 @@ export async function tickAgent(agentId, opts = {}) {
  * @param {string} [taskId]
  * @returns {Promise<void>}
  */
-async function _recordExecution(executionStore, agentId, date, status, taskId) {
+async function _recordExecution(
+  executionStore: ExecutionStore | undefined,
+  agentId: string,
+  date: Date,
+  status: ExecutionStatus,
+  taskId?: string,
+): Promise<void> {
   if (!executionStore) return;
   try {
     const record = createTickExecutionRecord({ agentId, date, status, taskId });
@@ -314,7 +371,10 @@ async function _recordExecution(executionStore, agentId, date, status, taskId) {
  * @param {number} [opts.windowMs] - Time window for idempotency
  * @returns {Promise<{status: string, agentId: string, result?: TaskTickResult, reason?: string, error?: Error}>}
  */
-export async function runHeartbeatTick(agentId, opts = {}) {
+export async function runHeartbeatTick(
+  agentId: string,
+  opts: RunHeartbeatTickOptions,
+): Promise<unknown> {
   const { scheduler, weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
   if (!scheduler) throw new Error('scheduler is required');
   if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
@@ -344,7 +404,10 @@ export async function runHeartbeatTick(agentId, opts = {}) {
  * @param {number} [opts.windowMs] - Time window for idempotency
  * @returns {Promise<Array<{status: string, agentId: string, result?: TaskTickResult}>>}
  */
-export async function runHeartbeatTickAll(agentIds, opts = {}) {
+export async function runHeartbeatTickAll(
+  agentIds: string[],
+  opts: RunHeartbeatTickOptions,
+): Promise<unknown[]> {
   const { scheduler, weeklyPlanStore, executionStore, agentStore, windowMs, projectDir, home } = opts;
   if (!scheduler) throw new Error('scheduler is required');
   if (!weeklyPlanStore) throw new Error('weeklyPlanStore is required');
@@ -371,7 +434,10 @@ export async function runHeartbeatTickAll(agentIds, opts = {}) {
  * @param {string} agentId
  * @returns {Promise<object|null>}
  */
-async function _loadLatestApprovedSafe(store, agentId) {
+async function _loadLatestApprovedSafe(
+  store: WeeklyPlanStore,
+  agentId: string,
+): Promise<Awaited<ReturnType<WeeklyPlanStore['loadLatestApproved']>> | null> {
   try {
     return await store.loadLatestApproved(agentId);
   } catch {
@@ -397,7 +463,10 @@ async function _loadLatestApprovedSafe(store, agentId) {
  *   - `ok: false` — listing unavailable (no `.list` method or threw); caller
  *     should skip the shell guard and continue the tick.
  */
-async function _listWeeklyPlanWeeksSafe(store, agentId) {
+async function _listWeeklyPlanWeeksSafe(
+  store: WeeklyPlanStore,
+  agentId: string,
+): Promise<{ ok: boolean; weeks: string[] }> {
   if (!store || typeof store.list !== 'function') {
     return { ok: false, weeks: [] };
   }
@@ -421,12 +490,15 @@ async function _listWeeklyPlanWeeksSafe(store, agentId) {
  * @param {string} agentId
  * @returns {Promise<{ paused: boolean, pausedReason: string|undefined }>}
  */
-async function _readAgentPauseStateSafe(agentStore, agentId) {
+async function _readAgentPauseStateSafe(
+  agentStore: AgentStore,
+  agentId: string,
+): Promise<{ paused: boolean; pausedReason: string | undefined }> {
   try {
     const config = await agentStore.load(agentId);
     return {
       paused: config.budget?.paused === true,
-      pausedReason: config.budget?.pausedReason,
+      pausedReason: config.budget?.pausedReason ?? undefined,
     };
   } catch {
     return { paused: false, pausedReason: undefined };
@@ -454,7 +526,18 @@ async function _readAgentPauseStateSafe(agentStore, agentId) {
  * @param {string} params.tickedAt
  * @returns {Promise<TaskTickResult|null>}
  */
-async function _autoPauseIfSubagentMissing(params) {
+interface AutoPauseParams {
+  agentStore: AgentStore;
+  agentId: string;
+  projectDir?: string;
+  home?: string;
+  now: Date;
+  executionStore?: ExecutionStore;
+  windowMs?: number;
+  tickedAt: string;
+}
+
+async function _autoPauseIfSubagentMissing(params: AutoPauseParams): Promise<TaskTickResult | null> {
   const {
     agentStore,
     agentId,
@@ -462,7 +545,7 @@ async function _autoPauseIfSubagentMissing(params) {
     home,
     now,
     executionStore,
-    windowMs,
+    windowMs: _windowMs,
     tickedAt,
   } = params;
 
@@ -495,7 +578,13 @@ async function _autoPauseIfSubagentMissing(params) {
   // so proceeding to spawn would crash-loop anyway).
   try {
     await agentStore.update(agentId, (cfg) => {
-      if (!cfg.budget) cfg.budget = {};
+      if (!cfg.budget) {
+        cfg.budget = {
+          weeklyTokenLimit: 0,
+          currentUsage: 0,
+          periodStart: new Date().toISOString(),
+        };
+      }
       cfg.budget.paused = true;
       cfg.budget.pausedReason = 'subagent_missing';
       return cfg;

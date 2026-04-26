@@ -17,9 +17,71 @@
  * - File source of truth: locks and queues are persisted to disk
  */
 
-import { acquireLock, releaseLock, queryLock, createLockManager } from '../lock/lock-manager.js';
-import { enqueue, dequeue, peek, queueLength, createTaskQueue } from '../queue/task-queue.js';
+import { acquireLock, releaseLock, queryLock } from '../lock/lock-manager.js';
+import { enqueue, dequeue, peek, queueLength } from '../queue/task-queue.js';
 import { DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
+import type { AgentStore } from '../storage/agent-store.js';
+
+export interface TaskInfo {
+  taskId: string;
+  type?: string;
+  priority?: number;
+  payload?: Record<string, unknown>;
+  source?: string;
+  /** Optional objectiveId used by the dispatching executor to route review tasks. */
+  objectiveId?: string;
+}
+
+export interface LockedSessionOpts {
+  lockDir?: string;
+  maxLockAgeMs?: number;
+  queueDir?: string;
+  drainQueue?: boolean;
+  agentStore?: AgentStore;
+}
+
+export interface DrainResult {
+  taskId: string;
+  status: 'executed' | 'error';
+  sessionResult?: unknown;
+  error?: Error;
+}
+
+export interface LockedSessionResult {
+  status: 'executed' | 'queued' | 'error' | 'skipped';
+  agentId: string;
+  taskId?: string;
+  sessionResult?: unknown;
+  queueEntry?: unknown;
+  queuePosition?: number;
+  duplicate?: boolean;
+  drainResults?: DrainResult[];
+  reason?: string;
+  error?: Error;
+  pausedReason?: string;
+  startedAt: string;
+}
+
+export type SessionExecuteFn = (
+  agentId: string,
+  taskInfo: TaskInfo,
+) => Promise<unknown>;
+
+export interface AgentTaskPair {
+  agentId: string;
+  taskInfo: TaskInfo;
+}
+
+export interface LockedSessionRunner {
+  lockDir?: string;
+  queueDir?: string;
+  run(agentId: string, taskInfo: TaskInfo, executeFn: SessionExecuteFn): Promise<LockedSessionResult>;
+  runAll(agentTasks: AgentTaskPair[], executeFn: SessionExecuteFn): Promise<LockedSessionResult[]>;
+  drain(agentId: string, executeFn: SessionExecuteFn): Promise<DrainResult[]>;
+  queryLock(agentId: string): ReturnType<typeof queryLock>;
+  queueLength(agentId: string): ReturnType<typeof queueLength>;
+  peek(agentId: string): ReturnType<typeof peek>;
+}
 
 /**
  * @typedef {object} LockedSessionResult
@@ -65,17 +127,22 @@ import { DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
  * @param {import('../storage/agent-store.js').AgentStore} [opts.agentStore] - Optional agent store for pause-check
  * @returns {Promise<LockedSessionResult>}
  */
-export async function runWithLockAndQueue(agentId, taskInfo, executeFn, opts = {}) {
+export async function runWithLockAndQueue(
+  agentId: string,
+  taskInfo: TaskInfo,
+  executeFn: SessionExecuteFn,
+  opts: LockedSessionOpts = {},
+): Promise<LockedSessionResult> {
   if (!agentId) throw new Error('agentId is required');
   if (!taskInfo) throw new Error('taskInfo is required');
   if (!taskInfo.taskId) throw new Error('taskInfo.taskId is required');
   if (typeof executeFn !== 'function') throw new Error('executeFn must be a function');
 
-  const lockOpts = {};
+  const lockOpts: { lockDir?: string; maxLockAgeMs?: number } = {};
   if (opts.lockDir) lockOpts.lockDir = opts.lockDir;
   if (opts.maxLockAgeMs !== undefined) lockOpts.maxLockAgeMs = opts.maxLockAgeMs;
 
-  const queueOpts = {};
+  const queueOpts: { queueDir?: string } = {};
   if (opts.queueDir) queueOpts.queueDir = opts.queueDir;
 
   const drainQueue = opts.drainQueue !== false;
@@ -138,7 +205,7 @@ export async function runWithLockAndQueue(agentId, taskInfo, executeFn, opts = {
   try {
     const sessionResult = await executeFn(agentId, taskInfo);
 
-    const result = {
+    const result: LockedSessionResult = {
       status: 'executed',
       agentId,
       taskId: taskInfo.taskId,
@@ -156,12 +223,13 @@ export async function runWithLockAndQueue(agentId, taskInfo, executeFn, opts = {
 
     return result;
   } catch (error) {
+    const errObj = error instanceof Error ? error : new Error(String(error));
     return {
       status: 'error',
       agentId,
       taskId: taskInfo.taskId,
-      error,
-      reason: `Execution error: ${error.message}`,
+      error: errObj,
+      reason: `Execution error: ${errObj.message}`,
       startedAt,
     };
   } finally {
@@ -183,11 +251,15 @@ export async function runWithLockAndQueue(agentId, taskInfo, executeFn, opts = {
  * @param {string} [queueOpts.queueDir]
  * @returns {Promise<Array<DrainResult>>}
  */
-export async function drainQueuedTasks(agentId, executeFn, queueOpts = {}) {
+export async function drainQueuedTasks(
+  agentId: string,
+  executeFn: SessionExecuteFn,
+  queueOpts: { queueDir?: string } = {},
+): Promise<DrainResult[]> {
   if (!agentId) throw new Error('agentId is required');
   if (typeof executeFn !== 'function') throw new Error('executeFn must be a function');
 
-  const results = [];
+  const results: DrainResult[] = [];
 
   // Drain loop: dequeue one at a time, execute, repeat
   while (true) {
@@ -195,6 +267,7 @@ export async function drainQueuedTasks(agentId, executeFn, queueOpts = {}) {
     if (!dequeueResult.dequeued) break;
 
     const entry = dequeueResult.entry;
+    if (!entry) break;
 
     try {
       const sessionResult = await executeFn(agentId, {
@@ -211,10 +284,11 @@ export async function drainQueuedTasks(agentId, executeFn, queueOpts = {}) {
         sessionResult,
       });
     } catch (error) {
+      const errObj = error instanceof Error ? error : new Error(String(error));
       results.push({
         taskId: entry.taskId,
         status: 'error',
-        error,
+        error: errObj,
       });
       // Continue draining — don't stop on error
     }
@@ -233,7 +307,11 @@ export async function drainQueuedTasks(agentId, executeFn, queueOpts = {}) {
  * @param {object} [opts] - Same as runWithLockAndQueue opts
  * @returns {Promise<Array<LockedSessionResult>>}
  */
-export async function runAllWithLockAndQueue(agentTasks, executeFn, opts = {}) {
+export async function runAllWithLockAndQueue(
+  agentTasks: AgentTaskPair[],
+  executeFn: SessionExecuteFn,
+  opts: LockedSessionOpts = {},
+): Promise<LockedSessionResult[]> {
   if (!Array.isArray(agentTasks)) throw new Error('agentTasks must be an array');
   if (typeof executeFn !== 'function') throw new Error('executeFn must be a function');
 
@@ -254,7 +332,7 @@ export async function runAllWithLockAndQueue(agentTasks, executeFn, opts = {}) {
  * @param {boolean} [opts.drainQueue=true]
  * @returns {object} LockedSessionRunner API
  */
-export function createLockedSessionRunner(opts = {}) {
+export function createLockedSessionRunner(opts: LockedSessionOpts = {}): LockedSessionRunner {
   return {
     lockDir: opts.lockDir,
     queueDir: opts.queueDir,
@@ -262,37 +340,37 @@ export function createLockedSessionRunner(opts = {}) {
     /**
      * Run a task with lock + queue isolation.
      */
-    run: (agentId, taskInfo, executeFn) =>
+    run: (agentId: string, taskInfo: TaskInfo, executeFn: SessionExecuteFn) =>
       runWithLockAndQueue(agentId, taskInfo, executeFn, opts),
 
     /**
      * Run tasks for multiple agents in parallel.
      */
-    runAll: (agentTasks, executeFn) =>
+    runAll: (agentTasks: AgentTaskPair[], executeFn: SessionExecuteFn) =>
       runAllWithLockAndQueue(agentTasks, executeFn, opts),
 
     /**
      * Drain queued tasks for an agent.
      */
-    drain: (agentId, executeFn) =>
+    drain: (agentId: string, executeFn: SessionExecuteFn) =>
       drainQueuedTasks(agentId, executeFn, { queueDir: opts.queueDir }),
 
     /**
      * Query the lock status for an agent.
      */
-    queryLock: (agentId) =>
+    queryLock: (agentId: string) =>
       queryLock(agentId, { lockDir: opts.lockDir }),
 
     /**
      * Get queue length for an agent.
      */
-    queueLength: (agentId) =>
+    queueLength: (agentId: string) =>
       queueLength(agentId, { queueDir: opts.queueDir }),
 
     /**
      * Peek at next queued task.
      */
-    peek: (agentId) =>
+    peek: (agentId: string) =>
       peek(agentId, { queueDir: opts.queueDir }),
   };
 }
@@ -321,16 +399,20 @@ export function createLockedSessionRunner(opts = {}) {
  *   when omitted, daily-review tasks fall through to normalExecuteFn
  * @returns {function(string, object): Promise<*>} Dispatch-aware executor
  */
-export function createDispatchingExecutor(normalExecuteFn, opts = {}) {
+export function createDispatchingExecutor(
+  normalExecuteFn: SessionExecuteFn,
+  opts: { dailyReviewExecuteFn?: SessionExecuteFn } = {},
+): SessionExecuteFn {
   if (typeof normalExecuteFn !== 'function') {
     throw new Error('normalExecuteFn must be a function');
   }
   const { dailyReviewExecuteFn } = opts;
 
-  return async function dispatchingExecute(agentId, taskInfo) {
+  return async function dispatchingExecute(agentId: string, taskInfo: TaskInfo) {
     // Resolve objectiveId from either the top-level field (canonical) or the
     // payload envelope (legacy / alternate callers).
-    const objectiveId = taskInfo?.objectiveId ?? taskInfo?.payload?.objectiveId;
+    const objectiveId =
+      taskInfo?.objectiveId ?? (taskInfo?.payload?.objectiveId as string | undefined);
 
     if (objectiveId === DAILY_REVIEW_OBJECTIVE_ID && typeof dailyReviewExecuteFn === 'function') {
       return dailyReviewExecuteFn(agentId, taskInfo);

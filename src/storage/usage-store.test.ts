@@ -1,5 +1,12 @@
 /**
  * Tests for UsageStore and usage record schema validation.
+ *
+ * The runtime/contract assertions are unchanged from the original `.js`
+ * test — this file is the strict-mode TypeScript port that lands as part
+ * of seed-03-storage-C-final's storage migration. Types are imported
+ * from the migrated `./usage-store.js` source via NodeNext extension
+ * resolution; type-only imports use `import type` so they erase at
+ * runtime under `node --test`.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,6 +15,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { UsageStore, createUsageRecord, getMondayDate } from './usage-store.js';
 import { validateUsageRecord, validateUsageLog } from '../schemas/validator.js';
+
+/**
+ * Inferred from the migrated `createUsageRecord` factory so the test
+ * stays in lockstep with the source's declared return shape — without
+ * forcing a hard re-export of an internal type alias.
+ */
+type UsageRecord = ReturnType<typeof createUsageRecord>;
 
 describe('usage-store getMondayDate', () => {
   it('returns Monday for a Monday date', () => {
@@ -161,8 +175,8 @@ describe('usage record schema validation', () => {
 });
 
 describe('UsageStore', () => {
-  let tmpDir;
-  let store;
+  let tmpDir: string;
+  let store: UsageStore;
   const agentId = 'agent-usage-test';
 
   beforeEach(async () => {
@@ -448,7 +462,7 @@ describe('UsageStore', () => {
 
   describe('accumulation logic', () => {
     it('accumulates tokens across many records in the same week', async () => {
-      const records = [];
+      const records: UsageRecord[] = [];
       for (let i = 0; i < 10; i++) {
         records.push(
           createUsageRecord({
@@ -534,7 +548,7 @@ describe('UsageStore', () => {
     });
 
     it('tracks usage independently across multiple weeks', async () => {
-      const weeks = ['2026-03-30', '2026-04-06', '2026-04-13', '2026-04-20'];
+      const weeks: readonly string[] = ['2026-03-30', '2026-04-06', '2026-04-13', '2026-04-20'];
       for (let i = 0; i < weeks.length; i++) {
         const r = createUsageRecord({
           agentId,
@@ -637,7 +651,8 @@ describe('UsageStore', () => {
 
     it('parallel appends for multiple agents do not interfere', async () => {
       // Simulate parallel heartbeat: all agents write at the same time
-      const records = [agent1, agent2, agent3].map((id, i) =>
+      const agentIds: readonly string[] = [agent1, agent2, agent3];
+      const records: UsageRecord[] = agentIds.map((id, i) =>
         createUsageRecord({
           agentId: id,
           taskId: `task-${i}`,
@@ -648,7 +663,7 @@ describe('UsageStore', () => {
       );
 
       await Promise.all(
-        records.map((r, i) => store.append([agent1, agent2, agent3][i], r)),
+        records.map((r, i) => store.append(agentIds[i], r)),
       );
 
       const t1 = await store.weeklyTotal(agent1, '2026-04-13');

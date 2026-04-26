@@ -26,17 +26,46 @@ import { createInterface } from 'node:readline';
 import { redactLine } from '../execution/secret-redactor.js';
 
 /**
+ * Handle returned by {@link openExecutionLogWriter}. The caller is
+ * responsible for invoking {@link ExecutionLogWriter.close} when the
+ * session ends — otherwise the underlying write stream stays open and
+ * the file may be truncated on process exit.
+ */
+export interface ExecutionLogWriter {
+  /**
+   * Append a single line to the execution log. Empty strings and
+   * non-string values are silently dropped (defensive against the CLI
+   * occasionally emitting `null` between event chunks). Each line is
+   * routed through the secret redactor before hitting disk.
+   */
+  writeLine: (line: unknown) => void;
+  /** Flush + close the underlying write stream. Resolves when the OS confirms the file is fsynced. */
+  close: () => Promise<void>;
+  /** Absolute on-disk path of the file being written. */
+  path: string;
+}
+
+/** Narrow `unknown` to a Node `ErrnoException` so we can read the `code` field. */
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && typeof (err as NodeJS.ErrnoException).code === 'string';
+}
+
+/**
  * Absolute path to an execution's execution-log file. Keeps the naming
  * flat (`<taskId>-<executionId>.jsonl`) so discovery by taskId is a cheap
  * glob — no need to walk per-run subdirectories.
  *
- * @param {string} agentsDir `.aweek/agents` root
- * @param {string} agentId
- * @param {string} taskId
- * @param {string} executionId
- * @returns {string}
+ * @param agentsDir `.aweek/agents` root
+ * @param agentId
+ * @param taskId
+ * @param executionId
  */
-export function executionLogPath(agentsDir, agentId, taskId, executionId) {
+export function executionLogPath(
+  agentsDir: string,
+  agentId: string,
+  taskId: string,
+  executionId: string,
+): string {
   if (!agentsDir) throw new TypeError('agentsDir is required');
   if (!agentId) throw new TypeError('agentId is required');
   if (!taskId) throw new TypeError('taskId is required');
@@ -54,28 +83,32 @@ export function executionLogPath(agentsDir, agentId, taskId, executionId) {
  * responsible for calling `close()` when the session ends. Every line
  * passed to `writeLine` is routed through the secret redactor before
  * hitting disk.
- *
- * @param {string} agentsDir
- * @param {string} agentId
- * @param {string} taskId
- * @param {string} executionId
- * @returns {Promise<{ writeLine: (line: string) => void, close: () => Promise<void>, path: string }>}
  */
-export async function openExecutionLogWriter(agentsDir, agentId, taskId, executionId) {
+export async function openExecutionLogWriter(
+  agentsDir: string,
+  agentId: string,
+  taskId: string,
+  executionId: string,
+): Promise<ExecutionLogWriter> {
   const path = executionLogPath(agentsDir, agentId, taskId, executionId);
   await mkdir(dirname(path), { recursive: true });
 
   const stream = createWriteStream(path, { flags: 'a', encoding: 'utf8' });
 
-  const writeLine = (line) => {
+  const writeLine = (line: unknown): void => {
     if (typeof line !== 'string' || line.length === 0) return;
-    const redacted = redactLine(line);
+    // `redactLine` is typed to return `unknown` because it passes
+    // non-string inputs through untouched, but we just narrowed `line`
+    // to a non-empty string above — so the redacted result is always a
+    // string here. `String()` makes that contract explicit without
+    // resorting to a cast.
+    const redacted = String(redactLine(line));
     stream.write(redacted.endsWith('\n') ? redacted : redacted + '\n');
   };
 
-  const close = () =>
-    new Promise((resolve, reject) => {
-      stream.end((err) => (err ? reject(err) : resolve()));
+  const close = (): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      stream.end((err?: Error | null) => (err ? reject(err) : resolve()));
     });
 
   return { writeLine, close, path };
@@ -85,19 +118,18 @@ export async function openExecutionLogWriter(agentsDir, agentId, taskId, executi
  * Check whether an execution log exists on disk. Useful for the
  * dashboard — older executions recorded before this feature landed won't
  * have a file.
- *
- * @param {string} agentsDir
- * @param {string} agentId
- * @param {string} taskId
- * @param {string} executionId
- * @returns {Promise<boolean>}
  */
-export async function executionLogExists(agentsDir, agentId, taskId, executionId) {
+export async function executionLogExists(
+  agentsDir: string,
+  agentId: string,
+  taskId: string,
+  executionId: string,
+): Promise<boolean> {
   try {
     const s = await stat(executionLogPath(agentsDir, agentId, taskId, executionId));
     return s.isFile();
   } catch (err) {
-    if (err && err.code === 'ENOENT') return false;
+    if (isErrnoException(err) && err.code === 'ENOENT') return false;
     throw err;
   }
 }
@@ -106,20 +138,19 @@ export async function executionLogExists(agentsDir, agentId, taskId, executionId
  * Stream the execution-log lines back. Yields raw strings — one per
  * event in the underlying JSONL. Missing files yield nothing. Callers
  * that want parsed events can `JSON.parse` each line.
- *
- * @param {string} agentsDir
- * @param {string} agentId
- * @param {string} taskId
- * @param {string} executionId
- * @returns {AsyncGenerator<string>}
  */
-export async function* readExecutionLogLines(agentsDir, agentId, taskId, executionId) {
+export async function* readExecutionLogLines(
+  agentsDir: string,
+  agentId: string,
+  taskId: string,
+  executionId: string,
+): AsyncGenerator<string, void, void> {
   const path = executionLogPath(agentsDir, agentId, taskId, executionId);
   let stream;
   try {
     stream = createReadStream(path, { encoding: 'utf8' });
   } catch (err) {
-    if (err && err.code === 'ENOENT') return;
+    if (isErrnoException(err) && err.code === 'ENOENT') return;
     throw err;
   }
 
@@ -130,7 +161,7 @@ export async function* readExecutionLogLines(agentsDir, agentId, taskId, executi
       yield line;
     }
   } catch (err) {
-    if (err && err.code === 'ENOENT') return;
+    if (isErrnoException(err) && err.code === 'ENOENT') return;
     throw err;
   }
 }
