@@ -136,26 +136,59 @@
     "tsBuildInfoFile": "./node_modules/.cache/tsc/tsconfig.node.tsbuildinfo"
   },
 
-  // Just the four Node-context config files at the repo root. Anything
-  // else in the repo is covered by `tsconfig.spa.json` (SPA tree) or
-  // intentionally left untyped in this migration phase (backend `.js`).
+  // The four Node-context config files at the repo root, PLUS the
+  // backend module trees that have been migrated to TypeScript and
+  // currently type-check cleanly: `src/schemas/`, `src/models/`,
+  // `src/time/`, `src/execution/`, `src/heartbeat/`, `src/lock/`,
+  // `src/queue/`, `src/services/`. Tests are excluded for now (their
+  // mocking patterns need a separate typing pass); five heartbeat
+  // production files with unresolved migration errors are also
+  // excluded below — they're tracked as follow-up work and will be
+  // re-included once their signatures are reconciled.
+  //
+  // Out of scope (still raw `.js`): `src/storage/`, `src/subagents/`,
+  // `src/skills/` (except `summary.d.ts`), `src/cli/`, `src/serve/`,
+  // `src/index.js`, `bin/`, `scripts/`. The SPA tree (`src/serve/spa/`)
+  // belongs to `tsconfig.spa.json`.
   "include": [
     "vite.config.js",
     "vitest.config.js",
     "postcss.config.js",
-    "tailwind.config.js"
+    "tailwind.config.js",
+    "src/schemas/**/*.ts",
+    "src/models/**/*.ts",
+    "src/time/**/*.ts",
+    "src/execution/**/*.ts",
+    "src/heartbeat/**/*.ts",
+    "src/lock/**/*.ts",
+    "src/queue/**/*.ts",
+    "src/services/**/*.ts"
   ],
 
   // Carve-outs:
   //   - `node_modules` — never type-check vendored sources.
-  //   - `src/**` — the SPA tree is `tsconfig.spa.json`'s job; the
-  //     backend is intentionally untyped in this phase.
-  //   - `dist`-style output dirs — none at the repo root today, but
-  //     listed for parity with the SPA config in case a future tool
-  //     emits there.
+  //   - `src/storage/`, `src/skills/`, `src/cli/`, `src/serve/` —
+  //     still raw `.js`, untyped in this phase.
+  //   - `src/**/*.test.ts` / `*.integration.test.ts` — tests need a
+  //     follow-up typing pass; production code is the priority here.
+  //   - Five heartbeat production files with unresolved migration
+  //     errors (signature mismatches against still-`.js` storage/
+  //     services collaborators). Re-include once the surrounding
+  //     `.js` stores migrate or gain `.d.ts` shims.
+  //   - `dist` — output dir parity with the SPA config.
   "exclude": [
     "node_modules",
-    "src",
+    "src/storage",
+    "src/skills",
+    "src/cli",
+    "src/serve",
+    "src/**/*.test.ts",
+    "src/**/*.integration.test.ts",
+    "src/heartbeat/heartbeat-task-runner.ts",
+    "src/heartbeat/run.ts",
+    "src/heartbeat/locked-session-runner.ts",
+    "src/heartbeat/task-selector.ts",
+    "src/heartbeat/inbox-processor.ts",
     "dist"
   ]
 }
