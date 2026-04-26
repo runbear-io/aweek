@@ -1,5 +1,5 @@
 /**
- * Tests for src/skills/plan-interview-triggers.js
+ * Tests for src/skills/plan-interview-triggers.ts
  *
  * Each test section mirrors one exported symbol. We test:
  *   - Pure helper functions (no I/O) with direct inputs
@@ -9,9 +9,9 @@
  * (shape and trigger ID) rather than duplicating store-level coverage.
  */
 
-import { describe, it, before, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -44,22 +44,13 @@ import {
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { ActivityLogStore } from '../storage/activity-log-store.js';
 import { writePlan } from '../storage/plan-markdown-store.js';
-import { createWeeklyPlan, createTask, createGoal, createObjective } from '../models/agent.js';
+import { createWeeklyPlan, createTask } from '../models/agent.js';
 
 const AGENT_ID = 'test-agent';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Minimal valid weekly plan for any week. */
-function makeWeeklyPlan(week) {
-  const task = createTask({ title: 'Test task', prompt: 'Test task' }, 'obj-test', { priority: 'medium' });
-  return createWeeklyPlan(week, week.slice(0, 7).replace('-W', '-').replace(/W(\d+)$/, (_m, w) => {
-    // Convert "2026-W16" -> "2026-04" approximately — we just need a valid YYYY-MM.
-    return '04';
-  }), [task]);
-}
 
 /** Simple plan.md body with real goals and a monthly section. */
 const GOOD_PLAN_MD = `# Test Agent
@@ -146,7 +137,7 @@ const CONFLICTING_GOALS_PLAN_MD = `# Test Agent
 `;
 
 /** Plan.md with an approaching monthly deadline. */
-function deadlinePlanMd(monthStr) {
+function deadlinePlanMd(monthStr: string): string {
   return `# Test Agent
 
 ## Long-term goals
@@ -166,7 +157,7 @@ function deadlinePlanMd(monthStr) {
 }
 
 /** Plan.md with an explicit "by YYYY-MM-DD" date mention. */
-function explicitDeadlinePlanMd(dateStr) {
+function explicitDeadlinePlanMd(dateStr: string): string {
   return `# Test Agent
 
 ## Long-term goals
@@ -191,13 +182,11 @@ function explicitDeadlinePlanMd(dateStr) {
 
 describe('isoWeeksInYear', () => {
   it('returns 52 for typical years', () => {
-    // 2023: p(2023)=(2023+505-20+5)%7=2513%7=359*7=2513→0. p(2022)=(2022+505-20+5)%7=2512%7=6. Not 4 or 3 → 52
     assert.equal(isoWeeksInYear(2023), 52);
     assert.equal(isoWeeksInYear(2024), 52);
   });
 
   it('returns 53 for long years', () => {
-    // 2015, 2020, 2026 are known 53-week years
     assert.equal(isoWeeksInYear(2015), 53);
     assert.equal(isoWeeksInYear(2020), 53);
   });
@@ -217,7 +206,6 @@ describe('previousWeekKey', () => {
   });
 
   it('crosses the year boundary to the last week of the prior year', () => {
-    // 2026-W01 → last week of 2025 (which has 52 weeks)
     const prev = previousWeekKey('2026-W01');
     assert.match(prev, /^2025-W\d{2}$/);
     const weekNum = parseInt(prev.slice(-2), 10);
@@ -237,14 +225,13 @@ describe('mondayStringForWeek', () => {
   });
 
   it('2026-W16 Monday is 2026-04-13', () => {
-    // Verified independently: 2026-W16 starts on Monday April 13
     assert.equal(mondayStringForWeek('2026-W16'), '2026-04-13');
   });
 
   it('consecutive weeks differ by exactly 7 days', () => {
     const d1 = new Date(mondayStringForWeek('2026-W10') + 'T00:00:00Z');
     const d2 = new Date(mondayStringForWeek('2026-W11') + 'T00:00:00Z');
-    const diffDays = (d2 - d1) / (24 * 60 * 60 * 1000);
+    const diffDays = (d2.getTime() - d1.getTime()) / (24 * 60 * 60 * 1000);
     assert.equal(diffDays, 7);
   });
 
@@ -311,7 +298,6 @@ describe('goalLinesAppearConflicting', () => {
   });
 
   it('handles mixed-direction lines without false positive', () => {
-    // Line A has both growth and shrink verbs → not "purely growth"
     assert.equal(
       goalLinesAppearConflicting('Increase and reduce costs', 'Reduce overall costs'),
       false,
@@ -357,13 +343,13 @@ describe('parseDateMentions', () => {
 
 describe('lastDayOfMonth', () => {
   it('returns the correct last day for standard months', () => {
-    assert.equal(lastDayOfMonth('2026-04').toISOString().slice(0, 10), '2026-04-30');
-    assert.equal(lastDayOfMonth('2026-12').toISOString().slice(0, 10), '2026-12-31');
-    assert.equal(lastDayOfMonth('2026-02').toISOString().slice(0, 10), '2026-02-28');
+    assert.equal(lastDayOfMonth('2026-04')!.toISOString().slice(0, 10), '2026-04-30');
+    assert.equal(lastDayOfMonth('2026-12')!.toISOString().slice(0, 10), '2026-12-31');
+    assert.equal(lastDayOfMonth('2026-02')!.toISOString().slice(0, 10), '2026-02-28');
   });
 
   it('handles leap February', () => {
-    assert.equal(lastDayOfMonth('2024-02').toISOString().slice(0, 10), '2024-02-29');
+    assert.equal(lastDayOfMonth('2024-02')!.toISOString().slice(0, 10), '2024-02-29');
   });
 
   it('returns null for malformed input', () => {
@@ -377,7 +363,7 @@ describe('lastDayOfMonth', () => {
 // ---------------------------------------------------------------------------
 
 describe('isFirstEverPlan', () => {
-  let dir;
+  let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'aweek-trigger1-'));
@@ -390,10 +376,10 @@ describe('isFirstEverPlan', () => {
   it('fires when no weekly plans exist', async () => {
     const result = await isFirstEverPlan({ agentId: AGENT_ID, dataDir: dir });
     assert.ok(result !== null, 'should fire');
-    assert.equal(result.trigger, 'first-ever-plan');
-    assert.ok(typeof result.reason === 'string' && result.reason.length > 0);
-    assert.equal(result.details.agentId, AGENT_ID);
-    assert.equal(result.details.priorWeekCount, 0);
+    assert.equal(result!.trigger, 'first-ever-plan');
+    assert.ok(typeof result!.reason === 'string' && result!.reason.length > 0);
+    assert.equal(result!.details.agentId, AGENT_ID);
+    assert.equal(result!.details.priorWeekCount, 0);
   });
 
   it('returns null when at least one weekly plan exists', async () => {
@@ -417,7 +403,7 @@ describe('isFirstEverPlan', () => {
 // ---------------------------------------------------------------------------
 
 describe('detectVagueOrConflictingGoals', () => {
-  let dir;
+  let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'aweek-trigger2-'));
@@ -433,9 +419,9 @@ describe('detectVagueOrConflictingGoals', () => {
       agentsDir: dir,
     });
     assert.ok(result !== null);
-    assert.equal(result.trigger, 'conflicting-or-vague-goals');
-    assert.equal(result.details.vague, true);
-    assert.match(result.details.vagueReason, /absent/i);
+    assert.equal(result!.trigger, 'conflicting-or-vague-goals');
+    assert.equal(result!.details.vague, true);
+    assert.match(result!.details.vagueReason as string, /absent/i);
   });
 
   it('fires with vague reason when goals section is empty/placeholder', async () => {
@@ -445,9 +431,9 @@ describe('detectVagueOrConflictingGoals', () => {
       agentsDir: dir,
     });
     assert.ok(result !== null);
-    assert.equal(result.trigger, 'conflicting-or-vague-goals');
-    assert.equal(result.details.vague, true);
-    assert.equal(result.details.substantiveGoalLineCount, 0);
+    assert.equal(result!.trigger, 'conflicting-or-vague-goals');
+    assert.equal(result!.details.vague, true);
+    assert.equal(result!.details.substantiveGoalLineCount, 0);
   });
 
   it('fires with vague reason when no YYYY-MM monthly sections exist', async () => {
@@ -457,9 +443,9 @@ describe('detectVagueOrConflictingGoals', () => {
       agentsDir: dir,
     });
     assert.ok(result !== null);
-    assert.equal(result.trigger, 'conflicting-or-vague-goals');
-    assert.equal(result.details.vague, true);
-    assert.match(result.details.vagueReason, /YYYY-MM/i);
+    assert.equal(result!.trigger, 'conflicting-or-vague-goals');
+    assert.equal(result!.details.vague, true);
+    assert.match(result!.details.vagueReason as string, /YYYY-MM/i);
   });
 
   it('fires with conflicting reason when goals oppose each other', async () => {
@@ -469,10 +455,10 @@ describe('detectVagueOrConflictingGoals', () => {
       agentsDir: dir,
     });
     assert.ok(result !== null);
-    assert.equal(result.trigger, 'conflicting-or-vague-goals');
-    assert.equal(result.details.conflicting, true);
-    assert.ok(Array.isArray(result.details.conflictingPairs));
-    assert.ok(result.details.conflictingPairs.length > 0);
+    assert.equal(result!.trigger, 'conflicting-or-vague-goals');
+    assert.equal(result!.details.conflicting, true);
+    assert.ok(Array.isArray(result!.details.conflictingPairs));
+    assert.ok((result!.details.conflictingPairs as unknown[]).length > 0);
   });
 
   it('returns null for a well-formed plan.md', async () => {
@@ -501,7 +487,7 @@ describe('detectVagueOrConflictingGoals', () => {
 // ---------------------------------------------------------------------------
 
 describe('detectPriorWeekProblems', () => {
-  let dir;
+  let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'aweek-trigger3-'));
@@ -515,7 +501,6 @@ describe('detectPriorWeekProblems', () => {
     const result = await detectPriorWeekProblems({
       agentId: AGENT_ID,
       dataDir: dir,
-      // Fix "now" to a known week so the test is deterministic.
       now: new Date('2026-04-20T12:00:00Z'),
     });
     assert.equal(result, null);
@@ -523,10 +508,8 @@ describe('detectPriorWeekProblems', () => {
 
   it('returns null when prior week had no failures', async () => {
     const store = new ActivityLogStore(dir);
-    // 2026-W15 Monday = 2026-04-06; to test W16 prior, fix now to W17.
-    const priorMonday = '2026-04-06'; // Monday of 2026-W15
+    const priorMonday = '2026-04-06';
     await store.init(AGENT_ID);
-    // Write two completed entries.
     const entry1 = {
       id: 'log-aabb0001',
       timestamp: '2026-04-07T10:00:00Z',
@@ -541,28 +524,24 @@ describe('detectPriorWeekProblems', () => {
       status: 'completed',
       title: 'Task two completed',
     };
-    // Write directly to the log file for that week.
     await writeFile(
       join(dir, AGENT_ID, 'logs', `${priorMonday}.json`),
       JSON.stringify([entry1, entry2], null, 2),
     );
 
-    // "now" is in 2026-W16 so previous week is 2026-W15
     const result = await detectPriorWeekProblems({
       agentId: AGENT_ID,
       dataDir: dir,
-      now: new Date('2026-04-13T12:00:00Z'), // Monday of W16 → prior = W15
+      now: new Date('2026-04-13T12:00:00Z'),
     });
     assert.equal(result, null);
   });
 
   it('fires when absolute failure threshold is met', async () => {
     const store = new ActivityLogStore(dir);
-    const priorMonday = '2026-04-06'; // 2026-W15
+    const priorMonday = '2026-04-06';
     await store.init(AGENT_ID);
 
-    // Write PRIOR_WEEK_ABSOLUTE_FAILURE_THRESHOLD failed entries.
-    // IDs must satisfy the schema pattern ^log-[a-f0-9]+$ (hex chars only).
     const entries = [];
     for (let i = 0; i < PRIOR_WEEK_ABSOLUTE_FAILURE_THRESHOLD; i++) {
       entries.push({
@@ -581,25 +560,23 @@ describe('detectPriorWeekProblems', () => {
     const result = await detectPriorWeekProblems({
       agentId: AGENT_ID,
       dataDir: dir,
-      now: new Date('2026-04-13T12:00:00Z'), // W16 → prior W15
+      now: new Date('2026-04-13T12:00:00Z'),
     });
     assert.ok(result !== null, 'should fire');
-    assert.equal(result.trigger, 'prior-week-problems');
-    assert.equal(result.details.totalFailed, PRIOR_WEEK_ABSOLUTE_FAILURE_THRESHOLD);
-    assert.ok(Array.isArray(result.details.failedDescriptions));
-    assert.equal(result.details.triggeredBy, 'absolute-threshold');
+    assert.equal(result!.trigger, 'prior-week-problems');
+    assert.equal(result!.details.totalFailed, PRIOR_WEEK_ABSOLUTE_FAILURE_THRESHOLD);
+    assert.ok(Array.isArray(result!.details.failedDescriptions));
+    assert.equal(result!.details.triggeredBy, 'absolute-threshold');
   });
 
   it('fires when rate threshold is met with sufficient sample size', async () => {
     const store = new ActivityLogStore(dir);
-    const priorMonday = '2026-04-06'; // 2026-W15
+    const priorMonday = '2026-04-06';
     await store.init(AGENT_ID);
 
-    // PRIOR_WEEK_MIN_ACTIVITIES entries with >= PRIOR_WEEK_FAILURE_RATE_THRESHOLD failures.
     const total = PRIOR_WEEK_MIN_ACTIVITIES;
     const failCount = Math.ceil(total * PRIOR_WEEK_FAILURE_RATE_THRESHOLD);
     const entries = [];
-    // IDs must satisfy the schema pattern ^log-[a-f0-9]+$ (hex chars only).
     for (let i = 0; i < total; i++) {
       entries.push({
         id: `log-cafe${String(i).padStart(4, '0')}`,
@@ -620,8 +597,8 @@ describe('detectPriorWeekProblems', () => {
       now: new Date('2026-04-13T12:00:00Z'),
     });
     assert.ok(result !== null, 'should fire on rate threshold');
-    assert.equal(result.trigger, 'prior-week-problems');
-    assert.ok(result.details.failureRate >= PRIOR_WEEK_FAILURE_RATE_THRESHOLD);
+    assert.equal(result!.trigger, 'prior-week-problems');
+    assert.ok((result!.details.failureRate as number) >= PRIOR_WEEK_FAILURE_RATE_THRESHOLD);
   });
 
   it('throws on missing required params', async () => {
@@ -641,7 +618,7 @@ describe('detectPriorWeekProblems', () => {
 // ---------------------------------------------------------------------------
 
 describe('detectDeadlineApproaching', () => {
-  let dir;
+  let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'aweek-trigger4-'));
@@ -661,12 +638,7 @@ describe('detectDeadlineApproaching', () => {
   });
 
   it('returns null when no deadlines are within the window', async () => {
-    // Plan has "### 2030-06" — far in the future
-    await writePlan(
-      dir,
-      AGENT_ID,
-      deadlinePlanMd('2030-06'),
-    );
+    await writePlan(dir, AGENT_ID, deadlinePlanMd('2030-06'));
     const result = await detectDeadlineApproaching({
       agentId: AGENT_ID,
       agentsDir: dir,
@@ -676,7 +648,6 @@ describe('detectDeadlineApproaching', () => {
   });
 
   it('fires when a monthly plan end-date is within the lookahead window', async () => {
-    // "now" is Apr 19, 2026; April ends Apr 30 — 11 days away (< 14-day default)
     await writePlan(dir, AGENT_ID, deadlinePlanMd('2026-04'));
     const result = await detectDeadlineApproaching({
       agentId: AGENT_ID,
@@ -684,14 +655,14 @@ describe('detectDeadlineApproaching', () => {
       now: new Date('2026-04-19T00:00:00Z'),
     });
     assert.ok(result !== null, 'should fire');
-    assert.equal(result.trigger, 'deadline-approaching');
-    assert.equal(result.details.nearestDeadline.type, 'monthly-plan');
-    assert.equal(result.details.nearestDeadline.label, '2026-04');
-    assert.ok(result.details.nearestDeadline.daysRemaining >= 0);
+    assert.equal(result!.trigger, 'deadline-approaching');
+    const nearest = result!.details.nearestDeadline as { type: string; label: string; daysRemaining: number };
+    assert.equal(nearest.type, 'monthly-plan');
+    assert.equal(nearest.label, '2026-04');
+    assert.ok(nearest.daysRemaining >= 0);
   });
 
   it('fires when an explicit date mention is within the lookahead window', async () => {
-    // "by 2026-04-25" is 6 days from Apr 19
     await writePlan(dir, AGENT_ID, explicitDeadlinePlanMd('2026-04-25'));
     const result = await detectDeadlineApproaching({
       agentId: AGENT_ID,
@@ -699,14 +670,14 @@ describe('detectDeadlineApproaching', () => {
       now: new Date('2026-04-19T00:00:00Z'),
     });
     assert.ok(result !== null, 'should fire');
-    assert.equal(result.trigger, 'deadline-approaching');
-    assert.equal(result.details.nearestDeadline.label, '2026-04-25');
-    assert.ok(result.details.nearestDeadline.daysRemaining > 0);
-    assert.ok(result.details.nearestDeadline.daysRemaining <= DEFAULT_DEADLINE_LOOKAHEAD_DAYS);
+    assert.equal(result!.trigger, 'deadline-approaching');
+    const nearest = result!.details.nearestDeadline as { label: string; daysRemaining: number };
+    assert.equal(nearest.label, '2026-04-25');
+    assert.ok(nearest.daysRemaining > 0);
+    assert.ok(nearest.daysRemaining <= DEFAULT_DEADLINE_LOOKAHEAD_DAYS);
   });
 
   it('respects a custom lookaheadDays value', async () => {
-    // April ends in 11 days from Apr 19. With lookahead=7, it should NOT fire.
     await writePlan(dir, AGENT_ID, deadlinePlanMd('2026-04'));
     const result = await detectDeadlineApproaching({
       agentId: AGENT_ID,
@@ -718,8 +689,6 @@ describe('detectDeadlineApproaching', () => {
   });
 
   it('sorts approachingDeadlines by soonest first', async () => {
-    // Two deadlines: monthly end 2026-04 (Apr 30 = 11 days from Apr 19)
-    // and an explicit "by 2026-04-22" (3 days). Nearest should be Apr 22.
     const body = `# Test Agent
 
 ## Long-term goals
@@ -747,9 +716,9 @@ Ship the thing by 2026-04-22.
       now: new Date('2026-04-19T00:00:00Z'),
     });
     assert.ok(result !== null);
-    // Nearest should be 2026-04-22 (3 days) not 2026-04-30 (11 days)
-    assert.equal(result.details.nearestDeadline.label, '2026-04-22');
-    assert.ok(result.details.approachingDeadlines.length >= 2);
+    const nearest = result!.details.nearestDeadline as { label: string };
+    assert.equal(nearest.label, '2026-04-22');
+    assert.ok((result!.details.approachingDeadlines as unknown[]).length >= 2);
   });
 
   it('throws on missing required params', async () => {
@@ -769,7 +738,7 @@ Ship the thing by 2026-04-22.
 // ---------------------------------------------------------------------------
 
 describe('checkInterviewTriggers', () => {
-  let dir;
+  let dir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'aweek-check-triggers-'));
@@ -780,20 +749,17 @@ describe('checkInterviewTriggers', () => {
   });
 
   it('returns an empty array when no triggers fire (good plan, prior week clean, no deadlines)', async () => {
-    // Write a good plan.md
     await writePlan(dir, AGENT_ID, GOOD_PLAN_MD);
-    // Seed at least one prior weekly plan so isFirstEverPlan stays silent
     const store = new WeeklyPlanStore(dir);
     const task = createTask({ title: 'Prior task', prompt: 'Prior task' }, 'obj-prior', { priority: 'medium' });
     const plan = createWeeklyPlan('2026-W15', '2026-04', [task]);
     await store.save(AGENT_ID, plan);
 
-    // "now" is in 2026-W17, April ends far outside 14-day window from Apr 26
     const result = await checkInterviewTriggers({
       agentId: AGENT_ID,
       dataDir: dir,
-      now: new Date('2026-04-26T12:00:00Z'), // Apr 30 is only 4 days away — tighten window
-      deadlineLookaheadDays: 3, // window too small for Apr 30
+      now: new Date('2026-04-26T12:00:00Z'),
+      deadlineLookaheadDays: 3,
     });
     assert.deepEqual(result, []);
   });
@@ -804,14 +770,13 @@ describe('checkInterviewTriggers', () => {
       agentId: AGENT_ID,
       dataDir: dir,
       now: new Date('2026-04-19T12:00:00Z'),
-      deadlineLookaheadDays: 3, // keep Apr 30 quiet
+      deadlineLookaheadDays: 3,
     });
     const triggers = result.map((r) => r.trigger);
     assert.ok(triggers.includes('first-ever-plan'), `got: ${JSON.stringify(triggers)}`);
   });
 
   it('returns an array with the correct shape for each fired trigger', async () => {
-    // No plan.md → vague trigger; no plans → first-ever trigger.
     const result = await checkInterviewTriggers({
       agentId: AGENT_ID,
       dataDir: dir,
@@ -825,8 +790,6 @@ describe('checkInterviewTriggers', () => {
   });
 
   it('swallows individual trigger errors gracefully', async () => {
-    // Pass a completely bogus dataDir — all store operations will fail.
-    // The composite should still return an array (empty or partial), not throw.
     const result = await checkInterviewTriggers({
       agentId: AGENT_ID,
       dataDir: '/this/path/does/not/exist/at/all',
@@ -848,7 +811,6 @@ describe('generateAssumptionForTrigger', () => {
     });
     assert.equal(typeof result, 'string');
     assert.ok(result.length > 0);
-    // Should mention calibration / starter week
     assert.match(result, /calibration|starter|first/i);
   });
 
@@ -864,7 +826,6 @@ describe('generateAssumptionForTrigger', () => {
     });
     assert.equal(typeof result, 'string');
     assert.ok(result.length > 0);
-    // Should mention the first line of the pair and "conflicting"
     assert.match(result, /Increase content marketing spend/i);
     assert.match(result, /conflict/i);
   });
@@ -883,7 +844,6 @@ describe('generateAssumptionForTrigger', () => {
   });
 
   it('returns a vague-goals assumption when details has no conflicting flag', () => {
-    // Neither vague nor conflicting explicitly set — fallback to vague path
     const result = generateAssumptionForTrigger({
       trigger: 'conflicting-or-vague-goals',
       details: {},
@@ -1084,7 +1044,6 @@ describe('formatAssumptionsBlock', () => {
       { trigger: 'first-ever-plan', label: 'First-Ever Plan', assumption: 'Test assumption.' },
     ];
     const result = formatAssumptionsBlock(assumptions);
-    // Should open and close with --- separators
     assert.match(result, /^---/m);
   });
 

@@ -29,6 +29,13 @@ import { promisify } from 'node:util';
 
 const pExecFile = promisify(_execFile);
 
+/** Loose error shape for child_process / fs errors. */
+interface ErrnoLike extends Error {
+  code?: string | number;
+  stderr?: string;
+  stdout?: string;
+}
+
 /**
  * Prefix for the launchd service label. The full label is
  * `${LAUNCHD_LABEL_PREFIX}.${shortHash(projectDir)}` so multiple aweek
@@ -48,20 +55,20 @@ export const DEFAULT_LAUNCHD_INTERVAL_SECONDS = 600;
  */
 const MIN_LAUNCHD_INTERVAL_SECONDS = 60;
 
+/** Result returned by {@link defaultLaunchctl}. */
+export interface LaunchctlResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Async launchctl runner signature. */
+export type LaunchctlFn = (args: string[]) => Promise<LaunchctlResult>;
+
 /**
- * Convert a cron-style "every N minutes" schedule string to seconds. Used
- * so callers can keep the existing `heartbeatSchedule` option shape and
- * have it Just Work on macOS without learning a new knob.
- *
- * Anything more complex than "every N minutes" is rejected — we
- * deliberately do not paper over the impedance mismatch between cron's
- * 5-field grammar and launchd's `StartCalendarInterval` dict. Callers
- * that need a calendar-style schedule pass `intervalSeconds` directly.
- *
- * @param {string} schedule
- * @returns {number} Interval in seconds.
+ * Convert a cron-style "every N minutes" schedule string to seconds.
  */
-export function cronScheduleToSeconds(schedule) {
+export function cronScheduleToSeconds(schedule: unknown): number {
   if (typeof schedule !== 'string') {
     throw new Error('schedule must be a string');
   }
@@ -81,36 +88,27 @@ export function cronScheduleToSeconds(schedule) {
 
 /**
  * Short, stable hash of a project directory for the launchd label +
- * plist filename. 10 hex chars ≈ 40 bits, plenty for disambiguation
- * between aweek projects on one user's machine.
- *
- * @param {string} projectDir
- * @returns {string}
+ * plist filename.
  */
-function projectHash(projectDir) {
+function projectHash(projectDir: string): string {
   return createHash('sha1').update(projectDir).digest('hex').slice(0, 10);
 }
 
 /**
  * Build the full launchd service label for a project.
- *
- * @param {string} projectDir
- * @returns {string}
  */
-export function launchdLabel(projectDir) {
+export function launchdLabel(projectDir?: string): string {
   if (!projectDir) throw new Error('projectDir is required');
   return `${LAUNCHD_LABEL_PREFIX}.${projectHash(projectDir)}`;
 }
 
 /**
  * Absolute path to the plist file for a project.
- *
- * @param {string} projectDir
- * @param {object} [opts]
- * @param {string} [opts.home=homedir()]
- * @returns {string}
  */
-export function launchdPlistPath(projectDir, { home = homedir() } = {}) {
+export function launchdPlistPath(
+  projectDir: string,
+  { home = homedir() }: { home?: string } = {},
+): string {
   return join(
     home,
     'Library',
@@ -120,24 +118,16 @@ export function launchdPlistPath(projectDir, { home = homedir() } = {}) {
 }
 
 /**
- * Escape a string for safe inclusion in a POSIX single-quoted shell
- * word. Kept local (rather than imported from init.js) so this module
- * stays independent of the cron backend.
- *
- * @param {string} arg
- * @returns {string}
+ * Escape a string for safe inclusion in a POSIX single-quoted shell word.
  */
-function shellSingleQuote(arg) {
+function shellSingleQuote(arg: unknown): string {
   return `'${String(arg).replaceAll("'", `'\\''`)}'`;
 }
 
 /**
  * Escape a string for safe inclusion in a plist XML `<string>` value.
- *
- * @param {string} value
- * @returns {string}
  */
-function xmlEscape(value) {
+function xmlEscape(value: unknown): string {
   return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -146,39 +136,42 @@ function xmlEscape(value) {
     .replaceAll("'", '&apos;');
 }
 
+/** Resolved heartbeat command. */
+interface ResolvedLaunchdCommand {
+  shell: string;
+  loginFlag: string;
+  innerCommand: string;
+}
+
 /**
- * Resolve the heartbeat command's {shell, loginFlag, innerCommand}
- * components. The launchd plist stores these as three separate argv
- * elements in `ProgramArguments`, so we intentionally skip the
- * cron-style "one giant shell string" packaging.
- *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {string} [opts.shell='/bin/zsh']
- * @param {string} [opts.loginFlag='-lic']
- * @returns {{ shell: string, loginFlag: string, innerCommand: string }}
+ * Resolve the heartbeat command's components.
  */
-function resolveLaunchdCommand({ projectDir, shell = '/bin/zsh', loginFlag = '-lic' }) {
+function resolveLaunchdCommand({
+  projectDir,
+  shell = '/bin/zsh',
+  loginFlag = '-lic',
+}: {
+  projectDir?: string;
+  shell?: string;
+  loginFlag?: string;
+}): ResolvedLaunchdCommand {
   if (!projectDir) throw new Error('projectDir is required');
-  const innerCommand = `aweek heartbeat --all --project-dir ${shellSingleQuote(
-    projectDir,
-  )}`;
+  const innerCommand = `aweek heartbeat --all --project-dir ${shellSingleQuote(projectDir)}`;
   return { shell, loginFlag, innerCommand };
+}
+
+/** Options accepted by {@link buildLaunchdPlist}. */
+export interface BuildLaunchdPlistOptions {
+  projectDir?: string;
+  intervalSeconds?: number;
+  schedule?: string;
+  shell?: string;
+  loginFlag?: string;
+  logsDir?: string;
 }
 
 /**
  * Build the plist XML for a project heartbeat.
- *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {number} [opts.intervalSeconds=DEFAULT_LAUNCHD_INTERVAL_SECONDS]
- * @param {string} [opts.schedule] - Alternative to intervalSeconds:
- *   a cron-style "every N minutes" string, converted via {@link cronScheduleToSeconds}.
- * @param {string} [opts.shell='/bin/zsh']
- * @param {string} [opts.loginFlag='-lic']
- * @param {string} [opts.logsDir] - Directory for stdout/stderr logs
- *   (defaults to `<projectDir>/.aweek/logs`).
- * @returns {string} Plist XML.
  */
 export function buildLaunchdPlist({
   projectDir,
@@ -187,7 +180,7 @@ export function buildLaunchdPlist({
   shell,
   loginFlag,
   logsDir,
-} = {}) {
+}: BuildLaunchdPlistOptions = {}): string {
   if (!projectDir) throw new Error('projectDir is required');
 
   const seconds =
@@ -233,16 +226,17 @@ export function buildLaunchdPlist({
   ].join('\n');
 }
 
+/** Result of {@link parseLaunchdPlist}. */
+export interface ParsedLaunchdPlist {
+  intervalSeconds: number | null;
+  programArguments: string[];
+}
+
 /**
  * Extract the StartInterval (seconds) and the three-element
- * ProgramArguments from a plist XML blob. Deliberately loose — we only
- * parse what we need to decide "is the installed plist the same as
- * what we'd produce now" for the install idempotency contract.
- *
- * @param {string} plistXml
- * @returns {{ intervalSeconds: number | null, programArguments: string[] } | null}
+ * ProgramArguments from a plist XML blob.
  */
-export function parseLaunchdPlist(plistXml) {
+export function parseLaunchdPlist(plistXml: unknown): ParsedLaunchdPlist | null {
   if (typeof plistXml !== 'string' || plistXml.length === 0) return null;
 
   const intervalMatch =
@@ -251,19 +245,19 @@ export function parseLaunchdPlist(plistXml) {
 
   const argsMatch =
     /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/i.exec(plistXml);
-  const programArguments = [];
+  const programArguments: string[] = [];
   if (argsMatch) {
     const stringRe = /<string>([\s\S]*?)<\/string>/gi;
-    let m;
-    while ((m = stringRe.exec(argsMatch[1])) !== null) {
-      programArguments.push(xmlUnescape(m[1]));
+    let m: RegExpExecArray | null;
+    while ((m = stringRe.exec(argsMatch[1]!)) !== null) {
+      programArguments.push(xmlUnescape(m[1]!));
     }
   }
 
   return { intervalSeconds, programArguments };
 }
 
-function xmlUnescape(value) {
+function xmlUnescape(value: string): string {
   return String(value)
     .replaceAll('&lt;', '<')
     .replaceAll('&gt;', '>')
@@ -273,28 +267,23 @@ function xmlUnescape(value) {
 }
 
 /**
- * Default `launchctl` runner. Accepts a verb + args, returns
- * `{ code, stdout, stderr }` instead of throwing on non-zero exit so
- * the caller can distinguish "service not loaded" from "launchctl
- * missing".
- *
- * @param {string[]} args
- * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ * Default `launchctl` runner.
  */
-async function defaultLaunchctl(args) {
+async function defaultLaunchctl(args: string[]): Promise<LaunchctlResult> {
   try {
     const { stdout, stderr } = await pExecFile('launchctl', args);
     return { code: 0, stdout, stderr };
   } catch (err) {
-    if (err && typeof err.code === 'number') {
-      return { code: err.code, stdout: err.stdout || '', stderr: err.stderr || '' };
+    const e = err as ErrnoLike;
+    if (e && typeof e.code === 'number') {
+      return { code: e.code, stdout: e.stdout || '', stderr: e.stderr || '' };
     }
     // launchctl missing entirely (non-macOS), or spawn failure.
     throw err;
   }
 }
 
-function currentUidOrThrow(getUid) {
+function currentUidOrThrow(getUid: (() => number | null) | undefined): number {
   const uid = typeof getUid === 'function' ? getUid() : null;
   if (typeof uid !== 'number' || !Number.isFinite(uid) || uid < 0) {
     throw new Error(
@@ -304,47 +293,54 @@ function currentUidOrThrow(getUid) {
   return uid;
 }
 
-function defaultGetUid() {
+function defaultGetUid(): number | null {
   return typeof process.getuid === 'function' ? process.getuid() : null;
+}
+
+/** Options for {@link queryLaunchdHeartbeat}. */
+export interface QueryLaunchdHeartbeatOptions {
+  projectDir?: string;
+  home?: string;
+  readFileFn?: (path: string, enc: string) => Promise<string>;
+  launchctlFn?: LaunchctlFn;
+  getUidFn?: () => number | null;
+}
+
+/** Result of {@link queryLaunchdHeartbeat}. */
+export interface QueryLaunchdHeartbeatResult {
+  installed: boolean;
+  loaded: boolean;
+  label: string;
+  plistPath: string;
+  projectDir: string;
+  intervalSeconds: number | null;
+  programArguments: string[];
 }
 
 /**
  * Query the installed plist (if any) and whether launchd currently
- * tracks the service. Mirrors `queryHeartbeat` on the cron side.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir]
- * @param {string} [opts.home=homedir()]
- * @param {Function} [opts.readFileFn]
- * @param {Function} [opts.launchctlFn] - `(args) => Promise<{code,stdout,stderr}>`
- * @param {Function} [opts.getUidFn]
- * @returns {Promise<{
- *   installed: boolean,
- *   loaded: boolean,
- *   label: string,
- *   plistPath: string,
- *   projectDir: string,
- *   intervalSeconds: number | null,
- *   programArguments: string[],
- * }>}
+ * tracks the service.
  */
 export async function queryLaunchdHeartbeat({
   projectDir,
   home = homedir(),
-  readFileFn = readFile,
+  readFileFn,
   launchctlFn = defaultLaunchctl,
   getUidFn = defaultGetUid,
-} = {}) {
+}: QueryLaunchdHeartbeatOptions = {}): Promise<QueryLaunchdHeartbeatResult> {
   if (!projectDir) throw new Error('projectDir is required');
 
   const plistPath = launchdPlistPath(projectDir, { home });
   const label = launchdLabel(projectDir);
 
-  let plistXml = null;
+  const reader = readFileFn || ((p: string, enc: string) => readFile(p, enc as BufferEncoding));
+
+  let plistXml: string | null = null;
   try {
-    plistXml = await readFileFn(plistPath, 'utf8');
+    plistXml = await reader(plistPath, 'utf8');
   } catch (err) {
-    if (err && err.code !== 'ENOENT') throw err;
+    const e = err as ErrnoLike;
+    if (e && e.code !== 'ENOENT') throw err;
   }
 
   const parsed = plistXml ? parseLaunchdPlist(plistXml) : null;
@@ -371,44 +367,36 @@ export async function queryLaunchdHeartbeat({
   };
 }
 
+/** Options for {@link installLaunchdHeartbeat}. */
+export interface InstallLaunchdHeartbeatOptions {
+  projectDir?: string;
+  intervalSeconds?: number;
+  schedule?: string;
+  shell?: string;
+  loginFlag?: string;
+  logsDir?: string;
+  confirmed?: boolean;
+  home?: string;
+  writeFileFn?: (path: string, content: string, enc: string) => Promise<void>;
+  readFileFn?: (path: string, enc: string) => Promise<string>;
+  mkdirFn?: (path: string, opts?: unknown) => Promise<unknown>;
+  launchctlFn?: LaunchctlFn;
+  getUidFn?: () => number | null;
+}
+
+/** Result of {@link installLaunchdHeartbeat}. */
+export interface InstallLaunchdHeartbeatResult {
+  outcome: 'created' | 'updated' | 'skipped';
+  label: string;
+  plistPath: string;
+  projectDir: string;
+  intervalSeconds: number | null;
+  plist: string;
+  previous: ParsedLaunchdPlist | null;
+}
+
 /**
  * Install (or refresh) the launchd user agent for a project.
- *
- * DESTRUCTIVE: writes `~/Library/LaunchAgents/<label>.plist` and runs
- * `launchctl bootstrap`. Requires `confirmed: true` for symmetry with
- * the cron backend's gate.
- *
- * Idempotency:
- *   - If the plist on disk matches what we would produce and the
- *     service is already loaded, outcome is `skipped`.
- *   - Otherwise the old plist is booted out (best-effort), the new
- *     plist is written, and `launchctl bootstrap` is invoked. Outcome
- *     is `created` or `updated` accordingly.
- *
- * @param {object} opts
- * @param {string} [opts.projectDir]
- * @param {number} [opts.intervalSeconds]
- * @param {string} [opts.schedule] - Cron-style shorthand, converted via
- *   {@link cronScheduleToSeconds}.
- * @param {string} [opts.shell]
- * @param {string} [opts.loginFlag]
- * @param {string} [opts.logsDir]
- * @param {boolean} [opts.confirmed=false]
- * @param {string} [opts.home=homedir()]
- * @param {Function} [opts.writeFileFn]
- * @param {Function} [opts.readFileFn]
- * @param {Function} [opts.mkdirFn]
- * @param {Function} [opts.launchctlFn]
- * @param {Function} [opts.getUidFn]
- * @returns {Promise<{
- *   outcome: 'created' | 'updated' | 'skipped',
- *   label: string,
- *   plistPath: string,
- *   projectDir: string,
- *   intervalSeconds: number,
- *   plist: string,
- *   previous: { intervalSeconds: number | null } | null,
- * }>}
  */
 export async function installLaunchdHeartbeat({
   projectDir,
@@ -419,21 +407,29 @@ export async function installLaunchdHeartbeat({
   logsDir,
   confirmed = false,
   home = homedir(),
-  writeFileFn = writeFile,
-  readFileFn = readFile,
-  mkdirFn = mkdir,
+  writeFileFn,
+  readFileFn,
+  mkdirFn,
   launchctlFn = defaultLaunchctl,
   getUidFn = defaultGetUid,
-} = {}) {
+}: InstallLaunchdHeartbeatOptions = {}): Promise<InstallLaunchdHeartbeatResult> {
   if (confirmed !== true) {
     const err = new Error(
       'installLaunchdHeartbeat requires explicit user confirmation. ' +
         'Collect consent via AskUserQuestion and pass `confirmed: true`.',
-    );
+    ) as ErrnoLike;
     err.code = 'EHB_NOT_CONFIRMED';
     throw err;
   }
   if (!projectDir) throw new Error('projectDir is required');
+
+  const writer =
+    writeFileFn || ((p: string, c: string, enc: string) => writeFile(p, c, enc as BufferEncoding));
+  const reader =
+    readFileFn || ((p: string, enc: string) => readFile(p, enc as BufferEncoding));
+  const mkdirImpl =
+    mkdirFn ||
+    ((p: string, opts?: unknown) => mkdir(p, opts as { recursive?: boolean } | undefined));
 
   const plistPath = launchdPlistPath(projectDir, { home });
   const label = launchdLabel(projectDir);
@@ -445,11 +441,11 @@ export async function installLaunchdHeartbeat({
     loginFlag,
     logsDir,
   });
-  const parsedNew = parseLaunchdPlist(plist);
+  const parsedNew = parseLaunchdPlist(plist)!;
 
-  let existing = null;
+  let existing: ParsedLaunchdPlist | null = null;
   try {
-    const prev = await readFileFn(plistPath, 'utf8');
+    const prev = await reader(plistPath, 'utf8');
     existing = parseLaunchdPlist(prev);
     // Same-content early-return only when the service is actually loaded;
     // otherwise fall through so we bootstrap it.
@@ -469,19 +465,20 @@ export async function installLaunchdHeartbeat({
       }
     }
   } catch (err) {
-    if (err && err.code !== 'ENOENT') throw err;
+    const e = err as ErrnoLike;
+    if (e && e.code !== 'ENOENT') throw err;
   }
 
   // Ensure ~/Library/LaunchAgents exists.
   const parent = join(home, 'Library', 'LaunchAgents');
-  await mkdirFn(parent, { recursive: true });
+  await mkdirImpl(parent, { recursive: true });
 
   // Best-effort bootout before we overwrite — launchctl dislikes
   // overlapping the same label with new on-disk content.
   const uid = currentUidOrThrow(getUidFn);
   await launchctlFn(['bootout', `gui/${uid}/${label}`]).catch(() => null);
 
-  await writeFileFn(plistPath, plist, 'utf8');
+  await writer(plistPath, plist, 'utf8');
 
   const boot = await launchctlFn(['bootstrap', `gui/${uid}`, plistPath]);
   if (boot.code !== 0) {
@@ -501,37 +498,41 @@ export async function installLaunchdHeartbeat({
   };
 }
 
+/** Options for {@link uninstallLaunchdHeartbeat}. */
+export interface UninstallLaunchdHeartbeatOptions {
+  projectDir?: string;
+  confirmed?: boolean;
+  home?: string;
+  unlinkFn?: (path: string) => Promise<void>;
+  statFn?: (path: string) => Promise<unknown>;
+  launchctlFn?: LaunchctlFn;
+  getUidFn?: () => number | null;
+}
+
+/** Result of {@link uninstallLaunchdHeartbeat}. */
+export interface UninstallLaunchdHeartbeatResult {
+  outcome: 'removed' | 'absent';
+  label: string;
+  plistPath: string;
+}
+
 /**
  * Remove the launchd user agent for a project. Idempotent.
- *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {boolean} [opts.confirmed=false]
- * @param {string} [opts.home=homedir()]
- * @param {Function} [opts.unlinkFn]
- * @param {Function} [opts.statFn]
- * @param {Function} [opts.launchctlFn]
- * @param {Function} [opts.getUidFn]
- * @returns {Promise<{
- *   outcome: 'removed' | 'absent',
- *   label: string,
- *   plistPath: string,
- * }>}
  */
 export async function uninstallLaunchdHeartbeat({
   projectDir,
   confirmed = false,
   home = homedir(),
-  unlinkFn = unlink,
-  statFn = stat,
+  unlinkFn,
+  statFn,
   launchctlFn = defaultLaunchctl,
   getUidFn = defaultGetUid,
-} = {}) {
+}: UninstallLaunchdHeartbeatOptions = {}): Promise<UninstallLaunchdHeartbeatResult> {
   if (confirmed !== true) {
     const err = new Error(
       'uninstallLaunchdHeartbeat requires explicit user confirmation. ' +
         'Collect consent via AskUserQuestion and pass `confirmed: true`.',
-    );
+    ) as ErrnoLike;
     err.code = 'EHB_NOT_CONFIRMED';
     throw err;
   }
@@ -540,24 +541,28 @@ export async function uninstallLaunchdHeartbeat({
   const plistPath = launchdPlistPath(projectDir, { home });
   const label = launchdLabel(projectDir);
 
+  const unlinkImpl = unlinkFn || ((p: string) => unlink(p));
+  const statImpl = statFn || ((p: string) => stat(p));
+
   let present = false;
   try {
-    await statFn(plistPath);
+    await statImpl(plistPath);
     present = true;
   } catch (err) {
-    if (err && err.code !== 'ENOENT') throw err;
+    const e = err as ErrnoLike;
+    if (e && e.code !== 'ENOENT') throw err;
   }
 
-  // Best-effort unload even if the file is already gone — covers the
-  // case where the plist was hand-deleted but launchd still has it.
+  // Best-effort unload even if the file is already gone.
   const uid = currentUidOrThrow(getUidFn);
   await launchctlFn(['bootout', `gui/${uid}/${label}`]).catch(() => null);
 
   if (present) {
     try {
-      await unlinkFn(plistPath);
+      await unlinkImpl(plistPath);
     } catch (err) {
-      if (err && err.code !== 'ENOENT') throw err;
+      const e = err as ErrnoLike;
+      if (e && e.code !== 'ENOENT') throw err;
     }
   }
 

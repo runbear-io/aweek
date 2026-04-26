@@ -975,7 +975,7 @@ export async function installHeartbeat(
       mkdirFn: opts.mkdirFn,
       launchctlFn: opts.launchctlFn,
       getUidFn: opts.getUidFn,
-    })) as { outcome: string; [key: string]: unknown };
+    })) as unknown as { outcome: string; [key: string]: unknown };
     return {
       backend: 'launchd',
       migratedFromCron,

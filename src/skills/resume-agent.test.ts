@@ -16,8 +16,19 @@ import {
   formatResumeResult,
 } from './resume-agent.js';
 
+interface BudgetOverrides {
+  paused?: boolean;
+  currentUsage?: number;
+  weeklyTokenLimit?: number;
+}
+
 // Helper: create a valid agent config and save it, then optionally patch budget fields
-async function createTestAgent(dataDir, nameStr, { role, budget: budgetOverrides, weeklyTokenLimit } = {}) {
+async function createTestAgent(
+  dataDir: string,
+  nameStr: string,
+  { budget: budgetOverrides, weeklyTokenLimit }:
+    { role?: string; budget?: BudgetOverrides; weeklyTokenLimit?: number } = {},
+) {
   const agentStore = new AgentStore(dataDir);
   const config = createAgentConfig({
     subagentRef: nameStr,
@@ -26,11 +37,15 @@ async function createTestAgent(dataDir, nameStr, { role, budget: budgetOverrides
 
   // Apply budget overrides after creation
   if (budgetOverrides) {
-    if (budgetOverrides.paused !== undefined) config.budget.paused = budgetOverrides.paused;
-    if (budgetOverrides.currentUsage !== undefined) config.budget.currentUsage = budgetOverrides.currentUsage;
+    if (budgetOverrides.paused !== undefined) config.budget!.paused = budgetOverrides.paused;
+    if (budgetOverrides.currentUsage !== undefined) {
+      (config.budget as { currentUsage?: number }).currentUsage = budgetOverrides.currentUsage;
+    }
     if (budgetOverrides.weeklyTokenLimit !== undefined) {
-      config.budget.weeklyTokenLimit = budgetOverrides.weeklyTokenLimit;
-      config.weeklyTokenBudget = budgetOverrides.weeklyTokenLimit;
+      (config.budget as { weeklyTokenLimit?: number }).weeklyTokenLimit =
+        budgetOverrides.weeklyTokenLimit;
+      (config as { weeklyTokenBudget?: number }).weeklyTokenBudget =
+        budgetOverrides.weeklyTokenLimit;
     }
   }
 
@@ -39,7 +54,7 @@ async function createTestAgent(dataDir, nameStr, { role, budget: budgetOverrides
 }
 
 describe('resume-agent skill', () => {
-  let dataDir;
+  let dataDir: string;
 
   beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), 'resume-agent-test-'));
@@ -87,7 +102,7 @@ describe('resume-agent skill', () => {
     });
 
     it('includes budget details for paused agents', async () => {
-      const agent = await createTestAgent(dataDir, 'pausedone', {
+      await createTestAgent(dataDir, 'pausedone', {
         role: 'worker',
         budget: { paused: true, currentUsage: 150000, weeklyTokenLimit: 100000 },
       });
@@ -118,9 +133,9 @@ describe('resume-agent skill', () => {
       assert.equal(details.paused, true);
       assert.equal(details.agentId, agent.id);
       assert.equal(details.name, 'agentx');
-      assert.equal(details.budget.weeklyTokenLimit, 100000);
-      assert.equal(details.budget.currentUsage, 110000);
-      assert.equal(details.budget.exceededBy, 10000);
+      assert.equal(details.budget!.weeklyTokenLimit, 100000);
+      assert.equal(details.budget!.currentUsage, 110000);
+      assert.equal(details.budget!.exceededBy, 10000);
     });
 
     it('returns not-paused message for active agents', async () => {
@@ -130,7 +145,7 @@ describe('resume-agent skill', () => {
 
       const details = await getPausedAgentDetails(agent.id, { dataDir });
       assert.equal(details.paused, false);
-      assert.ok(details.message.includes('not paused'));
+      assert.ok(details.message!.includes('not paused'));
     });
 
     it('includes alert info when alert file exists', async () => {
@@ -150,12 +165,18 @@ describe('resume-agent skill', () => {
         timestamp: '2026-04-15T10:00:00.000Z',
         message: `Agent "${agent.id}" has exhausted its weekly token budget.`,
       };
-      await writeFile(join(alertDir, 'budget-exhausted-2026-04-13.json'), JSON.stringify(alertData));
+      await writeFile(
+        join(alertDir, 'budget-exhausted-2026-04-13.json'),
+        JSON.stringify(alertData),
+      );
 
-      const details = await getPausedAgentDetails(agent.id, { dataDir, weekMonday: '2026-04-13' });
+      const details = await getPausedAgentDetails(agent.id, {
+        dataDir,
+        weekMonday: '2026-04-13',
+      });
       assert.ok(details.alert);
-      assert.equal(details.alert.timestamp, '2026-04-15T10:00:00.000Z');
-      assert.equal(details.alert.exceededBy, 20000);
+      assert.equal(details.alert!.timestamp, '2026-04-15T10:00:00.000Z');
+      assert.equal(details.alert!.exceededBy, 20000);
     });
 
     it('throws if agentId is missing', async () => {
@@ -180,7 +201,7 @@ describe('resume-agent skill', () => {
     it('rejects invalid action', () => {
       const result = validateResumeAction('nope');
       assert.equal(result.valid, false);
-      assert.ok(result.error.includes('Invalid action'));
+      assert.ok(result.error!.includes('Invalid action'));
     });
 
     it('rejects null action', () => {
@@ -190,7 +211,7 @@ describe('resume-agent skill', () => {
     it('rejects negative newLimit for top-up', () => {
       const result = validateResumeAction('top-up', { newLimit: -500 });
       assert.equal(result.valid, false);
-      assert.ok(result.error.includes('positive number'));
+      assert.ok(result.error!.includes('positive number'));
     });
 
     it('accepts top-up with valid newLimit', () => {
@@ -215,12 +236,12 @@ describe('resume-agent skill', () => {
       assert.equal(result.success, true);
       assert.equal(result.action, 'resume');
       assert.equal(result.wasPaused, true);
-      assert.ok(result.message.includes('resumed'));
+      assert.ok(result.message!.includes('resumed'));
 
       // Verify persistence
       const store = new AgentStore(dataDir);
       const config = await store.load(agent.id);
-      assert.equal(config.budget.paused, false);
+      assert.equal(config.budget!.paused, false);
     });
 
     it('handles already-active agent gracefully', async () => {
@@ -231,7 +252,7 @@ describe('resume-agent skill', () => {
       const result = await executeResume(agent.id, 'resume', { dataDir });
       assert.equal(result.success, true);
       assert.equal(result.wasPaused, false);
-      assert.ok(result.message.includes('not paused'));
+      assert.ok(result.message!.includes('not paused'));
     });
 
     it('is idempotent — resuming twice is safe', async () => {
@@ -245,7 +266,7 @@ describe('resume-agent skill', () => {
 
       const store = new AgentStore(dataDir);
       const config = await store.load(agent.id);
-      assert.equal(config.budget.paused, false);
+      assert.equal(config.budget!.paused, false);
     });
   });
 
@@ -269,8 +290,8 @@ describe('resume-agent skill', () => {
       // Verify persistence
       const store = new AgentStore(dataDir);
       const config = await store.load(agent.id);
-      assert.equal(config.budget.paused, false);
-      assert.equal(config.budget.currentUsage, 0);
+      assert.equal(config.budget!.paused, false);
+      assert.equal((config.budget as { currentUsage?: number }).currentUsage, 0);
     });
 
     it('allows setting a new budget limit', async () => {
@@ -289,8 +310,8 @@ describe('resume-agent skill', () => {
 
       const store = new AgentStore(dataDir);
       const config = await store.load(agent.id);
-      assert.equal(config.budget.weeklyTokenLimit, 200000);
-      assert.equal(config.weeklyTokenBudget, 200000);
+      assert.equal((config.budget as { weeklyTokenLimit?: number }).weeklyTokenLimit, 200000);
+      assert.equal((config as { weeklyTokenBudget?: number }).weeklyTokenBudget, 200000);
     });
 
     it('message describes the top-up clearly', async () => {
@@ -299,9 +320,9 @@ describe('resume-agent skill', () => {
       });
 
       const result = await executeResume(agent.id, 'top-up', { dataDir });
-      assert.ok(result.message.includes('topped up and resumed'));
-      assert.ok(result.message.includes('reset to 0'));
-      assert.ok(result.message.includes('100,000'));
+      assert.ok(result.message!.includes('topped up and resumed'));
+      assert.ok(result.message!.includes('reset to 0'));
+      assert.ok(result.message!.includes('100,000'));
     });
   });
 
@@ -335,7 +356,12 @@ describe('resume-agent skill', () => {
     it('lists paused agents with budget details', () => {
       const output = formatPausedAgentsList({
         paused: [
-          { id: 'agent-1', name: 'Alice', role: 'dev', budget: { weeklyTokenLimit: 100000, currentUsage: 120000, paused: true } },
+          {
+            id: 'agent-1',
+            name: 'Alice',
+            role: 'dev',
+            budget: { weeklyTokenLimit: 100000, currentUsage: 120000, paused: true },
+          },
         ],
         active: ['agent-2'],
         total: 2,
@@ -350,7 +376,11 @@ describe('resume-agent skill', () => {
 
   describe('formatPausedAgentDetails', () => {
     it('shows not-paused message for active agent', () => {
-      const output = formatPausedAgentDetails({ paused: false, message: 'Agent is not paused' });
+      const output = formatPausedAgentDetails({
+        agentId: 'a',
+        paused: false,
+        message: 'Agent is not paused',
+      });
       assert.equal(output, 'Agent is not paused');
     });
 
@@ -360,8 +390,17 @@ describe('resume-agent skill', () => {
         name: 'AgentX',
         role: 'coder',
         paused: true,
-        budget: { weeklyTokenLimit: 100000, storeUsage: 110000, currentUsage: 110000, exceededBy: 10000 },
-        alert: { timestamp: '2026-04-15T10:00:00.000Z', message: 'Budget exhausted', exceededBy: 10000 },
+        budget: {
+          weeklyTokenLimit: 100000,
+          storeUsage: 110000,
+          currentUsage: 110000,
+          exceededBy: 10000,
+        },
+        alert: {
+          timestamp: '2026-04-15T10:00:00.000Z',
+          message: 'Budget exhausted',
+          exceededBy: 10000,
+        },
       });
       assert.ok(output.includes('AgentX'));
       assert.ok(output.includes('PAUSED'));
@@ -375,7 +414,10 @@ describe('resume-agent skill', () => {
 
     it('omits alert section when no alert exists', () => {
       const output = formatPausedAgentDetails({
-        agentId: 'a', name: 'A', role: 'r', paused: true,
+        agentId: 'a',
+        name: 'A',
+        role: 'r',
+        paused: true,
         budget: { weeklyTokenLimit: 1000, storeUsage: 1500, currentUsage: 1500, exceededBy: 500 },
         alert: null,
       });

@@ -33,6 +33,8 @@
 
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { ActivityLogStore } from '../storage/activity-log-store.js';
+import type { ActivityLogEntry } from '../storage/activity-log-store.js';
+import type { WeeklyTask } from '../storage/weekly-plan-store.js';
 import { readPlan, parsePlanMarkdownSections } from '../storage/plan-markdown-store.js';
 import { currentWeekKey } from '../time/zone.js';
 
@@ -59,43 +61,34 @@ export const PRIOR_WEEK_MIN_ACTIVITIES = 4;
 /** Default lookahead window in calendar days for trigger 4. */
 export const DEFAULT_DEADLINE_LOOKAHEAD_DAYS = 14;
 
+/** Common shape returned by every trigger function. */
+export interface TriggerResult {
+  trigger: string;
+  reason: string;
+  details: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // Week-key arithmetic helpers (exported for unit tests)
 // ---------------------------------------------------------------------------
 
 /**
  * Return the number of ISO weeks in `year` (52 or 53).
- *
- * A year has 53 ISO weeks if its last Thursday falls in week 53 — which
- * happens when Dec 31 is a Thursday, or when the year is a leap year and
- * Dec 31 is a Wednesday. The equivalent algebraic test used here is the
- * Doomsday-style formula: p(y) ≡ (y + ⌊y/4⌋ − ⌊y/100⌋ + ⌊y/400⌋) mod 7.
- * A year has 53 weeks iff p(y) === 4 (Dec 31 is Thursday) OR p(y−1) === 3
- * (Dec 31 of the preceding year was Wednesday, making Jan 1 Thursday).
- *
- * @param {number} year - Four-digit Gregorian year
- * @returns {52 | 53}
  */
-export function isoWeeksInYear(year) {
-  const p = (y) =>
+export function isoWeeksInYear(year: number): 52 | 53 {
+  const p = (y: number): number =>
     (y + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400)) % 7;
   return p(year) === 4 || p(year - 1) === 3 ? 53 : 52;
 }
 
 /**
  * Return the ISO-week key for the week immediately before `weekKey`.
- * Handles year-boundary roll-over by computing the ISO week count of the
- * prior year via {@link isoWeeksInYear}.
- *
- * @param {string} weekKey - "YYYY-Www" (e.g. "2026-W01")
- * @returns {string} - e.g. "2025-W52"
- * @throws {TypeError} On malformed input
  */
-export function previousWeekKey(weekKey) {
-  const m = /^(\d{4})-W(\d{2})$/.exec(weekKey);
+export function previousWeekKey(weekKey: unknown): string {
+  const m = typeof weekKey === 'string' ? /^(\d{4})-W(\d{2})$/.exec(weekKey) : null;
   if (!m) throw new TypeError(`Invalid ISO week key: ${JSON.stringify(weekKey)}`);
-  const year = parseInt(m[1], 10);
-  const week = parseInt(m[2], 10);
+  const year = parseInt(m[1]!, 10);
+  const week = parseInt(m[2]!, 10);
 
   if (week > 1) {
     return `${year}-W${String(week - 1).padStart(2, '0')}`;
@@ -108,20 +101,12 @@ export function previousWeekKey(weekKey) {
 
 /**
  * Compute the Monday "YYYY-MM-DD" string for the given ISO week key.
- *
- * Algorithm: Jan 4 is always in ISO week 1. Locate that week's Monday,
- * then advance (week − 1) × 7 days to reach the target Monday. All
- * arithmetic stays in UTC so the result is timezone-agnostic.
- *
- * @param {string} weekKey - "YYYY-Www"
- * @returns {string} - "YYYY-MM-DD" in UTC
- * @throws {TypeError} On malformed input
  */
-export function mondayStringForWeek(weekKey) {
-  const m = /^(\d{4})-W(\d{2})$/.exec(weekKey);
+export function mondayStringForWeek(weekKey: unknown): string {
+  const m = typeof weekKey === 'string' ? /^(\d{4})-W(\d{2})$/.exec(weekKey) : null;
   if (!m) throw new TypeError(`Invalid ISO week key: ${JSON.stringify(weekKey)}`);
-  const year = parseInt(m[1], 10);
-  const week = parseInt(m[2], 10);
+  const year = parseInt(m[1]!, 10);
+  const week = parseInt(m[2]!, 10);
 
   const jan4 = new Date(Date.UTC(year, 0, 4));
   const jan4Dow = jan4.getUTCDay() || 7; // 1=Mon … 7=Sun (ISO convention)
@@ -141,15 +126,8 @@ export function mondayStringForWeek(weekKey) {
 /**
  * Extract substantive lines from a section body returned by
  * {@link parsePlanMarkdownSections}.
- *
- * "Substantive" means not blank, not an HTML comment placeholder
- * (`<!-- … -->`), and not a bare sub-heading (`### …`). List markers
- * (`-`, `*`, `N.`) are stripped so callers receive the goal text only.
- *
- * @param {string} body - Raw section body from parsePlanMarkdownSections
- * @returns {string[]} Cleaned, non-empty lines
  */
-export function extractSubstantiveLines(body) {
+export function extractSubstantiveLines(body: unknown): string[] {
   if (typeof body !== 'string') return [];
   return body
     .split(/\r?\n/)
@@ -164,10 +142,6 @@ export function extractSubstantiveLines(body) {
     .filter((line) => line.length > 0);
 }
 
-// Action-verb sets for lightweight conflict detection.
-// A pair of goals is "potentially conflicting" when one line contains a
-// GROWTH_VERB and the other contains a SHRINK_VERB AND they share at least
-// one significant noun (≥ 4 chars, not a stopword).
 const GROWTH_VERBS = new Set([
   'increase', 'grow', 'expand', 'scale', 'build', 'add', 'more', 'raise',
   'boost', 'accelerate', 'double', 'maximize',
@@ -185,14 +159,7 @@ const STOPWORDS = new Set([
   'not', 'do', 'so', 'if', 'as', 'up', 'all', 'each', 'get', 'make',
 ]);
 
-/**
- * Extract significant tokens (non-stopword words ≥ 4 chars) from a line.
- * Used for noun-overlap detection in the conflict heuristic.
- *
- * @param {string} line
- * @returns {Set<string>}
- */
-function significantTokens(line) {
+function significantTokens(line: string): Set<string> {
   const words = line
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
@@ -202,18 +169,9 @@ function significantTokens(line) {
 }
 
 /**
- * Return true when `lineA` and `lineB` appear to contradict each other:
- * one line contains a growth verb, the other a shrink verb, and they
- * share at least one significant noun (same topic, opposite direction).
- *
- * This is a lightweight syntactic heuristic, not semantic analysis. False
- * positives on very different topics are guarded by the noun-overlap check.
- *
- * @param {string} lineA
- * @param {string} lineB
- * @returns {boolean}
+ * Return true when `lineA` and `lineB` appear to contradict each other.
  */
-export function goalLinesAppearConflicting(lineA, lineB) {
+export function goalLinesAppearConflicting(lineA: string, lineB: string): boolean {
   const wordsA = new Set(lineA.toLowerCase().split(/\s+/));
   const wordsB = new Set(lineB.toLowerCase().split(/\s+/));
 
@@ -235,34 +193,31 @@ export function goalLinesAppearConflicting(lineA, lineB) {
   return [...tA].some((t) => tB.has(t));
 }
 
+/** Result of {@link parseDateMentions}. */
+export interface DateMention {
+  date: Date;
+  label: string;
+  snippet: string;
+}
+
 /**
  * Parse explicit date mentions from free-form text.
- * Recognizes patterns:
- *   - "by YYYY-MM-DD"
- *   - "due YYYY-MM-DD"
- *   - "deadline: YYYY-MM-DD"
- *   - Bare ISO dates ("YYYY-MM-DD") preceded by a word boundary
- *
- * @param {string} text
- * @returns {Array<{date: Date, label: string, snippet: string}>}
  */
-export function parseDateMentions(text) {
+export function parseDateMentions(text: unknown): DateMention[] {
   if (typeof text !== 'string') return [];
 
-  const results = [];
-  // Capture either an explicit keyword ("by", "due", "deadline :") or a
-  // bare ISO date standing alone at a word boundary.
+  const results: DateMention[] = [];
   const re =
     /(?:(?:by|due|deadline\s*:?\s+)\s*)(\d{4}-\d{2}-\d{2})|\b(\d{4}-\d{2}-\d{2})\b/gi;
-  let match;
+  let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
-    const dateStr = match[1] ?? match[2];
+    const dateStr = match[1] ?? match[2]!;
     const d = new Date(`${dateStr}T00:00:00Z`);
     if (!Number.isNaN(d.getTime())) {
       results.push({
         date: d,
         label: dateStr,
-        snippet: match[0].trim(),
+        snippet: match[0]!.trim(),
       });
     }
   }
@@ -271,16 +226,12 @@ export function parseDateMentions(text) {
 
 /**
  * Return the last calendar day (UTC midnight) of a "YYYY-MM" string.
- *
- * @param {string} month - e.g. "2026-04"
- * @returns {Date | null} null on malformed input
  */
-export function lastDayOfMonth(month) {
-  const m = /^(\d{4})-(\d{2})$/.exec(month);
+export function lastDayOfMonth(month: unknown): Date | null {
+  const m = typeof month === 'string' ? /^(\d{4})-(\d{2})$/.exec(month) : null;
   if (!m) return null;
-  const year = parseInt(m[1], 10);
-  const mo = parseInt(m[2], 10); // 1-indexed
-  // Date.UTC(year, mo, 0) === day 0 of month `mo+1` === last day of month `mo`.
+  const year = parseInt(m[1]!, 10);
+  const mo = parseInt(m[2]!, 10); // 1-indexed
   return new Date(Date.UTC(year, mo, 0));
 }
 
@@ -290,26 +241,18 @@ export function lastDayOfMonth(month) {
 
 /**
  * Check whether this agent has never had a weekly plan generated.
- *
- * This is the lowest-cost trigger. It fires on the very first call to
- * /aweek:plan for a brand-new agent and signals the interview gate to
- * establish basic planning context before any tasks are created.
- *
- * @param {object} params
- * @param {string} params.agentId
- * @param {string} params.dataDir - `.aweek/agents` root
- * @returns {Promise<{trigger: string, reason: string, details: object} | null>}
  */
-export async function isFirstEverPlan({ agentId, dataDir }) {
+export async function isFirstEverPlan(
+  { agentId, dataDir }: { agentId?: string; dataDir?: string } = {},
+): Promise<TriggerResult | null> {
   if (!agentId) throw new TypeError('agentId is required');
   if (!dataDir) throw new TypeError('dataDir is required');
 
   const store = new WeeklyPlanStore(dataDir);
-  let weeks;
+  let weeks: string[];
   try {
     weeks = await store.list(agentId);
   } catch {
-    // Plans directory not yet created — definitely the first plan.
     weeks = [];
   }
 
@@ -334,30 +277,15 @@ const MIN_GOAL_LINE_CHARS = 10;
 
 /**
  * Scan an agent's plan.md for vague or conflicting goals.
- *
- * **Vague** is flagged when:
- *   - plan.md does not exist.
- *   - The `Long-term goals` section is absent, empty, or contains only
- *     HTML placeholder comments with no substantive text.
- *   - The `Monthly plans` section has no `### YYYY-MM` subsection headings
- *     (no concrete monthly objectives to derive weekly tasks from).
- *
- * **Conflicting** is flagged when two or more goal lines contain opposing
- * direction verbs (e.g. "increase revenue" vs "reduce revenue") AND share
- * at least one significant noun token — indicating the same topic is being
- * pushed in contradictory directions.
- *
- * @param {object} params
- * @param {string} params.agentId
- * @param {string} params.agentsDir - `.aweek/agents` root (same as dataDir)
- * @returns {Promise<{trigger: string, reason: string, details: object} | null>}
  */
-export async function detectVagueOrConflictingGoals({ agentId, agentsDir }) {
+export async function detectVagueOrConflictingGoals(
+  { agentId, agentsDir }: { agentId?: string; agentsDir?: string } = {},
+): Promise<TriggerResult | null> {
   if (!agentId) throw new TypeError('agentId is required');
   if (!agentsDir) throw new TypeError('agentsDir is required');
 
   // --- Load plan.md ---
-  let body;
+  let body: string | null;
   try {
     body = await readPlan(agentsDir, agentId);
   } catch {
@@ -418,11 +346,11 @@ export async function detectVagueOrConflictingGoals({ agentId, agentsDir }) {
   }
 
   // --- Check for conflicting goals ---
-  const conflictingPairs = [];
+  const conflictingPairs: Array<[string, string]> = [];
   for (let i = 0; i < substantiveGoalLines.length; i++) {
     for (let j = i + 1; j < substantiveGoalLines.length; j++) {
-      if (goalLinesAppearConflicting(substantiveGoalLines[i], substantiveGoalLines[j])) {
-        conflictingPairs.push([substantiveGoalLines[i], substantiveGoalLines[j]]);
+      if (goalLinesAppearConflicting(substantiveGoalLines[i]!, substantiveGoalLines[j]!)) {
+        conflictingPairs.push([substantiveGoalLines[i]!, substantiveGoalLines[j]!]);
       }
     }
   }
@@ -450,32 +378,23 @@ export async function detectVagueOrConflictingGoals({ agentId, agentsDir }) {
 // Trigger 3: prior-week flagged problems
 // ---------------------------------------------------------------------------
 
+/** Options for {@link detectPriorWeekProblems}. */
+export interface DetectPriorWeekProblemsOptions {
+  agentId?: string;
+  dataDir?: string;
+  tz?: string;
+  now?: Date | number;
+}
+
 /**
  * Inspect the prior week's activity log and weekly plan for failed tasks.
- *
- * The trigger fires when failures meet either threshold:
- *   - Absolute: {@link PRIOR_WEEK_ABSOLUTE_FAILURE_THRESHOLD} or more failures (regardless of total).
- *   - Rate: at least {@link PRIOR_WEEK_MIN_ACTIVITIES} activities total AND
- *     {@link PRIOR_WEEK_FAILURE_RATE_THRESHOLD} or more are failures.
- *
- * Failure signals are sourced from:
- *   - Activity log entries with `status === 'failed'`
- *   - Weekly plan tasks with `status === 'failed'` (avoiding double-count
- *     against log entries that already reference the same task via taskId)
- *
- * @param {object} params
- * @param {string} params.agentId
- * @param {string} params.dataDir - `.aweek/agents` root
- * @param {string} [params.tz] - IANA timezone for week-boundary computation (defaults to UTC)
- * @param {Date|number} [params.now] - Override wall-clock "now" for testing
- * @returns {Promise<{trigger: string, reason: string, details: object} | null>}
  */
 export async function detectPriorWeekProblems({
   agentId,
   dataDir,
   tz,
   now = new Date(),
-}) {
+}: DetectPriorWeekProblemsOptions = {}): Promise<TriggerResult | null> {
   if (!agentId) throw new TypeError('agentId is required');
   if (!dataDir) throw new TypeError('dataDir is required');
 
@@ -489,11 +408,11 @@ export async function detectPriorWeekProblems({
 
   // Load both sources concurrently; treat missing data as empty.
   const [logEntries, priorPlan] = await Promise.all([
-    activityStore.load(agentId, priorMonday).catch(() => []),
+    activityStore.load(agentId, priorMonday).catch(() => [] as ActivityLogEntry[]),
     weeklyPlanStore.load(agentId, priorKey).catch(() => null),
   ]);
 
-  const priorPlanTasks = Array.isArray(priorPlan?.tasks) ? priorPlan.tasks : [];
+  const priorPlanTasks: WeeklyTask[] = Array.isArray(priorPlan?.tasks) ? priorPlan!.tasks : [];
 
   // Failed activity log entries.
   const failedLogEntries = logEntries.filter((e) => e.status === 'failed');
@@ -544,38 +463,36 @@ export async function detectPriorWeekProblems({
 // Trigger 4: deadline approaching
 // ---------------------------------------------------------------------------
 
+/** Options for {@link detectDeadlineApproaching}. */
+export interface DetectDeadlineApproachingOptions {
+  agentId?: string;
+  agentsDir?: string;
+  lookaheadDays?: number;
+  now?: Date | number;
+}
+
+/** Approaching deadline record. */
+export interface ApproachingDeadline {
+  type: 'monthly-plan' | 'explicit-date';
+  label: string;
+  deadline: string;
+  daysRemaining: number;
+  snippet?: string;
+}
+
 /**
  * Scan plan.md for deadlines that fall within the lookahead window.
- *
- * Two deadline sources are searched:
- *   1. `## Monthly plans` section: each `### YYYY-MM` subsection heading
- *      is treated as a monthly objective whose deadline is the last calendar
- *      day of that month.
- *   2. Explicit date mentions anywhere in plan.md (patterns recognized by
- *      {@link parseDateMentions}: "by YYYY-MM-DD", "due YYYY-MM-DD",
- *      "deadline: YYYY-MM-DD", or bare ISO dates).
- *
- * A deadline is "approaching" when it falls between (now − 1 day) and
- * (now + lookaheadDays). The 1-day grace handles end-of-day timing so a
- * deadline that passed at midnight tonight still fires.
- *
- * @param {object} params
- * @param {string} params.agentId
- * @param {string} params.agentsDir - `.aweek/agents` root
- * @param {number} [params.lookaheadDays] - Window in calendar days (default 14)
- * @param {Date|number} [params.now] - Override wall-clock "now" for testing
- * @returns {Promise<{trigger: string, reason: string, details: object} | null>}
  */
 export async function detectDeadlineApproaching({
   agentId,
   agentsDir,
   lookaheadDays = DEFAULT_DEADLINE_LOOKAHEAD_DAYS,
   now = new Date(),
-}) {
+}: DetectDeadlineApproachingOptions = {}): Promise<TriggerResult | null> {
   if (!agentId) throw new TypeError('agentId is required');
   if (!agentsDir) throw new TypeError('agentsDir is required');
 
-  let body;
+  let body: string | null;
   try {
     body = await readPlan(agentsDir, agentId);
   } catch {
@@ -588,15 +505,15 @@ export async function detectDeadlineApproaching({
   const windowStartMs = nowMs - 24 * 60 * 60 * 1000; // 1-day grace
   const windowEndMs = nowMs + lookaheadDays * 24 * 60 * 60 * 1000;
 
-  const approachingDeadlines = [];
+  const approachingDeadlines: ApproachingDeadline[] = [];
 
   // --- Source 1: Monthly plan end-dates (### YYYY-MM headings) ---
   const parsed = parsePlanMarkdownSections(body);
   const monthlyBody = parsed.byTitle['Monthly plans'] ?? '';
   const monthHeadingRe = /^###\s+(\d{4}-\d{2})\b/gm;
-  let monthMatch;
+  let monthMatch: RegExpExecArray | null;
   while ((monthMatch = monthHeadingRe.exec(monthlyBody)) !== null) {
-    const monthStr = monthMatch[1];
+    const monthStr = monthMatch[1]!;
     const deadline = lastDayOfMonth(monthStr);
     if (!deadline) continue;
     const deadlineMs = deadline.getTime();
@@ -636,7 +553,7 @@ export async function detectDeadlineApproaching({
   // Sort by soonest deadline first so the most urgent appears in the reason string.
   approachingDeadlines.sort((a, b) => a.daysRemaining - b.daysRemaining);
 
-  const nearest = approachingDeadlines[0];
+  const nearest = approachingDeadlines[0]!;
   const daysDesc =
     nearest.daysRemaining <= 0
       ? 'already passed'
@@ -661,22 +578,18 @@ export async function detectDeadlineApproaching({
 // Composite: run all four triggers in parallel
 // ---------------------------------------------------------------------------
 
+/** Options for {@link checkInterviewTriggers}. */
+export interface CheckInterviewTriggersOptions {
+  agentId?: string;
+  dataDir?: string;
+  tz?: string;
+  now?: Date | number;
+  deadlineLookaheadDays?: number;
+}
+
 /**
  * Run all four interview triggers concurrently and return the array of
- * fired reasons. An empty array means no interview is needed and the
- * planner can proceed autonomously.
- *
- * Individual trigger failures are silently swallowed (the trigger is
- * treated as non-firing) so a broken activity log or missing plan.md
- * never blocks the weekly planning flow.
- *
- * @param {object} params
- * @param {string} params.agentId
- * @param {string} params.dataDir - `.aweek/agents` root directory
- * @param {string} [params.tz] - IANA timezone (passed to trigger 3)
- * @param {Date|number} [params.now] - Override wall-clock "now" for testing
- * @param {number} [params.deadlineLookaheadDays] - Lookahead window for trigger 4 (default 14)
- * @returns {Promise<Array<{trigger: string, reason: string, details: object}>>}
+ * fired reasons.
  */
 export async function checkInterviewTriggers({
   agentId,
@@ -684,7 +597,7 @@ export async function checkInterviewTriggers({
   tz,
   now = new Date(),
   deadlineLookaheadDays = DEFAULT_DEADLINE_LOOKAHEAD_DAYS,
-}) {
+}: CheckInterviewTriggersOptions = {}): Promise<TriggerResult[]> {
   const results = await Promise.allSettled([
     isFirstEverPlan({ agentId, dataDir }),
     detectVagueOrConflictingGoals({ agentId, agentsDir: dataDir }),
@@ -698,29 +611,18 @@ export async function checkInterviewTriggers({
   ]);
 
   return results
-    .filter((r) => r.status === 'fulfilled' && r.value !== null)
+    .filter(
+      (r): r is PromiseFulfilledResult<TriggerResult> =>
+        r.status === 'fulfilled' && r.value !== null,
+    )
     .map((r) => r.value);
 }
 
 // ---------------------------------------------------------------------------
 // Skip-questions escape hatch
-//
-// When the user selects "skip questions" at the B2a interview gate, the skill
-// calls generateSkipAssumptions(triggers) to produce a best-guess assumption
-// for every fired trigger and then displays the formatted block via
-// formatAssumptionsBlock(assumptions). The user reviews the block and either
-// approves it (proceeding directly to B2b) or declines (falling back to the
-// normal inline interview). No further AskUserQuestion interview steps are
-// run while skip mode is active.
 // ---------------------------------------------------------------------------
 
-/**
- * Human-readable label for a trigger ID.
- *
- * @param {string} trigger
- * @returns {string}
- */
-function triggerLabel(trigger) {
+function triggerLabel(trigger: string): string {
   switch (trigger) {
     case 'first-ever-plan':
       return 'First-Ever Plan';
@@ -737,19 +639,10 @@ function triggerLabel(trigger) {
 
 /**
  * Generate a best-guess assumption string for a single fired trigger.
- *
- * Each trigger type produces a concise, actionable assumption that a
- * planner would make when proceeding without further user input. The
- * assumptions are intentionally conservative — they prefer reducing scope
- * and deferring risky choices rather than committing to a direction that
- * might be wrong.
- *
- * @param {object} triggerResult - One element from the checkInterviewTriggers array
- * @param {string} triggerResult.trigger - Trigger ID
- * @param {object} triggerResult.details - Trigger-specific context
- * @returns {string} Best-guess assumption text (one or two sentences)
  */
-export function generateAssumptionForTrigger({ trigger, details = {} }) {
+export function generateAssumptionForTrigger(
+  { trigger, details = {} }: { trigger: string; details?: Record<string, unknown> },
+): string {
   switch (trigger) {
     case 'first-ever-plan':
       return (
@@ -759,8 +652,10 @@ export function generateAssumptionForTrigger({ trigger, details = {} }) {
       );
 
     case 'conflicting-or-vague-goals': {
-      if (details.conflicting && Array.isArray(details.conflictingPairs) && details.conflictingPairs.length > 0) {
-        const [lineA] = details.conflictingPairs[0];
+      const conflicting = details.conflicting === true;
+      const conflictingPairs = details.conflictingPairs as Array<[string, string]> | undefined;
+      if (conflicting && Array.isArray(conflictingPairs) && conflictingPairs.length > 0) {
+        const [lineA] = conflictingPairs[0]!;
         return (
           `Conflicting goal direction detected. Assuming the first stated direction takes ` +
           `precedence this week: "${lineA}". Tasks that pull in the opposing direction ` +
@@ -769,7 +664,7 @@ export function generateAssumptionForTrigger({ trigger, details = {} }) {
         );
       }
       // Vague / absent goals
-      const vagueReason = details.vagueReason ?? 'goals are absent or placeholder-only';
+      const vagueReason = (details.vagueReason as string | undefined) ?? 'goals are absent or placeholder-only';
       return (
         `Goals are unclear (${vagueReason}). Defaulting to a general-productivity focus: ` +
         `consolidating existing work, fixing outstanding issues, and preparing for the next ` +
@@ -778,10 +673,10 @@ export function generateAssumptionForTrigger({ trigger, details = {} }) {
     }
 
     case 'prior-week-problems': {
-      const totalFailed = details.totalFailed ?? 0;
-      const failurePct = Math.round((details.failureRate ?? 0) * 100);
+      const totalFailed = (details.totalFailed as number | undefined) ?? 0;
+      const failurePct = Math.round(((details.failureRate as number | undefined) ?? 0) * 100);
       return (
-        `Prior week (${details.priorWeekKey ?? 'last week'}) had ${totalFailed} failed ` +
+        `Prior week (${(details.priorWeekKey as string | undefined) ?? 'last week'}) had ${totalFailed} failed ` +
         `task${totalFailed !== 1 ? 's' : ''} (${failurePct}% failure rate). Assuming tasks ` +
         `were over-scoped. This week's plan will reduce breadth by ~30%, focusing on fewer ` +
         `and more atomic tasks to rebuild momentum. Adjust scope up next week if this week ` +
@@ -790,13 +685,15 @@ export function generateAssumptionForTrigger({ trigger, details = {} }) {
     }
 
     case 'deadline-approaching': {
-      const count = details.approachingDeadlines?.length ?? 1;
-      const nearest = details.nearestDeadline;
+      const approachingDeadlines = details.approachingDeadlines as ApproachingDeadline[] | undefined;
+      const count = approachingDeadlines?.length ?? 1;
+      const nearest = details.nearestDeadline as ApproachingDeadline | undefined;
+      const lookaheadDays = (details.lookaheadDays as number | undefined) ?? DEFAULT_DEADLINE_LOOKAHEAD_DAYS;
       const nearestDesc = nearest
         ? `nearest: ${nearest.label} — ${
             nearest.daysRemaining <= 0 ? 'already passed' : `in ${nearest.daysRemaining} day${nearest.daysRemaining !== 1 ? 's' : ''}`
           }`
-        : `within ${details.lookaheadDays ?? DEFAULT_DEADLINE_LOOKAHEAD_DAYS} days`;
+        : `within ${lookaheadDays} days`;
       return (
         `${count} deadline${count !== 1 ? 's are' : ' is'} approaching (${nearestDesc}). ` +
         `Assuming deadline-critical work takes top priority this week. Non-critical tasks ` +
@@ -812,20 +709,19 @@ export function generateAssumptionForTrigger({ trigger, details = {} }) {
   }
 }
 
+/** A skip-mode assumption record. */
+export interface SkipAssumption {
+  trigger: string;
+  label: string;
+  assumption: string;
+}
+
 /**
  * Generate a best-guess assumption for every fired trigger.
- *
- * This is the primary entry point for the skip-questions escape hatch.
- * The returned array has one entry per trigger (same order as the input)
- * and is meant to be passed directly to {@link formatAssumptionsBlock}.
- *
- * @param {Array<{trigger: string, reason: string, details: object}>} triggers
- *   Fired triggers from {@link checkInterviewTriggers}
- * @returns {Array<{trigger: string, label: string, assumption: string}>}
  */
-export function generateSkipAssumptions(triggers) {
+export function generateSkipAssumptions(triggers: unknown): SkipAssumption[] {
   if (!Array.isArray(triggers)) return [];
-  return triggers.map((t) => ({
+  return triggers.map((t: TriggerResult) => ({
     trigger: t.trigger,
     label: triggerLabel(t.trigger),
     assumption: generateAssumptionForTrigger(t),
@@ -835,23 +731,11 @@ export function generateSkipAssumptions(triggers) {
 /**
  * Format a list of skip-mode assumptions as a clearly-labelled markdown
  * block suitable for direct display in the skill output.
- *
- * The block is framed with horizontal rules so it stands visually apart
- * from the surrounding plan text. Each assumption is introduced with its
- * trigger label as an H3 heading and quoted in a blockquote so the user
- * can distinguish the machine-generated guess from their own plan content.
- *
- * An empty assumptions array returns an empty string so callers can skip
- * the display step cleanly.
- *
- * @param {Array<{trigger: string, label: string, assumption: string}>} assumptions
- *   Output of {@link generateSkipAssumptions}
- * @returns {string} Formatted markdown block (empty string if no assumptions)
  */
-export function formatAssumptionsBlock(assumptions) {
+export function formatAssumptionsBlock(assumptions: unknown): string {
   if (!Array.isArray(assumptions) || assumptions.length === 0) return '';
 
-  const lines = [
+  const lines: string[] = [
     '---',
     '',
     '## ⚠ Skipped Questions — Assumptions Applied',
@@ -862,7 +746,8 @@ export function formatAssumptionsBlock(assumptions) {
     '',
   ];
 
-  for (const { label, assumption } of assumptions) {
+  for (const a of assumptions as SkipAssumption[]) {
+    const { label, assumption } = a;
     lines.push(`### ${label}`);
     lines.push('');
     lines.push(`> ${assumption}`);
