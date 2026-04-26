@@ -48,9 +48,9 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-let tmpDir;
-let projectDir;
-let dataDir;
+let tmpDir: string;
+let projectDir: string;
+let dataDir: string;
 
 async function setup() {
   // projectDir doubles as both the aweek data root and the .claude/agents
@@ -71,7 +71,7 @@ async function teardown() {
  * display name and description — this is the single source of truth for
  * identity after the refactor.
  */
-async function writeSubagentMd(slug, { name, description }) {
+async function writeSubagentMd(slug: string, { name, description }: { name?: string; description?: string }): Promise<void> {
   const content = buildSubagentMarkdown({
     name: name || slug,
     description: description || `${slug} description`,
@@ -81,19 +81,9 @@ async function writeSubagentMd(slug, { name, description }) {
 }
 
 /**
- * Create a valid aweek agent config + matching subagent .md file. The slug
- * is derived from the human-readable `name` so tests can still speak in
- * friendly terms like "Alice" while the wrapper refactor enforces slug ids.
- *
- * @param {string} name
- * @param {object} [opts]
- * @param {boolean} [opts.writeSubagentFile=true] - When false, skips writing
- *   the .md file so tests can exercise the missing-marker path.
- * @param {string} [opts.description] - Override for the .md `description`.
- * @param {string} [opts.slug] - Override for the slug (defaults to lowercased name).
- * @returns {Promise<object>} Persisted agent config.
+ * Create a valid aweek agent config + matching subagent .md file.
  */
-async function makeAgent(name, { writeSubagentFile: shouldWriteMd = true, description, slug } = {}) {
+async function makeAgent(name: string, { writeSubagentFile: shouldWriteMd = true, description, slug }: { writeSubagentFile?: boolean; description?: string; slug?: string } = {}): Promise<any> {
   const effectiveSlug = slug || name.toLowerCase();
   if (shouldWriteMd) {
     await writeSubagentMd(effectiveSlug, {
@@ -302,8 +292,8 @@ describe('renderTable', () => {
     assert.ok(lines[3].includes('Bob'));
 
     // All data lines share the same rendered width (padding honoured)
-    const widths = lines.map((l) => l.length);
-    assert.ok(widths.every((w) => w === widths[0]));
+    const widths = lines.map((l: string) => l.length);
+    assert.ok(widths.every((w: number) => w === widths[0]));
   });
 });
 
@@ -411,7 +401,7 @@ describe('buildSummary end-to-end', () => {
     assert.equal(result.agentCount, 2);
     assert.equal(result.rows.length, 2);
 
-    const byName = Object.fromEntries(result.rows.map((r) => [r.agent, r]));
+    const byName: Record<string, any> = Object.fromEntries(result.rows.map((r: any) => [r.agent, r]));
     // Alice: 1 active of 2 goals, 1 completed of 3 tasks, 25% usage, ACTIVE
     assert.equal(byName.Alice.goals, '1/2');
     assert.equal(byName.Alice.tasks, '1/3');
@@ -513,17 +503,17 @@ describe('getAgentDrillDownChoices', () => {
     // Two real agents + one sentinel
     assert.equal(choices.length, 3);
 
-    const realChoices = choices.filter((c) => c.id !== null);
+    const realChoices = choices.filter((c: any) => c.id !== null);
     assert.equal(realChoices.length, 2);
 
     // Paused agents surface the [paused] marker in their label
-    const bobChoice = realChoices.find((c) => c.name === 'Bob');
+    const bobChoice: any = realChoices.find((c: any) => c.name === 'Bob');
     assert.ok(bobChoice, 'expected Bob in choices');
     assert.equal(bobChoice.paused, true);
     assert.ok(bobChoice.label.includes('[paused]'));
 
     // Alice is not paused
-    const aliceChoice = realChoices.find((c) => c.name === 'Alice');
+    const aliceChoice: any = realChoices.find((c: any) => c.name === 'Alice');
     assert.ok(aliceChoice, 'expected Alice in choices');
     assert.equal(aliceChoice.paused, false);
     assert.ok(!aliceChoice.label.includes('[paused]'));
@@ -538,7 +528,7 @@ describe('getAgentDrillDownChoices', () => {
     await agentStore.save(alice);
 
     const choices = await getAgentDrillDownChoices({ dataDir, projectDir });
-    const aliceChoice = choices.find((c) => c.name === 'Alice');
+    const aliceChoice: any = choices.find((c: any) => c.name === 'Alice');
     assert.ok(aliceChoice, 'expected Alice in choices');
     assert.ok(aliceChoice.label.includes('Alice'));
     assert.ok(aliceChoice.label.includes('Alice role'));
@@ -551,7 +541,7 @@ describe('getAgentDrillDownChoices', () => {
     await unlink(subagentFilePath('alice', projectDir));
 
     const choices = await getAgentDrillDownChoices({ dataDir, projectDir });
-    const real = choices.filter((c) => c.id !== null);
+    const real = choices.filter((c: any) => c.id !== null);
     assert.equal(real.length, 1);
 
     const [orphan] = real;

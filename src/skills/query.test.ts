@@ -157,9 +157,9 @@ describe('matchesBudget', () => {
 // End-to-end fixtures
 // ---------------------------------------------------------------------------
 
-let tmpDir;
-let projectDir;
-let dataDir;
+let tmpDir: string;
+let projectDir: string;
+let dataDir: string;
 
 async function setup() {
   tmpDir = await mkdtemp(join(tmpdir(), 'query-test-'));
@@ -172,7 +172,7 @@ async function teardown() {
   await rm(tmpDir, { recursive: true, force: true });
 }
 
-async function writeSubagentMd(slug, { name, description, systemPrompt }) {
+async function writeSubagentMd(slug: string, { name, description, systemPrompt }: { name?: string; description?: string; systemPrompt?: string }): Promise<void> {
   const content = buildSubagentMarkdown({
     name: name || slug,
     description: description || `${slug} description`,
@@ -181,7 +181,7 @@ async function writeSubagentMd(slug, { name, description, systemPrompt }) {
   await writeFile(subagentFilePath(slug, projectDir), content, 'utf8');
 }
 
-async function makeAgent(slug, { description, systemPrompt, writeMd = true } = {}) {
+async function makeAgent(slug: string, { description, systemPrompt, writeMd = true }: { description?: string; systemPrompt?: string; writeMd?: boolean } = {}): Promise<any> {
   if (writeMd) await writeSubagentMd(slug, { name: slug, description, systemPrompt });
   return createAgentConfig({ subagentRef: slug, weeklyTokenLimit: 100000 });
 }
@@ -212,7 +212,7 @@ describe('queryAgents', () => {
     assert.equal(result.total, 2);
     assert.equal(result.matched, 2);
     assert.equal(result.filters.role, null);
-    const ids = result.agents.map((a) => a.id).sort();
+    const ids = result.agents.map((a: any) => a.id).sort();
     assert.deepEqual(ids, ['pat', 'sam']);
   });
 
@@ -230,7 +230,7 @@ describe('queryAgents', () => {
     });
 
     assert.equal(result.matched, 2);
-    const ids = result.agents.map((a) => a.id).sort();
+    const ids = result.agents.map((a: any) => a.id).sort();
     assert.deepEqual(ids, ['ivy', 'sam']);
     for (const a of result.agents) {
       assert.ok(a.matchedOn.includes('description'));

@@ -19,15 +19,15 @@ import { execute, buildAdHocTask } from './run-once.js';
 // Pass-through lock stub — exercises the callback path without any real
 // filesystem lock. Matches the `{ status, result }` contract of
 // `runWithHeartbeatLock`.
-async function passThroughLock(agentId, callback) {
+async function passThroughLock(agentId: string, callback: any): Promise<any> {
   const result = await callback(agentId);
   return { status: 'completed', agentId, result };
 }
 
 // Helper that builds a minimal stub executor whose return value matches the
 // real `ExecutionResult` shape well enough for activity-log rendering.
-function stubExecutor({ executionLogPath = null, tokenUsage = null } = {}) {
-  return async (_agentId, _subagentRef, _task, _opts) => ({
+function stubExecutor({ executionLogPath = null, tokenUsage = null }: { executionLogPath?: any; tokenUsage?: any } = {}): any {
+  return async (_agentId: any, _subagentRef: any, _task: any, _opts: any) => ({
     sessionResult: {
       stdout: 'ok',
       stderr: '',
@@ -42,10 +42,10 @@ function stubExecutor({ executionLogPath = null, tokenUsage = null } = {}) {
 }
 
 // Fresh tmpdir per test so activity-log files never leak between cases.
-let baseDir;
-let agentStore;
-let activityLogStore;
-let usageStore;
+let baseDir: string;
+let agentStore: AgentStore;
+let activityLogStore: ActivityLogStore;
+let usageStore: UsageStore;
 const AGENT_ID = 'runonce-test';
 
 async function setup() {
@@ -106,7 +106,7 @@ describe('execute — confirmation gate', () => {
           executeFn: stubExecutor(),
           lockFn: passThroughLock,
         }),
-      (err) => err.code === 'ERUN_NOT_CONFIRMED',
+      (err: any) => err.code === 'ERUN_NOT_CONFIRMED',
     );
   });
 
@@ -124,7 +124,7 @@ describe('execute — confirmation gate', () => {
           executeFn: stubExecutor(),
           lockFn: passThroughLock,
         }),
-      (err) => err.code === 'ERUN_NOT_CONFIRMED',
+      (err: any) => err.code === 'ERUN_NOT_CONFIRMED',
     );
   });
 });
@@ -147,7 +147,7 @@ describe('execute — unknown agent', () => {
           executeFn: stubExecutor(),
           lockFn: passThroughLock,
         }),
-      (err) => err.code === 'ERUN_UNKNOWN_AGENT',
+      (err: any) => err.code === 'ERUN_UNKNOWN_AGENT',
     );
   });
 });
@@ -157,7 +157,7 @@ describe('execute — force-through pause', () => {
   afterEach(teardown);
 
   it('runs the session even when the agent is budget-paused', async () => {
-    const config = await agentStore.load(AGENT_ID);
+    const config: any = await agentStore.load(AGENT_ID);
     config.budget = { ...(config.budget || {}), paused: true };
     await agentStore.save(config);
 
@@ -170,9 +170,9 @@ describe('execute — force-through pause', () => {
       agentStore,
       activityLogStore,
       usageStore,
-      executeFn: async (...args) => {
+      executeFn: async (...args: any[]) => {
         executorCalled = true;
-        return stubExecutor()(...args);
+        return (stubExecutor() as any)(...args);
       },
       lockFn: passThroughLock,
     });
@@ -187,7 +187,7 @@ describe('execute — env loading', () => {
   afterEach(teardown);
 
   it('forwards the parsed .env as opts.env', async () => {
-    let receivedEnv = null;
+    let receivedEnv: any = null;
     await execute({
       agentId: AGENT_ID,
       prompt: 'inspect env',
@@ -196,9 +196,9 @@ describe('execute — env loading', () => {
       agentStore,
       activityLogStore,
       usageStore,
-      executeFn: async (_aid, _sref, _task, opts) => {
+      executeFn: async (_aid: any, _sref: any, _task: any, opts: any) => {
         receivedEnv = opts.env;
-        return stubExecutor()(_aid, _sref, _task, opts);
+        return (stubExecutor() as any)(_aid, _sref, _task, opts);
       },
       lockFn: passThroughLock,
     });
@@ -213,7 +213,7 @@ describe('execute — dangerous-permissions forwarding', () => {
   afterEach(teardown);
 
   it('passes dangerouslySkipPermissions: true to the executor', async () => {
-    let receivedOpts = null;
+    let receivedOpts: any = null;
     await execute({
       agentId: AGENT_ID,
       prompt: 'p',
@@ -222,9 +222,9 @@ describe('execute — dangerous-permissions forwarding', () => {
       agentStore,
       activityLogStore,
       usageStore,
-      executeFn: async (_aid, _sref, _task, opts) => {
+      executeFn: async (_aid: any, _sref: any, _task: any, opts: any) => {
         receivedOpts = opts;
-        return stubExecutor()(_aid, _sref, _task, opts);
+        return (stubExecutor() as any)(_aid, _sref, _task, opts);
       },
       lockFn: passThroughLock,
     });

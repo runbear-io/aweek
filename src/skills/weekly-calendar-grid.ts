@@ -33,10 +33,10 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 
-const STATUS_ICONS = {
+const STATUS_ICONS: Record<string, string> = {
   completed: '✓',
   failed: '✗',
   pending: '○',
@@ -52,7 +52,7 @@ export const REVIEW_SLOT_ICON = '◆';
  * Human-readable display names for reserved review objectiveIds.
  * Used by the grid renderer to label review rows distinctly from work tasks.
  */
-export const REVIEW_DISPLAY_NAMES = {
+export const REVIEW_DISPLAY_NAMES: Record<string, string> = {
   [DAILY_REVIEW_OBJECTIVE_ID]: 'Daily Review',
   [WEEKLY_REVIEW_OBJECTIVE_ID]: 'Weekly Review',
 };
@@ -63,21 +63,14 @@ export const REVIEW_DISPLAY_NAMES = {
 
 /**
  * Get the Monday instant for an ISO week string like "2026-W16".
- * When `tz` is supplied, returns the UTC `Date` that corresponds to
- * Monday 00:00 *local time* in that zone. Default behavior (no `tz`)
- * stays UTC-only so existing callers and tests are unchanged.
- *
- * @param {string} isoWeek
- * @param {string} [tz]
- * @returns {Date}
  */
-export function mondayFromISOWeek(isoWeek, tz) {
+export function mondayFromISOWeek(isoWeek: string, tz?: string): Date {
   if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
     return mondayOfWeek(isoWeek, tz);
   }
   const [yearStr, weekStr] = isoWeek.split('-W');
-  const year = parseInt(yearStr, 10);
-  const week = parseInt(weekStr, 10);
+  const year = parseInt(yearStr ?? '', 10);
+  const week = parseInt(weekStr ?? '', 10);
   const jan4 = new Date(Date.UTC(year, 0, 4));
   const dayOfWeek = jan4.getUTCDay() || 7;
   const monday = new Date(jan4);
@@ -87,27 +80,19 @@ export function mondayFromISOWeek(isoWeek, tz) {
 
 /**
  * Derive a per-day cell width that fits within a terminal width.
- *
- * The grid's total printed width is `hourWidth + (cellWidth + 1) * daysCount + 1`
- * (with `hourWidth === 7`). Solving for `cellWidth` and flooring gives the
- * widest cell that still fits. Clamped to `minCellWidth` so very narrow
- * terminals still produce a usable grid (truncated, but not broken).
- *
- * @param {number} terminalWidth - Available columns in the terminal.
- * @param {number} daysCount - Number of day columns (5 or 7).
- * @param {object} [opts]
- * @param {number} [opts.minCellWidth=12]
- * @param {number} [opts.maxCellWidth=32]
- * @returns {number}
  */
 export const DEFAULT_TERMINAL_WIDTH = 120;
 
-export function computeCellWidth(terminalWidth, daysCount, opts = {}) {
+export function computeCellWidth(
+  terminalWidth: number | undefined,
+  daysCount: number,
+  opts: { minCellWidth?: number; maxCellWidth?: number } = {},
+): number {
   const { minCellWidth = 12, maxCellWidth = 32 } = opts;
   const hourWidth = 7;
   const width =
-    Number.isFinite(terminalWidth) && terminalWidth > 0
-      ? terminalWidth
+    Number.isFinite(terminalWidth) && (terminalWidth as number) > 0
+      ? (terminalWidth as number)
       : DEFAULT_TERMINAL_WIDTH;
   const available = width - hourWidth - 2; // minus "│" borders on each side
   const cell = Math.floor(available / daysCount) - 1;
@@ -116,22 +101,16 @@ export function computeCellWidth(terminalWidth, daysCount, opts = {}) {
 
 /**
  * Truncate a string, appending '…' if truncated.
- * @param {string} str
- * @param {number} max
- * @returns {string}
  */
-function trunc(str, max) {
+function trunc(str: string | undefined | null, max: number): string {
   if (!str) return '';
   return str.length <= max ? str : str.slice(0, max - 1) + '…';
 }
 
 /**
  * Pad string to exact width.
- * @param {string} s
- * @param {number} w
- * @returns {string}
  */
-function pad(s, w) {
+function pad(s: any, w: number): string {
   const str = String(s);
   return str.length >= w ? str.slice(0, w) : str + ' '.repeat(w - str.length);
 }
@@ -140,32 +119,22 @@ function pad(s, w) {
 // Task distribution
 // ---------------------------------------------------------------------------
 
+export interface DistributeTasksOpts {
+  startHour?: number;
+  endHour?: number;
+  daysCount?: number;
+  spread?: 'pack' | 'spread';
+  weekMonday?: Date;
+  tz?: string;
+}
+
 /**
  * Distribute tasks across days and hours.
- *
- * Each (day, hour) cell holds an ORDERED LIST of entries, not a single
- * entry — multiple tasks with the same floor-hour (e.g. a 13:00 task and a
- * 13:30 task) both land in the same 13:00 bucket rather than one being
- * dropped on collision. The renderer decides how to summarize crowded
- * buckets; the distributor never hides a task.
- *
- * Placement runs in two passes:
- *   1. Tasks with a `runAt` ISO timestamp are appended to their bucket,
- *      stacking on collision.
- *   2. Remaining tasks (no `runAt`, or `runAt` outside the visible window)
- *      are placed via `pack` or `spread`, treating any non-empty bucket as
- *      occupied so they settle into truly free slots.
- *
- * @param {Array} tasks - Weekly plan tasks
- * @param {object} opts
- * @param {number} opts.startHour - First working hour (default: 9)
- * @param {number} opts.endHour - Last working hour exclusive (default: 18)
- * @param {number} opts.daysCount - Number of days to schedule across (default: 5 for weekdays)
- * @param {string} opts.spread - Distribution mode: 'pack' (fill each day) or 'spread' (round-robin across days)
- * @param {Date} [opts.weekMonday] - Monday (UTC) of the plan's week. Required to place runAt-tagged tasks; if omitted, tasks with runAt fall through to the default placement.
- * @returns {Map<string, Map<number, Array<{task: object, isStart: boolean, spanHours: number, offset: number, sortKey?: number}>>>}
  */
-export function distributeTasks(tasks, opts = {}) {
+export function distributeTasks(
+  tasks: any[],
+  opts: DistributeTasksOpts = {},
+): Map<string, Map<number, any[]>> {
   const {
     startHour = 9,
     endHour = 18,
@@ -178,13 +147,13 @@ export function distributeTasks(tasks, opts = {}) {
   const useLocalTz = typeof tz === 'string' && tz !== 'UTC' && isValidTimeZone(tz);
 
   // dayKey → Map(hour → Array<Entry>)
-  const grid = new Map();
+  const grid = new Map<string, Map<number, any[]>>();
   for (let d = 0; d < 7; d++) {
-    grid.set(DAY_KEYS[d], new Map());
+    grid.set(DAY_KEYS[d] as string, new Map<number, any[]>());
   }
 
-  const append = (dayKey, hour, entry) => {
-    const dayGrid = grid.get(dayKey);
+  const append = (dayKey: string, hour: number, entry: any) => {
+    const dayGrid = grid.get(dayKey)!;
     let bucket = dayGrid.get(hour);
     if (!bucket) {
       bucket = [];
@@ -194,7 +163,7 @@ export function distributeTasks(tasks, opts = {}) {
   };
 
   // ---- Pass 1: runAt-anchored placement ----------------------------------
-  const runAtPlaced = new Set();
+  const runAtPlaced = new Set<any>();
   if (weekMonday instanceof Date && !Number.isNaN(weekMonday.getTime())) {
     const weekStartMs = Date.UTC(
       weekMonday.getUTCFullYear(),
@@ -206,15 +175,11 @@ export function distributeTasks(tasks, opts = {}) {
       const ts = Date.parse(task.runAt);
       if (Number.isNaN(ts)) continue;
 
-      // Day / hour derivation runs in `tz` when supplied so half-hour local
-      // tasks (e.g. 13:30 LA) anchor to the same local 13:00 bucket as a
-      // 13:00 LA task does. Default path stays UTC for back-compat with
-      // callers that don't plumb a time zone through yet.
-      let dayOffset;
-      let hour;
+      let dayOffset: number;
+      let hour: number;
       if (useLocalTz) {
-        dayOffset = localDayOffset(ts, weekMonday, tz);
-        hour = localHour(ts, tz);
+        dayOffset = localDayOffset(ts, weekMonday, tz as string);
+        hour = localHour(ts, tz as string);
       } else {
         const msInDay = 24 * 60 * 60 * 1000;
         dayOffset = Math.floor((ts - weekStartMs) / msInDay);
@@ -225,7 +190,7 @@ export function distributeTasks(tasks, opts = {}) {
 
       const minutes = task.estimatedMinutes || 60;
       const spanHours = Math.max(1, Math.ceil(minutes / 60));
-      const dayKey = DAY_KEYS[dayOffset];
+      const dayKey = DAY_KEYS[dayOffset] as string;
 
       for (let h = 0; h < spanHours && hour + h < endHour; h++) {
         append(dayKey, hour + h, {
@@ -243,15 +208,15 @@ export function distributeTasks(tasks, opts = {}) {
   // Within a bucket, earlier runAt comes first so numbering is deterministic.
   for (const dayGrid of grid.values()) {
     for (const bucket of dayGrid.values()) {
-      bucket.sort((a, b) => (a.sortKey ?? 0) - (b.sortKey ?? 0));
+      bucket.sort((a: any, b: any) => (a.sortKey ?? 0) - (b.sortKey ?? 0));
     }
   }
 
-  const remaining = tasks.filter((t) => !runAtPlaced.has(t.id));
+  const remaining = tasks.filter((t: any) => !runAtPlaced.has(t.id));
 
   // A bucket is "free" for unscheduled placement only if it's completely
   // empty — preserves the pre-refactor reserve semantics.
-  const firstFreeHourFrom = (dayGrid, fromHour, spanHours) => {
+  const firstFreeHourFrom = (dayGrid: Map<number, any[]>, fromHour: number, spanHours: number): number => {
     for (let h = fromHour; h + spanHours <= endHour; h++) {
       let clear = true;
       for (let k = 0; k < spanHours; k++) {
@@ -276,8 +241,8 @@ export function distributeTasks(tasks, opts = {}) {
       const minutes = task.estimatedMinutes || 60;
       const spanHours = Math.max(1, Math.ceil(minutes / 60));
 
-      const dayKey = DAY_KEYS[dayIdx];
-      const dayGrid = grid.get(dayKey);
+      const dayKey = DAY_KEYS[dayIdx] as string;
+      const dayGrid = grid.get(dayKey)!;
       const slot = firstFreeHourFrom(dayGrid, nextHour[dayIdx], spanHours);
       if (slot === -1) continue;
 
@@ -307,7 +272,7 @@ export function distributeTasks(tasks, opts = {}) {
 
     let slot = -1;
     while (currentDay < daysCount) {
-      const dayGrid = grid.get(DAY_KEYS[currentDay]);
+      const dayGrid = grid.get(DAY_KEYS[currentDay] as string)!;
       slot = firstFreeHourFrom(dayGrid, currentHour, spanHours);
       if (slot !== -1) break;
       currentDay++;
@@ -315,7 +280,7 @@ export function distributeTasks(tasks, opts = {}) {
     }
     if (currentDay >= daysCount || slot === -1) break;
 
-    const dayKey = DAY_KEYS[currentDay];
+    const dayKey = DAY_KEYS[currentDay] as string;
 
     for (let h = 0; h < spanHours; h++) {
       append(dayKey, slot + h, {
@@ -340,23 +305,22 @@ export function distributeTasks(tasks, opts = {}) {
 // Grid renderer
 // ---------------------------------------------------------------------------
 
-/**
- * Render the weekly calendar grid as a text table.
- *
- * @param {object} params
- * @param {object} params.agent - Agent config
- * @param {object} params.plan - Weekly plan
- * @param {object} [params.opts]
- * @param {number} [params.opts.startHour=9]
- * @param {number} [params.opts.endHour=18]
- * @param {number} [params.opts.cellWidth] - Explicit cell width. Overrides the terminalWidth-derived default.
- * @param {number} [params.opts.terminalWidth] - Terminal columns the grid should fit. Defaults to DEFAULT_TERMINAL_WIDTH (120) when omitted.
- * @param {boolean} [params.opts.showWeekend=false]
- * @returns {string} Rendered grid
- */
 export const TASK_CONTENT_MAX = 40;
 
-export function renderGrid({ agent, plan, opts = {} }) {
+export interface RenderGridOpts {
+  startHour?: number;
+  endHour?: number;
+  cellWidth?: number;
+  terminalWidth?: number;
+  showWeekend?: boolean;
+  spread?: 'pack' | 'spread';
+  tz?: string;
+}
+
+/**
+ * Render the weekly calendar grid as a text table.
+ */
+export function renderGrid({ agent, plan, opts = {} }: { agent: any; plan: any; opts?: RenderGridOpts }): { text: string; taskIndex: any[] } {
   const {
     startHour = 9,
     endHour = 18,
@@ -370,27 +334,22 @@ export function renderGrid({ agent, plan, opts = {} }) {
   const useLocalTz = typeof tz === 'string' && tz !== 'UTC' && isValidTimeZone(tz);
 
   const daysCount = showWeekend ? 7 : 5;
-  // Fit the grid to a terminal (120 cols by default). An explicit cellWidth
-  // takes precedence; otherwise derive cellWidth from the terminal width so
-  // every column is the same.
   const resolvedTerminalWidth =
-    Number.isFinite(terminalWidth) && terminalWidth > 0
-      ? terminalWidth
+    Number.isFinite(terminalWidth) && (terminalWidth as number) > 0
+      ? (terminalWidth as number)
       : DEFAULT_TERMINAL_WIDTH;
   const cellWidth =
-    Number.isFinite(cellWidthOpt) && cellWidthOpt > 0
-      ? cellWidthOpt
+    Number.isFinite(cellWidthOpt) && (cellWidthOpt as number) > 0
+      ? (cellWidthOpt as number)
       : computeCellWidth(resolvedTerminalWidth, daysCount);
   const dayLabels = DAY_LABELS.slice(0, daysCount);
   const dayKeys = DAY_KEYS.slice(0, daysCount);
 
-  // Compute date labels. When tz is supplied, the labels come from the
-  // local-zone projection of Monday 00:00 + N days; otherwise we render
-  // the UTC date (old behavior).
+  // Compute date labels.
   const monday = mondayFromISOWeek(plan.week, tz);
-  const dateLabels = dayKeys.map((_, i) => {
+  const dateLabels = dayKeys.map((_: any, i: number) => {
     if (useLocalTz) {
-      const parts = localParts(monday.getTime() + i * 86400000, tz);
+      const parts = localParts(monday.getTime() + i * 86400000, tz as string);
       return `${parts.month}/${parts.day}`;
     }
     const d = new Date(monday);
@@ -398,7 +357,6 @@ export function renderGrid({ agent, plan, opts = {} }) {
     return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
   });
 
-  // Distribute tasks and build task index (number → task mapping)
   const grid = distributeTasks(plan.tasks || [], {
     startHour,
     endHour,
@@ -407,15 +365,9 @@ export function renderGrid({ agent, plan, opts = {} }) {
     spread,
     weekMonday: monday,
   });
-  const taskIndex = []; // 1-based: taskIndex[0] = task #1
+  const taskIndex: any[] = [];
 
-  // Assign numbers in column-major order: walk each day top-to-bottom, then
-  // move to the next day. Within each hour bucket, entries are already sorted
-  // by runAt so the earliest-scheduled task gets the lowest number.
-  // Review slots (daily-review / weekly-review objectiveIds) receive numbers
-  // identical to regular work tasks so users can select them and apply status
-  // transitions the same way.
-  const taskNumMap = new Map(); // task.id → number
+  const taskNumMap = new Map<string, number>();
   for (const dayKey of dayKeys) {
     for (let h = startHour; h < endHour; h++) {
       const bucket = grid.get(dayKey)?.get(h);
@@ -441,7 +393,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
     }
   }
 
-  const lines = [];
+  const lines: string[] = [];
   const hourWidth = 7; // "HH:00 "
   const totalWidth = hourWidth + (cellWidth + 1) * daysCount + 1;
 
@@ -450,13 +402,9 @@ export function renderGrid({ agent, plan, opts = {} }) {
   const status = plan.approved ? 'Approved' : 'Pending';
   lines.push(`┌${'─'.repeat(totalWidth - 2)}┐`);
   lines.push(`│ ${pad(title, totalWidth - 4)} │`);
-  // Surface the effective time zone in the header so the user can tell at
-  // a glance which zone the day/hour axes correspond to.
   const displayTz = useLocalTz ? tz : 'UTC';
-  // Separate work task count from advisor-mode review slot count so the
-  // header gives an accurate picture of scheduled work vs. pacing structure.
   const allPlanTasks = plan.tasks || [];
-  const workTaskCount = allPlanTasks.filter((t) => !isReviewObjectiveId(t.objectiveId)).length;
+  const workTaskCount = allPlanTasks.filter((t: any) => !isReviewObjectiveId(t.objectiveId)).length;
   const reviewSlotCount = allPlanTasks.length - workTaskCount;
   const reviewSuffix = reviewSlotCount > 0 ? ` | Reviews: ${reviewSlotCount}` : '';
   lines.push(
@@ -466,23 +414,13 @@ export function renderGrid({ agent, plan, opts = {} }) {
     `├${'─'.repeat(hourWidth)}${dayKeys.map(() => `┬${'─'.repeat(cellWidth)}`).join('')}┤`);
 
   // Day header row
-  const headerCells = dayKeys.map((_, i) =>
+  const headerCells = dayKeys.map((_: any, i: number) =>
     pad(`${dayLabels[i]} ${dateLabels[i]}`, cellWidth)
   );
-  lines.push(`│ ${pad('Hour', hourWidth - 2)} │${headerCells.map(c => `${c}│`).join('')}`);
+  lines.push(`│ ${pad('Hour', hourWidth - 2)} │${headerCells.map((c: string) => `${c}│`).join('')}`);
   lines.push(`├${'─'.repeat(hourWidth)}${dayKeys.map(() => `┼${'─'.repeat(cellWidth)}`).join('')}┤`);
 
-  // Each task is rendered as a small block of wrapped lines inside its
-  // cell. Every task gets at most TASK_CONTENT_MAX visible chars total
-  // (prefix + description); anything beyond collapses with `…`. The capped
-  // text is then chunked across lines of `cellWidth` columns so narrow
-  // cells simply take more lines. Hour row height = the tallest cell in
-  // that row; shorter cells pad with blanks.
-  //
-  // Advisor-mode review slots (daily-review / weekly-review objectiveIds) are
-  // rendered with the distinct `◆` icon and their selection number, identical
-  // to regular work tasks, so users can select them and apply status transitions.
-  const wrapTaskBlock = (entry) => {
+  const wrapTaskBlock = (entry: any): string[] => {
     const { task } = entry;
     const num = taskNumMap.get(task.id);
 
@@ -490,7 +428,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
       const displayName = REVIEW_DISPLAY_NAMES[task.objectiveId] ?? 'Review';
       const prefix = num != null ? `${REVIEW_SLOT_ICON} ${num}. ` : `${REVIEW_SLOT_ICON} `;
       const capped = trunc(`${prefix}${displayName}`, TASK_CONTENT_MAX);
-      const chunks = [];
+      const chunks: string[] = [];
       for (let i = 0; i < capped.length; i += cellWidth) {
         chunks.push(pad(capped.slice(i, i + cellWidth), cellWidth));
       }
@@ -501,7 +439,7 @@ export function renderGrid({ agent, plan, opts = {} }) {
     const icon = STATUS_ICONS[task.status] || '?';
     const prefix = `${icon} ${num}. `;
     const capped = trunc(`${prefix}${task.title}`, TASK_CONTENT_MAX);
-    const chunks = [];
+    const chunks: string[] = [];
     for (let i = 0; i < capped.length; i += cellWidth) {
       chunks.push(pad(capped.slice(i, i + cellWidth), cellWidth));
     }
@@ -512,24 +450,21 @@ export function renderGrid({ agent, plan, opts = {} }) {
   for (let h = startHour; h < endHour; h++) {
     const hourLabel = pad(`${String(h).padStart(2, '0')}:00`, hourWidth - 1);
 
-    // For each day cell, flatten every task's wrapped block into a stack
-    // of lines. Empty cells still reserve one blank line so the hour
-    // label row never collapses to zero height.
-    const cells = dayKeys.map((dayKey) => {
+    const cells = dayKeys.map((dayKey: string) => {
       const bucket = grid.get(dayKey)?.get(h);
       if (!bucket || bucket.length === 0) return [pad('', cellWidth)];
       return bucket.flatMap(wrapTaskBlock);
     });
 
-    const linesPerCell = Math.max(...cells.map((c) => c.length), 1);
+    const linesPerCell = Math.max(...cells.map((c: string[]) => c.length), 1);
     for (const c of cells) {
       while (c.length < linesPerCell) c.push(pad('', cellWidth));
     }
 
     for (let ln = 0; ln < linesPerCell; ln++) {
       const hourCol = ln === 0 ? hourLabel : pad('', hourWidth - 1);
-      const row = cells.map((c) => c[ln]);
-      lines.push(`│${hourCol} │${row.map((c) => `${c}│`).join('')}`);
+      const row = cells.map((c: string[]) => c[ln]);
+      lines.push(`│${hourCol} │${row.map((c: any) => `${c}│`).join('')}`);
     }
   }
 
@@ -548,60 +483,18 @@ export function renderGrid({ agent, plan, opts = {} }) {
 // Markdown-table renderer (responsive)
 // ---------------------------------------------------------------------------
 
-/**
- * Maximum visible characters per task entry in the markdown renderer.
- * Matches the box renderer's `TASK_CONTENT_MAX` so task numbering + titles
- * read identically in both formats. Long titles collapse to `…` past this.
- */
 export const MD_TASK_CONTENT_MAX = 40;
 
-/**
- * Default maximum tasks visibly stacked in a single (hour × day) cell before
- * the remainder collapses to a `+N more` trailer. Prevents crowded cells
- * from blowing past terminal table-layout thresholds. Override via
- * `renderMarkdownGrid({ opts: { maxTasksPerCell } })`.
- */
 export const MD_DEFAULT_MAX_TASKS_PER_CELL = 3;
+
+export interface RenderMarkdownGridOpts extends RenderGridOpts {
+  maxTasksPerCell?: number;
+}
 
 /**
  * Render the weekly calendar as a GitHub-flavored markdown table.
- *
- * The pipe-table layout re-flows automatically in Claude Code's terminal UI
- * (and any other markdown renderer) since the renderer picks column widths
- * from the longest cell — no hand-rolled box-drawing, no `terminalWidth`
- * guess. Multi-task cells stack their entries with `<br>` so wrapping keeps
- * tasks on distinct visual lines.
- *
- * Output shape:
- *
- *   **<agent> — Week <iso>**
- *   Status: <status> | Tasks: <n>[ | Reviews: <m>] | TZ: <tz>
- *
- *   | Hour  | Mon 4/20 | Tue 4/21 | … |
- *   | ----- | -------- | -------- | … |
- *   | 09:00 | ○ 1. Foo | ○ 3. Baz | … |
- *   | 10:00 | ○ 2. Bar |          | … |
- *   | …     |          |          | … |
- *
- *   Legend: ○ pending …
- *   Select a task number (1-N) to see details.
- *
- * Shares numbering + task-distribution semantics with `renderGrid` so the
- * returned `taskIndex` and "Select task N" prompt are interchangeable
- * between the two renderers.
- *
- * @param {object} params
- * @param {object} params.agent - Agent config
- * @param {object} params.plan - Weekly plan
- * @param {object} [params.opts]
- * @param {number} [params.opts.startHour=9]
- * @param {number} [params.opts.endHour=18]
- * @param {boolean} [params.opts.showWeekend=false]
- * @param {'pack'|'spread'} [params.opts.spread='pack']
- * @param {string} [params.opts.tz] - IANA zone for day/hour bucketing.
- * @returns {{ text: string, taskIndex: object[] }}
  */
-export function renderMarkdownGrid({ agent, plan, opts = {} }) {
+export function renderMarkdownGrid({ agent, plan, opts = {} }: { agent: any; plan: any; opts?: RenderMarkdownGridOpts }): { text: string; taskIndex: any[] } {
   const {
     startHour = 9,
     endHour = 18,
@@ -617,9 +510,9 @@ export function renderMarkdownGrid({ agent, plan, opts = {} }) {
   const dayKeys = DAY_KEYS.slice(0, daysCount);
 
   const monday = mondayFromISOWeek(plan.week, tz);
-  const dateLabels = dayKeys.map((_, i) => {
+  const dateLabels = dayKeys.map((_: any, i: number) => {
     if (useLocalTz) {
-      const parts = localParts(monday.getTime() + i * 86400000, tz);
+      const parts = localParts(monday.getTime() + i * 86400000, tz as string);
       return `${parts.month}/${parts.day}`;
     }
     const d = new Date(monday);
@@ -637,8 +530,8 @@ export function renderMarkdownGrid({ agent, plan, opts = {} }) {
   });
 
   // Shared column-major numbering so numbers agree with `renderGrid`.
-  const taskIndex = [];
-  const taskNumMap = new Map();
+  const taskIndex: any[] = [];
+  const taskNumMap = new Map<string, number>();
   for (const dayKey of dayKeys) {
     for (let h = startHour; h < endHour; h++) {
       const bucket = grid.get(dayKey)?.get(h);
@@ -660,13 +553,7 @@ export function renderMarkdownGrid({ agent, plan, opts = {} }) {
     }
   }
 
-  // Markdown tables don't wrap within a cell — a single long line forces the
-  // whole column to that width and can push Claude Code's terminal UI past
-  // its table-layout threshold, which drops the table to a list view. Cap
-  // every cell's visible content at `MD_TASK_CONTENT_MAX` chars (matching the
-  // box renderer's TASK_CONTENT_MAX so numbering + titles read the same) and
-  // collapse any overflow beyond `maxTasksPerCell` into a `+N more` trailer.
-  const formatTask = (entry) => {
+  const formatTask = (entry: any): string | null => {
     const { task, isStart } = entry;
     if (!isStart) return null;
     const num = taskNumMap.get(task.id);
@@ -680,15 +567,15 @@ export function renderMarkdownGrid({ agent, plan, opts = {} }) {
     return escapePipe(trunc(`${prefix}${task.title}`, MD_TASK_CONTENT_MAX));
   };
 
-  const headerCells = ['Hour', ...dayKeys.map((_, i) => `${dayLabels[i]} ${dateLabels[i]}`)];
-  const lines = [];
+  const headerCells = ['Hour', ...dayKeys.map((_: any, i: number) => `${dayLabels[i]} ${dateLabels[i]}`)];
+  const lines: string[] = [];
 
   // Meta paragraph above the table
   const title = `${agent.identity?.name || agent.id} — Week ${plan.week}`;
   const status = plan.approved ? 'Approved' : 'Pending';
   const displayTz = useLocalTz ? tz : 'UTC';
   const allPlanTasks = plan.tasks || [];
-  const workTaskCount = allPlanTasks.filter((t) => !isReviewObjectiveId(t.objectiveId)).length;
+  const workTaskCount = allPlanTasks.filter((t: any) => !isReviewObjectiveId(t.objectiveId)).length;
   const reviewSlotCount = allPlanTasks.length - workTaskCount;
   const reviewSuffix = reviewSlotCount > 0 ? ` | Reviews: ${reviewSlotCount}` : '';
   lines.push(`**${title}**`);
@@ -699,28 +586,20 @@ export function renderMarkdownGrid({ agent, plan, opts = {} }) {
   lines.push(`| ${headerCells.join(' | ')} |`);
   lines.push(`| ${headerCells.map(() => '---').join(' | ')} |`);
 
-  // One row per hour. Each day cell lists every task in that bucket (joined
-  // by `<br>` so crowded cells render on multiple lines without widening the
-  // column). The hour label in the first column is always present so the
-  // renderer can compute row height independently.
   for (let h = startHour; h < endHour; h++) {
     const hourLabel = `${String(h).padStart(2, '0')}:00`;
-    const row = [hourLabel];
+    const row: string[] = [hourLabel];
     for (const dayKey of dayKeys) {
       const bucket = grid.get(dayKey)?.get(h);
       if (!bucket || bucket.length === 0) {
         row.push(' ');
         continue;
       }
-      const entries = bucket.map(formatTask).filter(Boolean);
+      const entries = bucket.map(formatTask).filter(Boolean) as string[];
       if (entries.length === 0) {
         row.push(' ');
         continue;
       }
-      // Cap visible stack height so crowded cells don't blow past the
-      // terminal UI's table-width budget and fall back to a list view.
-      // The overflow trailer points at the backlog-style numbered index
-      // which always carries the full set.
       const cap = Math.max(1, maxTasksPerCell);
       const visible = entries.slice(0, cap);
       const hidden = entries.length - visible.length;
@@ -740,13 +619,9 @@ export function renderMarkdownGrid({ agent, plan, opts = {} }) {
 }
 
 /**
- * Escape literal `|` characters so they don't terminate a markdown table
- * cell. Everything else passes through unchanged.
- *
- * @param {string} s
- * @returns {string}
+ * Escape literal `|` characters so they don't terminate a markdown table cell.
  */
-function escapePipe(s) {
+function escapePipe(s: string): string {
   return String(s).replace(/\|/g, '\\|');
 }
 
@@ -756,36 +631,18 @@ function escapePipe(s) {
 
 /**
  * Shift an ISO week key by a number of weeks (positive or negative).
- *
- * @param {string} weekKey - YYYY-Www
- * @param {number} weeks
- * @returns {string} shifted YYYY-Www
  */
-function shiftWeekKey(weekKey, weeks) {
-  const monday = isoWeekToMondayDate(weekKey); // YYYY-MM-DD
+function shiftWeekKey(weekKey: string, weeks: number): string {
+  const monday = isoWeekToMondayDate(weekKey);
   const d = new Date(monday + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + weeks * 7);
   return dateToISOWeek(d.toISOString().slice(0, 10));
 }
 
 /**
- * Normalize a user-supplied week reference into the canonical YYYY-Www key
- * used by the weekly-plan store.
- *
- * Accepted shapes:
- *   - `null` / `undefined` / empty → returns `null` (caller should fall back
- *     to the latest approved plan)
- *   - Full ISO week: `2026-W17` (case-insensitive `W`)
- *   - Bare week number: `17` or `W17` (uses the current ISO year for `tz`)
- *   - ISO date: `2026-04-20` (any date — derives the ISO week containing it)
- *   - Aliases: `current` / `this` / `now`, `next`, `prev` / `previous` / `last`
- *
- * @param {string|number|null|undefined} input
- * @param {string} [tz='UTC'] - IANA zone used for relative aliases & bare-week year
- * @returns {string|null} Canonical `YYYY-Www` or `null` when input is empty
- * @throws {Error} when input doesn't match any accepted shape
+ * Normalize a user-supplied week reference into the canonical YYYY-Www key.
  */
-export function resolveWeekKey(input, tz = 'UTC') {
+export function resolveWeekKey(input: any, tz: string = 'UTC'): string | null {
   if (input == null) return null;
   const str = String(input).trim();
   if (str === '') return null;
@@ -803,26 +660,26 @@ export function resolveWeekKey(input, tz = 'UTC') {
     return shiftWeekKey(currentWeekKey(zone), -1);
   }
 
-  // Full ISO week key: YYYY-Www (1- or 2-digit week tolerated, padded out)
+  // Full ISO week key: YYYY-Www
   let m = /^(\d{4})-W(\d{1,2})$/i.exec(str);
   if (m) {
-    const week = parseInt(m[2], 10);
+    const week = parseInt(m[2] ?? '', 10);
     if (week < 1 || week > 53) {
       throw new Error(`Invalid week number ${week} (must be 1-53)`);
     }
     return `${m[1]}-W${String(week).padStart(2, '0')}`;
   }
 
-  // ISO date YYYY-MM-DD → derive containing ISO week.
+  // ISO date YYYY-MM-DD
   m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
   if (m) {
     return dateToISOWeek(str);
   }
 
-  // Bare week number (W17 or 17) — assume the current ISO year for `tz`.
+  // Bare week number
   m = /^W?(\d{1,2})$/i.exec(str);
   if (m) {
-    const week = parseInt(m[1], 10);
+    const week = parseInt(m[1] ?? '', 10);
     if (week < 1 || week > 53) {
       throw new Error(`Invalid week number ${week} (must be 1-53)`);
     }
@@ -841,26 +698,17 @@ export function resolveWeekKey(input, tz = 'UTC') {
 // Load and render
 // ---------------------------------------------------------------------------
 
+export interface LoadAndRenderGridParams {
+  agentId: string;
+  week?: any;
+  dataDir?: string;
+  opts?: RenderGridOpts & { format?: 'box' | 'markdown' };
+}
+
 /**
  * Load agent data and render the weekly calendar grid.
- *
- * @param {object} params
- * @param {string} params.agentId - Agent ID
- * @param {string} [params.week] - Week reference. Accepts canonical
- *   `YYYY-Www`, an ISO date `YYYY-MM-DD`, a bare week number `17`/`W17`, or
- *   the aliases `current` / `next` / `prev`. Resolved through
- *   {@link resolveWeekKey}. Default: latest approved plan.
- * @param {string} [params.dataDir] - Data directory
- * @param {object} [params.opts] - Render options
- * @param {'box'|'markdown'} [params.opts.format='box'] - Picks the renderer.
- *   `'box'` keeps the fixed-width Unicode box-drawing grid. `'markdown'` emits
- *   a GitHub-flavored pipe table so the host (e.g. Claude Code's terminal UI)
- *   can reflow columns to the available width. Numbering + task index stay
- *   identical between the two so downstream callers can swap formats without
- *   changing task selection logic.
- * @returns {Promise<{success: boolean, output?: string, errors?: string[]}>}
  */
-export async function loadAndRenderGrid(params) {
+export async function loadAndRenderGrid(params: LoadAndRenderGridParams): Promise<{ success: boolean; output?: string; errors?: string[]; taskIndex?: any[] }> {
   const { agentId, week, opts = {} } = params;
   const dataDir = params.dataDir || join(process.cwd(), '.aweek', 'agents');
 
@@ -870,11 +718,7 @@ export async function loadAndRenderGrid(params) {
 
     const agent = await agentStore.load(agentId);
 
-    // Auto-resolve the user's time zone from `.aweek/config.json` unless
-    // the caller already provided one in opts. We need this *before* the
-    // week resolver runs so relative aliases like `current`/`next` and
-    // bare week numbers settle in the user's zone.
-    const resolvedOpts = { ...opts };
+    const resolvedOpts: any = { ...opts };
     if (resolvedOpts.tz == null) {
       try {
         const config = await loadConfig(dataDir);
@@ -884,14 +728,14 @@ export async function loadAndRenderGrid(params) {
       }
     }
 
-    let resolvedWeek;
+    let resolvedWeek: string | null;
     try {
       resolvedWeek = resolveWeekKey(week, resolvedOpts.tz);
-    } catch (err) {
+    } catch (err: any) {
       return { success: false, errors: [err.message] };
     }
 
-    let plan;
+    let plan: any;
     if (resolvedWeek) {
       try {
         plan = await weeklyPlanStore.load(agentId, resolvedWeek);
@@ -908,7 +752,6 @@ export async function loadAndRenderGrid(params) {
     } else {
       plan = await weeklyPlanStore.loadLatestApproved(agentId);
       if (!plan) {
-        // Fall back to the most recent plan regardless of approval state.
         const plans = await weeklyPlanStore.loadAll(agentId).catch(() => []);
         plan = plans[plans.length - 1];
       }
@@ -921,26 +764,17 @@ export async function loadAndRenderGrid(params) {
     const render = resolvedOpts.format === 'markdown' ? renderMarkdownGrid : renderGrid;
     const { text, taskIndex } = render({ agent, plan, opts: resolvedOpts });
     return { success: true, output: text, taskIndex };
-  } catch (err) {
+  } catch (err: any) {
     return { success: false, errors: [err.message] };
   }
 }
 
 /**
  * List all agents with their latest plan week.
- *
- * Thin wrapper around the shared {@link getAgentChoices} helper — kept so the
- * existing `/aweek:weekly-calendar` skill markdown import stays stable while
- * the consolidated `/aweek:calendar` skill (which imports `getAgentChoices`
- * directly) rolls in. The returned shape is intentionally narrower than the
- * helper's so downstream calendar code only sees fields it cares about.
- *
- * @param {string} [dataDir]
- * @returns {Promise<Array<{id: string, name: string, latestWeek: string|null, taskCount: number, approved: boolean}>>}
  */
-export async function listAgentsForCalendar(dataDir) {
+export async function listAgentsForCalendar(dataDir?: string): Promise<Array<{ id: string; name: string; latestWeek: string | null; taskCount: number; approved: boolean }>> {
   const choices = await getAgentChoices({ dataDir });
-  return choices.map(({ id, name, latestWeek, taskCount, approved }) => ({
+  return choices.map(({ id, name, latestWeek, taskCount, approved }: any) => ({
     id,
     name,
     latestWeek,

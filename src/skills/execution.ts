@@ -21,27 +21,27 @@ import { join } from 'node:path';
 const DEFAULT_OLDER_THAN_WEEKS = 4;
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
+export interface PruneExecutionLogsOpts {
+  projectDir?: string;
+  olderThanWeeks?: number;
+  now?: Date;
+}
+
+export interface PruneExecutionLogsResult {
+  deleted: string[];
+  kept: number;
+  scannedAgents: string[];
+  cutoffIso: string;
+}
+
 /**
  * Delete execution logs older than a cutoff.
- *
- * @param {object} opts
- * @param {string} opts.projectDir - Project root (parent of `.aweek`).
- * @param {number} [opts.olderThanWeeks] - Retention cutoff in whole weeks.
- *   Execution logs with mtime older than `now - olderThanWeeks * 1 week`
- *   are deleted. `0` prunes everything; negative values throw.
- * @param {Date} [opts.now] - Injectable "now" for deterministic tests.
- * @returns {Promise<{
- *   deleted: string[],  // Absolute paths of files removed.
- *   kept: number,       // Count of execution logs retained.
- *   scannedAgents: string[],  // Agent slugs whose executions dir was scanned.
- *   cutoffIso: string,  // The resolved cutoff instant, for reporting.
- * }>}
  */
 export async function pruneExecutionLogs({
   projectDir,
   olderThanWeeks = DEFAULT_OLDER_THAN_WEEKS,
   now = new Date(),
-} = {}) {
+}: PruneExecutionLogsOpts = {}): Promise<PruneExecutionLogsResult> {
   if (typeof projectDir !== 'string' || projectDir.length === 0) {
     throw new Error('projectDir is required');
   }
@@ -56,14 +56,14 @@ export async function pruneExecutionLogs({
   const cutoffIso = new Date(cutoffMs).toISOString();
 
   const agentsDir = join(projectDir, '.aweek', 'agents');
-  const deleted = [];
+  const deleted: string[] = [];
   let kept = 0;
-  const scannedAgents = [];
+  const scannedAgents: string[] = [];
 
   let agentEntries;
   try {
     agentEntries = await readdir(agentsDir, { withFileTypes: true });
-  } catch (err) {
+  } catch (err: any) {
     if (err && err.code === 'ENOENT') {
       return { deleted, kept, scannedAgents, cutoffIso };
     }
@@ -75,10 +75,10 @@ export async function pruneExecutionLogs({
     const slug = agentEntry.name;
     const execDir = join(agentsDir, slug, 'executions');
 
-    let files;
+    let files: string[];
     try {
       files = await readdir(execDir);
-    } catch (err) {
+    } catch (err: any) {
       if (err && err.code === 'ENOENT') continue;
       throw err;
     }
@@ -90,7 +90,7 @@ export async function pruneExecutionLogs({
       let s;
       try {
         s = await stat(full);
-      } catch (err) {
+      } catch (err: any) {
         if (err && err.code === 'ENOENT') continue;
         throw err;
       }
@@ -99,7 +99,7 @@ export async function pruneExecutionLogs({
         try {
           await unlink(full);
           deleted.push(full);
-        } catch (err) {
+        } catch (err: any) {
           // Missing-during-delete is a race we tolerate silently; anything
           // else bubbles so callers see real failures rather than a lie.
           if (err && err.code === 'ENOENT') continue;

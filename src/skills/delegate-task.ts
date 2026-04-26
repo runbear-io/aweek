@@ -13,17 +13,24 @@ import { AgentStore } from '../storage/agent-store.js';
 import { InboxStore } from '../storage/inbox-store.js';
 import { createInboxMessage } from '../models/agent.js';
 
+export interface DelegationParams {
+  fromAgentId?: string;
+  toAgentId?: string;
+  taskDescription?: string;
+  options?: {
+    priority?: string;
+    context?: string;
+    sourceTaskId?: string;
+  };
+}
+
 /**
  * Validate delegation parameters before constructing the message.
  * Throws descriptive errors for missing or invalid inputs.
- *
- * @param {object} params
- * @param {string} params.fromAgentId - Sender agent ID
- * @param {string} params.toAgentId - Recipient agent ID
- * @param {string} params.taskDescription - Task description
- * @returns {{ fromAgentId: string, toAgentId: string, taskDescription: string }}
  */
-export function validateDelegationParams({ fromAgentId, toAgentId, taskDescription } = {}) {
+export function validateDelegationParams(
+  { fromAgentId, toAgentId, taskDescription }: DelegationParams = {},
+): { fromAgentId: string; toAgentId: string; taskDescription: string } {
   if (!fromAgentId || typeof fromAgentId !== 'string') {
     throw new Error('fromAgentId is required and must be a non-empty string');
   }
@@ -42,6 +49,11 @@ export function validateDelegationParams({ fromAgentId, toAgentId, taskDescripti
   return { fromAgentId, toAgentId, taskDescription };
 }
 
+export interface DelegateTaskDeps {
+  agentStore?: any;
+  inboxStore?: any;
+}
+
 /**
  * Delegate a task from one agent to another.
  *
@@ -49,21 +61,11 @@ export function validateDelegationParams({ fromAgentId, toAgentId, taskDescripti
  * 2. Verifies both sender and recipient agents exist
  * 3. Constructs a schema-valid inbox message
  * 4. Enqueues the message into the recipient's inbox (idempotent)
- *
- * @param {object} params
- * @param {string} params.fromAgentId - Sender agent ID
- * @param {string} params.toAgentId - Recipient agent ID
- * @param {string} params.taskDescription - What the target agent should do
- * @param {object} [params.options] - Optional message fields
- * @param {string} [params.options.priority] - 'critical' | 'high' | 'medium' | 'low' (default: 'medium')
- * @param {string} [params.options.context] - Additional context for the task
- * @param {string} [params.options.sourceTaskId] - Weekly task ID that triggered this delegation
- * @param {object} [deps] - Injectable dependencies (for testing)
- * @param {AgentStore} [deps.agentStore]
- * @param {InboxStore} [deps.inboxStore]
- * @returns {Promise<object>} The enqueued inbox message
  */
-export async function delegateTask(params, deps = {}) {
+export async function delegateTask(
+  params: DelegationParams,
+  deps: DelegateTaskDeps = {},
+): Promise<any> {
   const { fromAgentId, toAgentId, taskDescription } = validateDelegationParams(params);
   const options = params.options || {};
 
@@ -84,7 +86,7 @@ export async function delegateTask(params, deps = {}) {
 
   // Construct the inbox message via the model factory
   const message = createInboxMessage(fromAgentId, toAgentId, taskDescription, {
-    priority: options.priority,
+    priority: options.priority as any,
     context: options.context,
     sourceTaskId: options.sourceTaskId,
   });
@@ -97,11 +99,8 @@ export async function delegateTask(params, deps = {}) {
 
 /**
  * Format a human-friendly summary of a delegation result.
- *
- * @param {object} message - The enqueued inbox message
- * @returns {string} Formatted summary
  */
-export function formatDelegationResult(message) {
+export function formatDelegationResult(message: any): string {
   const lines = [
     `Task delegated successfully`,
     `  Message ID: ${message.id}`,

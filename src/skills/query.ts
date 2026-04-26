@@ -39,18 +39,18 @@ import { stateLabel, MISSING_SUBAGENT_MARKER } from './summary.js';
  * no filter was provided. Callers pass either a single string (`'active'`),
  * a comma-separated list (`'active,paused'`), or a pre-split array.
  */
-export function normalizeStatusFilter(status) {
+export function normalizeStatusFilter(status: any): string[] | null {
   if (status === undefined || status === null || status === '') return null;
   const parts = Array.isArray(status)
     ? status
     : String(status).split(',');
   const cleaned = parts
-    .map((s) => String(s).trim().toLowerCase())
-    .filter((s) => s.length > 0);
+    .map((s: any) => String(s).trim().toLowerCase())
+    .filter((s: string) => s.length > 0);
   return cleaned.length > 0 ? cleaned : null;
 }
 
-export function matchesRole(description, role) {
+export function matchesRole(description: any, role: any): { matched: boolean; on: string[] } {
   if (!role) return { matched: true, on: [] };
   const needle = String(role).toLowerCase();
   const haystack = String(description ?? '').toLowerCase();
@@ -59,10 +59,10 @@ export function matchesRole(description, role) {
     : { matched: false, on: [] };
 }
 
-export function matchesKeyword(subagent, keyword) {
+export function matchesKeyword(subagent: any, keyword: any): { matched: boolean; on: string[] } {
   if (!keyword) return { matched: true, on: [] };
   const needle = String(keyword).toLowerCase();
-  const on = [];
+  const on: string[] = [];
   const name = String(subagent?.name ?? '').toLowerCase();
   const desc = String(subagent?.description ?? '').toLowerCase();
   const body = String(subagent?.body ?? '').toLowerCase();
@@ -72,12 +72,12 @@ export function matchesKeyword(subagent, keyword) {
   return { matched: on.length > 0, on };
 }
 
-export function matchesStatus(state, wanted) {
+export function matchesStatus(state: any, wanted: string[] | null): boolean {
   if (!wanted) return true;
   return wanted.includes(String(state ?? '').toLowerCase());
 }
 
-export function matchesBudget(budget, wanted) {
+export function matchesBudget(budget: any, wanted: any): boolean {
   if (!wanted) return true;
   const w = String(wanted).toLowerCase();
   const limit = Number(budget?.weeklyTokenLimit ?? 0);
@@ -93,41 +93,19 @@ export function matchesBudget(budget, wanted) {
 // Main entry
 // ---------------------------------------------------------------------------
 
+export interface QueryAgentsOpts {
+  dataDir?: string;
+  projectDir?: string;
+  date?: Date;
+  lockOpts?: any;
+  role?: string;
+  keyword?: string;
+  status?: string | string[];
+  budget?: string;
+}
+
 /**
  * Filter the full agent roster down to those matching the supplied filters.
- *
- * Returns a structured payload rather than a pre-rendered table so downstream
- * skills (e.g. a future `/aweek:bulk-plan`) can consume the slug list directly
- * while `/aweek:query` itself still formats for the terminal via
- * {@link formatQueryResult}.
- *
- * @param {object} opts
- * @param {string} opts.dataDir - `.aweek/agents` root.
- * @param {string} [opts.projectDir] - Project root for `.claude/agents/` lookup.
- * @param {Date}   [opts.date] - Reference date (defaults to now).
- * @param {object} [opts.lockOpts] - Forwarded to `gatherAllAgentStatuses`.
- * @param {string} [opts.role] - Substring filter against `.md` description.
- * @param {string} [opts.keyword] - Substring filter against name + desc + prompt body.
- * @param {string|string[]} [opts.status] - Lifecycle state(s) to keep.
- * @param {string} [opts.budget] - `no-limit` | `under` | `over`.
- * @returns {Promise<{
- *   total: number,
- *   matched: number,
- *   filters: object,
- *   week: string,
- *   weekMonday: string,
- *   agents: Array<{
- *     id: string,
- *     name: string,
- *     description: string,
- *     state: string,
- *     paused: boolean,
- *     missing: boolean,
- *     matchedOn: string[],
- *     weeklyPlan: { week: string|null, approved: boolean, tasks: object },
- *     budget: { weeklyTokenLimit: number, utilizationPct: number },
- *   }>
- * }>}
  */
 export async function queryAgents({
   dataDir,
@@ -138,26 +116,26 @@ export async function queryAgents({
   keyword,
   status,
   budget,
-} = {}) {
+}: QueryAgentsOpts = {}): Promise<any> {
   if (!dataDir) throw new Error('queryAgents: dataDir is required');
 
   const configs = await listAllAgents({ dataDir });
-  const configMap = new Map(configs.map((c) => [c.id, c]));
+  const configMap = new Map(configs.map((c: any) => [c.id, c]));
 
   const gathered = await gatherAllAgentStatuses({ dataDir, date, lockOpts });
   const statuses = gathered.agents;
   const total = statuses.length;
 
   const subagentEntries = await Promise.all(
-    statuses.map(async (s) => [s.id, await readSubagentIdentity(s.id, projectDir)]),
+    statuses.map(async (s: any) => [s.id, await readSubagentIdentity(s.id, projectDir)] as [string, any]),
   );
-  const subagentMap = new Map(subagentEntries);
+  const subagentMap = new Map<string, any>(subagentEntries);
 
   const statusFilter = normalizeStatusFilter(status);
 
-  const filtered = [];
+  const filtered: any[] = [];
   for (const s of statuses) {
-    const subagent = subagentMap.get(s.id) || { missing: true, name: '', description: '', body: '' };
+    const subagent: any = subagentMap.get(s.id) || { missing: true, name: '', description: '', body: '' };
     const effectiveState = subagent.missing ? 'missing-subagent' : s.state;
 
     // Role / keyword live in the subagent .md — when the file is missing we
@@ -179,7 +157,7 @@ export async function queryAgents({
       name: subagent.missing ? s.id : (subagent.name || s.id),
       description: subagent.missing ? '' : (subagent.description || ''),
       state: effectiveState,
-      paused: !!configMap.get(s.id)?.budget?.paused,
+      paused: !!(configMap.get(s.id) as any)?.budget?.paused,
       missing: !!subagent.missing,
       matchedOn,
       weeklyPlan: {
@@ -219,22 +197,22 @@ const COLUMNS = [
   { key: 'status',     header: 'Status' },
   { key: 'tasks',      header: 'Tasks' },
   { key: 'matchedOn',  header: 'Matched on' },
-];
+] as const;
 
-function truncate(value, max) {
+function truncate(value: any, max: number): string {
   const s = String(value ?? '');
   if (s.length <= max) return s;
   return `${s.slice(0, Math.max(1, max - 1))}…`;
 }
 
-function formatTasksCell(plan) {
+function formatTasksCell(plan: any): string {
   const total = plan?.tasks?.total || 0;
   if (total === 0) return '—';
   const completed = plan?.tasks?.byStatus?.['completed'] || 0;
   return `${completed}/${total}`;
 }
 
-export function buildQueryRow(agent) {
+export function buildQueryRow(agent: any): Record<string, string> {
   const agentCell = agent.missing
     ? `${agent.id} ${MISSING_SUBAGENT_MARKER}`
     : (agent.name || agent.id);
@@ -248,26 +226,26 @@ export function buildQueryRow(agent) {
   };
 }
 
-function renderTable(rows) {
+function renderTable(rows: Record<string, string>[]): string {
   const widths = COLUMNS.map((col) => {
     const cellWidth = rows.reduce(
-      (max, r) => Math.max(max, String(r[col.key] ?? '').length),
+      (max: number, r: Record<string, string>) => Math.max(max, String(r[col.key] ?? '').length),
       0,
     );
     return Math.max(col.header.length, cellWidth);
   });
-  const line = (cells) =>
-    '| ' + cells.map((c, i) => String(c).padEnd(widths[i])).join(' | ') + ' |';
+  const line = (cells: any[]) =>
+    '| ' + cells.map((c, i) => String(c).padEnd(widths[i] ?? 0)).join(' | ') + ' |';
   const separator = '|' + widths.map((w) => '-'.repeat(w + 2)).join('|') + '|';
-  const out = [];
+  const out: string[] = [];
   out.push(line(COLUMNS.map((c) => c.header)));
   out.push(separator);
   for (const r of rows) out.push(line(COLUMNS.map((c) => r[c.key] ?? '')));
   return out.join('\n');
 }
 
-function formatFilters(filters) {
-  const parts = [];
+function formatFilters(filters: any): string {
+  const parts: string[] = [];
   if (filters.role) parts.push(`role~"${filters.role}"`);
   if (filters.keyword) parts.push(`keyword~"${filters.keyword}"`);
   if (filters.status) parts.push(`status=${filters.status.join('|')}`);
@@ -277,12 +255,9 @@ function formatFilters(filters) {
 
 /**
  * Render a human-readable report for the skill's final output.
- *
- * @param {Awaited<ReturnType<typeof queryAgents>>} result
- * @returns {string}
  */
-export function formatQueryResult(result) {
-  const lines = [];
+export function formatQueryResult(result: any): string {
+  const lines: string[] = [];
   lines.push('=== aweek Query ===');
   lines.push(`Week: ${result.week} (Monday: ${result.weekMonday})`);
   lines.push(`Filters: ${formatFilters(result.filters)}`);
@@ -305,9 +280,9 @@ export function formatQueryResult(result) {
  * `id: null` "No thanks" entry is appended so the skill markdown can wire the
  * same homogeneous list that `/aweek:summary` uses.
  */
-export function buildQueryChoices(result) {
+export function buildQueryChoices(result: any): any[] {
   if (!result || !Array.isArray(result.agents)) return [];
-  const choices = result.agents.map((a) => {
+  const choices = result.agents.map((a: any) => {
     const displayName = a.missing
       ? `${a.id} ${MISSING_SUBAGENT_MARKER}`
       : (a.name || a.id);
@@ -324,3 +299,6 @@ export function buildQueryChoices(result) {
 }
 
 export { MISSING_SUBAGENT_MARKER };
+
+// Re-exports for status helpers that the query skill markdown depends on.
+export { getCurrentWeekString, getMondayDate };
