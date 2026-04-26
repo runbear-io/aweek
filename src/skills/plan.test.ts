@@ -1,22 +1,5 @@
 /**
  * Tests for the `plan` skill adapter.
- *
- * The adapter is a thin composition layer over `../services/plan-adjustments.js`
- * and `../services/plan-approval.js`, both of which already have comprehensive
- * tests under `src/services/plan-{adjustments,approval}.test.js`. Here we only
- * verify the surface that exists *because of* the adapter:
- *
- *   1. Re-exports and aliases bind the same function references as the
- *      underlying services so there is exactly one source of truth.
- *   2. The thin pass-through wrappers (`adjustPlan`, `approve`, `edit`,
- *      `reviewPlan`, `formatAdjustmentResult`) forward arguments and return
- *      values verbatim.
- *   3. The destructive `reject` operation is confirmation-gated and refuses
- *      to call the underlying service without `confirmed: true`.
- *   4. End-to-end happy paths through the adapter exercise the full
- *      `/aweek:plan` flow against a real on-disk agent store so a regression
- *      in the wiring (wrong import path, dropped argument, swapped return
- *      shape) is caught here before it reaches the skill markdown.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,15 +66,15 @@ const TEST_SLUG = 'test-agent';
 function buildTestAgent({ subagentRef = TEST_SLUG, planApproved = false } = {}) {
   const config = createAgentConfig({
     subagentRef,
-    budget: { weeklyTokenLimit: 100000 },
+    weeklyTokenLimit: 100000,
   });
 
   const goal = createGoal('Ship the new feature', '3mo');
-  config.goals.push(goal);
+  config.goals!.push(goal);
 
   const objective = createObjective('Land MVP this month', goal.id);
   const monthlyPlan = createMonthlyPlan('2026-04', [objective]);
-  config.monthlyPlans.push(monthlyPlan);
+  config.monthlyPlans!.push(monthlyPlan);
 
   const task = createTask({ title: 'Draft the spec', prompt: 'Draft the spec' }, objective.id, {
     priority: 'high',
@@ -104,13 +87,23 @@ function buildTestAgent({ subagentRef = TEST_SLUG, planApproved = false } = {}) 
 }
 
 /** Persist both the config and the weekly plan to the file store. */
-async function saveFixture({ store, dir, config, weeklyPlan }) {
+async function saveFixture({
+  store,
+  dir,
+  config,
+  weeklyPlan,
+}: {
+  store: AgentStore;
+  dir: string;
+  config: ReturnType<typeof createAgentConfig>;
+  weeklyPlan: ReturnType<typeof createWeeklyPlan>;
+}) {
   await store.save(config);
   const weeklyPlanStore = new WeeklyPlanStore(dir);
   await weeklyPlanStore.save(config.id, weeklyPlan);
 }
 
-async function withTempStore(fn) {
+async function withTempStore(fn: (args: { store: AgentStore; dir: string }) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), 'aweek-plan-adapter-'));
   try {
     const store = new AgentStore(dir);
@@ -121,9 +114,7 @@ async function withTempStore(fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Re-export identity — every passthrough symbol must be the same reference
-// the underlying service exports, so the adapter stays a true shim and never
-// silently shadows the canonical impl with a divergent copy.
+// Re-export identity
 // ---------------------------------------------------------------------------
 
 describe('plan skill adapter — re-export identity', () => {
@@ -171,17 +162,13 @@ describe('plan skill adapter — formatAdjustmentResult', () => {
 
 // ---------------------------------------------------------------------------
 // reject — destructive confirmation gate
-//
-// The adapter is the *only* place this guard exists; the underlying service
-// has no `confirmed` field. These tests pin the gate against accidental
-// removal or weakening (e.g., truthy-but-not-strict-true bypass).
 // ---------------------------------------------------------------------------
 
 describe('plan skill adapter — reject confirmation gate', () => {
   it('refuses to run when confirmed is missing', async () => {
     const result = await reject({ agentId: 'agent-x', dataDir: '/tmp/unused' });
     assert.equal(result.success, false);
-    assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+    assert.ok(result.errors!.some((e: string) => /explicit confirmation/i.test(e)));
   });
 
   it('refuses to run when confirmed is false', async () => {
@@ -191,7 +178,7 @@ describe('plan skill adapter — reject confirmation gate', () => {
       confirmed: false,
     });
     assert.equal(result.success, false);
-    assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+    assert.ok(result.errors!.some((e: string) => /explicit confirmation/i.test(e)));
   });
 
   it('refuses to run when confirmed is truthy but not strictly true', async () => {
@@ -199,29 +186,24 @@ describe('plan skill adapter — reject confirmation gate', () => {
       const result = await reject({
         agentId: 'agent-x',
         dataDir: '/tmp/unused',
-        confirmed: sneaky,
+        confirmed: sneaky as unknown as boolean,
       });
       assert.equal(
         result.success,
         false,
         `confirmed=${JSON.stringify(sneaky)} should not bypass the gate`,
       );
-      assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+      assert.ok(result.errors!.some((e: string) => /explicit confirmation/i.test(e)));
     }
   });
 
   it('refuses to run when called with no params at all', async () => {
     const result = await reject();
     assert.equal(result.success, false);
-    assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+    assert.ok(result.errors!.some((e: string) => /explicit confirmation/i.test(e)));
   });
 
   it('strips `confirmed` before delegating to the service', async () => {
-    // The service has no `confirmed` field — if we leak the flag through,
-    // the schema validator on the service side may complain or ignore it
-    // silently. Either way it's a leak. Verify by spying via a fixture
-    // store: a real reject succeeds and the persisted JSON has no
-    // `confirmed` artifact anywhere.
     await withTempStore(async ({ store, dir }) => {
       const { config, weeklyPlan } = buildTestAgent();
       await saveFixture({ store, dir, config, weeklyPlan });
@@ -252,16 +234,11 @@ describe('plan skill adapter — reject confirmation gate', () => {
 
 // ---------------------------------------------------------------------------
 // End-to-end happy paths through the adapter
-//
-// These exercise the `/aweek:plan` flow against a real on-disk store to
-// catch wiring regressions in the adapter (wrong import path, dropped
-// argument, swapped return shape). They deliberately stay shallow — the
-// underlying service tests own deep behavioral coverage.
 // ---------------------------------------------------------------------------
 
 describe('plan skill adapter — adjustPlan happy path', () => {
-  let tempDir;
-  let store;
+  let tempDir: string;
+  let store: AgentStore;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'aweek-plan-adjust-'));
@@ -286,11 +263,11 @@ describe('plan skill adapter — adjustPlan happy path', () => {
 
     assert.equal(result.success, false);
     assert.ok(
-      result.errors.some((e) => /plan\.md/.test(e)),
+      result.errors!.some((e: string) => /plan\.md/.test(e)),
       JSON.stringify(result.errors),
     );
     const reloaded = await store.load(config.id);
-    assert.equal(reloaded.goals.length, 1, 'goals must be unchanged');
+    assert.equal(reloaded.goals!.length, 1, 'goals must be unchanged');
   });
 
   it('rejects monthlyAdjustments and points at plan.md', async () => {
@@ -301,21 +278,21 @@ describe('plan skill adapter — adjustPlan happy path', () => {
       agentId: config.id,
       dataDir: tempDir,
       monthlyAdjustments: [
-        { action: 'add', month: '2026-04', description: 'obj', goalId: config.goals[0].id },
+        { action: 'add', month: '2026-04', description: 'obj', goalId: config.goals![0]!.id },
       ],
     });
 
     assert.equal(result.success, false);
     assert.ok(
-      result.errors.some((e) => /plan\.md/.test(e)),
+      result.errors!.some((e: string) => /plan\.md/.test(e)),
       JSON.stringify(result.errors),
     );
   });
 });
 
 describe('plan skill adapter — approve / edit / reviewPlan happy paths', () => {
-  let tempDir;
-  let store;
+  let tempDir: string;
+  let store: AgentStore;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'aweek-plan-approval-'));
@@ -333,9 +310,9 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
     const result = await reviewPlan({ agentId: config.id, dataDir: tempDir });
     assert.equal(result.success, true, JSON.stringify(result.errors));
     assert.ok(result.formatted, 'expected a `formatted` field');
-    assert.match(result.formatted, /2026-W16/);
+    assert.match(result.formatted!, /2026-W16/);
     assert.ok(
-      result.formatted.includes(task.title),
+      result.formatted!.includes(task.title),
       'formatted output should mention the task description',
     );
   });
@@ -351,8 +328,8 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(persistedPlan.approved, true);
+    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    assert.equal(persistedPlan!.approved, true);
   });
 
   it('edit applies an add-task operation and leaves the plan pending by default', async () => {
@@ -376,11 +353,11 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(persistedPlan.tasks.length, 2);
-    assert.ok(persistedPlan.tasks.some((t) => t.title === 'Write the README'));
+    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    assert.equal(persistedPlan!.tasks.length, 2);
+    assert.ok(persistedPlan!.tasks.some((t) => t.title === 'Write the README'));
     // Default behavior: still pending.
-    assert.equal(persistedPlan.approved, false);
+    assert.equal(persistedPlan!.approved, false);
   });
 
   it('edit + autoApproveAfterEdit:true approves and persists in one call', async () => {
@@ -405,26 +382,18 @@ describe('plan skill adapter — approve / edit / reviewPlan happy paths', () =>
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(persistedPlan.approved, true);
-    assert.equal(persistedPlan.tasks.length, 2);
+    const persistedPlan = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    assert.equal(persistedPlan!.approved, true);
+    assert.equal(persistedPlan!.tasks.length, 2);
   });
 });
 
 // ---------------------------------------------------------------------------
 // detectLayoutAmbiguity — adapter (Sub-AC 7c)
-//
-// Tests verify that the function:
-//   1. Returns the correct shape with all required fields.
-//   2. Classifies absent plan.md correctly (absent-signals, not confident).
-//   3. Classifies a clear theme-days plan.md correctly (confident).
-//   4. Classifies a clear priority-waterfall plan.md correctly (confident).
-//   5. Classifies a plan.md with conflicting signals correctly (not confident).
-//   6. Includes a human-readable `modeLabel` field.
 // ---------------------------------------------------------------------------
 
 describe('plan skill adapter — detectLayoutAmbiguity', () => {
-  let tempDir;
+  let tempDir: string;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'aweek-layout-ambiguity-'));
@@ -543,18 +512,11 @@ Priority 2: Write tests.
 
 // ---------------------------------------------------------------------------
 // AC 8: backward-compatibility — plans containing advisor-mode review tasks
-//
-// The weekly-plan generator now injects daily-review and weekly-review tasks
-// into every new plan (via buildReviewTasks). These tests verify that the
-// existing /aweek:plan adjustment and approval flows work correctly when a
-// plan contains those reserved-objectiveId tasks alongside ordinary work
-// tasks. This change must be purely additive — no existing flow is removed
-// or replaced.
 // ---------------------------------------------------------------------------
 
 describe('plan skill adapter — AC 8 backward compatibility with advisor-mode review tasks', () => {
-  let tempDir;
-  let store;
+  let tempDir: string;
+  let store: AgentStore;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'aweek-plan-compat-'));
@@ -565,15 +527,9 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  /**
-   * Build a fixture whose weekly plan contains both a normal work task AND
-   * the advisor-mode review tasks that buildReviewTasks() injects.  This
-   * simulates a plan produced by the updated weekly-plan generator.
-   */
   function buildAgentWithReviewTasks() {
     const { config, goal, objective, task, monthlyPlan, weeklyPlan } = buildTestAgent();
 
-    // Simulate 5 daily-review tasks (Mon–Fri) as buildReviewTasks() produces.
     const dailyReviewTasks = [
       ['Mon review: week orientation', "Week orientation: open your weekly plan, confirm today's top two priorities."],
       ['Tue review: day-two check-in', 'Day-two check-in: note what moved forward yesterday, update task statuses.'],
@@ -581,7 +537,7 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
       ['Thu review: pre-close prep', 'Pre-close prep: drive open items toward done, escalate any unresolved blockers.'],
       ['Fri review: end-of-day wrap-up', 'End-of-day Friday: record today\'s outcomes, note what carries forward.'],
     ].map(([title, prompt], i) =>
-      createTask({ title, prompt }, DAILY_REVIEW_OBJECTIVE_ID, {
+      createTask({ title: title as string, prompt: prompt as string }, DAILY_REVIEW_OBJECTIVE_ID, {
         priority: 'medium',
         estimatedMinutes: 30,
         runAt: `2026-04-${20 + i}T17:00:00Z`,
@@ -589,7 +545,6 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
       }),
     );
 
-    // Simulate the single weekly-review task (Friday afternoon).
     const weeklyReviewTask = createTask(
       {
         title: 'Weekly review',
@@ -612,10 +567,6 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
     };
   }
 
-  // -------------------------------------------------------------------------
-  // reviewPlan — still formats correctly when review tasks are present
-  // -------------------------------------------------------------------------
-
   it('reviewPlan returns a formatted summary that includes both work and review tasks', async () => {
     const { config, task, dailyReviewTasks, weeklyReviewTask, weeklyPlan } =
       buildAgentWithReviewTasks();
@@ -625,24 +576,20 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     assert.ok(result.formatted, 'expected a `formatted` field');
-    // Existing work task is still visible.
     assert.ok(
-      result.formatted.includes(task.title),
+      result.formatted!.includes(task.title),
       'existing work task should appear in the formatted output',
     );
-    // Daily review tasks appear alongside the work task.
     assert.ok(
-      result.formatted.includes(dailyReviewTasks[0].title),
+      result.formatted!.includes(dailyReviewTasks[0]!.title),
       'first daily-review task should appear in the formatted output',
     );
-    // Weekly review task appears.
     assert.ok(
-      result.formatted.includes(weeklyReviewTask.title),
+      result.formatted!.includes(weeklyReviewTask.title),
       'weekly-review task should appear in the formatted output',
     );
-    // Task count includes both work and review tasks.
     assert.match(
-      result.formatted,
+      result.formatted!,
       /Tasks \(\d+\)/,
       'formatted output should declare the total task count',
     );
@@ -654,13 +601,8 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     const result = await reviewPlan({ agentId: config.id, dataDir: tempDir });
     assert.equal(result.success, true, JSON.stringify(result.errors));
-    // 1 work task + 5 daily reviews + 1 weekly review = 7
-    assert.match(result.formatted, /Tasks \(7\)/);
+    assert.match(result.formatted!, /Tasks \(7\)/);
   });
-
-  // -------------------------------------------------------------------------
-  // approve — marks approved and persists review tasks intact
-  // -------------------------------------------------------------------------
 
   it('approve marks the plan as approved even when it contains review tasks', async () => {
     const { config, weeklyPlan } = buildAgentWithReviewTasks();
@@ -673,8 +615,8 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(persisted.approved, true, 'plan should be approved');
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    assert.equal(persisted!.approved, true, 'plan should be approved');
   });
 
   it('approve preserves all review tasks in the persisted plan', async () => {
@@ -687,25 +629,21 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
     });
 
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    const dailyReviewCount = persisted.tasks.filter(
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    const dailyReviewCount = persisted!.tasks.filter(
       (t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID,
     ).length;
-    const weeklyReviewCount = persisted.tasks.filter(
+    const weeklyReviewCount = persisted!.tasks.filter(
       (t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID,
     ).length;
     assert.equal(dailyReviewCount, 5, 'all 5 daily-review tasks should survive approval');
     assert.equal(weeklyReviewCount, 1, 'the weekly-review task should survive approval');
   });
 
-  // -------------------------------------------------------------------------
-  // edit — adds a work task without disturbing existing review tasks
-  // -------------------------------------------------------------------------
-
   it('edit (add) appends a new work task without removing review tasks', async () => {
     const { config, objective, weeklyPlan } = buildAgentWithReviewTasks();
     await saveFixture({ store, dir: tempDir, config, weeklyPlan });
-    const originalCount = weeklyPlan.tasks.length; // 1 work + 5 daily + 1 weekly = 7
+    const originalCount = weeklyPlan.tasks.length;
 
     const result = await edit({
       agentId: config.id,
@@ -724,26 +662,24 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
 
-    assert.equal(persisted.tasks.length, originalCount + 1, 'total task count should be +1');
+    assert.equal(persisted!.tasks.length, originalCount + 1, 'total task count should be +1');
     assert.ok(
-      persisted.tasks.some((t) => t.title === 'Write changelog entry'),
+      persisted!.tasks.some((t) => t.title === 'Write changelog entry'),
       'new work task should be present',
     );
-    // Review tasks are untouched.
     assert.equal(
-      persisted.tasks.filter((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID).length,
+      persisted!.tasks.filter((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID).length,
       5,
       'all 5 daily-review tasks should still be present after edit',
     );
     assert.equal(
-      persisted.tasks.filter((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID).length,
+      persisted!.tasks.filter((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID).length,
       1,
       'weekly-review task should still be present after edit',
     );
-    // Plan stays pending (edit without autoApproveAfterEdit).
-    assert.equal(persisted.approved, false, 'plan should remain pending after plain edit');
+    assert.equal(persisted!.approved, false, 'plan should remain pending after plain edit');
   });
 
   it('edit + autoApproveAfterEdit:true approves even when review tasks are present', async () => {
@@ -768,22 +704,17 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(persisted.approved, true, 'plan should be approved after autoApprove edit');
-    // All review tasks still present.
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    assert.equal(persisted!.approved, true, 'plan should be approved after autoApprove edit');
     assert.ok(
-      persisted.tasks.some((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID),
+      persisted!.tasks.some((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID),
       'daily-review tasks should survive auto-approve edit',
     );
     assert.ok(
-      persisted.tasks.some((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID),
+      persisted!.tasks.some((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID),
       'weekly-review task should survive auto-approve edit',
     );
   });
-
-  // -------------------------------------------------------------------------
-  // reject — removes the plan even when review tasks are present
-  // -------------------------------------------------------------------------
 
   it('reject (confirmed) removes the plan even when it contains review tasks', async () => {
     const { config, weeklyPlan } = buildAgentWithReviewTasks();
@@ -809,20 +740,14 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
     const result = await reject({ agentId: config.id, dataDir: tempDir });
 
     assert.equal(result.success, false, 'reject without confirmed must fail');
-    assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
-    // Plan must still be intact.
+    assert.ok(result.errors!.some((e: string) => /explicit confirmation/i.test(e)));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
     const remaining = await weeklyPlanStore.loadAll(config.id).catch(() => []);
     assert.equal(remaining.length, 1, 'plan should survive a rejected rejection attempt');
   });
 
-  // -------------------------------------------------------------------------
-  // adjustPlan (weekly add) — works on a plan that already has review tasks
-  // -------------------------------------------------------------------------
-
   it('adjustPlan weekly add-task works when the plan already has review tasks', async () => {
     const { config, objective, weeklyPlan } = buildAgentWithReviewTasks();
-    // The plan must exist for `add` action to find it.
     weeklyPlan.approved = true;
     await saveFixture({ store, dir: tempDir, config, weeklyPlan });
     const originalCount = weeklyPlan.tasks.length;
@@ -833,7 +758,7 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
       weeklyAdjustments: [
         {
           action: 'add',
-          week: weeklyPlan.week,
+          week: weeklyPlan.week!,
           title: 'Draft release notes',
           prompt: 'Draft release notes',
           objectiveId: objective.id,
@@ -844,25 +769,24 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
 
     assert.equal(
-      persisted.tasks.length,
+      persisted!.tasks.length,
       originalCount + 1,
       'one additional work task should have been added',
     );
     assert.ok(
-      persisted.tasks.some((t) => t.title === 'Draft release notes'),
+      persisted!.tasks.some((t) => t.title === 'Draft release notes'),
       'added task should be present in the persisted plan',
     );
-    // Review tasks are untouched by the weekly adjustment.
     assert.equal(
-      persisted.tasks.filter((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID).length,
+      persisted!.tasks.filter((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID).length,
       5,
       'daily-review tasks should be untouched by weekly adjustPlan add',
     );
     assert.equal(
-      persisted.tasks.filter((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID).length,
+      persisted!.tasks.filter((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID).length,
       1,
       'weekly-review task should be untouched by weekly adjustPlan add',
     );
@@ -879,7 +803,7 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
       weeklyAdjustments: [
         {
           action: 'update',
-          week: weeklyPlan.week,
+          week: weeklyPlan.week!,
           taskId: task.id,
           status: 'completed',
         },
@@ -888,24 +812,17 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
 
-    const updatedTask = persisted.tasks.find((t) => t.id === task.id);
-    assert.equal(updatedTask.status, 'completed', 'work task status should be updated');
-    // Review tasks status must be unchanged.
-    for (const t of persisted.tasks.filter(
+    const updatedTask = persisted!.tasks.find((t) => t.id === task.id);
+    assert.equal(updatedTask!.status, 'completed', 'work task status should be updated');
+    for (const t of persisted!.tasks.filter(
       (t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID ||
              t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID,
     )) {
       assert.equal(t.status, 'pending', `review task ${t.id} should still be pending`);
     }
   });
-
-  // -------------------------------------------------------------------------
-  // adjustPlan (goalAdjustments / monthlyAdjustments) — legacy guard unchanged
-  // The review-tasks additive change must not affect the existing guard that
-  // redirects callers away from goalAdjustments / monthlyAdjustments.
-  // -------------------------------------------------------------------------
 
   it('adjustPlan still rejects goalAdjustments and points at plan.md (review tasks in plan does not change this)', async () => {
     const { config, weeklyPlan } = buildAgentWithReviewTasks();
@@ -921,7 +838,7 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
     assert.equal(result.success, false, 'goalAdjustments should still be rejected');
     assert.ok(
-      result.errors.some((e) => /plan\.md/.test(e)),
+      result.errors!.some((e: string) => /plan\.md/.test(e)),
       'rejection error should point at plan.md',
     );
   });
@@ -929,19 +846,11 @@ describe('plan skill adapter — AC 8 backward compatibility with advisor-mode r
 
 // ---------------------------------------------------------------------------
 // autoApprovePlan — autonomous approval (Sub-AC 4b-iii)
-//
-// This function is the exclusive entry point for the autonomous next-week
-// planner chain (weekly-review → next-week planner). It must:
-//   1. Set approved:true on the pending plan immediately.
-//   2. Never issue an AskUserQuestion or dispatch notifications.
-//   3. Return noPendingPlanRemains:true after the write.
-//   4. Return noPendingPlanRemains:false on failure.
-//   5. Work correctly with plans that contain advisor-mode review tasks.
 // ---------------------------------------------------------------------------
 
 describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
-  let tempDir;
-  let store;
+  let tempDir: string;
+  let store: AgentStore;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'aweek-plan-autoapprove-'));
@@ -963,9 +872,9 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(persisted.approved, true, 'plan must be approved after autoApprovePlan');
-    assert.ok(persisted.approvedAt, 'approvedAt timestamp must be set');
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    assert.equal(persisted!.approved, true, 'plan must be approved after autoApprovePlan');
+    assert.ok(persisted!.approvedAt, 'approvedAt timestamp must be set');
   });
 
   it('returns noPendingPlanRemains:true after a successful auto-approval', async () => {
@@ -986,7 +895,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
   });
 
   it('returns noPendingPlanRemains:false when approval fails', async () => {
-    // No agent exists → approveImpl returns success:false → noPendingPlanRemains:false.
     const result = await autoApprovePlan({
       agentId: 'non-existent-agent',
       dataDir: tempDir,
@@ -1001,7 +909,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
   });
 
   it('returns noPendingPlanRemains:false when there is no pending plan', async () => {
-    // Agent exists but plan is already approved → no pending plan to approve.
     const { config, weeklyPlan } = buildTestAgent({ planApproved: true });
     await saveFixture({ store, dir: tempDir, config, weeklyPlan });
 
@@ -1015,11 +922,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
   });
 
   it('does not require any AskUserQuestion interaction — call completes without user prompts', async () => {
-    // This test asserts the structural guarantee: autoApprovePlan is a pure
-    // async function that resolves without any interactive step. If it tried to
-    // issue an AskUserQuestion the call would never resolve (no interactive
-    // handler is present in the test environment), so a resolved result here is
-    // evidence that no interactive prompt was issued.
     const { config, weeklyPlan } = buildTestAgent();
     await saveFixture({ store, dir: tempDir, config, weeklyPlan });
 
@@ -1048,17 +950,13 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
 
     assert.equal(result.success, true, JSON.stringify(result.errors));
     assert.ok(result.plan, 'result must include the approved plan object');
-    assert.equal(result.plan.approved, true);
-    assert.equal(result.plan.week, weeklyPlan.week);
+    assert.equal(result.plan!.approved, true);
+    assert.equal(result.plan!.week, weeklyPlan.week);
   });
 
   it('works correctly when the plan contains advisor-mode review tasks', async () => {
-    // Plans generated by the updated weekly-plan generator include daily-review
-    // and weekly-review tasks. autoApprovePlan must handle them without issue
-    // since the autonomous chain always produces review-task-bearing plans.
     const { config, weeklyPlan } = buildTestAgent();
 
-    // Inject advisor-mode review tasks to simulate a generator-produced plan.
     const dailyReviewTask = createTask({ title: 'Week orientation: open your weekly plan, confirm priorities.', prompt: 'Week orientation: open your weekly plan, confirm priorities.' },
       DAILY_REVIEW_OBJECTIVE_ID,
       { priority: 'medium', estimatedMinutes: 30, runAt: '2026-04-20T17:00:00Z',
@@ -1082,21 +980,19 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
     assert.equal(result.noPendingPlanRemains, true);
 
     const weeklyPlanStore = new WeeklyPlanStore(tempDir);
-    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week);
-    assert.equal(persisted.approved, true);
-    // Review tasks must survive auto-approval intact.
+    const persisted = await weeklyPlanStore.load(config.id, weeklyPlan.week!);
+    assert.equal(persisted!.approved, true);
     assert.ok(
-      persisted.tasks.some((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID),
+      persisted!.tasks.some((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID),
       'daily-review task must be preserved',
     );
     assert.ok(
-      persisted.tasks.some((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID),
+      persisted!.tasks.some((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID),
       'weekly-review task must be preserved',
     );
   });
 
   it('result shape always includes noPendingPlanRemains regardless of outcome', async () => {
-    // Failure path.
     const failResult = await autoApprovePlan({
       agentId: 'ghost-agent',
       dataDir: tempDir,
@@ -1106,7 +1002,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
       'noPendingPlanRemains must be present in failure result',
     );
 
-    // Success path.
     const { config, weeklyPlan } = buildTestAgent();
     await saveFixture({ store, dir: tempDir, config, weeklyPlan });
     const okResult = await autoApprovePlan({
@@ -1122,16 +1017,6 @@ describe('plan skill adapter — autoApprovePlan (Sub-AC 4b-iii)', () => {
 
 // ---------------------------------------------------------------------------
 // Skip-questions escape hatch — adapter re-exports (Sub-AC 5c)
-//
-// The adapter re-exports generateSkipAssumptions, formatAssumptionsBlock, and
-// generateAssumptionForTrigger from plan-interview-triggers.js. These tests
-// verify that:
-//   1. The exported symbols are the same function references as the underlying
-//      module (no shadow copies).
-//   2. generateSkipAssumptions produces the expected shape when called via the
-//      adapter surface.
-//   3. formatAssumptionsBlock renders a non-empty block for a single assumption.
-// Deep behavioural coverage lives in plan-interview-triggers.test.js.
 // ---------------------------------------------------------------------------
 
 import * as interviewTriggers from './plan-interview-triggers.js';
@@ -1167,10 +1052,10 @@ describe('plan skill adapter — skip-questions escape hatch re-exports', () => 
     ];
     const result = generateSkipAssumptions(triggers);
     assert.equal(result.length, 1);
-    assert.equal(result[0].trigger, 'first-ever-plan');
-    assert.equal(result[0].label, 'First-Ever Plan');
-    assert.equal(typeof result[0].assumption, 'string');
-    assert.ok(result[0].assumption.length > 0);
+    assert.equal(result[0]!.trigger, 'first-ever-plan');
+    assert.equal(result[0]!.label, 'First-Ever Plan');
+    assert.equal(typeof result[0]!.assumption, 'string');
+    assert.ok(result[0]!.assumption.length > 0);
   });
 
   it('generateSkipAssumptions returns an empty array for an empty triggers input', () => {
@@ -1205,7 +1090,6 @@ describe('plan skill adapter — skip-questions escape hatch re-exports', () => 
       { trigger: 'first-ever-plan', label: 'First-Ever Plan', assumption: 'Some assumption.' },
     ];
     const block = formatAssumptionsBlock(assumptions);
-    // The block must explicitly mention declining so users know they can fall back.
     assert.match(block, /decline/i);
   });
 });

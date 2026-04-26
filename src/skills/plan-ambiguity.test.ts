@@ -167,8 +167,9 @@ describe('plan-ambiguity — weakestDimension', () => {
   it('returns the dimension with the largest deficit (floor - score)', () => {
     const breakdown = fullBreakdown({ goal: 0.5, task: 0.95, priority: 0.95, constraint: 0.95 });
     const weakest = weakestDimension(breakdown);
-    assert.equal(weakest.key, 'goalClarity');
-    assert.ok(weakest.score === 0.5);
+    assert.ok(weakest);
+    assert.equal(weakest!.key, 'goalClarity');
+    assert.ok(weakest!.score === 0.5);
   });
 
   it('returns null for an empty breakdown', () => {
@@ -239,6 +240,7 @@ describe('plan-ambiguity — parseScoreResponse', () => {
     });
     const res = parseScoreResponse(raw);
     assert.equal(res.ok, true);
+    assert.ok(res.ok);
     assert.equal(res.breakdown.goalClarity.score, 0.8);
   });
 
@@ -251,6 +253,7 @@ describe('plan-ambiguity — parseScoreResponse', () => {
     }) + '\n```';
     const res = parseScoreResponse(raw);
     assert.equal(res.ok, true);
+    assert.ok(res.ok);
     assert.equal(res.breakdown.taskSpecificity.score, 0.7);
   });
 
@@ -279,6 +282,7 @@ describe('plan-ambiguity — parseScoreResponse', () => {
     });
     const res = parseScoreResponse(raw);
     assert.equal(res.ok, false);
+    assert.ok(!res.ok);
     assert.match(res.error, /taskSpecificity/);
   });
 
@@ -291,6 +295,7 @@ describe('plan-ambiguity — parseScoreResponse', () => {
     });
     const res = parseScoreResponse(raw);
     assert.equal(res.ok, true);
+    assert.ok(res.ok);
     assert.equal(res.breakdown.goalClarity.score, 1);
     assert.equal(res.breakdown.taskSpecificity.score, 0);
   });
@@ -302,7 +307,7 @@ describe('plan-ambiguity — isFullBreakdown', () => {
   });
 
   it('returns false when a dimension is missing', () => {
-    const partial = fullBreakdown();
+    const partial: Record<string, { score: number; justification: string }> = fullBreakdown();
     delete partial.constraintClarity;
     assert.equal(isFullBreakdown(partial), false);
   });

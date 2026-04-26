@@ -1,17 +1,5 @@
 /**
  * Tests for the `manage` skill adapter.
- *
- * The adapter is a thin composition layer over `./resume-agent.js` (which
- * already has comprehensive tests). Here we only verify:
- *
- *   1. Re-exports are verbatim (same function references) so there is a
- *      single source of truth.
- *   2. `resume` / `topUp` wrappers dispatch to the correct underlying
- *      action and preserve semantics.
- *   3. Destructive operations (`topUp`) are confirmation-gated per project
- *      constraints and fail cleanly without `confirmed: true`.
- *   4. `executeAction('top-up', ...)` honors the same confirmation guard.
- *   5. Validation / formatting aliases pass through correctly.
  */
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -63,13 +51,13 @@ describe('manage skill (adapter over resume-agent)', () => {
     it('rejects invalid actions', () => {
       const result = validateAction('bogus');
       assert.equal(result.valid, false);
-      assert.match(result.error, /Invalid action/);
+      assert.match(result.error!, /Invalid action/);
     });
 
     it('rejects non-positive top-up newLimit', () => {
       const result = validateAction('top-up', { newLimit: -1 });
       assert.equal(result.valid, false);
-      assert.match(result.error, /positive number/);
+      assert.match(result.error!, /positive number/);
     });
   });
 
@@ -77,13 +65,13 @@ describe('manage skill (adapter over resume-agent)', () => {
     it('refuses to run when confirmed is missing', async () => {
       const result = await topUp({ agentId: 'agent-x', dataDir: '/tmp/unused' });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+      assert.ok(result.errors!.some((e) => /explicit confirmation/i.test(e)));
     });
 
     it('refuses to run when confirmed is false', async () => {
       const result = await topUp({ agentId: 'agent-x', dataDir: '/tmp/unused', confirmed: false });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+      assert.ok(result.errors!.some((e) => /explicit confirmation/i.test(e)));
     });
   });
 
@@ -91,7 +79,7 @@ describe('manage skill (adapter over resume-agent)', () => {
     it('refuses top-up without confirmation', async () => {
       const result = await executeAction('agent-x', 'top-up', { dataDir: '/tmp/unused' });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+      assert.ok(result.errors!.some((e) => /explicit confirmation/i.test(e)));
     });
   });
 
@@ -99,8 +87,8 @@ describe('manage skill (adapter over resume-agent)', () => {
   // End-to-end resume / top-up with a real on-disk agent store
   // -------------------------------------------------------------------------
   describe('action dispatching (with filesystem)', () => {
-    let tmpDir;
-    let pausedAgent;
+    let tmpDir: string;
+    let pausedAgent: ReturnType<typeof createAgentConfig>;
 
     before(async () => {
       tmpDir = await mkdtemp(join(tmpdir(), 'aweek-manage-test-'));
@@ -121,8 +109,8 @@ describe('manage skill (adapter over resume-agent)', () => {
       });
       // Mutate only the fields we care about — leave schema-required fields
       // (like `periodStart`) intact.
-      config.budget.paused = true;
-      config.budget.currentUsage = 150_000;
+      config.budget!.paused = true;
+      (config.budget as { currentUsage?: number }).currentUsage = 150_000;
       await store.save(config);
       pausedAgent = config;
     });
@@ -136,7 +124,7 @@ describe('manage skill (adapter over resume-agent)', () => {
 
       const store = new AgentStore(tmpDir);
       const reloaded = await store.load(pausedAgent.id);
-      assert.equal(reloaded.budget.paused, false);
+      assert.equal(reloaded.budget!.paused, false);
     });
 
     it('topUp with confirmed:true resets usage and clears the pause flag', async () => {
@@ -151,8 +139,8 @@ describe('manage skill (adapter over resume-agent)', () => {
 
       const store = new AgentStore(tmpDir);
       const reloaded = await store.load(pausedAgent.id);
-      assert.equal(reloaded.budget.paused, false);
-      assert.equal(reloaded.budget.currentUsage, 0);
+      assert.equal(reloaded.budget!.paused, false);
+      assert.equal((reloaded.budget as { currentUsage?: number }).currentUsage, 0);
     });
 
     it('topUp with a new limit updates the weekly token budget', async () => {
@@ -169,8 +157,8 @@ describe('manage skill (adapter over resume-agent)', () => {
 
       const store = new AgentStore(tmpDir);
       const reloaded = await store.load(pausedAgent.id);
-      assert.equal(reloaded.budget.currentUsage, 0);
-      assert.equal(reloaded.budget.paused, false);
+      assert.equal((reloaded.budget as { currentUsage?: number }).currentUsage, 0);
+      assert.equal(reloaded.budget!.paused, false);
     });
 
     it('executeAction("resume") dispatches to the resume path', async () => {
@@ -192,7 +180,7 @@ describe('manage skill (adapter over resume-agent)', () => {
       const list = await listPausedAgents({ dataDir: tmpDir });
       assert.equal(list.total, 1);
       assert.equal(list.paused.length, 1);
-      assert.equal(list.paused[0].id, pausedAgent.id);
+      assert.equal(list.paused[0]!.id, pausedAgent.id);
       assert.equal(list.active.length, 0);
     });
 
@@ -200,8 +188,8 @@ describe('manage skill (adapter over resume-agent)', () => {
       const details = await getPausedAgentDetails(pausedAgent.id, { dataDir: tmpDir });
       assert.equal(details.paused, true);
       assert.equal(details.agentId, pausedAgent.id);
-      assert.equal(details.budget.weeklyTokenLimit, 100_000);
-      assert.ok(details.budget.exceededBy > 0);
+      assert.equal(details.budget!.weeklyTokenLimit, 100_000);
+      assert.ok(details.budget!.exceededBy > 0);
     });
   });
 
@@ -237,8 +225,8 @@ describe('manage skill (adapter over resume-agent)', () => {
   // AC 8 — pause, editIdentity, deleteAgent lifecycle ops
   // -------------------------------------------------------------------------
   describe('pause', () => {
-    let tmpDir;
-    let agent;
+    let tmpDir: string;
+    let agent: ReturnType<typeof createAgentConfig>;
 
     before(async () => {
       tmpDir = await mkdtemp(join(tmpdir(), 'aweek-manage-pause-'));
@@ -256,7 +244,7 @@ describe('manage skill (adapter over resume-agent)', () => {
         weeklyTokenLimit: 100_000,
       });
       // Active (not paused)
-      config.budget.paused = false;
+      config.budget!.paused = false;
       await store.save(config);
       agent = config;
     });
@@ -264,7 +252,7 @@ describe('manage skill (adapter over resume-agent)', () => {
     it('requires agentId', async () => {
       const result = await pause({ dataDir: tmpDir });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /agentId/i.test(e)));
+      assert.ok(result.errors!.some((e) => /agentId/i.test(e)));
     });
 
     it('pauses an active agent (wasPaused:false)', async () => {
@@ -275,7 +263,7 @@ describe('manage skill (adapter over resume-agent)', () => {
 
       const store = new AgentStore(tmpDir);
       const reloaded = await store.load(agent.id);
-      assert.equal(reloaded.budget.paused, true);
+      assert.equal(reloaded.budget!.paused, true);
     });
 
     it('is idempotent — pausing an already-paused agent is a no-op', async () => {
@@ -283,20 +271,20 @@ describe('manage skill (adapter over resume-agent)', () => {
       const second = await pause({ agentId: agent.id, dataDir: tmpDir });
       assert.equal(second.success, true);
       assert.equal(second.wasPaused, true);
-      assert.match(second.message, /already paused/i);
+      assert.match(second.message!, /already paused/i);
     });
 
     it('returns a structured error for a missing agent', async () => {
       const result = await pause({ agentId: 'agent-nope-deadbeef', dataDir: tmpDir });
       assert.equal(result.success, false);
       assert.ok(Array.isArray(result.errors));
-      assert.ok(result.errors.length > 0);
+      assert.ok(result.errors!.length > 0);
     });
   });
 
   describe('deleteAgent (destructive, confirmation-gated)', () => {
-    let tmpDir;
-    let agent;
+    let tmpDir: string;
+    let agent: ReturnType<typeof createAgentConfig>;
 
     before(async () => {
       tmpDir = await mkdtemp(join(tmpdir(), 'aweek-manage-delete-'));
@@ -320,7 +308,7 @@ describe('manage skill (adapter over resume-agent)', () => {
     it('refuses to run without confirmed: true', async () => {
       const result = await deleteAgent({ agentId: agent.id, dataDir: tmpDir });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+      assert.ok(result.errors!.some((e) => /explicit confirmation/i.test(e)));
 
       // File untouched.
       const store = new AgentStore(tmpDir);
@@ -334,13 +322,13 @@ describe('manage skill (adapter over resume-agent)', () => {
         confirmed: false,
       });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /explicit confirmation/i.test(e)));
+      assert.ok(result.errors!.some((e) => /explicit confirmation/i.test(e)));
     });
 
     it('requires agentId', async () => {
       const result = await deleteAgent({ dataDir: tmpDir, confirmed: true });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /agentId/i.test(e)));
+      assert.ok(result.errors!.some((e) => /agentId/i.test(e)));
     });
 
     it('surfaces a descriptive not-found error when the agent does not exist', async () => {
@@ -350,7 +338,7 @@ describe('manage skill (adapter over resume-agent)', () => {
         confirmed: true,
       });
       assert.equal(result.success, false);
-      assert.ok(result.errors.some((e) => /not found|ENOENT/i.test(e)));
+      assert.ok(result.errors!.some((e) => /not found|ENOENT/i.test(e)));
     });
 
     it('deletes the agent config when confirmed:true', async () => {
@@ -361,7 +349,7 @@ describe('manage skill (adapter over resume-agent)', () => {
       });
       assert.equal(result.success, true);
       assert.equal(result.deleted, true);
-      assert.equal(result.snapshot.id, agent.id);
+      assert.equal(result.snapshot!.id, agent.id);
 
       const store = new AgentStore(tmpDir);
       assert.equal(await store.exists(agent.id), false);
@@ -370,17 +358,11 @@ describe('manage skill (adapter over resume-agent)', () => {
 
   // -------------------------------------------------------------------------
   // AC 10 — delete also handles the Claude Code subagent .md file.
-  //
-  // The default MUST be "keep" — aweek owns only the JSON scheduling state,
-  // while the subagent `.md` at `.claude/agents/<slug>.md` is the identity
-  // source of truth and may be shared with other tooling. Deletion of the
-  // `.md` is opt-in via `deleteSubagentMd: true` after the /aweek:manage
-  // skill gathers a separate AskUserQuestion answer.
   // -------------------------------------------------------------------------
   describe('deleteAgent — subagent .md handling (AC 10)', () => {
-    let tmpDir;
-    let dataDir;
-    let subagentsDir;
+    let tmpDir: string;
+    let dataDir: string;
+    let subagentsDir: string;
     const slug = 'test-subagent';
 
     before(async () => {
@@ -416,7 +398,7 @@ describe('manage skill (adapter over resume-agent)', () => {
     });
 
     /** Assert whether a path currently exists on disk. */
-    async function pathExists(p) {
+    async function pathExists(p: string): Promise<boolean> {
       try {
         await access(p);
         return true;
@@ -443,9 +425,9 @@ describe('manage skill (adapter over resume-agent)', () => {
 
       // Result records the kept .md explicitly.
       assert.ok(result.subagentMd, 'expected subagentMd metadata on result');
-      assert.equal(result.subagentMd.requested, false);
-      assert.equal(result.subagentMd.deleted, false);
-      assert.equal(result.subagentMd.path, mdPath);
+      assert.equal(result.subagentMd!.requested, false);
+      assert.equal(result.subagentMd!.deleted, false);
+      assert.equal(result.subagentMd!.path, mdPath);
     });
 
     it('defaults to keeping the .md file when deleteSubagentMd is explicitly false', async () => {
@@ -460,8 +442,8 @@ describe('manage skill (adapter over resume-agent)', () => {
       assert.equal(result.success, true);
       const mdPath = join(subagentsDir, `${slug}.md`);
       assert.equal(await pathExists(mdPath), true);
-      assert.equal(result.subagentMd.requested, false);
-      assert.equal(result.subagentMd.deleted, false);
+      assert.equal(result.subagentMd!.requested, false);
+      assert.equal(result.subagentMd!.deleted, false);
     });
 
     it('deletes the .md file when deleteSubagentMd is true', async () => {
@@ -479,10 +461,10 @@ describe('manage skill (adapter over resume-agent)', () => {
       assert.equal(result.success, true);
       assert.equal(await pathExists(join(dataDir, `${slug}.json`)), false);
       assert.equal(await pathExists(mdPath), false);
-      assert.equal(result.subagentMd.requested, true);
-      assert.equal(result.subagentMd.existed, true);
-      assert.equal(result.subagentMd.deleted, true);
-      assert.equal(result.subagentMd.path, mdPath);
+      assert.equal(result.subagentMd!.requested, true);
+      assert.equal(result.subagentMd!.existed, true);
+      assert.equal(result.subagentMd!.deleted, true);
+      assert.equal(result.subagentMd!.path, mdPath);
     });
 
     it('is graceful when deleteSubagentMd:true but the .md is already missing', async () => {
@@ -502,10 +484,10 @@ describe('manage skill (adapter over resume-agent)', () => {
       // The overall delete still succeeds — a missing .md is not an error.
       assert.equal(result.success, true);
       assert.equal(result.deleted, true);
-      assert.equal(result.subagentMd.requested, true);
-      assert.equal(result.subagentMd.existed, false);
-      assert.equal(result.subagentMd.deleted, false);
-      assert.ok(!result.subagentMd.error, 'no error expected for missing .md');
+      assert.equal(result.subagentMd!.requested, true);
+      assert.equal(result.subagentMd!.existed, false);
+      assert.equal(result.subagentMd!.deleted, false);
+      assert.ok(!result.subagentMd!.error, 'no error expected for missing .md');
     });
 
     it('formatDeleteResult renders "Subagent file kept" for the default path', async () => {

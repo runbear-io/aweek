@@ -1,34 +1,7 @@
 /**
- * Tests for `hire-create-new-menu.js` — the Sub-AC 3 of AC 50303 handler
+ * Tests for `hire-create-new-menu.ts` — the Sub-AC 3 of AC 50303 handler
  * that wires the `/aweek:init` four-option menu's **Create new** branch
  * into the `/aweek:hire` create-new flow.
- *
- * Coverage
- * --------
- *   - Handoff descriptor (`buildCreateNewLaunchInstruction`): stable
- *     skill + route names, projectDir default, promptText override,
- *     reason copy.
- *   - `runCreateNewHire` happy path: validates input, writes a fresh
- *     `.claude/agents/<slug>.md`, creates the minimal aweek JSON shell,
- *     and reports both outcomes under one result.
- *   - `runCreateNewHire` adopt path: existing `.md` is left untouched
- *     (`adopted: true`) and the aweek wrapper is still created.
- *   - `runCreateNewHire` already-hired path: both the `.md` and the
- *     aweek JSON pre-exist; `.md` adopted, wrapper skipped under
- *     `hire.skipped`, top-level `success` still true (idempotent re-hire).
- *   - `runCreateNewHire` validation failure: no filesystem writes at all.
- *   - `runCreateNewHire` subagent-write failure: `.md` error is surfaced
- *     and the hire delegate is NEVER called (no orphaned aweek wrapper).
- *   - `runCreateNewHire` wrapper failure: top-level `success` flips off
- *     when `hireAllSubagents` reports a failed slug, while the `.md`
- *     outcome is preserved on the subagent field.
- *   - Budget override: `weeklyTokenLimit` propagates to the hire
- *     delegate.
- *   - Injectable fakes: `createNewSubagentFn` and `hireFn` replace the
- *     real modules so pure logic can be unit-tested without touching the
- *     filesystem.
- *   - `formatCreateNewResult`: renders distinct blocks for validation
- *     error, subagent-write error, and success.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,7 +26,6 @@ import {
   writeSubagentFile,
 } from '../subagents/subagent-file.js';
 import { AgentStore } from '../storage/agent-store.js';
-import { createAgentConfig } from '../models/agent.js';
 
 describe('hire-create-new-menu — constants', () => {
   it('exports a stable skill name of /aweek:hire', () => {
@@ -118,8 +90,8 @@ describe('hire-create-new-menu — buildCreateNewLaunchInstruction', () => {
 });
 
 describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
-  let tmpProject;
-  let dataDir;
+  let tmpProject: string;
+  let dataDir: string;
 
   beforeEach(async () => {
     tmpProject = await mkdtemp(join(tmpdir(), 'aweek-hire-create-new-menu-'));
@@ -144,11 +116,13 @@ describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
     assert.equal(result.validation.slug, 'content-writer');
 
     // Subagent .md landed.
-    assert.equal(result.subagent.success, true);
-    assert.equal(result.subagent.adopted, false);
-    assert.equal(result.subagent.slug, 'content-writer');
+    assert.ok(result.subagent && result.subagent.success);
+    const subagent = result.subagent;
+    if (!subagent.success) throw new Error('expected success');
+    assert.equal(subagent.adopted, false);
+    assert.equal(subagent.slug, 'content-writer');
     const mdPath = subagentFilePath('content-writer', tmpProject);
-    assert.equal(result.subagent.path, mdPath);
+    assert.equal(subagent.path, mdPath);
     assert.equal(await subagentFileExists('content-writer', tmpProject), true);
     const md = await readFile(mdPath, 'utf8');
     assert.match(md, /name: content-writer/);
@@ -157,22 +131,22 @@ describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
 
     // aweek JSON wrapper landed.
     assert.ok(result.hire, 'expected a hire result');
-    assert.equal(result.hire.success, true);
-    assert.deepEqual(result.hire.created, ['content-writer']);
-    assert.deepEqual(result.hire.skipped, []);
-    assert.deepEqual(result.hire.failed, []);
+    assert.equal(result.hire!.success, true);
+    assert.deepEqual(result.hire!.created, ['content-writer']);
+    assert.deepEqual(result.hire!.skipped, []);
+    assert.deepEqual(result.hire!.failed, []);
 
     const store = new AgentStore(dataDir);
     assert.equal(await store.exists('content-writer'), true);
     const agent = await store.load('content-writer');
     assert.equal(agent.id, 'content-writer');
     assert.equal(agent.subagentRef, 'content-writer');
-    assert.equal(agent.budget.weeklyTokenLimit, DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT);
+    assert.equal(agent.budget?.weeklyTokenLimit, DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT);
     assert.deepEqual(agent.goals, []);
     assert.deepEqual(agent.monthlyPlans, []);
     // Weekly plans live in the per-week file store; agent JSON never
     // carries the field.
-    assert.equal(agent.weeklyPlans, undefined);
+    assert.equal((agent as { weeklyPlans?: unknown }).weeklyPlans, undefined);
   });
 
   it('adopts an existing .md and still creates the aweek wrapper', async () => {
@@ -193,19 +167,21 @@ describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
     });
 
     assert.equal(result.success, true);
-    assert.equal(result.subagent.adopted, true, 'expected adopt-on-collision');
-    assert.equal(result.subagent.slug, 'content-writer');
+    const subagent = result.subagent;
+    if (!subagent || !subagent.success) throw new Error('expected success');
+    assert.equal(subagent.adopted, true, 'expected adopt-on-collision');
+    assert.equal(subagent.slug, 'content-writer');
 
     // The .md bytes the caller sees match on-disk content (typed fields discarded).
     const mdPath = subagentFilePath('content-writer', tmpProject);
     const diskContent = await readFile(mdPath, 'utf8');
-    assert.equal(result.subagent.content, diskContent);
+    assert.equal(subagent.content, diskContent);
     assert.match(diskContent, /On-disk description/);
     assert.doesNotMatch(diskContent, /Typed description/);
 
     // aweek wrapper is still created — adoption does not short-circuit the shell.
-    assert.equal(result.hire.success, true);
-    assert.deepEqual(result.hire.created, ['content-writer']);
+    assert.equal(result.hire!.success, true);
+    assert.deepEqual(result.hire!.created, ['content-writer']);
     const store = new AgentStore(dataDir);
     assert.equal(await store.exists('content-writer'), true);
   });
@@ -220,7 +196,7 @@ describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
       dataDir,
     });
     assert.equal(first.success, true);
-    assert.deepEqual(first.hire.created, ['content-writer']);
+    assert.deepEqual(first.hire!.created, ['content-writer']);
 
     // Second run on the same name — .md adopted, wrapper skipped.
     const second = await runCreateNewHire({
@@ -231,11 +207,12 @@ describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
       dataDir,
     });
     assert.equal(second.success, true, 'already-hired is a valid idempotent no-op');
+    if (!second.subagent || !second.subagent.success) throw new Error('expected success');
     assert.equal(second.subagent.adopted, true);
-    assert.deepEqual(second.hire.created, []);
-    assert.equal(second.hire.skipped.length, 1);
-    assert.equal(second.hire.skipped[0].slug, 'content-writer');
-    assert.match(second.hire.skipped[0].reason, /already exists/i);
+    assert.deepEqual(second.hire!.created, []);
+    assert.equal(second.hire!.skipped.length, 1);
+    assert.equal(second.hire!.skipped[0]!.slug, 'content-writer');
+    assert.match(second.hire!.skipped[0]!.reason, /already exists/i);
   });
 
   it('propagates the weeklyTokenLimit override into the aweek shell', async () => {
@@ -250,7 +227,7 @@ describe('hire-create-new-menu — runCreateNewHire (real filesystem)', () => {
     assert.equal(result.success, true);
     const store = new AgentStore(dataDir);
     const agent = await store.load('writer');
-    assert.equal(agent.budget.weeklyTokenLimit, 123_456);
+    assert.equal(agent.budget?.weeklyTokenLimit, 123_456);
   });
 });
 
@@ -264,7 +241,7 @@ describe('hire-create-new-menu — runCreateNewHire (pure logic with fakes)', ()
       systemPrompt: '',
       createNewSubagentFn: async () => {
         subagentCalls += 1;
-        return { success: true };
+        return { success: true, adopted: false, slug: '', path: '', content: '' };
       },
       hireFn: async () => {
         hireCalls += 1;
@@ -299,8 +276,8 @@ describe('hire-create-new-menu — runCreateNewHire (pure logic with fakes)', ()
     });
 
     assert.equal(result.success, false);
-    assert.equal(result.subagent.success, false);
-    assert.deepEqual(result.subagent.errors, ['filesystem blew up']);
+    assert.equal(result.subagent!.success, false);
+    assert.deepEqual((result.subagent as { errors: string[] }).errors, ['filesystem blew up']);
     assert.equal(result.hire, null);
     assert.equal(hireCalls, 0, 'must not call hire delegate when .md failed');
   });
@@ -326,14 +303,14 @@ describe('hire-create-new-menu — runCreateNewHire (pure logic with fakes)', ()
     });
 
     assert.equal(result.success, false);
-    assert.equal(result.subagent.success, true, 'subagent step still succeeded');
-    assert.equal(result.hire.success, false);
-    assert.deepEqual(result.hire.failed, [{ slug: 'writer', errors: ['schema error'] }]);
+    assert.equal(result.subagent!.success, true, 'subagent step still succeeded');
+    assert.equal(result.hire!.success, false);
+    assert.deepEqual(result.hire!.failed, [{ slug: 'writer', errors: ['schema error'] }]);
   });
 
   it('forwards { slugs, weeklyTokenLimit, projectDir, dataDir, agentStore } to the hire delegate', async () => {
-    const captured = {};
-    const fakeStore = { __tag: 'fake-store' };
+    const captured: Record<string, unknown> = {};
+    const fakeStore = { __tag: 'fake-store' } as unknown as AgentStore;
     const result = await runCreateNewHire({
       name: 'Writer',
       description: 'd',
@@ -378,7 +355,7 @@ describe('hire-create-new-menu — runCreateNewHire (pure logic with fakes)', ()
       hireFn: async () => undefined,
     });
     assert.equal(result.success, false);
-    assert.equal(result.subagent.success, true);
+    assert.equal(result.subagent!.success, true);
     assert.equal(result.hire, undefined);
   });
 });

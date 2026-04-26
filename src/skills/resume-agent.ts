@@ -14,31 +14,48 @@
 import { AgentStore } from '../storage/agent-store.js';
 import { UsageStore } from '../storage/usage-store.js';
 import { listAllAgents } from '../storage/agent-helpers.js';
+import type { AgentConfig } from '../storage/agent-helpers.js';
 import {
-  isAgentPaused,
   resumeAgent,
   topUpResume,
   loadAlert,
-  createBudgetEnforcer,
 } from '../services/budget-enforcer.js';
+import type { TopUpResult } from '../services/budget-enforcer.js';
 
 /** Valid resume actions */
-export const RESUME_ACTIONS = ['resume', 'top-up', 'cancel'];
+export const RESUME_ACTIONS: readonly string[] = ['resume', 'top-up', 'cancel'];
+
+/** Result of {@link listPausedAgents}. */
+export interface PausedAgentSummary {
+  id: string;
+  name: string;
+  role: string;
+  budget: {
+    weeklyTokenLimit: number;
+    currentUsage: number;
+    paused: true;
+  };
+}
+
+/** Result of {@link listPausedAgents}. */
+export interface ListPausedAgentsResult {
+  paused: PausedAgentSummary[];
+  active: string[];
+  total: number;
+}
 
 /**
  * List all paused agents with their budget details.
- *
- * @param {object} opts
- * @param {string} opts.dataDir - Base data directory (e.g., ./.aweek/agents)
- * @returns {Promise<{ paused: object[], active: string[], total: number }>}
  */
-export async function listPausedAgents({ dataDir }) {
+export async function listPausedAgents(
+  { dataDir }: { dataDir?: string } = {},
+): Promise<ListPausedAgentsResult> {
   if (!dataDir) throw new Error('dataDir is required');
 
-  const allConfigs = await listAllAgents({ dataDir });
+  const allConfigs = (await listAllAgents({ dataDir })) as AgentConfig[];
 
-  const paused = [];
-  const active = [];
+  const paused: PausedAgentSummary[] = [];
+  const active: string[] = [];
 
   for (const config of allConfigs) {
     if (config.budget?.paused === true) {
@@ -47,8 +64,11 @@ export async function listPausedAgents({ dataDir }) {
         name: config.identity?.name || config.id,
         role: config.identity?.role || '',
         budget: {
-          weeklyTokenLimit: config.budget.weeklyTokenLimit || config.weeklyTokenBudget || 0,
-          currentUsage: config.budget.currentUsage || 0,
+          weeklyTokenLimit:
+            (config.budget as { weeklyTokenLimit?: number }).weeklyTokenLimit ||
+            (config as { weeklyTokenBudget?: number }).weeklyTokenBudget ||
+            0,
+          currentUsage: (config.budget as { currentUsage?: number }).currentUsage || 0,
           paused: true,
         },
       });
@@ -60,23 +80,40 @@ export async function listPausedAgents({ dataDir }) {
   return { paused, active, total: allConfigs.length };
 }
 
+/** Result of {@link getPausedAgentDetails}. */
+export interface PausedAgentDetails {
+  agentId: string;
+  paused: boolean;
+  message?: string;
+  name?: string;
+  role?: string;
+  budget?: {
+    weeklyTokenLimit: number;
+    currentUsage: number;
+    storeUsage: number;
+    exceededBy: number;
+  };
+  alert?: {
+    timestamp: string;
+    message: string;
+    exceededBy: number;
+  } | null;
+}
+
 /**
  * Get detailed budget status for a specific paused agent.
- *
- * @param {string} agentId
- * @param {object} opts
- * @param {string} opts.dataDir - Base data directory
- * @param {string} [opts.weekMonday] - Week key (defaults to current)
- * @returns {Promise<object>} Detailed budget/alert info
  */
-export async function getPausedAgentDetails(agentId, { dataDir, weekMonday }) {
+export async function getPausedAgentDetails(
+  agentId: string | null | undefined,
+  { dataDir, weekMonday }: { dataDir?: string; weekMonday?: string } = {},
+): Promise<PausedAgentDetails> {
   if (!agentId) throw new Error('agentId is required');
   if (!dataDir) throw new Error('dataDir is required');
 
   const agentStore = new AgentStore(dataDir);
   const usageStore = new UsageStore(dataDir);
 
-  const config = await agentStore.load(agentId);
+  const config = (await agentStore.load(agentId)) as AgentConfig;
   const paused = config.budget?.paused === true;
 
   if (!paused) {
@@ -87,14 +124,17 @@ export async function getPausedAgentDetails(agentId, { dataDir, weekMonday }) {
     };
   }
 
-  const budgetLimit = config.weeklyTokenBudget || config.budget?.weeklyTokenLimit || 0;
-  const currentUsage = config.budget?.currentUsage || 0;
+  const budgetLimit =
+    (config as { weeklyTokenBudget?: number }).weeklyTokenBudget ||
+    (config.budget as { weeklyTokenLimit?: number } | undefined)?.weeklyTokenLimit ||
+    0;
+  const currentUsage = (config.budget as { currentUsage?: number } | undefined)?.currentUsage || 0;
 
   // Try loading the alert for context
   const alert = await loadAlert(dataDir, agentId, weekMonday);
 
   // Try getting actual usage from store
-  let usageTotals = null;
+  let usageTotals: { totalTokens: number } | null = null;
   try {
     usageTotals = await usageStore.weeklyTotal(agentId, weekMonday);
   } catch {
@@ -112,25 +152,34 @@ export async function getPausedAgentDetails(agentId, { dataDir, weekMonday }) {
       storeUsage: usageTotals?.totalTokens || currentUsage,
       exceededBy: Math.max(0, currentUsage - budgetLimit),
     },
-    alert: alert ? {
-      timestamp: alert.timestamp,
-      message: alert.message,
-      exceededBy: alert.exceededBy,
-    } : null,
+    alert: alert
+      ? {
+          timestamp: alert.timestamp,
+          message: alert.message,
+          exceededBy: alert.exceededBy,
+        }
+      : null,
   };
+}
+
+/** Result of {@link validateResumeAction}. */
+export interface ValidateResumeActionResult {
+  valid: boolean;
+  error?: string;
 }
 
 /**
  * Validate the user's chosen resume action.
- *
- * @param {string} action - One of RESUME_ACTIONS
- * @param {object} [options] - Additional options for top-up
- * @param {number} [options.newLimit] - New budget limit (for top-up)
- * @returns {{ valid: boolean, error?: string }}
  */
-export function validateResumeAction(action, options = {}) {
+export function validateResumeAction(
+  action: string | null | undefined,
+  options: { newLimit?: number } = {},
+): ValidateResumeActionResult {
   if (!action || !RESUME_ACTIONS.includes(action)) {
-    return { valid: false, error: `Invalid action "${action}". Must be one of: ${RESUME_ACTIONS.join(', ')}` };
+    return {
+      valid: false,
+      error: `Invalid action "${action}". Must be one of: ${RESUME_ACTIONS.join(', ')}`,
+    };
   }
   if (action === 'top-up' && options.newLimit !== undefined) {
     if (typeof options.newLimit !== 'number' || options.newLimit <= 0) {
@@ -140,18 +189,30 @@ export function validateResumeAction(action, options = {}) {
   return { valid: true };
 }
 
+/** Result returned by {@link executeResume}. */
+export interface ExecuteResumeResult {
+  agentId: string;
+  action: 'resume' | 'top-up';
+  success: boolean;
+  wasPaused?: boolean;
+  resumed?: boolean;
+  previousUsage?: number;
+  previousLimit?: number;
+  newLimit?: number;
+  limitChanged?: boolean;
+  message?: string;
+  error?: string;
+  errors?: string[];
+}
+
 /**
  * Execute the resume/top-up action on a paused agent.
- *
- * @param {string} agentId - Agent to resume
- * @param {string} action - 'resume' or 'top-up'
- * @param {object} opts
- * @param {string} opts.dataDir - Base data directory
- * @param {number} [opts.newLimit] - New weekly token limit (top-up only)
- * @param {string} [opts.timestamp] - Explicit timestamp
- * @returns {Promise<object>} Result of the action
  */
-export async function executeResume(agentId, action, { dataDir, newLimit, timestamp }) {
+export async function executeResume(
+  agentId: string | null | undefined,
+  action: string | null | undefined,
+  { dataDir, newLimit, timestamp }: { dataDir?: string; newLimit?: number; timestamp?: string } = {},
+): Promise<ExecuteResumeResult> {
   if (!agentId) throw new Error('agentId is required');
   if (!dataDir) throw new Error('dataDir is required');
   if (!action || !['resume', 'top-up'].includes(action)) {
@@ -159,7 +220,9 @@ export async function executeResume(agentId, action, { dataDir, newLimit, timest
   }
 
   const agentStore = new AgentStore(dataDir);
-  const usageStore = new UsageStore(dataDir);
+  // UsageStore retained for symmetry / potential future use; topUpResume
+  // only needs the agentStore for the actual mutation.
+  void new UsageStore(dataDir);
   const deps = { agentStore };
 
   if (action === 'resume') {
@@ -181,7 +244,7 @@ export async function executeResume(agentId, action, { dataDir, newLimit, timest
   }
 
   // top-up — reset usage and optionally set new limit
-  const result = await topUpResume(agentId, { agentStore, usageStore }, {
+  const result: TopUpResult = await topUpResume(agentId, { agentStore }, {
     newLimit,
     timestamp,
   });
@@ -204,16 +267,14 @@ export async function executeResume(agentId, action, { dataDir, newLimit, timest
 
 /**
  * Build a human-readable message for a top-up result.
- * @param {string} agentId
- * @param {object} result - TopUpResult
- * @param {boolean} limitChanged
- * @returns {string}
  */
-function buildTopUpMessage(agentId, result, limitChanged) {
+function buildTopUpMessage(agentId: string, result: TopUpResult, limitChanged: boolean): string {
   const parts = [`Agent "${agentId}" has been topped up and resumed.`];
   parts.push(`Previous usage: ${result.previousUsage.toLocaleString('en-US')} tokens (reset to 0).`);
   if (limitChanged) {
-    parts.push(`Budget limit changed: ${result.previousLimit.toLocaleString('en-US')} → ${result.newLimit.toLocaleString('en-US')} tokens/week.`);
+    parts.push(
+      `Budget limit changed: ${result.previousLimit.toLocaleString('en-US')} → ${result.newLimit.toLocaleString('en-US')} tokens/week.`,
+    );
   } else {
     parts.push(`Budget limit unchanged: ${result.newLimit.toLocaleString('en-US')} tokens/week.`);
   }
@@ -222,15 +283,14 @@ function buildTopUpMessage(agentId, result, limitChanged) {
 
 /**
  * Format the paused agents list for display.
- *
- * @param {{ paused: object[], active: string[], total: number }} listResult
- * @returns {string}
  */
-export function formatPausedAgentsList(listResult) {
-  const lines = [];
+export function formatPausedAgentsList(listResult: ListPausedAgentsResult): string {
+  const lines: string[] = [];
 
   lines.push('=== Paused Agents ===');
-  lines.push(`Total agents: ${listResult.total} (${listResult.paused.length} paused, ${listResult.active.length} active)`);
+  lines.push(
+    `Total agents: ${listResult.total} (${listResult.paused.length} paused, ${listResult.active.length} active)`,
+  );
   lines.push('');
 
   if (listResult.paused.length === 0) {
@@ -239,7 +299,7 @@ export function formatPausedAgentsList(listResult) {
   }
 
   for (let i = 0; i < listResult.paused.length; i++) {
-    const a = listResult.paused[i];
+    const a = listResult.paused[i]!;
     const usage = a.budget.currentUsage.toLocaleString('en-US');
     const limit = a.budget.weeklyTokenLimit.toLocaleString('en-US');
     lines.push(`${i + 1}. [PAUSED] ${a.name} (${a.role})`);
@@ -253,24 +313,21 @@ export function formatPausedAgentsList(listResult) {
 
 /**
  * Format detailed agent budget info for the confirmation step.
- *
- * @param {object} details - From getPausedAgentDetails
- * @returns {string}
  */
-export function formatPausedAgentDetails(details) {
+export function formatPausedAgentDetails(details: PausedAgentDetails): string {
   if (!details.paused) {
-    return details.message;
+    return details.message || '';
   }
 
-  const lines = [];
+  const lines: string[] = [];
   lines.push(`=== Budget Details: ${details.name} (${details.role}) ===`);
   lines.push(`Agent ID: ${details.agentId}`);
   lines.push(`Status: PAUSED`);
   lines.push('');
-  lines.push(`Weekly token limit: ${details.budget.weeklyTokenLimit.toLocaleString('en-US')}`);
-  lines.push(`Current usage: ${details.budget.storeUsage.toLocaleString('en-US')} tokens`);
-  if (details.budget.exceededBy > 0) {
-    lines.push(`Exceeded by: ${details.budget.exceededBy.toLocaleString('en-US')} tokens`);
+  lines.push(`Weekly token limit: ${details.budget!.weeklyTokenLimit.toLocaleString('en-US')}`);
+  lines.push(`Current usage: ${details.budget!.storeUsage.toLocaleString('en-US')} tokens`);
+  if (details.budget!.exceededBy > 0) {
+    lines.push(`Exceeded by: ${details.budget!.exceededBy.toLocaleString('en-US')} tokens`);
   }
 
   if (details.alert) {
@@ -290,18 +347,15 @@ export function formatPausedAgentDetails(details) {
 
 /**
  * Format the result of a resume/top-up action.
- *
- * @param {object} result - From executeResume
- * @returns {string}
  */
-export function formatResumeResult(result) {
+export function formatResumeResult(result: ExecuteResumeResult): string {
   if (!result.success) {
     return `Failed to ${result.action} agent "${result.agentId}": ${result.error || 'unknown error'}`;
   }
 
-  const lines = [];
+  const lines: string[] = [];
   lines.push(`=== Resume Result ===`);
-  lines.push(result.message);
+  lines.push(result.message || '');
   lines.push('');
   lines.push(`The agent will execute tasks on its next heartbeat tick.`);
 

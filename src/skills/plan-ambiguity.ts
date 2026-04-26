@@ -28,8 +28,26 @@
  * module only defines the rules.
  */
 
+/** A single dimension's score record. */
+export interface DimensionScore {
+  score: number;
+  justification?: string;
+}
+
+/** Scoring breakdown across all four dimensions (sparse-tolerant). */
+export type Breakdown = Record<string, DimensionScore | undefined>;
+
+/** Public shape of a {@link DIMENSIONS} entry. */
+export interface DimensionSpec {
+  key: string;
+  label: string;
+  weight: number;
+  floor: number;
+  hint: string;
+}
+
 /** Ordered list of plan-interview clarity dimensions. */
-export const DIMENSIONS = Object.freeze([
+export const DIMENSIONS: readonly DimensionSpec[] = Object.freeze([
   Object.freeze({
     key: 'goalClarity',
     label: 'Goal Clarity',
@@ -67,18 +85,19 @@ export const AMBIGUITY_THRESHOLD = 0.20;
 export const AUTO_COMPLETE_STREAK_REQUIRED = 2;
 
 /** Milestone labels shown to the user and baked into the snapshot prompt. */
-export const MILESTONES = Object.freeze(['initial', 'progress', 'refined', 'ready']);
+export const MILESTONES: readonly string[] = Object.freeze(['initial', 'progress', 'refined', 'ready']);
+
+/** Milestone label type. */
+export type Milestone = 'initial' | 'progress' | 'refined' | 'ready';
 
 /**
  * Return true when each dimension in the breakdown carries a numeric score.
- *
- * @param {Record<string, { score?: number }>} breakdown
- * @returns {boolean}
  */
-export function isFullBreakdown(breakdown) {
+export function isFullBreakdown(breakdown: unknown): boolean {
   if (!breakdown || typeof breakdown !== 'object') return false;
+  const b = breakdown as Breakdown;
   for (const dim of DIMENSIONS) {
-    const entry = breakdown[dim.key];
+    const entry = b[dim.key];
     if (!entry || typeof entry.score !== 'number') return false;
     if (entry.score < 0 || entry.score > 1) return false;
   }
@@ -91,17 +110,15 @@ export function isFullBreakdown(breakdown) {
  * Dimensions absent from the input don't contribute to the mean (the
  * weight is removed from the denominator), so partial scores degrade
  * gracefully instead of snapping to 1.0.
- *
- * @param {Record<string, { score: number }>} breakdown
- * @returns {number} A value in [0, 1].
  */
-export function ambiguityFromBreakdown(breakdown) {
+export function ambiguityFromBreakdown(breakdown: unknown): number {
   if (!breakdown || typeof breakdown !== 'object') return 1;
+  const b = breakdown as Breakdown;
 
   let weightedClarity = 0;
   let totalWeight = 0;
   for (const dim of DIMENSIONS) {
-    const entry = breakdown[dim.key];
+    const entry = b[dim.key];
     if (!entry || typeof entry.score !== 'number') continue;
     const clamped = Math.max(0, Math.min(1, entry.score));
     weightedClarity += clamped * dim.weight;
@@ -111,14 +128,19 @@ export function ambiguityFromBreakdown(breakdown) {
   return Math.max(0, Math.min(1, 1 - weightedClarity / totalWeight));
 }
 
+/** Per-dimension floor failure record. */
+export interface FloorFailure {
+  key: string;
+  label: string;
+  score: number;
+  floor: number;
+}
+
 /**
  * Return the dimensions whose clarity score sits below their floor.
- *
- * @param {Record<string, { score: number }>} breakdown
- * @returns {Array<{ key: string, label: string, score: number, floor: number }>}
  */
-export function getFloorFailures(breakdown) {
-  const out = [];
+export function getFloorFailures(breakdown: unknown): FloorFailure[] {
+  const out: FloorFailure[] = [];
   if (!breakdown || typeof breakdown !== 'object') {
     return DIMENSIONS.map((dim) => ({
       key: dim.key,
@@ -127,8 +149,9 @@ export function getFloorFailures(breakdown) {
       floor: dim.floor,
     }));
   }
+  const b = breakdown as Breakdown;
   for (const dim of DIMENSIONS) {
-    const entry = breakdown[dim.key];
+    const entry = b[dim.key];
     const score = entry && typeof entry.score === 'number' ? entry.score : 0;
     if (score < dim.floor) {
       out.push({ key: dim.key, label: dim.label, score, floor: dim.floor });
@@ -137,24 +160,24 @@ export function getFloorFailures(breakdown) {
   return out;
 }
 
+/** Result of {@link qualifiesForCompletion}. */
+export interface QualifiesForCompletionResult {
+  qualifies: boolean;
+  ambiguity: number;
+  thresholdMet: boolean;
+  floorFailures: FloorFailure[];
+  streak: number;
+  streakMet: boolean;
+}
+
 /**
  * The three-gate completion check. All must pass for the interview to
  * offer closure: overall threshold, per-dimension floors, and N-turn
  * sustained-clarity streak.
- *
- * @param {object} args
- * @param {Record<string, { score: number }>} args.breakdown
- * @param {number} args.streak - Count of consecutive qualifying turns so far.
- * @returns {{
- *   qualifies: boolean,
- *   ambiguity: number,
- *   thresholdMet: boolean,
- *   floorFailures: ReturnType<typeof getFloorFailures>,
- *   streak: number,
- *   streakMet: boolean,
- * }}
  */
-export function qualifiesForCompletion({ breakdown, streak = 0 } = {}) {
+export function qualifiesForCompletion(
+  { breakdown, streak = 0 }: { breakdown?: unknown; streak?: number } = {},
+): QualifiesForCompletionResult {
   const ambiguity = ambiguityFromBreakdown(breakdown);
   const thresholdMet = ambiguity <= AMBIGUITY_THRESHOLD;
   const floorFailures = getFloorFailures(breakdown);
@@ -174,12 +197,8 @@ export function qualifiesForCompletion({ breakdown, streak = 0 } = {}) {
  * Update the sustained-clarity streak: +1 if *this* turn's breakdown
  * passes both the overall threshold AND every floor; reset to 0
  * otherwise. Matches Ouroboros's `_update_completion_candidate_streak`.
- *
- * @param {number} prevStreak
- * @param {Record<string, { score: number }>} breakdown
- * @returns {number}
  */
-export function updateStreak(prevStreak, breakdown) {
+export function updateStreak(prevStreak: number, breakdown: unknown): number {
   const ambiguity = ambiguityFromBreakdown(breakdown);
   const floorFails = getFloorFailures(breakdown);
   const qualifyingNow = ambiguity <= AMBIGUITY_THRESHOLD && floorFails.length === 0;
@@ -189,11 +208,8 @@ export function updateStreak(prevStreak, breakdown) {
 /**
  * Milestone label for a given score — used by the UI and snapshot
  * prompt so the model knows how far along the interview is.
- *
- * @param {number} score - Ambiguity in [0, 1].
- * @returns {'initial' | 'progress' | 'refined' | 'ready'}
  */
-export function milestoneFromScore(score) {
+export function milestoneFromScore(score: unknown): Milestone {
   if (typeof score !== 'number' || Number.isNaN(score)) return 'initial';
   if (score <= 0.2) return 'ready';
   if (score <= 0.3) return 'refined';
@@ -201,19 +217,26 @@ export function milestoneFromScore(score) {
   return 'initial';
 }
 
+/** Result of {@link weakestDimension}. */
+export interface WeakestDimension {
+  key: string;
+  label: string;
+  score: number;
+  floor: number;
+  justification: string;
+}
+
 /**
  * Return the weakest dimension (highest (floor - score) deficit, or
  * lowest score if none are below floor). Ties break by `DIMENSIONS`
  * order. Returns `null` for an empty breakdown.
- *
- * @param {Record<string, { score: number, justification?: string }>} breakdown
- * @returns {{ key: string, label: string, score: number, floor: number, justification: string } | null}
  */
-export function weakestDimension(breakdown) {
+export function weakestDimension(breakdown: unknown): WeakestDimension | null {
   if (!breakdown || typeof breakdown !== 'object') return null;
-  let worst = null;
+  const b = breakdown as Breakdown;
+  let worst: (WeakestDimension & { deficit: number }) | null = null;
   for (const dim of DIMENSIONS) {
-    const entry = breakdown[dim.key];
+    const entry = b[dim.key];
     const score = entry && typeof entry.score === 'number' ? entry.score : 0;
     const deficit = dim.floor - score;
     const candidate = {
@@ -228,8 +251,8 @@ export function weakestDimension(breakdown) {
   }
   if (!worst) return null;
   // Strip the internal `deficit` field from the public shape.
-  const { deficit: _, ...rest } = worst;
-  void _;
+  const { deficit: _deficit, ...rest } = worst;
+  void _deficit;
   return rest;
 }
 
@@ -238,13 +261,10 @@ export function weakestDimension(breakdown) {
  * markdown can splice into the next-question prompt. The goal is to let
  * the question-generating model *read numbers* — the biggest trick in
  * Ouroboros's flow.
- *
- * @param {object} args
- * @param {Record<string, { score: number, justification?: string }>} args.breakdown
- * @param {number} args.streak
- * @returns {string}
  */
-export function buildAmbiguitySnapshot({ breakdown, streak = 0 } = {}) {
+export function buildAmbiguitySnapshot(
+  { breakdown, streak = 0 }: { breakdown?: unknown; streak?: number } = {},
+): string {
   const ambiguity = ambiguityFromBreakdown(breakdown);
   const milestone = milestoneFromScore(ambiguity);
   const { qualifies, thresholdMet, floorFailures, streakMet } = qualifiesForCompletion({
@@ -286,19 +306,28 @@ export function buildAmbiguitySnapshot({ breakdown, streak = 0 } = {}) {
   return lines.join('\n');
 }
 
+/** A single Q&A turn in the interview transcript. */
+export interface InterviewTurn {
+  question?: string;
+  answer?: string;
+}
+
+/** Result of {@link buildScoringPrompt}. */
+export interface ScoringPrompt {
+  system: string;
+  user: string;
+}
+
 /**
  * Build the scoring-prompt payload the planner skill feeds to an LLM
  * between question rounds. Returns the text to send; the caller decides
  * how to invoke the model (Claude Code subagent, Task tool, direct
  * completion, etc.) and parses the JSON response via
  * {@link parseScoreResponse}.
- *
- * @param {object} args
- * @param {string} args.initialContext - The user's top-level plan intent.
- * @param {Array<{ question: string, answer: string }>} args.transcript - Prior Q&A.
- * @returns {{ system: string, user: string }}
  */
-export function buildScoringPrompt({ initialContext = '', transcript = [] } = {}) {
+export function buildScoringPrompt(
+  { initialContext = '', transcript = [] }: { initialContext?: string; transcript?: InterviewTurn[] } = {},
+): ScoringPrompt {
   const dimensionSpec = DIMENSIONS.map(
     (d) =>
       `  - ${d.key} (${Math.round(d.weight * 100)}%, floor ${d.floor}): ${d.hint}`,
@@ -340,18 +369,20 @@ export function buildScoringPrompt({ initialContext = '', transcript = [] } = {}
   return { system, user: lines.join('\n') };
 }
 
+/** Result of {@link parseScoreResponse}. */
+export type ParseScoreResult =
+  | {
+      ok: true;
+      breakdown: Record<string, { score: number; justification: string }>;
+    }
+  | { ok: false; error: string };
+
 /**
  * Parse and validate the LLM's JSON score output. Tolerates code-fence
  * wrapping and leading/trailing prose so a slightly chatty model still
  * produces usable data — Ouroboros's scorer does similar cleanup.
- *
- * @param {string} raw
- * @returns {{
- *   ok: true,
- *   breakdown: Record<string, { score: number, justification: string }>,
- * } | { ok: false, error: string }}
  */
-export function parseScoreResponse(raw) {
+export function parseScoreResponse(raw: unknown): ParseScoreResult {
   if (typeof raw !== 'string' || raw.trim().length === 0) {
     return { ok: false, error: 'Empty response' };
   }
@@ -363,20 +394,22 @@ export function parseScoreResponse(raw) {
     return { ok: false, error: 'No JSON object found' };
   }
 
-  let parsed;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
   } catch (err) {
-    return { ok: false, error: `Invalid JSON: ${err.message}` };
+    const e = err as Error;
+    return { ok: false, error: `Invalid JSON: ${e.message}` };
   }
 
   if (!parsed || typeof parsed !== 'object') {
     return { ok: false, error: 'Response was not an object' };
   }
+  const p = parsed as Record<string, unknown>;
 
-  const breakdown = {};
+  const breakdown: Record<string, { score: number; justification: string }> = {};
   for (const dim of DIMENSIONS) {
-    const entry = parsed[dim.key];
+    const entry = p[dim.key] as { score?: unknown; justification?: unknown } | undefined;
     if (!entry || typeof entry.score !== 'number' || Number.isNaN(entry.score)) {
       return { ok: false, error: `Missing or invalid score for ${dim.key}` };
     }
@@ -390,8 +423,8 @@ export function parseScoreResponse(raw) {
   return { ok: true, breakdown };
 }
 
-function stripCodeFence(s) {
+function stripCodeFence(s: string): string {
   const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/;
   const m = s.match(fence);
-  return m ? m[1] : s;
+  return m ? m[1]! : s;
 }

@@ -13,6 +13,7 @@ import {
   queryLaunchdHeartbeat,
   uninstallLaunchdHeartbeat,
 } from './launchd.js';
+import type { LaunchctlResult } from './launchd.js';
 
 describe('launchd — constants', () => {
   it('exposes a predictable label prefix', () => {
@@ -121,17 +122,18 @@ describe('launchd — parseLaunchdPlist', () => {
       intervalSeconds: 900,
     });
     const parsed = parseLaunchdPlist(plist);
-    assert.equal(parsed.intervalSeconds, 900);
-    assert.equal(parsed.programArguments.length, 3);
-    assert.equal(parsed.programArguments[0], '/bin/zsh');
-    assert.equal(parsed.programArguments[1], '-lic');
-    assert.ok(parsed.programArguments[2].includes('/tmp/proj'));
+    assert.ok(parsed);
+    assert.equal(parsed!.intervalSeconds, 900);
+    assert.equal(parsed!.programArguments.length, 3);
+    assert.equal(parsed!.programArguments[0], '/bin/zsh');
+    assert.equal(parsed!.programArguments[1], '-lic');
+    assert.ok(parsed!.programArguments[2].includes('/tmp/proj'));
   });
 
   it('round-trips XML-escaped projectDir back to its original form', () => {
     const plist = buildLaunchdPlist({ projectDir: "/tmp/foo's proj" });
     const parsed = parseLaunchdPlist(plist);
-    assert.ok(parsed.programArguments[2].includes("'\\''"));
+    assert.ok(parsed!.programArguments[2].includes("'\\''"));
   });
 
   it('returns null on non-string / empty input', () => {
@@ -145,52 +147,67 @@ describe('launchd — parseLaunchdPlist', () => {
  * integration-style tests below.
  * ------------------------------------------------------------------ */
 
-function makeFakeFs() {
-  const files = new Map();
+interface FakeFs {
+  files: Map<string, string>;
+  readFileFn: (p: string) => Promise<string>;
+  writeFileFn: (p: string, content: string) => Promise<void>;
+  unlinkFn: (p: string) => Promise<void>;
+  statFn: (p: string) => Promise<{ size: number }>;
+  mkdirFn: () => Promise<undefined>;
+}
+
+function makeFakeFs(): FakeFs {
+  const files = new Map<string, string>();
   return {
     files,
-    readFileFn: async (p) => {
+    readFileFn: async (p: string): Promise<string> => {
       if (!files.has(p)) {
-        const err = new Error(`ENOENT: no such file, open '${p}'`);
+        const err = new Error(`ENOENT: no such file, open '${p}'`) as Error & { code?: string };
         err.code = 'ENOENT';
         throw err;
       }
-      return files.get(p);
+      return files.get(p)!;
     },
-    writeFileFn: async (p, content) => {
+    writeFileFn: async (p: string, content: string): Promise<void> => {
       files.set(p, content);
     },
-    unlinkFn: async (p) => {
+    unlinkFn: async (p: string): Promise<void> => {
       if (!files.has(p)) {
-        const err = new Error(`ENOENT`);
+        const err = new Error(`ENOENT`) as Error & { code?: string };
         err.code = 'ENOENT';
         throw err;
       }
       files.delete(p);
     },
-    statFn: async (p) => {
+    statFn: async (p: string): Promise<{ size: number }> => {
       if (!files.has(p)) {
-        const err = new Error(`ENOENT`);
+        const err = new Error(`ENOENT`) as Error & { code?: string };
         err.code = 'ENOENT';
         throw err;
       }
-      return { size: files.get(p).length };
+      return { size: files.get(p)!.length };
     },
-    mkdirFn: async () => undefined,
+    mkdirFn: async (): Promise<undefined> => undefined,
   };
 }
 
-function makeFakeLaunchctl({ loadedLabels = new Set() } = {}) {
-  const calls = [];
+interface FakeLaunchctl {
+  calls: string[][];
+  loadedLabels: Set<string>;
+  launchctlFn: (args: string[]) => Promise<LaunchctlResult>;
+}
+
+function makeFakeLaunchctl({ loadedLabels = new Set<string>() }: { loadedLabels?: Set<string> } = {}): FakeLaunchctl {
+  const calls: string[][] = [];
   return {
     calls,
     loadedLabels,
-    launchctlFn: async (args) => {
+    launchctlFn: async (args: string[]): Promise<LaunchctlResult> => {
       calls.push(args);
       const [verb, target, plistPath] = args;
       if (verb === 'print') {
         // target is `gui/<uid>/<label>`.
-        const label = target.split('/').slice(2).join('/');
+        const label = target!.split('/').slice(2).join('/');
         return loadedLabels.has(label)
           ? { code: 0, stdout: 'loaded', stderr: '' }
           : { code: 37, stdout: '', stderr: 'Could not find service' };
@@ -203,7 +220,7 @@ function makeFakeLaunchctl({ loadedLabels = new Set() } = {}) {
         return { code: 0, stdout: '', stderr: '' };
       }
       if (verb === 'bootout') {
-        const label = target.split('/').slice(2).join('/');
+        const label = target!.split('/').slice(2).join('/');
         if (loadedLabels.has(label)) {
           loadedLabels.delete(label);
           return { code: 0, stdout: '', stderr: '' };
@@ -233,14 +250,16 @@ describe('launchd — installLaunchdHeartbeat', () => {
       projectDir,
       home,
       confirmed: true,
-      ...fs,
+      readFileFn: fs.readFileFn,
+      writeFileFn: fs.writeFileFn,
+      mkdirFn: fs.mkdirFn,
       launchctlFn: lc.launchctlFn,
       getUidFn: () => 501,
     });
     assert.equal(result.outcome, 'created');
     assert.ok(result.plistPath.includes('/Users/alice/Library/LaunchAgents/'));
     assert.equal(fs.files.size, 1);
-    assert.ok(fs.files.get(result.plistPath).includes('<integer>600</integer>'));
+    assert.ok(fs.files.get(result.plistPath)!.includes('<integer>600</integer>'));
 
     const verbs = lc.calls.map((c) => c[0]);
     assert.ok(verbs.includes('bootout'));
@@ -254,7 +273,9 @@ describe('launchd — installLaunchdHeartbeat', () => {
       projectDir,
       home,
       confirmed: true,
-      ...fs,
+      readFileFn: fs.readFileFn,
+      writeFileFn: fs.writeFileFn,
+      mkdirFn: fs.mkdirFn,
       launchctlFn: lc.launchctlFn,
       getUidFn: () => 501,
     });
@@ -264,7 +285,9 @@ describe('launchd — installLaunchdHeartbeat', () => {
       projectDir,
       home,
       confirmed: true,
-      ...fs,
+      readFileFn: fs.readFileFn,
+      writeFileFn: fs.writeFileFn,
+      mkdirFn: fs.mkdirFn,
       launchctlFn: lc.launchctlFn,
       getUidFn: () => 501,
     });
@@ -282,7 +305,9 @@ describe('launchd — installLaunchdHeartbeat', () => {
       home,
       intervalSeconds: 600,
       confirmed: true,
-      ...fs,
+      readFileFn: fs.readFileFn,
+      writeFileFn: fs.writeFileFn,
+      mkdirFn: fs.mkdirFn,
       launchctlFn: lc.launchctlFn,
       getUidFn: () => 501,
     });
@@ -291,17 +316,19 @@ describe('launchd — installLaunchdHeartbeat', () => {
       home,
       intervalSeconds: 900,
       confirmed: true,
-      ...fs,
+      readFileFn: fs.readFileFn,
+      writeFileFn: fs.writeFileFn,
+      mkdirFn: fs.mkdirFn,
       launchctlFn: lc.launchctlFn,
       getUidFn: () => 501,
     });
     assert.equal(result.outcome, 'updated');
-    assert.ok(fs.files.get(result.plistPath).includes('<integer>900</integer>'));
+    assert.ok(fs.files.get(result.plistPath)!.includes('<integer>900</integer>'));
   });
 
   it('throws when launchctl bootstrap fails', async () => {
     const fs = makeFakeFs();
-    const launchctlFn = async (args) => {
+    const launchctlFn = async (args: string[]): Promise<LaunchctlResult> => {
       if (args[0] === 'bootstrap') return { code: 5, stdout: '', stderr: 'denied' };
       return { code: 0, stdout: '', stderr: '' };
     };
@@ -310,7 +337,9 @@ describe('launchd — installLaunchdHeartbeat', () => {
         projectDir,
         home,
         confirmed: true,
-        ...fs,
+        readFileFn: fs.readFileFn,
+        writeFileFn: fs.writeFileFn,
+        mkdirFn: fs.mkdirFn,
         launchctlFn,
         getUidFn: () => 501,
       }),
@@ -345,7 +374,9 @@ describe('launchd — queryLaunchdHeartbeat', () => {
       projectDir,
       home,
       confirmed: true,
-      ...fs,
+      readFileFn: fs.readFileFn,
+      writeFileFn: fs.writeFileFn,
+      mkdirFn: fs.mkdirFn,
       launchctlFn: lc.launchctlFn,
       getUidFn: () => 501,
     });
@@ -381,7 +412,9 @@ describe('launchd — uninstallLaunchdHeartbeat', () => {
       projectDir,
       home,
       confirmed: true,
-      ...fs,
+      readFileFn: fs.readFileFn,
+      writeFileFn: fs.writeFileFn,
+      mkdirFn: fs.mkdirFn,
       launchctlFn: lc.launchctlFn,
       getUidFn: () => 501,
     });
