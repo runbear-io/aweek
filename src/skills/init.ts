@@ -41,6 +41,18 @@ import {
 const execFileAsync = promisify(execFile);
 
 /**
+ * Loose error shape that crontab/spawn helpers throw — we narrow on `.code`
+ * and `.stderr` without insisting on a full `NodeJS.ErrnoException` shape.
+ */
+interface ErrnoLike extends Error {
+  code?: string;
+  stderr?: string;
+  stdout?: string;
+  exitCode?: number;
+  cause?: unknown;
+}
+
+/**
  * Read the current user crontab.
  *
  * Returns empty string when the user has no crontab yet — `crontab -l` emits
@@ -50,15 +62,14 @@ const execFileAsync = promisify(execFile);
  * Inlined here (rather than imported from the former
  * `src/heartbeat/crontab-manager.js`) because the project-level heartbeat in
  * this module is now the ONLY automated crontab interaction surface in aweek.
- *
- * @returns {Promise<string>}
  */
-async function defaultReadCrontab() {
+async function defaultReadCrontab(): Promise<string> {
   try {
     const { stdout } = await execFileAsync('crontab', ['-l']);
     return stdout;
   } catch (err) {
-    if (err.stderr && err.stderr.includes('no crontab')) {
+    const e = err as ErrnoLike;
+    if (e.stderr && e.stderr.includes('no crontab')) {
       return '';
     }
     throw err;
@@ -70,16 +81,18 @@ async function defaultReadCrontab() {
  *
  * Pipes `content` into `crontab -` via stdin. Like {@link defaultReadCrontab},
  * this is the sole automated write path into the user's crontab.
- *
- * @param {string} content
- * @returns {Promise<void>}
  */
-async function defaultWriteCrontab(content) {
+async function defaultWriteCrontab(content: string): Promise<void> {
   const child = execFileAsync('crontab', ['-'], {});
-  child.child.stdin.write(content);
-  child.child.stdin.end();
+  child.child.stdin!.write(content);
+  child.child.stdin!.end();
   await child;
 }
+
+/** Async crontab read function signature. */
+export type ReadCrontabFn = () => Promise<string>;
+/** Async crontab write function signature. */
+export type WriteCrontabFn = (content: string) => Promise<void>;
 
 /**
  * Canonical subdirectories that live under `.aweek/`.
@@ -94,7 +107,7 @@ async function defaultWriteCrontab(content) {
  * Frozen to discourage ad-hoc mutation; subdir additions should be an explicit
  * code change with a matching test update.
  */
-export const AWEEK_SUBDIRS = Object.freeze(['agents']);
+export const AWEEK_SUBDIRS: readonly string[] = Object.freeze(['agents']);
 
 /**
  * Default aweek data-root path (relative to `projectDir`).
@@ -116,11 +129,8 @@ export const DEFAULT_PACKAGE_MANAGER = 'pnpm';
 
 /**
  * Resolve `projectDir` to an absolute path, falling back to `process.cwd()`.
- *
- * @param {string} [projectDir]
- * @returns {string}
  */
-export function resolveProjectDir(projectDir) {
+export function resolveProjectDir(projectDir?: string): string {
   return projectDir ? resolve(projectDir) : process.cwd();
 }
 
@@ -130,32 +140,27 @@ export function resolveProjectDir(projectDir) {
  * Distinguishes "missing" (returns false) from "exists but not a directory"
  * (throws) so callers can surface the latter as an error without silently
  * overwriting a regular file.
- *
- * @param {string} path
- * @returns {Promise<boolean>}
  */
-async function isDirectory(path) {
+async function isDirectory(path: string): Promise<boolean> {
   try {
     const stats = await stat(path);
     if (!stats.isDirectory()) {
-      const err = new Error(`Path exists but is not a directory: ${path}`);
+      const err = new Error(`Path exists but is not a directory: ${path}`) as ErrnoLike;
       err.code = 'ENOTDIR';
       throw err;
     }
     return true;
   } catch (err) {
-    if (err && err.code === 'ENOENT') return false;
+    const e = err as ErrnoLike;
+    if (e && e.code === 'ENOENT') return false;
     throw err;
   }
 }
 
 /**
  * Check whether a path exists (file or directory) without reading it.
- *
- * @param {string} path
- * @returns {Promise<boolean>}
  */
-async function pathExists(path) {
+async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
@@ -173,16 +178,43 @@ async function pathExists(path) {
  *
  *   - `.aweek` / `.aweek/` → treat as the aweek root.
  *   - `.aweek/agents`      → step up one level.
- *
- * @param {string} absoluteDataDir
- * @returns {string} Absolute path to the `.aweek/` root.
  */
-function normalizeAweekRoot(absoluteDataDir) {
+function normalizeAweekRoot(absoluteDataDir: string): string {
   const leaf = basename(absoluteDataDir);
   if (leaf === 'agents') {
     return dirname(absoluteDataDir);
   }
   return absoluteDataDir;
+}
+
+/** Options accepted by {@link ensureDataDir}. */
+export interface EnsureDataDirOptions {
+  projectDir?: string;
+  /**
+   * Path (relative to `projectDir`) for the `.aweek/` root. Accepts
+   * `.aweek/agents` for backwards compatibility with the original
+   * skill-markdown default.
+   */
+  dataDir?: string;
+}
+
+/** Per-subdir outcome reported by {@link ensureDataDir}. */
+export interface EnsureSubdirOutcome {
+  path: string;
+  outcome: 'created' | 'skipped';
+}
+
+/** Result of {@link ensureDataDir}. */
+export interface EnsureDataDirResult {
+  root: string;
+  outcome: 'created' | 'skipped';
+  subdirs: Record<string, EnsureSubdirOutcome>;
+  agentsPath: string;
+  config: {
+    path: string;
+    outcome: 'created' | 'skipped';
+    timeZone: string;
+  };
 }
 
 /**
@@ -191,23 +223,11 @@ function normalizeAweekRoot(absoluteDataDir) {
  * Creates (if missing) the aweek data root and its canonical `agents/`
  * subdirectory. Safe to call repeatedly — each resource reports its own
  * `created` / `skipped` outcome.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root (defaults to `process.cwd()`).
- * @param {string} [opts.dataDir=DEFAULT_DATA_DIR] - Path (relative to
- *   `projectDir`) for the `.aweek/` root. Accepts `.aweek/agents` for
- *   backwards compatibility with the original skill-markdown default.
- * @returns {Promise<{
- *   root: string,
- *   outcome: 'created' | 'skipped',
- *   subdirs: Record<string, { path: string, outcome: 'created' | 'skipped' }>,
- *   agentsPath: string,
- * }>}
  */
 export async function ensureDataDir({
   projectDir,
   dataDir = DEFAULT_DATA_DIR,
-} = {}) {
+}: EnsureDataDirOptions = {}): Promise<EnsureDataDirResult> {
   const resolvedProject = resolveProjectDir(projectDir);
   const absoluteDataDir = resolve(resolvedProject, dataDir);
   const aweekRoot = normalizeAweekRoot(absoluteDataDir);
@@ -216,7 +236,7 @@ export async function ensureDataDir({
   const rootExisted = await isDirectory(aweekRoot);
   await mkdir(aweekRoot, { recursive: true });
 
-  const subdirs = {};
+  const subdirs: Record<string, EnsureSubdirOutcome> = {};
   for (const sub of AWEEK_SUBDIRS) {
     const subPath = join(aweekRoot, sub);
     const existed = await isDirectory(subPath);
@@ -230,22 +250,23 @@ export async function ensureDataDir({
   // Seed `.aweek/config.json` with the detected system time zone on a
   // fresh init. A re-init against an existing config is a no-op — we
   // don't touch a user-edited `timeZone` value, just report `skipped`.
-  const configAbsPath = configPath(subdirs.agents.path);
+  const agentsEntry = subdirs.agents!;
+  const configAbsPath = configPath(agentsEntry.path);
   const configExisted = await pathExists(configAbsPath);
-  let configOutcome;
+  let configOutcome: 'created' | 'skipped';
   if (configExisted) {
     configOutcome = 'skipped';
   } else {
-    await saveConfig(subdirs.agents.path, { timeZone: DEFAULT_TZ });
+    await saveConfig(agentsEntry.path, { timeZone: DEFAULT_TZ });
     configOutcome = 'created';
   }
-  const configState = await loadConfig(subdirs.agents.path);
+  const configState = await loadConfig(agentsEntry.path);
 
   return {
     root: aweekRoot,
     outcome: rootExisted ? 'skipped' : 'created',
     subdirs,
-    agentsPath: subdirs.agents.path,
+    agentsPath: agentsEntry.path,
     config: {
       path: configAbsPath,
       outcome: configOutcome,
@@ -254,6 +275,23 @@ export async function ensureDataDir({
   };
 }
 
+/** Args passed to {@link SpawnFn}. */
+export interface SpawnFnArgs {
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
+/** Result of a {@link SpawnFn} call. */
+export interface SpawnFnResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Injectable spawner signature accepted by {@link installDependencies}. */
+export type SpawnFn = (args: SpawnFnArgs) => Promise<SpawnFnResult>;
+
 /**
  * Default spawner — boring, well-typed wrapper around `child_process.spawn`.
  *
@@ -261,14 +299,8 @@ export async function ensureDataDir({
  * a standalone function so tests can inject their own spawner via the
  * `spawnFn` option on {@link installDependencies} without having to stub
  * `child_process` globally.
- *
- * @param {object} params
- * @param {string} params.command
- * @param {string[]} params.args
- * @param {string} params.cwd
- * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
-function defaultSpawn({ command, args, cwd }) {
+function defaultSpawn({ command, args, cwd }: SpawnFnArgs): Promise<SpawnFnResult> {
   return new Promise((resolvePromise, rejectPromise) => {
     let stdout = '';
     let stderr = '';
@@ -297,6 +329,27 @@ function defaultSpawn({ command, args, cwd }) {
   });
 }
 
+/** Options for {@link installDependencies}. */
+export interface InstallDependenciesOptions {
+  projectDir?: string;
+  /** Defaults to `pnpm` to match `package.json#packageManager`. */
+  packageManager?: string;
+  /** Arguments passed to the package manager. Defaults to `['install']`. */
+  args?: string[];
+  /** Injectable spawner for tests. */
+  spawnFn?: SpawnFn;
+}
+
+/** Result of {@link installDependencies}. */
+export interface InstallDependenciesResult {
+  outcome: 'created' | 'updated' | 'skipped';
+  packageManager: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  reason?: string;
+}
+
 /**
  * Install project dependencies via pnpm (or an alternate package manager).
  *
@@ -310,30 +363,13 @@ function defaultSpawn({ command, args, cwd }) {
  *   3. Runs `<packageManager> install` in the project directory.
  *   4. Surfaces non-zero exit codes as an `EINSTALL` error with captured
  *      stdout/stderr for debugging.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root (defaults to `process.cwd()`).
- * @param {string} [opts.packageManager=DEFAULT_PACKAGE_MANAGER] - Binary to
- *   invoke. Defaults to `pnpm` to match `package.json#packageManager`.
- * @param {string[]} [opts.args=['install']] - Arguments passed to the package
- *   manager. Tests can override with `['install', '--offline']` etc.
- * @param {Function} [opts.spawnFn] - Injectable spawner for tests.
- *   Receives `{ command, args, cwd }`, resolves with `{ code, stdout, stderr }`.
- * @returns {Promise<{
- *   outcome: 'created' | 'updated' | 'skipped',
- *   packageManager: string,
- *   cwd: string,
- *   stdout: string,
- *   stderr: string,
- *   reason?: string,
- * }>}
  */
 export async function installDependencies({
   projectDir,
   packageManager = DEFAULT_PACKAGE_MANAGER,
   args = ['install'],
   spawnFn,
-} = {}) {
+}: InstallDependenciesOptions = {}): Promise<InstallDependenciesResult> {
   const cwd = resolveProjectDir(projectDir);
 
   const pkgJsonPath = join(cwd, 'package.json');
@@ -351,18 +387,19 @@ export async function installDependencies({
   const nodeModulesPath = join(cwd, 'node_modules');
   const hadNodeModules = await isDirectory(nodeModulesPath).catch(() => false);
 
-  const spawner = spawnFn || defaultSpawn;
+  const spawner: SpawnFn = spawnFn || defaultSpawn;
 
-  let result;
+  let result: SpawnFnResult;
   try {
     result = await spawner({ command: packageManager, args, cwd });
   } catch (err) {
+    const e = err as ErrnoLike;
     // `spawn ENOENT` when pnpm isn't on PATH — give a clearer error so the
     // skill markdown can tell the user to install pnpm first.
-    if (err && err.code === 'ENOENT') {
+    if (e && e.code === 'ENOENT') {
       const friendly = new Error(
         `${packageManager} is not installed or not on PATH. Install it with "npm install -g ${packageManager}" or follow https://pnpm.io/installation.`,
-      );
+      ) as ErrnoLike;
       friendly.code = 'EPKGMGR_MISSING';
       friendly.cause = err;
       throw friendly;
@@ -373,7 +410,7 @@ export async function installDependencies({
   if (result.code !== 0) {
     const err = new Error(
       `${packageManager} ${args.join(' ')} failed with exit code ${result.code}`,
-    );
+    ) as ErrnoLike;
     err.code = 'EINSTALL';
     err.exitCode = result.code;
     err.stdout = result.stdout;
@@ -433,12 +470,8 @@ export const DEFAULT_HEARTBEAT_SCHEDULE = '*/10 * * * *';
  * else is literal inside `'…'`. Cron runs each line through `/bin/sh
  * -c`, so quoting is required for absolute paths that may contain
  * spaces or other shell metacharacters.
- *
- * @param {string} arg
- * @returns {string} The input wrapped in single-quotes, with embedded
- *   single-quotes replaced by `'\''`.
  */
-function shellSingleQuote(arg) {
+function shellSingleQuote(arg: unknown): string {
   return `'${String(arg).replaceAll("'", `'\\''`)}'`;
 }
 
@@ -452,6 +485,18 @@ function shellSingleQuote(arg) {
  * not a default.
  */
 const INTERACTIVE_SHELL_RE = /\/(zsh|bash|ksh|mksh|fish)$/;
+
+/** Options accepted by {@link detectUserShell}. */
+export interface DetectUserShellOptions {
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+}
+
+/** Result of {@link detectUserShell}. */
+export interface DetectUserShellResult {
+  shell: string;
+  loginFlag: '-lic' | '-c';
+}
 
 /**
  * Detect the user's login shell for the cron wrap.
@@ -472,16 +517,11 @@ const INTERACTIVE_SHELL_RE = /\/(zsh|bash|ksh|mksh|fish)$/;
  *   3. `env.SHELL` verbatim with `-c` only, when it's a POSIX `/bin/sh`
  *      or similar non-interactive shell — rc sourcing is lost but we
  *      honor the user's explicit shell choice.
- *
- * @param {object} [opts]
- * @param {NodeJS.ProcessEnv} [opts.env=process.env]
- * @param {NodeJS.Platform} [opts.platform=process.platform]
- * @returns {{ shell: string, loginFlag: '-lic' | '-c' }}
  */
 export function detectUserShell({
   env = process.env,
   platform = process.platform,
-} = {}) {
+}: DetectUserShellOptions = {}): DetectUserShellResult {
   const candidate = env && env.SHELL ? env.SHELL : null;
   if (candidate && INTERACTIVE_SHELL_RE.test(candidate)) {
     return { shell: candidate, loginFlag: '-lic' };
@@ -506,13 +546,17 @@ export const PROJECT_HEARTBEAT_MARKER_PREFIX = 'aweek:project-heartbeat:';
 
 /**
  * Build the unique comment marker for a project heartbeat.
- *
- * @param {string} projectDir - Absolute path to the project root.
- * @returns {string} Marker string (without the leading `# `).
  */
-export function projectHeartbeatMarker(projectDir) {
+export function projectHeartbeatMarker(projectDir?: string): string {
   if (!projectDir) throw new Error('projectDir is required');
   return `${PROJECT_HEARTBEAT_MARKER_PREFIX}${projectDir}`;
+}
+
+/** Options accepted by {@link buildHeartbeatCommand}. */
+export interface BuildHeartbeatCommandOptions extends DetectUserShellOptions {
+  projectDir?: string;
+  shell?: string;
+  loginFlag?: string;
 }
 
 /**
@@ -541,18 +585,6 @@ export function projectHeartbeatMarker(projectDir) {
  * the crontab line readable. Callers that need to pin a specific
  * node or aweek binary (repo-dev workflows, CI) can pass a full
  * `command` string to {@link installHeartbeat}.
- *
- * @param {object} opts
- * @param {string} opts.projectDir - Absolute path to the project root.
- * @param {string} [opts.shell] - Override the detected login shell
- *   (e.g. `/bin/zsh`). Defaults to {@link detectUserShell}'s result.
- * @param {string} [opts.loginFlag] - Override the shell flag. Defaults
- *   to `-lic` for interactive-capable shells, `-c` for fallback.
- * @param {NodeJS.ProcessEnv} [opts.env] - Environment source forwarded
- *   to {@link detectUserShell} for tests.
- * @param {NodeJS.Platform} [opts.platform] - Platform string forwarded
- *   to {@link detectUserShell} for tests.
- * @returns {string} Shell command that the cron entry should invoke.
  */
 export function buildHeartbeatCommand({
   projectDir,
@@ -560,7 +592,7 @@ export function buildHeartbeatCommand({
   loginFlag,
   env,
   platform,
-} = {}) {
+}: BuildHeartbeatCommandOptions = {}): string {
   if (!projectDir) throw new Error('projectDir is required');
 
   const detected =
@@ -573,14 +605,17 @@ export function buildHeartbeatCommand({
   return `${shellSingleQuote(resolvedShell)} ${resolvedFlag} ${shellSingleQuote(inner)}`;
 }
 
+/** Options accepted by {@link buildHeartbeatEntry}. */
+export interface BuildHeartbeatEntryOptions extends BuildHeartbeatCommandOptions {
+  schedule?: string;
+  /** Defaults to {@link buildHeartbeatCommand}. */
+  command?: string;
+}
+
 /**
  * Build the full crontab entry (marker + cron line) for a project heartbeat.
  *
- * @param {object} opts
- * @param {string} opts.projectDir
- * @param {string} [opts.schedule=DEFAULT_HEARTBEAT_SCHEDULE]
- * @param {string} [opts.command] - Defaults to {@link buildHeartbeatCommand}.
- * @returns {string} Two lines: `# <marker>\n<schedule> <command>`
+ * Returns two lines: `# <marker>\n<schedule> <command>`.
  */
 export function buildHeartbeatEntry({
   projectDir,
@@ -590,7 +625,7 @@ export function buildHeartbeatEntry({
   loginFlag,
   env,
   platform,
-} = {}) {
+}: BuildHeartbeatEntryOptions = {}): string {
   if (!projectDir) throw new Error('projectDir is required');
   const marker = projectHeartbeatMarker(projectDir);
   const cmd =
@@ -605,6 +640,14 @@ export function buildHeartbeatEntry({
   return `# ${marker}\n${schedule} ${cmd}`;
 }
 
+/** Parsed heartbeat entry returned by {@link parseProjectHeartbeat}. */
+export interface ProjectHeartbeatEntry {
+  marker: string;
+  schedule: string;
+  command: string;
+  raw: string;
+}
+
 /**
  * Parse a crontab blob and return the project-heartbeat entry for the
  * given `projectDir` (or null if none exists).
@@ -616,18 +659,17 @@ export function buildHeartbeatEntry({
  *   - A marker with no following cron line (last line, or followed by
  *     another comment) is ignored — tolerates hand-edited crontabs
  *     without false positives.
- *
- * @param {string} crontabText
- * @param {string} projectDir
- * @returns {{ marker: string, schedule: string, command: string, raw: string } | null}
  */
-export function parseProjectHeartbeat(crontabText, projectDir) {
+export function parseProjectHeartbeat(
+  crontabText: string | null | undefined,
+  projectDir: string | null | undefined,
+): ProjectHeartbeatEntry | null {
   if (!crontabText || !projectDir) return null;
   const target = projectHeartbeatMarker(projectDir);
   const lines = crontabText.split('\n');
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const line = lines[i]!.trim();
     if (!line.startsWith('# ')) continue;
     const markerText = line.slice(2).trim();
     if (markerText !== target) continue;
@@ -654,16 +696,15 @@ export function parseProjectHeartbeat(crontabText, projectDir) {
  * Remove the project-heartbeat marker + cron line for `projectDir` from
  * the provided crontab text. Idempotent: returns the input unchanged
  * if no matching entry exists.
- *
- * @param {string} crontabText
- * @param {string} projectDir
- * @returns {string}
  */
-export function removeProjectHeartbeat(crontabText, projectDir) {
+export function removeProjectHeartbeat(
+  crontabText: string | null | undefined,
+  projectDir: string,
+): string {
   if (!crontabText) return crontabText || '';
   const target = `# ${projectHeartbeatMarker(projectDir)}`;
   const lines = crontabText.split('\n');
-  const out = [];
+  const out: string[] = [];
   let skipNext = false;
 
   for (const line of lines) {
@@ -681,28 +722,31 @@ export function removeProjectHeartbeat(crontabText, projectDir) {
   return out.join('\n');
 }
 
+/** Options for {@link queryCronHeartbeat}. */
+export interface QueryCronHeartbeatOptions {
+  projectDir?: string;
+  readCrontabFn?: ReadCrontabFn;
+}
+
+/** Result of {@link queryCronHeartbeat}. */
+export interface QueryCronHeartbeatResult {
+  installed: boolean;
+  schedule: string | null;
+  command: string | null;
+  marker: string;
+  projectDir: string;
+  entry: ProjectHeartbeatEntry | null;
+}
+
 /**
  * Query whether a project heartbeat is currently installed.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Defaults to `process.cwd()`.
- * @param {Function} [opts.readCrontabFn] - Injectable reader; defaults
- *   to the inlined `defaultReadCrontab` helper at the top of this module.
- * @returns {Promise<{
- *   installed: boolean,
- *   schedule: string | null,
- *   command: string | null,
- *   marker: string,
- *   projectDir: string,
- *   entry: object | null,
- * }>}
  */
 export async function queryCronHeartbeat({
   projectDir,
   readCrontabFn,
-} = {}) {
+}: QueryCronHeartbeatOptions = {}): Promise<QueryCronHeartbeatResult> {
   const resolvedProject = resolveProjectDir(projectDir);
-  const reader = readCrontabFn || defaultReadCrontab;
+  const reader: ReadCrontabFn = readCrontabFn || defaultReadCrontab;
   const current = await reader();
   const entry = parseProjectHeartbeat(current, resolvedProject);
   return {
@@ -715,6 +759,27 @@ export async function queryCronHeartbeat({
   };
 }
 
+/** Options for {@link installCronHeartbeat}. */
+export interface InstallCronHeartbeatOptions extends BuildHeartbeatCommandOptions {
+  schedule?: string;
+  command?: string;
+  /** Must be `true` to perform the destructive crontab write. */
+  confirmed?: boolean;
+  readCrontabFn?: ReadCrontabFn;
+  writeCrontabFn?: WriteCrontabFn;
+}
+
+/** Result of {@link installCronHeartbeat}. */
+export interface InstallCronHeartbeatResult {
+  outcome: 'created' | 'updated' | 'skipped';
+  marker: string;
+  projectDir: string;
+  schedule: string;
+  command: string;
+  entry: string;
+  previous: { schedule: string; command: string } | null;
+}
+
 /**
  * Install (or refresh) the project-heartbeat crontab entry.
  *
@@ -723,32 +788,6 @@ export async function queryCronHeartbeat({
  * MUST collect an explicit user confirmation via AskUserQuestion and
  * pass `confirmed: true` to this function. Invocations without
  * `confirmed: true` throw `EHB_NOT_CONFIRMED` without touching crontab.
- *
- * Idempotency contract:
- *
- *   | Current crontab state                             | Outcome  |
- *   |---------------------------------------------------|----------|
- *   | No entry for this projectDir                      | created  |
- *   | Entry exists with same schedule + command         | skipped  |
- *   | Entry exists with different schedule or command   | updated  |
- *
- * @param {object} opts
- * @param {string} [opts.projectDir] - Defaults to `process.cwd()`.
- * @param {string} [opts.schedule=DEFAULT_HEARTBEAT_SCHEDULE]
- * @param {string} [opts.command] - Defaults to {@link buildHeartbeatCommand}.
- * @param {boolean} [opts.confirmed=false] - Must be `true` to perform
- *   the destructive crontab write.
- * @param {Function} [opts.readCrontabFn] - Injectable reader.
- * @param {Function} [opts.writeCrontabFn] - Injectable writer.
- * @returns {Promise<{
- *   outcome: 'created' | 'updated' | 'skipped',
- *   marker: string,
- *   projectDir: string,
- *   schedule: string,
- *   command: string,
- *   entry: string,
- *   previous: { schedule: string, command: string } | null,
- * }>}
  */
 export async function installCronHeartbeat({
   projectDir,
@@ -761,12 +800,12 @@ export async function installCronHeartbeat({
   confirmed = false,
   readCrontabFn,
   writeCrontabFn,
-} = {}) {
+}: InstallCronHeartbeatOptions = {}): Promise<InstallCronHeartbeatResult> {
   if (confirmed !== true) {
     const err = new Error(
       'installCronHeartbeat requires explicit user confirmation. ' +
         'Collect consent via AskUserQuestion and pass `confirmed: true`.',
-    );
+    ) as ErrnoLike;
     err.code = 'EHB_NOT_CONFIRMED';
     throw err;
   }
@@ -781,8 +820,8 @@ export async function installCronHeartbeat({
       env,
       platform,
     });
-  const reader = readCrontabFn || defaultReadCrontab;
-  const writer = writeCrontabFn || defaultWriteCrontab;
+  const reader: ReadCrontabFn = readCrontabFn || defaultReadCrontab;
+  const writer: WriteCrontabFn = writeCrontabFn || defaultWriteCrontab;
 
   const current = await reader();
   const existing = parseProjectHeartbeat(current, resolvedProject);
@@ -850,14 +889,29 @@ export async function installCronHeartbeat({
  * field so callers can branch on what actually ran without re-detecting.
  */
 
+/** Heartbeat backend identifier. */
+export type HeartbeatBackend = 'cron' | 'launchd';
+
 /**
  * Pick the heartbeat backend for a given platform.
- *
- * @param {NodeJS.Platform} platform
- * @returns {'cron' | 'launchd'}
  */
-export function resolveHeartbeatBackend(platform = process.platform) {
+export function resolveHeartbeatBackend(
+  platform: NodeJS.Platform = process.platform,
+): HeartbeatBackend {
   return platform === 'darwin' ? 'launchd' : 'cron';
+}
+
+/** Combined options accepted by the {@link installHeartbeat} dispatcher. */
+export interface InstallHeartbeatOptions extends InstallCronHeartbeatOptions {
+  backend?: HeartbeatBackend;
+  intervalSeconds?: number;
+  logsDir?: string;
+  home?: string;
+  writeFileFn?: (path: string, content: string) => Promise<void>;
+  readFileFn?: (path: string) => Promise<string>;
+  mkdirFn?: (path: string, opts?: unknown) => Promise<unknown>;
+  launchctlFn?: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  getUidFn?: () => number;
 }
 
 /**
@@ -869,18 +923,10 @@ export function resolveHeartbeatBackend(platform = process.platform) {
  * the same transaction and `migratedFromCron: true` is set on the
  * result. That lets users upgrade from the cron path without needing
  * to remember to clean up the old crontab line.
- *
- * @param {object} [opts]
- * @param {string} [opts.backend] - Force a backend: `'cron'` or `'launchd'`.
- * @param {NodeJS.Platform} [opts.platform=process.platform]
- * @param {string} [opts.projectDir]
- * @param {string} [opts.schedule=DEFAULT_HEARTBEAT_SCHEDULE] - Cron-style.
- * @param {number} [opts.intervalSeconds] - launchd only. Converted from
- *   `schedule` if omitted.
- * @param {boolean} [opts.confirmed=false]
- * @returns {Promise<object>}
  */
-export async function installHeartbeat(opts = {}) {
+export async function installHeartbeat(
+  opts: InstallHeartbeatOptions = {},
+): Promise<Record<string, unknown>> {
   const backend = opts.backend || resolveHeartbeatBackend(opts.platform);
 
   if (backend === 'launchd') {
@@ -890,8 +936,8 @@ export async function installHeartbeat(opts = {}) {
     // is the source of truth going forward.
     let migratedFromCron = false;
     try {
-      const reader = opts.readCrontabFn || defaultReadCrontab;
-      const writer = opts.writeCrontabFn || defaultWriteCrontab;
+      const reader: ReadCrontabFn = opts.readCrontabFn || defaultReadCrontab;
+      const writer: WriteCrontabFn = opts.writeCrontabFn || defaultWriteCrontab;
       const current = await reader();
       if (current && parseProjectHeartbeat(current, projectDir)) {
         if (opts.confirmed !== true) {
@@ -900,7 +946,7 @@ export async function installHeartbeat(opts = {}) {
           const err = new Error(
             'installHeartbeat requires explicit user confirmation. ' +
               'Collect consent via AskUserQuestion and pass `confirmed: true`.',
-          );
+          ) as ErrnoLike;
           err.code = 'EHB_NOT_CONFIRMED';
           throw err;
         }
@@ -911,10 +957,11 @@ export async function installHeartbeat(opts = {}) {
     } catch (err) {
       // Only re-throw the confirmation gate; swallow crontab-read
       // errors so missing `crontab` doesn't block the launchd install.
-      if (err && err.code === 'EHB_NOT_CONFIRMED') throw err;
+      const e = err as ErrnoLike;
+      if (e && e.code === 'EHB_NOT_CONFIRMED') throw err;
     }
 
-    const res = await installLaunchdHeartbeat({
+    const res = (await installLaunchdHeartbeat({
       projectDir,
       intervalSeconds: opts.intervalSeconds,
       schedule: opts.schedule,
@@ -928,7 +975,7 @@ export async function installHeartbeat(opts = {}) {
       mkdirFn: opts.mkdirFn,
       launchctlFn: opts.launchctlFn,
       getUidFn: opts.getUidFn,
-    });
+    })) as { outcome: string; [key: string]: unknown };
     return {
       backend: 'launchd',
       migratedFromCron,
@@ -944,16 +991,23 @@ export async function installHeartbeat(opts = {}) {
   return { backend: 'cron', ...res };
 }
 
+/** Options accepted by the {@link queryHeartbeat} dispatcher. */
+export interface QueryHeartbeatOptions extends QueryCronHeartbeatOptions {
+  backend?: HeartbeatBackend;
+  platform?: NodeJS.Platform;
+  home?: string;
+  readFileFn?: (path: string) => Promise<string>;
+  launchctlFn?: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  getUidFn?: () => number;
+}
+
 /**
  * Query the installed heartbeat, dispatching to the cron or launchd
  * backend.
- *
- * @param {object} [opts]
- * @param {string} [opts.backend] - Force a backend.
- * @param {NodeJS.Platform} [opts.platform=process.platform]
- * @returns {Promise<object>}
  */
-export async function queryHeartbeat(opts = {}) {
+export async function queryHeartbeat(
+  opts: QueryHeartbeatOptions = {},
+): Promise<Record<string, unknown>> {
   const backend = opts.backend || resolveHeartbeatBackend(opts.platform);
   if (backend === 'launchd') {
     const res = await queryLaunchdHeartbeat({
@@ -963,10 +1017,25 @@ export async function queryHeartbeat(opts = {}) {
       launchctlFn: opts.launchctlFn,
       getUidFn: opts.getUidFn,
     });
-    return { backend: 'launchd', ...res };
+    return { backend: 'launchd', ...(res as object) };
   }
   const res = await queryCronHeartbeat(opts);
   return { backend: 'cron', ...res };
+}
+
+/** Options accepted by the {@link uninstallHeartbeat} dispatcher. */
+export interface UninstallHeartbeatOptions {
+  backend?: HeartbeatBackend;
+  platform?: NodeJS.Platform;
+  projectDir?: string;
+  confirmed?: boolean;
+  home?: string;
+  unlinkFn?: (path: string) => Promise<void>;
+  statFn?: (path: string) => Promise<unknown>;
+  launchctlFn?: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  getUidFn?: () => number;
+  readCrontabFn?: ReadCrontabFn;
+  writeCrontabFn?: WriteCrontabFn;
 }
 
 /**
@@ -974,11 +1043,10 @@ export async function queryHeartbeat(opts = {}) {
  * backend. Included for symmetry + to give the skill markdown a single
  * call for teardown; the cron uninstall path simply writes an empty
  * crontab line for this project via {@link removeProjectHeartbeat}.
- *
- * @param {object} [opts]
- * @returns {Promise<object>}
  */
-export async function uninstallHeartbeat(opts = {}) {
+export async function uninstallHeartbeat(
+  opts: UninstallHeartbeatOptions = {},
+): Promise<Record<string, unknown>> {
   const backend = opts.backend || resolveHeartbeatBackend(opts.platform);
   if (backend === 'launchd') {
     const res = await uninstallLaunchdHeartbeat({
@@ -990,7 +1058,7 @@ export async function uninstallHeartbeat(opts = {}) {
       launchctlFn: opts.launchctlFn,
       getUidFn: opts.getUidFn,
     });
-    return { backend: 'launchd', ...res };
+    return { backend: 'launchd', ...(res as object) };
   }
 
   // Cron uninstall is a thin wrapper around removeProjectHeartbeat.
@@ -998,13 +1066,13 @@ export async function uninstallHeartbeat(opts = {}) {
     const err = new Error(
       'uninstallHeartbeat requires explicit user confirmation. ' +
         'Collect consent via AskUserQuestion and pass `confirmed: true`.',
-    );
+    ) as ErrnoLike;
     err.code = 'EHB_NOT_CONFIRMED';
     throw err;
   }
   const projectDir = resolveProjectDir(opts.projectDir);
-  const reader = opts.readCrontabFn || defaultReadCrontab;
-  const writer = opts.writeCrontabFn || defaultWriteCrontab;
+  const reader: ReadCrontabFn = opts.readCrontabFn || defaultReadCrontab;
+  const writer: WriteCrontabFn = opts.writeCrontabFn || defaultWriteCrontab;
   const current = await reader();
   const existing = parseProjectHeartbeat(current, projectDir);
   if (!existing) {
@@ -1070,26 +1138,27 @@ export const HIRE_SKILL_NAME = '/aweek:hire';
 
 /**
  * Default user-facing copy for the post-init hire prompt on a fresh
- * project (no agents yet). Kept short so the AskUserQuestion dialog
- * stays scannable; longer context lives in the `skills/aweek-init.md`
- * body.
+ * project (no agents yet).
  */
 export const DEFAULT_HIRE_PROMPT_TEXT =
   'Infrastructure setup is complete. Would you like to hire your first agent now via /aweek:hire?';
 
 /**
  * Default user-facing copy for the post-init hire prompt on a re-run
- * where at least one agent already exists. Distinct from
- * {@link DEFAULT_HIRE_PROMPT_TEXT} so the skill can offer "add another
- * agent" instead of implying this is the user's first hire.
- *
- * AC 2 idempotency contract: re-running `/aweek:init` against an already
- * initialized project must still surface the hire flow — it's the
- * primary "what next?" affordance, and skipping it silently would make
- * re-runs feel like dead-ends.
+ * where at least one agent already exists.
  */
 export const DEFAULT_ADD_AGENT_PROMPT_TEXT =
   'aweek is already initialized. Would you like to hire another agent now via /aweek:hire?';
+
+/** Options for {@link hasExistingAgents}. */
+export interface HasExistingAgentsOptions {
+  projectDir?: string;
+  /** Accepts `.aweek` or `.aweek/agents`; normalized via {@link normalizeAweekRoot}. */
+  dataDir?: string;
+}
+
+/** Probe signature accepted by {@link shouldLaunchHire} / {@link finalizeInit}. */
+export type HasAgentsFn = (opts: HasExistingAgentsOptions) => Promise<boolean>;
 
 /**
  * Check whether the project already has at least one agent config.
@@ -1098,19 +1167,12 @@ export const DEFAULT_ADD_AGENT_PROMPT_TEXT =
  * (fresh install before `ensureDataDir` has run, or an init that
  * aborted early) is treated as "no agents" rather than an error — this
  * matches the forgiving behavior `listAllAgents` exposes in
- * `storage/agent-helpers.js`.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root (defaults to `process.cwd()`).
- * @param {string} [opts.dataDir=DEFAULT_DATA_DIR] - Data dir path
- *   (accepts `.aweek` or `.aweek/agents`; normalized via
- *   {@link normalizeAweekRoot}).
- * @returns {Promise<boolean>}
+ * `storage/agent-helpers.ts`.
  */
 export async function hasExistingAgents({
   projectDir,
   dataDir = DEFAULT_DATA_DIR,
-} = {}) {
+}: HasExistingAgentsOptions = {}): Promise<boolean> {
   const resolvedProject = resolveProjectDir(projectDir);
   const absoluteDataDir = resolve(resolvedProject, dataDir);
   const aweekRoot = normalizeAweekRoot(absoluteDataDir);
@@ -1120,12 +1182,19 @@ export async function hasExistingAgents({
     const entries = await readdir(agentsDir);
     return entries.some((name) => name.endsWith('.json'));
   } catch (err) {
+    const e = err as ErrnoLike;
     // Missing directory is fine — that means no agents yet.
-    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+    if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) {
       return false;
     }
     throw err;
   }
+}
+
+/** Options for {@link shouldLaunchHire}. */
+export interface ShouldLaunchHireOptions extends HasExistingAgentsOptions {
+  /** Injectable probe for tests. */
+  hasAgentsFn?: HasAgentsFn;
 }
 
 /**
@@ -1135,21 +1204,29 @@ export async function hasExistingAgents({
  * project that just finished infrastructure setup and has nothing to
  * manage until an agent is hired. Returns `false` when the project
  * already has one or more agent configs.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir]
- * @param {string} [opts.dataDir=DEFAULT_DATA_DIR]
- * @param {Function} [opts.hasAgentsFn] - Injectable probe for tests.
- * @returns {Promise<boolean>}
  */
 export async function shouldLaunchHire({
   projectDir,
   dataDir = DEFAULT_DATA_DIR,
   hasAgentsFn,
-} = {}) {
-  const check = hasAgentsFn || hasExistingAgents;
+}: ShouldLaunchHireOptions = {}): Promise<boolean> {
+  const check: HasAgentsFn = hasAgentsFn || hasExistingAgents;
   const hasAgents = await check({ projectDir, dataDir });
   return !hasAgents;
+}
+
+/** Options for {@link buildHireLaunchInstruction}. */
+export interface BuildHireLaunchInstructionOptions {
+  projectDir?: string;
+  promptText?: string;
+}
+
+/** Result of {@link buildHireLaunchInstruction}. */
+export interface HireLaunchInstruction {
+  skill: string;
+  projectDir: string;
+  promptText: string;
+  reason: string;
 }
 
 /**
@@ -1158,21 +1235,11 @@ export async function shouldLaunchHire({
  * Shape matches what the skill markdown emits to the Claude Code
  * harness so it can either (a) render a hint in the final summary or
  * (b) invoke the hire skill directly via SlashCommand.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root (defaults to `process.cwd()`).
- * @param {string} [opts.promptText=DEFAULT_HIRE_PROMPT_TEXT]
- * @returns {{
- *   skill: string,
- *   projectDir: string,
- *   promptText: string,
- *   reason: string,
- * }}
  */
 export function buildHireLaunchInstruction({
   projectDir,
   promptText = DEFAULT_HIRE_PROMPT_TEXT,
-} = {}) {
+}: BuildHireLaunchInstructionOptions = {}): HireLaunchInstruction {
   const resolvedProject = resolveProjectDir(projectDir);
   return {
     skill: HIRE_SKILL_NAME,
@@ -1183,18 +1250,40 @@ export function buildHireLaunchInstruction({
   };
 }
 
+/** Options accepted by {@link formatHireLaunchPrompt}. */
+export interface FormatHireLaunchPromptOptions {
+  promptText?: string;
+}
+
 /**
  * Format the user-facing prompt shown via AskUserQuestion when init
  * offers to launch `/aweek:hire` as its final step.
- *
- * @param {object} [opts]
- * @param {string} [opts.promptText=DEFAULT_HIRE_PROMPT_TEXT]
- * @returns {string}
  */
 export function formatHireLaunchPrompt({
   promptText = DEFAULT_HIRE_PROMPT_TEXT,
-} = {}) {
+}: FormatHireLaunchPromptOptions = {}): string {
   return promptText;
+}
+
+/** Options for {@link finalizeInit}. */
+export interface FinalizeInitOptions {
+  projectDir?: string;
+  dataDir?: string;
+  promptText?: string;
+  addAnotherPromptText?: string;
+  hasAgentsFn?: HasAgentsFn;
+}
+
+/** Result of {@link finalizeInit}. */
+export interface FinalizeInitResult {
+  launchHire: true;
+  nextSkill: string;
+  mode: 'first-agent' | 'add-another';
+  isReRun: boolean;
+  promptText: string;
+  reason: string;
+  projectDir: string;
+  instruction: HireLaunchInstruction;
 }
 
 /**
@@ -1203,46 +1292,6 @@ export function formatHireLaunchPrompt({
  * Called by the `/aweek:init` skill markdown after Step 5 (summary)
  * completes. Returns a result the markdown can use to decide whether
  * to AskUserQuestion → invoke the hire skill.
- *
- * AC 2 idempotency contract: `/aweek:init` is safe to re-run. The hire
- * handoff is ALWAYS offered on the final step, but the user-facing
- * prompt text adapts:
- *
- *   | State                  | `mode`          | Prompt copy |
- *   |------------------------|-----------------|-------------|
- *   | No agents yet          | `first-agent`   | "hire your first agent" |
- *   | One or more agents     | `add-another`   | "hire another agent"    |
- *
- * Returning `launchHire: true` in both cases ensures re-runs still give
- * the user a clear next action — skipping silently on re-run (the
- * previous behavior) made idempotent re-runs feel like dead-ends and
- * violated the idempotent-init evaluation principle.
- *
- * The destructive-operation policy in `skills/aweek-init.md` does
- * *not* gate this handoff: `/aweek:hire` only creates new state. The
- * caller still MUST collect explicit consent via AskUserQuestion
- * before invoking the skill — that's a UX requirement, not a safety
- * gate, and it's enforced in the markdown rather than here.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir]
- * @param {string} [opts.dataDir=DEFAULT_DATA_DIR]
- * @param {string} [opts.promptText] - Override for the "first agent"
- *   prompt copy. Defaults to {@link DEFAULT_HIRE_PROMPT_TEXT}.
- * @param {string} [opts.addAnotherPromptText] - Override for the "add
- *   another agent" prompt copy shown when agents already exist.
- *   Defaults to {@link DEFAULT_ADD_AGENT_PROMPT_TEXT}.
- * @param {Function} [opts.hasAgentsFn] - Injectable probe for tests.
- * @returns {Promise<{
- *   launchHire: true,
- *   nextSkill: string,
- *   mode: 'first-agent' | 'add-another',
- *   isReRun: boolean,
- *   promptText: string,
- *   reason: string,
- *   projectDir: string,
- *   instruction: ReturnType<typeof buildHireLaunchInstruction>,
- * }>}
  */
 export async function finalizeInit({
   projectDir,
@@ -1250,15 +1299,15 @@ export async function finalizeInit({
   promptText = DEFAULT_HIRE_PROMPT_TEXT,
   addAnotherPromptText = DEFAULT_ADD_AGENT_PROMPT_TEXT,
   hasAgentsFn,
-} = {}) {
+}: FinalizeInitOptions = {}): Promise<FinalizeInitResult> {
   const resolvedProject = resolveProjectDir(projectDir);
-  const check = hasAgentsFn || hasExistingAgents;
+  const check: HasAgentsFn = hasAgentsFn || hasExistingAgents;
   const hasAgents = await check({
     projectDir: resolvedProject,
     dataDir,
   });
 
-  const mode = hasAgents ? 'add-another' : 'first-agent';
+  const mode: 'first-agent' | 'add-another' = hasAgents ? 'add-another' : 'first-agent';
   const activePromptText = hasAgents ? addAnotherPromptText : promptText;
   const reason = hasAgents
     ? 'Agents already exist — offering /aweek:hire as the final step so the user can add another agent.'
@@ -1287,52 +1336,45 @@ export async function finalizeInit({
  * `/aweek:init` skill markdown runs at the top of every invocation.
  * It lets the wizard skip completed steps (idempotency) and present a
  * readable state summary to the user before taking any action.
- *
- * The report covers the two mutable init artifacts the plugin does not
- * handle itself:
- *
- *   1. `dataDir` — `.aweek/` existence + agent count. Feeds the
- *      "ensure data directory exists" step: if `exists === true`, the
- *      markdown reports it as skipped without re-creating.
- *
- *   2. `heartbeat` — delegates to {@link queryHeartbeat} so the
- *      markdown can avoid re-prompting for crontab install when the
- *      project heartbeat is already in place.
- *
- * Slash-command discovery is handled by the Claude Code plugin system
- * (see `.claude-plugin/plugin.json`); init no longer copies markdown
- * into `.claude/commands/`.
  */
+
+/** Options accepted by {@link detectInitState}. */
+export interface DetectInitStateOptions {
+  projectDir?: string;
+  dataDir?: string;
+  readCrontabFn?: ReadCrontabFn;
+  backend?: HeartbeatBackend;
+  platform?: NodeJS.Platform;
+  home?: string;
+  readFileFn?: (path: string) => Promise<string>;
+  launchctlFn?: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  getUidFn?: () => number;
+}
+
+/** Result of {@link detectInitState}. */
+export interface DetectInitStateResult {
+  projectDir: string;
+  dataDir: {
+    path: string;
+    exists: boolean;
+    agentCount: number;
+  };
+  heartbeat: {
+    installed: boolean;
+    schedule: string | null;
+    command: string | null;
+  };
+  needsWork: {
+    dataDir: boolean;
+    heartbeat: boolean;
+  };
+  fullyInitialized: boolean;
+}
 
 /**
  * Probe the current init state of a project.
  *
  * Purely read-only — NEVER mutates the filesystem or crontab.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Defaults to `process.cwd()`.
- * @param {string} [opts.dataDir=DEFAULT_DATA_DIR] - `.aweek/` root
- *   (accepts `.aweek` or `.aweek/agents`; normalized internally).
- * @param {Function} [opts.readCrontabFn] - Injectable crontab reader;
- *   forwarded to {@link queryHeartbeat}.
- * @returns {Promise<{
- *   projectDir: string,
- *   dataDir: {
- *     path: string,
- *     exists: boolean,
- *     agentCount: number,
- *   },
- *   heartbeat: {
- *     installed: boolean,
- *     schedule: string | null,
- *     command: string | null,
- *   },
- *   needsWork: {
- *     dataDir: boolean,
- *     heartbeat: boolean,
- *   },
- *   fullyInitialized: boolean,
- * }>}
  */
 export async function detectInitState({
   projectDir,
@@ -1344,7 +1386,7 @@ export async function detectInitState({
   readFileFn,
   launchctlFn,
   getUidFn,
-} = {}) {
+}: DetectInitStateOptions = {}): Promise<DetectInitStateResult> {
   const resolvedProject = resolveProjectDir(projectDir);
   const absoluteDataDir = resolve(resolvedProject, dataDir);
   const aweekRoot = normalizeAweekRoot(absoluteDataDir);
@@ -1357,7 +1399,8 @@ export async function detectInitState({
       const entries = await readdir(agentsDir);
       agentCount = entries.filter((name) => name.endsWith('.json')).length;
     } catch (err) {
-      if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+      const e = err as ErrnoLike;
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) {
         agentCount = 0;
       } else {
         throw err;
@@ -1365,7 +1408,7 @@ export async function detectInitState({
     }
   }
 
-  const heartbeat = await queryHeartbeat({
+  const heartbeat = (await queryHeartbeat({
     projectDir: resolvedProject,
     readCrontabFn,
     backend,
@@ -1374,7 +1417,7 @@ export async function detectInitState({
     readFileFn,
     launchctlFn,
     getUidFn,
-  });
+  })) as { installed: boolean; schedule: string | null; command: string | null };
 
   const needsDataDir = !rootExists;
   const needsHeartbeat = !heartbeat.installed;

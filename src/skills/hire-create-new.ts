@@ -42,22 +42,37 @@ import {
   subagentFilePath,
 } from '../subagents/subagent-file.js';
 
+/** Inputs for {@link validateCreateNewInput} and {@link createNewSubagent}. */
+export interface CreateNewInput {
+  /** Human-readable agent name (e.g. "Content Writer"). */
+  name?: string;
+  /** Short single-line description. */
+  description?: string;
+  /** Body of the subagent `.md` file. */
+  systemPrompt?: string;
+}
+
+/** Result of {@link validateCreateNewInput}. */
+export interface ValidateCreateNewResult {
+  valid: boolean;
+  errors: string[];
+  /**
+   * Slugified form of `name` — empty string if the name had no
+   * alphanumeric characters, in which case `valid` is false.
+   */
+  slug: string;
+}
+
 /**
  * Validate the three free-form inputs collected by the create-new wizard.
  *
  * Returns every validation error at once so the wizard can re-prompt for
  * only the invalid fields rather than one-at-a-time ping-ponging.
- *
- * @param {object} input
- * @param {string} input.name - Human-readable agent name (e.g. "Content Writer")
- * @param {string} input.description - Short single-line description
- * @param {string} input.systemPrompt - Body of the subagent `.md` file
- * @returns {{ valid: boolean, errors: string[], slug: string }}
- *   `slug` is the slugified form of `name` — empty string if the name had
- *   no alphanumeric characters, in which case `valid` is false.
  */
-export function validateCreateNewInput({ name, description, systemPrompt } = {}) {
-  const errors = [];
+export function validateCreateNewInput(
+  { name, description, systemPrompt }: CreateNewInput = {},
+): ValidateCreateNewResult {
+  const errors: string[] = [];
 
   if (typeof name !== 'string' || name.trim().length === 0) {
     errors.push('Name is required and must be a non-empty string');
@@ -84,6 +99,38 @@ export function validateCreateNewInput({ name, description, systemPrompt } = {})
   return { valid: errors.length === 0, errors, slug };
 }
 
+/** Inputs for {@link createNewSubagent}. */
+export interface CreateNewSubagentInput extends CreateNewInput {
+  /**
+   * Override for the project root. Tests use this to write into a temp dir;
+   * production code leaves it unset and gets `process.cwd()`.
+   */
+  projectDir?: string;
+}
+
+/** Successful outcome of {@link createNewSubagent}. */
+export interface CreateNewSubagentSuccess {
+  success: true;
+  adopted: boolean;
+  slug: string;
+  path: string;
+  content: string;
+}
+
+/** Failure outcome of {@link createNewSubagent}. */
+export interface CreateNewSubagentFailure {
+  success: false;
+  errors: string[];
+  slug?: string;
+  path?: string;
+  alreadyExists?: boolean;
+}
+
+/** Discriminated union covering every outcome of {@link createNewSubagent}. */
+export type CreateNewSubagentResult =
+  | CreateNewSubagentSuccess
+  | CreateNewSubagentFailure;
+
 /**
  * Create a brand-new subagent — or adopt an existing one on collision — by
  * ensuring `.claude/agents/<slug>.md` is present on disk.
@@ -103,27 +150,13 @@ export function validateCreateNewInput({ name, description, systemPrompt } = {})
  *
  * All other failures (invalid input, filesystem errors) surface as
  * `{ success: false, errors: [...] }`.
- *
- * @param {object} params
- * @param {string} params.name - Human-readable agent name (will be slugified).
- * @param {string} params.description - Short single-line description. Used
- *   only when creating a new file; ignored on adoption.
- * @param {string} params.systemPrompt - Body of the subagent `.md`. Used only
- *   when creating a new file; ignored on adoption.
- * @param {string} [params.projectDir] - Override for the project root. Tests
- *   use this to write into a temp dir; production code leaves it unset and
- *   gets `process.cwd()`.
- * @returns {Promise<
- *   | { success: true, adopted: boolean, slug: string, path: string, content: string }
- *   | { success: false, errors: string[], slug?: string, path?: string }
- * >}
  */
 export async function createNewSubagent({
   name,
   description,
   systemPrompt,
   projectDir,
-} = {}) {
+}: CreateNewSubagentInput = {}): Promise<CreateNewSubagentResult> {
   const inputCheck = validateCreateNewInput({ name, description, systemPrompt });
   if (!inputCheck.valid) {
     return { success: false, errors: inputCheck.errors, slug: inputCheck.slug };
@@ -151,8 +184,8 @@ export async function createNewSubagent({
 
   const result = await writeSubagentFile({
     slug,
-    description,
-    systemPrompt,
+    description: description as string,
+    systemPrompt: systemPrompt as string,
     projectDir,
   });
 

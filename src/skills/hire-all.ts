@@ -58,6 +58,7 @@
  */
 import { createAgentConfig } from '../models/agent.js';
 import { createAgentStore } from '../storage/agent-helpers.js';
+import type { AgentStore } from '../storage/agent-store.js';
 import {
   buildInitialPlan,
   exists as planExists,
@@ -78,6 +79,65 @@ import { isPluginSubagent } from './hire-route.js';
  */
 export const DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT = 500_000;
 
+/** Options accepted by {@link hireAllSubagents}. */
+export interface HireAllSubagentsOptions {
+  /**
+   * Subagent slugs to wrap. Typically the `route.slugs` payload from
+   * `routeInitHireMenuChoice`. Any non-array input lands as a structured
+   * failure rather than a throw.
+   */
+  slugs?: unknown;
+  /**
+   * Weekly token budget applied to every new shell. Defaults to
+   * {@link DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT}.
+   */
+  weeklyTokenLimit?: number;
+  /**
+   * Project root for the `.md` lookup. Defaults to `process.cwd()` via
+   * `subagentFileExists`.
+   */
+  projectDir?: string;
+  /**
+   * aweek data directory override. Defaults to the project-local
+   * `.aweek/agents/` via `createAgentStore`.
+   */
+  dataDir?: string;
+  /**
+   * Pre-constructed store (test hook). When supplied, `dataDir` is ignored
+   * and the provided store is used directly.
+   */
+  agentStore?: AgentStore;
+}
+
+/** Per-slug "skipped" outcome. */
+export interface HireAllSkipped {
+  slug: string;
+  reason: string;
+}
+
+/** Per-slug "failed" outcome. */
+export interface HireAllFailed {
+  slug: string;
+  errors: string[];
+}
+
+/** Result of {@link hireAllSubagents}. */
+export interface HireAllResult {
+  success: boolean;
+  /** slugs that now have a fresh aweek JSON wrapper on disk. */
+  created: string[];
+  /**
+   * slugs that were intentionally left alone (plugin-namespaced or
+   * already-hired). Each entry carries a human-readable `reason`.
+   */
+  skipped: HireAllSkipped[];
+  /**
+   * slugs that could not be wrapped (missing `.md`, invalid slug, schema
+   * error). Each entry carries the underlying `errors`.
+   */
+  failed: HireAllFailed[];
+}
+
 /**
  * Wrap a batch of pre-existing Claude Code subagents with minimal aweek
  * scheduling JSON shells.
@@ -86,31 +146,8 @@ export const DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT = 500_000;
  * short-circuit the batch. The returned object lists every outcome so the
  * caller can render a full post-hire summary.
  *
- * @param {object} params
- * @param {string[]} params.slugs - Subagent slugs to wrap. Typically the
- *   `route.slugs` payload from `routeInitHireMenuChoice`.
- * @param {number} [params.weeklyTokenLimit] - Weekly token budget applied to
- *   every new shell. Defaults to {@link DEFAULT_HIRE_ALL_WEEKLY_TOKEN_LIMIT}.
- * @param {string} [params.projectDir] - Project root for the `.md` lookup.
- *   Defaults to `process.cwd()` via `subagentFileExists`.
- * @param {string} [params.dataDir] - aweek data directory override. Defaults
- *   to the project-local `.aweek/agents/` via `createAgentStore`.
- * @param {import('../storage/agent-store.js').AgentStore} [params.agentStore]
- *   Pre-constructed store (test hook). When supplied, `dataDir` is ignored
- *   and the provided store is used directly.
- * @returns {Promise<{
- *   success: boolean,
- *   created: string[],
- *   skipped: Array<{ slug: string, reason: string }>,
- *   failed: Array<{ slug: string, errors: string[] }>,
- * }>}
- *   - `created`: slugs that now have a fresh aweek JSON wrapper on disk.
- *   - `skipped`: slugs that were intentionally left alone (plugin-namespaced
- *     or already-hired). Each entry carries a human-readable `reason`.
- *   - `failed`: slugs that could not be wrapped (missing `.md`, invalid slug,
- *     schema error). Each entry carries the underlying `errors`.
- *   - `success`: `true` iff `failed` is empty. `skipped` does not affect the
- *     success flag — skips are a valid outcome.
+ * `success` is `true` iff `failed` is empty. `skipped` does not affect the
+ * success flag — skips are a valid outcome.
  */
 export async function hireAllSubagents({
   slugs,
@@ -118,7 +155,7 @@ export async function hireAllSubagents({
   projectDir,
   dataDir,
   agentStore,
-} = {}) {
+}: HireAllSubagentsOptions = {}): Promise<HireAllResult> {
   // Defensive shape check — the handler is often called from skill markdown
   // that hands us whatever `route.slugs` happens to be, so we don't want a
   // stray `null`/`undefined` to throw an opaque error.
@@ -145,16 +182,16 @@ export async function hireAllSubagents({
 
   const store = agentStore || createAgentStore(dataDir);
 
-  const created = [];
-  const skipped = [];
-  const failed = [];
+  const created: string[] = [];
+  const skipped: HireAllSkipped[] = [];
+  const failed: HireAllFailed[] = [];
   // Track slugs we've already processed in THIS batch so a caller that
   // accidentally duplicates a slug in its input list still gets one create
   // + one "already hired" skip rather than a schema collision on the second
   // save.
-  const seen = new Set();
+  const seen = new Set<string>();
 
-  for (const slug of slugs) {
+  for (const slug of slugs as unknown[]) {
     // Validate the slug shape up front. If the caller passed a bad slug
     // (non-string, wrong casing, underscores, etc.) we want a clear error
     // in `failed` rather than a misleading "file not found" path.
@@ -167,21 +204,24 @@ export async function hireAllSubagents({
       continue;
     }
 
-    if (seen.has(slug)) {
+    // After validateSubagentSlug succeeds we know `slug` is a string.
+    const slugStr = slug as string;
+
+    if (seen.has(slugStr)) {
       skipped.push({
-        slug,
+        slug: slugStr,
         reason: 'duplicate slug in input — already processed in this batch',
       });
       continue;
     }
-    seen.add(slug);
+    seen.add(slugStr);
 
     // Plugin-namespaced slugs are filtered out of hireable lists per the v1
     // constraint. Re-check here because not every caller assembles its slug
     // list from `listUnhiredSubagents`.
-    if (isPluginSubagent(slug)) {
+    if (isPluginSubagent(slugStr)) {
       skipped.push({
-        slug,
+        slug: slugStr,
         reason:
           'plugin-namespaced subagent — excluded from hireable lists in v1 (see PLUGIN_SUBAGENT_PREFIXES)',
       });
@@ -191,9 +231,9 @@ export async function hireAllSubagents({
     // Idempotency: if an aweek JSON wrapper already exists, leave it
     // untouched. This lets users re-run the hire-all flow after adding a
     // new subagent without clobbering already-scheduled agents.
-    if (await store.exists(slug)) {
+    if (await store.exists(slugStr)) {
       skipped.push({
-        slug,
+        slug: slugStr,
         reason:
           'aweek JSON wrapper already exists — re-running hire-all on an already-hired slug is a no-op',
       });
@@ -204,12 +244,12 @@ export async function hireAllSubagents({
     // Creating an aweek config that points at a missing .md would just
     // trigger an immediate `subagent_missing` auto-pause on the next
     // heartbeat — better to surface the problem at hire time.
-    const exists = await subagentFileExists(slug, projectDir);
+    const exists = await subagentFileExists(slugStr, projectDir);
     if (!exists) {
       failed.push({
-        slug,
+        slug: slugStr,
         errors: [
-          `Subagent file .claude/agents/${slug}.md not found in project. Create the subagent first or run /aweek:hire create-new.`,
+          `Subagent file .claude/agents/${slugStr}.md not found in project. Create the subagent first or run /aweek:hire create-new.`,
         ],
       });
       continue;
@@ -221,10 +261,10 @@ export async function hireAllSubagents({
     // ever drifts.
     let config;
     try {
-      config = createAgentConfig({ subagentRef: slug, weeklyTokenLimit });
+      config = createAgentConfig({ subagentRef: slugStr, weeklyTokenLimit });
     } catch (err) {
       failed.push({
-        slug,
+        slug: slugStr,
         errors: [err instanceof Error ? err.message : String(err)],
       });
       continue;
@@ -265,25 +305,29 @@ export async function hireAllSubagents({
       // succeeds but fails to seed plan.md still counts as `created` — the
       // user can write the file by hand on first `/aweek:plan`.
       try {
-        if (!(await planExists(store.baseDir, slug))) {
-          let name = slug;
-          let description;
+        if (!(await planExists(store.baseDir, slugStr))) {
+          let name: string = slugStr;
+          let description: string | undefined;
           try {
-            const identity = await readSubagentIdentity(slug, projectDir);
+            const identity = await readSubagentIdentity(slugStr, projectDir);
             if (identity?.name) name = identity.name;
             if (identity?.description) description = identity.description;
           } catch {
             // Fall back to the slug alone.
           }
-          await writePlan(store.baseDir, slug, buildInitialPlan({ name, description }));
+          await writePlan(
+            store.baseDir,
+            slugStr,
+            buildInitialPlan({ name, description }),
+          );
         }
       } catch {
         // Ignore — plan.md is secondary to the JSON wrapper.
       }
-      created.push(slug);
+      created.push(slugStr);
     } catch (err) {
       failed.push({
-        slug,
+        slug: slugStr,
         errors: [err instanceof Error ? err.message : String(err)],
       });
     }
@@ -304,11 +348,10 @@ export async function hireAllSubagents({
  * Empty sections are omitted to keep the summary concise. When every list
  * is empty (e.g. the caller passed an empty `slugs` array), a single-line
  * "nothing to hire" message is returned instead.
- *
- * @param {Awaited<ReturnType<typeof hireAllSubagents>>} result
- * @returns {string}
  */
-export function formatHireAllSummary(result) {
+export function formatHireAllSummary(
+  result: HireAllResult | null | undefined,
+): string {
   if (!result) return '';
 
   const { created = [], skipped = [], failed = [] } = result;
@@ -316,7 +359,7 @@ export function formatHireAllSummary(result) {
     return 'hire-all: no slugs to process.';
   }
 
-  const lines = [];
+  const lines: string[] = [];
 
   if (created.length > 0) {
     lines.push(

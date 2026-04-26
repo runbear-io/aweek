@@ -163,7 +163,8 @@
     "src/lock/**/*.ts",
     "src/queue/**/*.ts",
     "src/services/**/*.ts",
-    "src/storage/**/*.ts"
+    "src/storage/**/*.ts",
+    "src/skills/**/*.ts"
   ],
 
   // Carve-outs:
@@ -179,7 +180,7 @@
   //   - `dist` — output dir parity with the SPA config.
   "exclude": [
     "node_modules",
-    "src/skills",
+    "src/skills/summary.d.ts",
     "src/cli",
     "src/serve",
     "src/**/*.test.ts",
