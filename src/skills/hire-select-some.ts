@@ -36,9 +36,17 @@
  *
  * @module skills/hire-select-some
  */
-import { hireAllSubagents, formatHireAllSummary } from './hire-all.js';
-import { readSubagentIdentity } from '../subagents/subagent-file.js';
-import { validateSelectedSlugs } from './init-hire-menu.js';
+import {
+  hireAllSubagents,
+  formatHireAllSummary,
+  type HireAllResult,
+} from './hire-all.js';
+import {
+  readSubagentIdentity,
+  type SubagentIdentity,
+} from '../subagents/subagent-file.js';
+import { validateSelectedSlugs, type InitHireMenu } from './init-hire-menu.js';
+import type { AgentStore } from '../storage/agent-store.js';
 
 /**
  * Default prompt copy shown above the multi-select list. The skill markdown
@@ -52,12 +60,50 @@ export const DEFAULT_SELECT_SOME_PROMPT_TEXT =
  * Default fallback description used for a choice entry when the subagent .md
  * has no frontmatter `description` (or the file cannot be read). Keeps the
  * multi-select picker readable even when metadata is missing.
- *
- * @param {string} slug
- * @returns {string}
  */
-export function defaultChoiceDescription(slug) {
+export function defaultChoiceDescription(slug: string): string {
   return `Wrap .claude/agents/${slug}.md into an aweek scheduling JSON shell (empty goals / plans, default budget).`;
+}
+
+/** Injectable identity reader signature accepted by {@link buildSelectSomeChoices}. */
+export type ReadIdentityFn = (
+  slug: string,
+  projectDir?: string,
+) => Promise<SubagentIdentity>;
+
+/** Options for {@link buildSelectSomeChoices}. */
+export interface BuildSelectSomeChoicesOptions {
+  /**
+   * Project root for the .md lookup; defaults to `process.cwd()` via
+   * `readSubagentIdentity`.
+   */
+  projectDir?: string;
+  /** Override for the prompt header copy. */
+  promptText?: string;
+  /**
+   * Flag the markdown can forward to `AskUserQuestion` so the picker
+   * renders with checkbox semantics instead of radio-button semantics.
+   */
+  multiSelect?: boolean;
+  /** Injectable identity reader (test hook). Defaults to {@link readSubagentIdentity}. */
+  readIdentityFn?: ReadIdentityFn;
+}
+
+/** A single choice entry built by {@link buildSelectSomeChoices}. */
+export interface SelectSomeChoice {
+  value: string;
+  label: string;
+  description: string;
+  missing: boolean;
+  path: string;
+}
+
+/** Result of {@link buildSelectSomeChoices}. */
+export interface SelectSomeChoicesPayload {
+  promptText: string;
+  multiSelect: boolean;
+  slugs: string[];
+  choices: SelectSomeChoice[];
 }
 
 /**
@@ -74,31 +120,11 @@ export function defaultChoiceDescription(slug) {
  * files without requiring callers to pre-load anything. Consumers that want
  * to avoid filesystem access (tests, dry-run previews) can inject a custom
  * `readIdentityFn` that returns the frontmatter shape directly.
- *
- * @param {object} menu - Return value of `buildInitHireMenu` from
- *   `init-hire-menu.js`. Must carry an `unhired` slug list.
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root for the .md lookup;
- *   defaults to `process.cwd()` via `readSubagentIdentity`.
- * @param {string} [opts.promptText] - Override for the prompt header copy.
- * @param {boolean} [opts.multiSelect=true] - Flag the markdown can forward
- *   to `AskUserQuestion` so the picker renders with checkbox semantics
- *   instead of radio-button semantics.
- * @param {(slug: string, projectDir?: string) => Promise<{
- *   missing: boolean,
- *   name: string,
- *   description: string,
- *   path: string,
- * }>} [opts.readIdentityFn] - Injectable identity reader (test hook).
- *   Defaults to {@link readSubagentIdentity}.
- * @returns {Promise<{
- *   promptText: string,
- *   multiSelect: boolean,
- *   slugs: string[],
- *   choices: Array<{ value: string, label: string, description: string, missing: boolean, path: string }>,
- * }>}
  */
-export async function buildSelectSomeChoices(menu, opts = {}) {
+export async function buildSelectSomeChoices(
+  menu: InitHireMenu | null | undefined,
+  opts: BuildSelectSomeChoicesOptions = {},
+): Promise<SelectSomeChoicesPayload> {
   const {
     projectDir,
     promptText = DEFAULT_SELECT_SOME_PROMPT_TEXT,
@@ -108,20 +134,20 @@ export async function buildSelectSomeChoices(menu, opts = {}) {
 
   // Defensive copy — keep the returned `slugs` array independent of the
   // caller's menu so mutations do not leak back into the menu state.
-  const slugs = Array.isArray(menu?.unhired) ? [...menu.unhired] : [];
-  const readIdentity = readIdentityFn || readSubagentIdentity;
+  const slugs: string[] = Array.isArray(menu?.unhired) ? [...menu!.unhired] : [];
+  const readIdentity: ReadIdentityFn = readIdentityFn || readSubagentIdentity;
 
-  const choices = [];
+  const choices: SelectSomeChoice[] = [];
   for (const slug of slugs) {
-    let identity;
+    let identity: SubagentIdentity;
     try {
       identity = await readIdentity(slug, projectDir);
-    } catch (err) {
+    } catch {
       // Never throw from the builder — a malformed .md should degrade to
       // a generic choice entry, not crash the whole picker. The user can
       // still select the slug and the downstream wrapper will surface any
       // actual file errors.
-      identity = { missing: true, name: '', description: '', path: '' };
+      identity = { missing: true, name: '', description: '', body: '', path: '' };
     }
 
     const name =
@@ -152,6 +178,34 @@ export async function buildSelectSomeChoices(menu, opts = {}) {
   };
 }
 
+/** Options accepted by {@link runSelectSomeHire}. */
+export interface RunSelectSomeHireOptions {
+  /** Return value of `buildInitHireMenu`. */
+  menu?: InitHireMenu | null;
+  /** Slugs picked in the multi-select UI. */
+  selected?: unknown;
+  /** Override forwarded to `hireAllSubagents`. */
+  weeklyTokenLimit?: number;
+  /** Project root; forwarded to `hireAllSubagents`. */
+  projectDir?: string;
+  /** aweek data directory override; forwarded to `hireAllSubagents`. */
+  dataDir?: string;
+  /** Pre-constructed store (test hook); forwarded to `hireAllSubagents`. */
+  agentStore?: AgentStore;
+  /**
+   * Injectable hire-all delegate for tests that want to assert the exact
+   * call args without touching the filesystem.
+   */
+  hireFn?: typeof hireAllSubagents;
+}
+
+/** Result of {@link runSelectSomeHire}. */
+export interface RunSelectSomeHireResult {
+  success: boolean;
+  validation: { valid: boolean; errors: string[] };
+  hire: HireAllResult | null;
+}
+
 /**
  * Run the select-some branch end-to-end.
  *
@@ -175,26 +229,6 @@ export async function buildSelectSomeChoices(menu, opts = {}) {
  *
  * The top-level `success` flag is only `true` when validation succeeded
  * AND every slug was wrapped (or legitimately skipped as a no-op).
- *
- * @param {object} params
- * @param {object} params.menu - Return value of `buildInitHireMenu`.
- * @param {string[]} params.selected - Slugs picked in the multi-select UI.
- * @param {number} [params.weeklyTokenLimit] - Override forwarded to
- *   `hireAllSubagents`. Defaults to the hire-all module's default.
- * @param {string} [params.projectDir] - Project root; forwarded to
- *   `hireAllSubagents`.
- * @param {string} [params.dataDir] - aweek data directory override;
- *   forwarded to `hireAllSubagents`.
- * @param {import('../storage/agent-store.js').AgentStore} [params.agentStore]
- *   Pre-constructed store (test hook); forwarded to `hireAllSubagents`.
- * @param {typeof hireAllSubagents} [params.hireFn] - Injectable hire-all
- *   delegate for tests that want to assert the exact call args without
- *   touching the filesystem.
- * @returns {Promise<{
- *   success: boolean,
- *   validation: { valid: boolean, errors: string[] },
- *   hire: Awaited<ReturnType<typeof hireAllSubagents>> | null,
- * }>}
  */
 export async function runSelectSomeHire({
   menu,
@@ -204,7 +238,7 @@ export async function runSelectSomeHire({
   dataDir,
   agentStore,
   hireFn,
-} = {}) {
+}: RunSelectSomeHireOptions = {}): Promise<RunSelectSomeHireResult> {
   const validation = validateSelectedSlugs(selected, menu);
   if (!validation.valid) {
     return {
@@ -216,7 +250,7 @@ export async function runSelectSomeHire({
 
   const delegate = hireFn || hireAllSubagents;
   const hire = await delegate({
-    slugs: selected,
+    slugs: selected as string[],
     weeklyTokenLimit,
     projectDir,
     dataDir,
@@ -242,11 +276,10 @@ export async function runSelectSomeHire({
  *     verbatim. When a selection succeeded, the output matches what
  *     hire-all would print, so users see a consistent summary regardless
  *     of which branch they came in from.
- *
- * @param {Awaited<ReturnType<typeof runSelectSomeHire>>} result
- * @returns {string}
  */
-export function formatSelectSomeResult(result) {
+export function formatSelectSomeResult(
+  result: RunSelectSomeHireResult | null | undefined,
+): string {
   if (!result) return '';
 
   if (result.validation && !result.validation.valid) {

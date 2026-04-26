@@ -49,6 +49,7 @@
  * `skills/aweek-init.md`; this file is the testable backing logic.
  */
 import { listUnhiredSubagents } from './hire-route.js';
+import type { AgentStore } from '../storage/agent-store.js';
 
 /**
  * Canonical choice identifiers returned by the four-option menu.
@@ -61,12 +62,24 @@ export const INIT_HIRE_MENU_CHOICE = Object.freeze({
   SELECT_SOME: 'select-some',
   CREATE_NEW: 'create-new',
   SKIP: 'skip',
-});
+} as const);
+
+/** Union of every canonical choice identifier. */
+export type InitHireMenuChoice =
+  (typeof INIT_HIRE_MENU_CHOICE)[keyof typeof INIT_HIRE_MENU_CHOICE];
 
 /**
  * Set form of the choice identifiers, handy for validation.
  */
-const ALL_CHOICES = new Set(Object.values(INIT_HIRE_MENU_CHOICE));
+const ALL_CHOICES: ReadonlySet<string> = new Set(Object.values(INIT_HIRE_MENU_CHOICE));
+
+/** Shape of a single entry in {@link INIT_HIRE_MENU_OPTIONS}. */
+export interface InitHireMenuOption {
+  value: InitHireMenuChoice;
+  label: string;
+  description: string;
+  requiresUnhired: boolean;
+}
 
 /**
  * Option metadata for every menu choice.
@@ -84,7 +97,7 @@ const ALL_CHOICES = new Set(Object.values(INIT_HIRE_MENU_CHOICE));
  * the user always sees "Hire all" before "Select some" before "Create new"
  * before "Skip" when all four are active.
  */
-export const INIT_HIRE_MENU_OPTIONS = Object.freeze([
+export const INIT_HIRE_MENU_OPTIONS: readonly InitHireMenuOption[] = Object.freeze([
   Object.freeze({
     value: INIT_HIRE_MENU_CHOICE.HIRE_ALL,
     label: 'Hire all',
@@ -129,11 +142,49 @@ export const DEFAULT_MENU_PROMPT_TEXT =
 export const DEFAULT_MENU_PROMPT_TEXT_NO_UNHIRED =
   'Infrastructure setup is complete. No unhired subagents were found under .claude/agents/. Would you like to create one now or skip?';
 
+/** Injectable discovery helper signature. */
+export type ListUnhiredFn = (
+  opts: BuildInitHireMenuOptions,
+) => Promise<string[] | null | undefined>;
+
+/** Options accepted by {@link buildInitHireMenu}. */
+export interface BuildInitHireMenuOptions {
+  /** Project root; defaults to `process.cwd()`. */
+  projectDir?: string;
+  /** aweek data directory override. */
+  dataDir?: string;
+  /** Pre-constructed store (test hook). */
+  agentStore?: AgentStore;
+  /** Override for the primary prompt copy. */
+  promptText?: string;
+  /**
+   * Override for the empty-menu prompt copy (shown when there are zero
+   * unhired subagents).
+   */
+  promptTextNoUnhired?: string;
+  /**
+   * Injectable discovery helper. Mirrors the `hasAgentsFn` pattern used by
+   * `finalizeInit` so unit tests can exercise the full control flow without
+   * touching the filesystem.
+   */
+  listUnhiredFn?: ListUnhiredFn;
+}
+
+/** Result of {@link buildInitHireMenu}. */
+export interface InitHireMenu {
+  unhired: string[];
+  hasUnhired: boolean;
+  fallThrough: boolean;
+  options: InitHireMenuOption[];
+  promptText: string;
+  projectDir: string;
+}
+
 /**
  * Build the menu state the skill markdown renders.
  *
  * Discovers unhired subagents (plugin-namespaced slugs filtered out per the v1
- * constraint — see `hire-route.js`) and returns the filtered option list plus
+ * constraint — see `hire-route.ts`) and returns the filtered option list plus
  * the right prompt copy for the current state. The markdown passes `options`
  * directly to `AskUserQuestion`.
  *
@@ -142,26 +193,6 @@ export const DEFAULT_MENU_PROMPT_TEXT_NO_UNHIRED =
  * straight to `/aweek:hire` (Sub-AC 3 of AC 6). The collapsed
  * `create-new` + `skip` options on this return value are kept for backwards
  * compatibility with callers that opt out of the fall-through helper.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root; defaults to `process.cwd()`.
- * @param {string} [opts.dataDir] - aweek data directory override.
- * @param {import('../storage/agent-store.js').AgentStore} [opts.agentStore]
- *   Pre-constructed store (test hook).
- * @param {string} [opts.promptText] - Override for the primary prompt copy.
- * @param {string} [opts.promptTextNoUnhired] - Override for the empty-menu
- *   prompt copy (shown when there are zero unhired subagents).
- * @param {Function} [opts.listUnhiredFn] - Injectable discovery helper. Mirrors
- *   the `hasAgentsFn` pattern used by `finalizeInit` so unit tests can exercise
- *   the full control flow without touching the filesystem.
- * @returns {Promise<{
- *   unhired: string[],
- *   hasUnhired: boolean,
- *   fallThrough: boolean,
- *   options: typeof INIT_HIRE_MENU_OPTIONS[number][],
- *   promptText: string,
- *   projectDir: string,
- * }>}
  */
 export async function buildInitHireMenu({
   projectDir,
@@ -170,8 +201,8 @@ export async function buildInitHireMenu({
   promptText = DEFAULT_MENU_PROMPT_TEXT,
   promptTextNoUnhired = DEFAULT_MENU_PROMPT_TEXT_NO_UNHIRED,
   listUnhiredFn,
-} = {}) {
-  const discover = listUnhiredFn || listUnhiredSubagents;
+}: BuildInitHireMenuOptions = {}): Promise<InitHireMenu> {
+  const discover: ListUnhiredFn = listUnhiredFn || (listUnhiredSubagents as ListUnhiredFn);
   const unhired = await discover({ projectDir, dataDir, agentStore });
   const hasUnhired = Array.isArray(unhired) && unhired.length > 0;
 
@@ -188,7 +219,7 @@ export async function buildInitHireMenu({
     // call `buildInitHireMenu` directly can branch on it without a second
     // probe of the unhired list.
     fallThrough: !hasUnhired,
-    options,
+    options: [...options],
     promptText: hasUnhired ? promptText : promptTextNoUnhired,
     projectDir: projectDir || process.cwd(),
   };
@@ -203,6 +234,34 @@ export async function buildInitHireMenu({
 export const DEFAULT_FALL_THROUGH_REASON =
   'No unhired subagents were found under .claude/agents/. Auto-delegating to /aweek:hire (create-new) — there is nothing to adopt and the only useful next action is to create a new agent.';
 
+/** Options accepted by {@link resolveInitHireMenu}. */
+export interface ResolveInitHireMenuOptions extends BuildInitHireMenuOptions {
+  /**
+   * Override for the auto-delegation reason copy. Defaults to
+   * {@link DEFAULT_FALL_THROUGH_REASON}.
+   */
+  fallThroughReason?: string;
+}
+
+/** Fall-through route descriptor returned by {@link resolveInitHireMenu}. */
+export interface InitHireMenuFallThroughRoute {
+  action: typeof INIT_HIRE_MENU_CHOICE.CREATE_NEW;
+  nextSkill: '/aweek:hire';
+  route: 'create-new';
+  slugs: string[];
+  bulk: false;
+  reason: string;
+  fallThrough: true;
+}
+
+/** Result of {@link resolveInitHireMenu}. */
+export interface ResolveInitHireMenuResult {
+  fallThrough: boolean;
+  menu: InitHireMenu;
+  route: InitHireMenuFallThroughRoute | null;
+  reason: string | null;
+}
+
 /**
  * Resolve the post-init hire decision, applying the Sub-AC 3 fall-through.
  *
@@ -211,29 +270,10 @@ export const DEFAULT_FALL_THROUGH_REASON =
  * the markdown gets one of two stable shapes back:
  *
  * **Fall-through path** (no unhired subagents):
- * ```
- * {
- *   fallThrough: true,
- *   menu,                 // for diagnostics — `menu.options` is collapsed
- *   route: {
- *     action: 'create-new',
- *     nextSkill: '/aweek:hire',
- *     route: 'create-new',
- *     slugs: [],
- *     bulk: false,
- *     reason: DEFAULT_FALL_THROUGH_REASON,
- *     fallThrough: true,
- *   },
- *   reason: DEFAULT_FALL_THROUGH_REASON,
- * }
- * ```
  * The markdown MUST skip `AskUserQuestion` and invoke `/aweek:hire` directly
  * — the user has nothing to pick between.
  *
  * **Choose path** (one or more unhired subagents):
- * ```
- * { fallThrough: false, menu, route: null }
- * ```
  * The markdown renders `menu.options` via `AskUserQuestion`, then routes the
  * user's selection through {@link routeInitHireMenuChoice} as before.
  *
@@ -243,30 +283,6 @@ export const DEFAULT_FALL_THROUGH_REASON =
  * on the route distinguishes "user picked create-new" from "we auto-delegated
  * because nothing was available" — useful when the markdown wants to echo a
  * different status line.
- *
- * @param {object} [opts] - All options are forwarded to {@link buildInitHireMenu}.
- * @param {string} [opts.projectDir]
- * @param {string} [opts.dataDir]
- * @param {import('../storage/agent-store.js').AgentStore} [opts.agentStore]
- * @param {string} [opts.promptText]
- * @param {string} [opts.promptTextNoUnhired]
- * @param {string} [opts.fallThroughReason] - Override for the auto-delegation
- *   reason copy. Defaults to {@link DEFAULT_FALL_THROUGH_REASON}.
- * @param {Function} [opts.listUnhiredFn]
- * @returns {Promise<{
- *   fallThrough: boolean,
- *   menu: Awaited<ReturnType<typeof buildInitHireMenu>>,
- *   route: ({
- *     action: 'create-new',
- *     nextSkill: '/aweek:hire',
- *     route: 'create-new',
- *     slugs: [],
- *     bulk: false,
- *     reason: string,
- *     fallThrough: true,
- *   }) | null,
- *   reason: string | null,
- * }>}
  */
 export async function resolveInitHireMenu({
   projectDir,
@@ -276,7 +292,7 @@ export async function resolveInitHireMenu({
   promptTextNoUnhired,
   fallThroughReason = DEFAULT_FALL_THROUGH_REASON,
   listUnhiredFn,
-} = {}) {
+}: ResolveInitHireMenuOptions = {}): Promise<ResolveInitHireMenuResult> {
   const menu = await buildInitHireMenu({
     projectDir,
     dataDir,
@@ -322,11 +338,10 @@ export async function resolveInitHireMenu({
  *
  * The primary skill markdown uses `menu.options` directly with `AskUserQuestion`
  * — this helper is the fallback for environments without structured pickers.
- *
- * @param {object} menu - Return value of {@link buildInitHireMenu}.
- * @returns {string}
  */
-export function formatInitHireMenuPrompt(menu) {
+export function formatInitHireMenuPrompt(
+  menu: InitHireMenu | null | undefined,
+): string {
   if (!menu) return '';
   const lines = [menu.promptText, ''];
   if (menu.hasUnhired) {
@@ -343,18 +358,23 @@ export function formatInitHireMenuPrompt(menu) {
   return lines.join('\n');
 }
 
+/** Result shape returned by validation helpers in this module. */
+export interface MenuValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
 /**
  * Validate a raw user selection against the current menu state.
  *
  * Accepts any string; returns an `errors` array the markdown can surface so
  * the user gets an actionable message instead of a silent failure.
- *
- * @param {string} choice
- * @param {object} menu - Return value of {@link buildInitHireMenu}.
- * @returns {{ valid: boolean, errors: string[] }}
  */
-export function validateInitHireMenuChoice(choice, menu) {
-  const errors = [];
+export function validateInitHireMenuChoice(
+  choice: unknown,
+  menu: InitHireMenu | null | undefined,
+): MenuValidationResult {
+  const errors: string[] = [];
 
   if (typeof choice !== 'string' || choice.length === 0) {
     errors.push('Menu choice is required and must be a non-empty string');
@@ -388,13 +408,12 @@ export function validateInitHireMenuChoice(choice, menu) {
  * `select-some` requires at least one slug and every slug must appear in the
  * menu's `unhired` list — callers can't "select" something that doesn't exist
  * on disk or is already hired.
- *
- * @param {string[]} selected
- * @param {object} menu - Return value of {@link buildInitHireMenu}.
- * @returns {{ valid: boolean, errors: string[] }}
  */
-export function validateSelectedSlugs(selected, menu) {
-  const errors = [];
+export function validateSelectedSlugs(
+  selected: unknown,
+  menu: InitHireMenu | null | undefined,
+): MenuValidationResult {
+  const errors: string[] = [];
   if (!Array.isArray(selected) || selected.length === 0) {
     errors.push(
       'Select-some requires at least one subagent slug; pass a non-empty array.',
@@ -402,9 +421,9 @@ export function validateSelectedSlugs(selected, menu) {
     return { valid: false, errors };
   }
 
-  const available = new Set((menu?.unhired) || []);
-  const seen = new Set();
-  for (const slug of selected) {
+  const available = new Set<string>(menu?.unhired || []);
+  const seen = new Set<string>();
+  for (const slug of selected as unknown[]) {
     if (typeof slug !== 'string' || slug.length === 0) {
       errors.push('Every entry in `selected` must be a non-empty slug string.');
       continue;
@@ -424,6 +443,40 @@ export function validateSelectedSlugs(selected, menu) {
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+/** Options for {@link routeInitHireMenuChoice}. */
+export interface RouteInitHireMenuChoiceOptions {
+  choice?: string;
+  menu?: InitHireMenu | null;
+  /** Required when `choice === 'select-some'`. */
+  selected?: string[];
+}
+
+/** Stable handler descriptor returned by {@link routeInitHireMenuChoice}. */
+export interface InitHireMenuRoute {
+  action: InitHireMenuChoice;
+  nextSkill: string | null;
+  route: 'pick-existing' | 'create-new' | null;
+  slugs: string[];
+  bulk: boolean;
+  reason: string;
+}
+
+/** Error class signature emitted by {@link routeInitHireMenuChoice}. */
+interface MenuChoiceError extends Error {
+  code: string;
+  errors: string[];
+}
+
+function makeMenuChoiceError(
+  code: string,
+  errors: string[],
+): MenuChoiceError {
+  const err = new Error(errors.join('; ')) as MenuChoiceError;
+  err.code = code;
+  err.errors = errors;
+  return err;
 }
 
 /**
@@ -446,27 +499,16 @@ export function validateSelectedSlugs(selected, menu) {
  * of its branches to enter. Bulk choices (`hire-all`, `select-some`) surface
  * every slug the markdown should loop the hire skill over, rather than
  * launching the wizard once per agent.
- *
- * @param {object} params
- * @param {string} params.choice - One of {@link INIT_HIRE_MENU_CHOICE}.
- * @param {object} params.menu - Return value of {@link buildInitHireMenu}.
- * @param {string[]} [params.selected] - Required when `choice === 'select-some'`.
- * @returns {{
- *   action: string,
- *   nextSkill: string | null,
- *   route: 'pick-existing' | 'create-new' | null,
- *   slugs: string[],
- *   bulk: boolean,
- *   reason: string,
- * }}
  */
-export function routeInitHireMenuChoice({ choice, menu, selected } = {}) {
+export function routeInitHireMenuChoice(
+  { choice, menu, selected }: RouteInitHireMenuChoiceOptions = {},
+): InitHireMenuRoute {
   const validChoice = validateInitHireMenuChoice(choice, menu);
   if (!validChoice.valid) {
-    const err = new Error(validChoice.errors.join('; '));
-    err.code = 'EINIT_HIRE_MENU_BAD_CHOICE';
-    err.errors = validChoice.errors;
-    throw err;
+    throw makeMenuChoiceError(
+      'EINIT_HIRE_MENU_BAD_CHOICE',
+      validChoice.errors,
+    );
   }
 
   switch (choice) {
@@ -484,16 +526,16 @@ export function routeInitHireMenuChoice({ choice, menu, selected } = {}) {
     case INIT_HIRE_MENU_CHOICE.SELECT_SOME: {
       const validSelected = validateSelectedSlugs(selected, menu);
       if (!validSelected.valid) {
-        const err = new Error(validSelected.errors.join('; '));
-        err.code = 'EINIT_HIRE_MENU_BAD_SELECTION';
-        err.errors = validSelected.errors;
-        throw err;
+        throw makeMenuChoiceError(
+          'EINIT_HIRE_MENU_BAD_SELECTION',
+          validSelected.errors,
+        );
       }
       return {
         action: INIT_HIRE_MENU_CHOICE.SELECT_SOME,
         nextSkill: '/aweek:hire',
         route: 'pick-existing',
-        slugs: [...selected],
+        slugs: [...(selected as string[])],
         bulk: true,
         reason:
           'User picked a subset of unhired subagents; dispatch /aweek:hire pick-existing once per selected slug.',

@@ -11,7 +11,7 @@
  *
  *   2. **Create new** — there are no unhired subagents available, OR the user
  *      explicitly opts into creating from scratch. The wizard falls through
- *      to the three-field capture flow (see `hire-create-new.js`).
+ *      to the three-field capture flow (see `hire-create-new.ts`).
  *
  * When at least one unhired subagent is available the wizard offers both
  * options via `AskUserQuestion` ("Pick existing" / "Create new"). When none
@@ -36,6 +36,7 @@
 import { readdir } from 'node:fs/promises';
 import { resolveSubagentsDir, validateSubagentSlug } from '../subagents/subagent-file.js';
 import { listAllAgents } from '../storage/agent-helpers.js';
+import type { AgentStore } from '../storage/agent-store.js';
 
 /**
  * Slug prefixes that belong to plugin-supplied subagents.
@@ -49,27 +50,31 @@ import { listAllAgents } from '../storage/agent-helpers.js';
  * A prefix matches when the slug equals the prefix exactly, or the slug
  * starts with `<prefix>-`. Keeping it a prefix match (not substring) avoids
  * false positives on unrelated slugs like `my-geo-notes`.
- *
- * @type {readonly string[]}
  */
-export const PLUGIN_SUBAGENT_PREFIXES = Object.freeze([
+export const PLUGIN_SUBAGENT_PREFIXES: readonly string[] = Object.freeze([
   'oh-my-claudecode',
   'geo',
 ]);
 
 /**
  * Check whether a subagent slug belongs to a plugin namespace.
- *
- * @param {string} slug
- * @returns {boolean}
  */
-export function isPluginSubagent(slug) {
+export function isPluginSubagent(slug: unknown): boolean {
   if (typeof slug !== 'string' || slug.length === 0) return false;
   for (const prefix of PLUGIN_SUBAGENT_PREFIXES) {
     if (slug === prefix) return true;
     if (slug.startsWith(`${prefix}-`)) return true;
   }
   return false;
+}
+
+/** Options for {@link listProjectSubagentSlugs}. */
+export interface ListProjectSubagentSlugsOptions {
+  /**
+   * Explicit project root override; falls back to `process.cwd()` via
+   * `resolveSubagentsDir`.
+   */
+  projectDir?: string;
 }
 
 /**
@@ -87,21 +92,18 @@ export function isPluginSubagent(slug) {
  *
  * Returned slugs are sorted alphabetically so downstream prompts render in a
  * stable order across runs.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Explicit project root override; falls
- *   back to `process.cwd()` via `resolveSubagentsDir`.
- * @returns {Promise<string[]>}
  */
-export async function listProjectSubagentSlugs({ projectDir } = {}) {
+export async function listProjectSubagentSlugs(
+  { projectDir }: ListProjectSubagentSlugsOptions = {},
+): Promise<string[]> {
   const dir = resolveSubagentsDir(projectDir);
-  let entries;
+  let entries: string[];
   try {
     entries = await readdir(dir);
   } catch {
     return [];
   }
-  const slugs = [];
+  const slugs: string[] = [];
   for (const entry of entries) {
     if (!entry.endsWith('.md')) continue;
     const slug = entry.slice(0, -'.md'.length);
@@ -110,6 +112,16 @@ export async function listProjectSubagentSlugs({ projectDir } = {}) {
   }
   slugs.sort();
   return slugs;
+}
+
+/** Options for {@link listUnhiredSubagents}. */
+export interface ListUnhiredSubagentsOptions {
+  /** Project root override (for the `.md` scan). */
+  projectDir?: string;
+  /** aweek data directory override (for the `.json` scan). */
+  dataDir?: string;
+  /** Pre-constructed store (test hook). */
+  agentStore?: AgentStore;
 }
 
 /**
@@ -122,21 +134,12 @@ export async function listProjectSubagentSlugs({ projectDir } = {}) {
  *
  * The order matches {@link listProjectSubagentSlugs} — alphabetical by slug
  * — so wizard prompts render deterministically.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root override (for the `.md`
- *   scan).
- * @param {string} [opts.dataDir] - aweek data directory override (for the
- *   `.json` scan).
- * @param {import('../storage/agent-store.js').AgentStore} [opts.agentStore]
- *   Pre-constructed store (test hook).
- * @returns {Promise<string[]>} Alphabetically sorted slug list.
  */
 export async function listUnhiredSubagents({
   projectDir,
   dataDir,
   agentStore,
-} = {}) {
+}: ListUnhiredSubagentsOptions = {}): Promise<string[]> {
   const [subagents, hired] = await Promise.all([
     listProjectSubagentSlugs({ projectDir }),
     listAllAgents({ dataDir, agentStore }),
@@ -145,6 +148,16 @@ export async function listUnhiredSubagents({
   return subagents.filter(
     (slug) => !isPluginSubagent(slug) && !hiredIds.has(slug),
   );
+}
+
+/** Options for {@link determineHireRoute}. */
+export interface DetermineHireRouteOptions extends ListUnhiredSubagentsOptions {}
+
+/** Result of {@link determineHireRoute}. */
+export interface HireRouteDecision {
+  route: 'create-new' | 'choose';
+  unhired: string[];
+  forcedCreateNew: boolean;
 }
 
 /**
@@ -162,22 +175,12 @@ export async function listUnhiredSubagents({
  *
  * This keeps the UX obvious: users never see a two-option prompt where one
  * option is impossible to fulfil.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir]
- * @param {string} [opts.dataDir]
- * @param {import('../storage/agent-store.js').AgentStore} [opts.agentStore]
- * @returns {Promise<{
- *   route: 'create-new' | 'choose',
- *   unhired: string[],
- *   forcedCreateNew: boolean,
- * }>}
  */
 export async function determineHireRoute({
   projectDir,
   dataDir,
   agentStore,
-} = {}) {
+}: DetermineHireRouteOptions = {}): Promise<HireRouteDecision> {
   const unhired = await listUnhiredSubagents({
     projectDir,
     dataDir,
