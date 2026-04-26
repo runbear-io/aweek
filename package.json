@@ -16,8 +16,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import tsx --test \"src/**/*.test.js\" \"src/**/*.test.ts\"",
-    "test:verbose": "node --import tsx --test --test-reporter=spec \"src/**/*.test.js\" \"src/**/*.test.ts\"",
+    "test": "node --import tsx --test \"src/cli/**/*.test.@(js|ts)\" \"src/execution/**/*.test.@(js|ts)\" \"src/heartbeat/**/*.test.@(js|ts)\" \"src/lock/**/*.test.@(js|ts)\" \"src/models/**/*.test.@(js|ts)\" \"src/queue/**/*.test.@(js|ts)\" \"src/schemas/**/*.test.@(js|ts)\" \"src/services/**/*.test.@(js|ts)\" \"src/serve/data/**/*.test.@(js|ts)\" \"src/serve/*.test.@(js|ts)\" \"src/skills/**/*.test.@(js|ts)\" \"src/storage/**/*.test.@(js|ts)\" \"src/subagents/**/*.test.@(js|ts)\" \"src/time/**/*.test.@(js|ts)\"",
+    "test:verbose": "node --import tsx --test --test-reporter=spec \"src/cli/**/*.test.@(js|ts)\" \"src/execution/**/*.test.@(js|ts)\" \"src/heartbeat/**/*.test.@(js|ts)\" \"src/lock/**/*.test.@(js|ts)\" \"src/models/**/*.test.@(js|ts)\" \"src/queue/**/*.test.@(js|ts)\" \"src/schemas/**/*.test.@(js|ts)\" \"src/services/**/*.test.@(js|ts)\" \"src/serve/data/**/*.test.@(js|ts)\" \"src/serve/*.test.@(js|ts)\" \"src/skills/**/*.test.@(js|ts)\" \"src/storage/**/*.test.@(js|ts)\" \"src/subagents/**/*.test.@(js|ts)\" \"src/time/**/*.test.@(js|ts)\"",
     "test:spa": "vitest run --config vitest.config.js",
     "test:spa:watch": "vitest --config vitest.config.js",
     "typecheck:spa": "tsc --noEmit -p tsconfig.spa.json",

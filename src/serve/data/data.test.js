@@ -234,7 +234,8 @@ function mondayIso(date) {
 test('gatherAgentsList reads from fixture .aweek/ via src/storage/*', async () => {
   const { root, agentId } = await makeFixtureProject();
   try {
-    const rows = await dataIndex.gatherAgentsList({ projectDir: root });
+    const { rows, issues } = await dataIndex.gatherAgentsList({ projectDir: root });
+    assert.deepEqual(issues, []);
     assert.equal(rows.length, 1);
     const row = rows[0];
     assert.equal(row.slug, agentId);
@@ -891,7 +892,7 @@ function assertShape(obj, expected, label) {
 test('SPA contract: gatherAgentsList row matches AgentListRow typedef', async () => {
   const { root } = await makeFixtureProject();
   try {
-    const rows = await dataIndex.gatherAgentsList({ projectDir: root });
+    const { rows } = await dataIndex.gatherAgentsList({ projectDir: root });
     assert.equal(rows.length, 1);
     // Shape is the superset of api-client.js `AgentListRow` + the extra
     // dashboard-only fields (`week`, `tasksTotal`, `tasksCompleted`) that

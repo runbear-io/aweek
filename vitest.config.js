@@ -29,10 +29,15 @@ export default defineConfig({
     environment: 'jsdom',
     globals: false,
     setupFiles: ['./vitest.setup.js'],
+    // Vitest only runs the SPA tree. The backend `*.test.ts` files
+    // (execution/, heartbeat/, services/, …) use the `node:test` runner
+    // and are launched by `pnpm test`. Without the `src/serve/spa/`
+    // prefix here, vitest would import them and fail with "No test
+    // suite found" because they don't call vitest's `describe/it`.
     include: [
-      'src/**/*.test.jsx',
-      'src/**/*.test.tsx',
-      'src/**/*.test.ts',
+      'src/serve/spa/**/*.test.jsx',
+      'src/serve/spa/**/*.test.tsx',
+      'src/serve/spa/**/*.test.ts',
     ],
   },
   // Vitest 4 uses `oxc` for JS/JSX transforms by default (not esbuild).
