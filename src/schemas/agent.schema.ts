@@ -82,7 +82,12 @@ export const budgetSchema: JSONSchemaType<Budget> = {
     },
     pausedReason: {
       type: 'string',
-      enum: ['budget_exhausted', 'subagent_missing', 'manual'],
+      // `null` is included in the enum alongside `nullable: true` because
+      // AJV's enum check fires before `nullable` and a bare
+      // `enum: ['budget_exhausted', ...]` rejects `null` outright. The
+      // runtime model writes `pausedReason: null` literally on freshly
+      // hired shells, so the schema must accept it.
+      enum: ['budget_exhausted', 'subagent_missing', 'manual', null],
       nullable: true,
       description:
         'Why the agent was paused. Set alongside paused=true so resume flows can distinguish recoverable causes (budget top-up) from identity-loss causes (subagent_missing → restore .claude/agents/<slug>.md). Explicitly `null` on freshly hired shells where paused=false — fresh JSON wrappers (e.g. produced by hire-all) carry the field with a null value so downstream readers can distinguish "never paused" from "field missing because the schema predates the column".',

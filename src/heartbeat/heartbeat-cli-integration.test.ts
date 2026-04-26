@@ -881,7 +881,7 @@ describe('CLI session launch options from heartbeat context (subagent-first)', (
     const { readFile } = await import('node:fs/promises');
     const { fileURLToPath } = await import('node:url');
     const runPath = fileURLToPath(
-      new URL('../heartbeat/run.js', import.meta.url),
+      new URL('../heartbeat/run.ts', import.meta.url),
     );
     const src = await readFile(runPath, 'utf8');
     const idx = src.indexOf('executeSessionWithTracking(');

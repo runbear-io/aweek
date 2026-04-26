@@ -45,6 +45,13 @@ import { fileURLToPath } from 'node:url';
 // being installed via `npm link`.
 const BIN_PATH = fileURLToPath(new URL('../../bin/aweek.js', import.meta.url));
 
+// `bin/aweek.js` imports backend modules (e.g. `src/heartbeat/run.js`)
+// that have been migrated to `.ts`. Until the build pipeline ships a
+// compiled `dist/bin/aweek.js`, child invocations must register the
+// `tsx` ESM loader so Node's resolver can map the `.js` import paths
+// to their `.ts` source files. Prepend these flags to every spawn.
+const NODE_PREFIX_ARGS = ['--import', 'tsx'];
+
 // Absolute path to the Vite build directory the CLI will probe. Matches
 // `resolveDefaultBuildDir()` in `server.js` and `build.outDir` in
 // `vite.config.js`, which both land the SPA bundle at
@@ -126,6 +133,7 @@ function startCliServer({
 } = {}) {
   return new Promise((resolveStart, rejectStart) => {
     const args = [
+      ...NODE_PREFIX_ARGS,
       BIN_PATH,
       'serve',
       '--port',
@@ -646,6 +654,7 @@ describe('aweek serve CLI — missing .aweek/', () => {
 
   it('exits 1 and prints the friendly ENOAWEEKDIR block when .aweek/ is missing', async () => {
     const args = [
+      ...NODE_PREFIX_ARGS,
       BIN_PATH,
       'serve',
       '--port',
@@ -785,6 +794,7 @@ describe('aweek serve CLI — flags (AC 8)', () => {
     // `--port 3000`) fails loud rather than silently binding the
     // default.
     const args = [
+      ...NODE_PREFIX_ARGS,
       BIN_PATH,
       'serve',
       '--port',
@@ -820,7 +830,7 @@ describe('aweek serve CLI — flags (AC 8)', () => {
     const { code, stdout, stderr } = await new Promise((resolvePromise) => {
       const child = spawn(
         process.execPath,
-        [BIN_PATH, 'serve', '--help'],
+        [...NODE_PREFIX_ARGS, BIN_PATH, 'serve', '--help'],
         { stdio: ['ignore', 'pipe', 'pipe'] },
       );
       let stdoutBuf = '';
