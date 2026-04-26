@@ -6,13 +6,18 @@ import { join } from 'node:path';
 
 import { pruneExecutionLogs, DEFAULT_OLDER_THAN_WEEKS } from './execution.js';
 
-async function makeProject() {
+async function makeProject(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'aweek-prune-'));
   await mkdir(join(dir, '.aweek', 'agents'), { recursive: true });
   return dir;
 }
 
-async function writeExecutionLog(projectDir, agentId, basename, { mtime } = {}) {
+async function writeExecutionLog(
+  projectDir: string,
+  agentId: string,
+  basename: string,
+  { mtime }: { mtime?: Date } = {},
+): Promise<string> {
   const dir = join(projectDir, '.aweek', 'agents', agentId, 'executions');
   await mkdir(dir, { recursive: true });
   const path = join(dir, `${basename}.jsonl`);

@@ -23,7 +23,7 @@ import {
 // Monday of ISO 2026-W17 is 2026-04-20 (UTC)
 const WEEK_MONDAY = mondayFromISOWeek('2026-W17');
 
-function task(id, overrides = {}) {
+function task(id: string, overrides: any = {}): any {
   const { description, title, prompt, ...rest } = overrides;
   const label = title || prompt || description || `Task ${id}`;
   return {
@@ -43,10 +43,10 @@ describe('distributeTasks — no runAt (regression guard)', () => {
       [task('a'), task('b'), task('c')],
       { startHour: 9, endHour: 18, daysCount: 5, weekMonday: WEEK_MONDAY },
     );
-    const mon = grid.get('mon');
-    assert.equal(mon.get(9)[0].task.id, 'task-a');
-    assert.equal(mon.get(10)[0].task.id, 'task-b');
-    assert.equal(mon.get(11)[0].task.id, 'task-c');
+    const mon = grid.get('mon')!;
+    assert.equal(mon.get(9)![0].task.id, 'task-a');
+    assert.equal(mon.get(10)![0].task.id, 'task-b');
+    assert.equal(mon.get(11)![0].task.id, 'task-c');
   });
 
   it("round-robins across days in 'spread' mode", () => {
@@ -60,9 +60,9 @@ describe('distributeTasks — no runAt (regression guard)', () => {
         weekMonday: WEEK_MONDAY,
       },
     );
-    assert.equal(grid.get('mon').get(9)[0].task.id, 'task-a');
-    assert.equal(grid.get('tue').get(9)[0].task.id, 'task-b');
-    assert.equal(grid.get('wed').get(9)[0].task.id, 'task-c');
+    assert.equal(grid.get('mon')!.get(9)![0].task.id, 'task-a');
+    assert.equal(grid.get('tue')!.get(9)![0].task.id, 'task-b');
+    assert.equal(grid.get('wed')!.get(9)![0].task.id, 'task-c');
   });
 });
 
@@ -75,9 +75,9 @@ describe('distributeTasks — runAt placement', () => {
       daysCount: 5,
       weekMonday: WEEK_MONDAY,
     });
-    assert.equal(grid.get('mon').get(10)?.[0].task.id, 'task-a');
-    assert.equal(grid.get('mon').get(9), undefined);
-    assert.equal(grid.get('mon').get(11), undefined);
+    assert.equal(grid.get('mon')!.get(10)?.[0].task.id, 'task-a');
+    assert.equal(grid.get('mon')!.get(9), undefined);
+    assert.equal(grid.get('mon')!.get(11), undefined);
   });
 
   it('places one task per hour across a working day when runAt is hourly-spaced', () => {
@@ -93,11 +93,11 @@ describe('distributeTasks — runAt placement', () => {
       daysCount: 5,
       weekMonday: WEEK_MONDAY,
     });
-    const mon = grid.get('mon');
+    const mon = grid.get('mon')!;
     for (let i = 0; i < 10; i++) {
       assert.equal(mon.get(9 + i)?.[0].task.id, `task-${i + 1}`);
     }
-    assert.equal(grid.get('tue').size, 0);
+    assert.equal(grid.get('tue')!.size, 0);
   });
 
   it('places a Wednesday runAt on the wed column', () => {
@@ -108,8 +108,8 @@ describe('distributeTasks — runAt placement', () => {
       daysCount: 5,
       weekMonday: WEEK_MONDAY,
     });
-    assert.equal(grid.get('wed').get(14)?.[0].task.id, 'task-a');
-    assert.equal(grid.get('mon').size, 0);
+    assert.equal(grid.get('wed')!.get(14)?.[0].task.id, 'task-a');
+    assert.equal(grid.get('mon')!.size, 0);
   });
 
   it('reserves the runAt cell so unscheduled tasks pack around it', () => {
@@ -121,11 +121,11 @@ describe('distributeTasks — runAt placement', () => {
       daysCount: 5,
       weekMonday: WEEK_MONDAY,
     });
-    const mon = grid.get('mon');
-    assert.equal(mon.get(11)[0].task.id, 'task-at-11');
-    assert.equal(mon.get(9)[0].task.id, 'task-a');
-    assert.equal(mon.get(10)[0].task.id, 'task-b');
-    assert.equal(mon.get(12)[0].task.id, 'task-c');
+    const mon = grid.get('mon')!;
+    assert.equal(mon.get(11)![0].task.id, 'task-at-11');
+    assert.equal(mon.get(9)![0].task.id, 'task-a');
+    assert.equal(mon.get(10)![0].task.id, 'task-b');
+    assert.equal(mon.get(12)![0].task.id, 'task-c');
   });
 
   it('falls through to pack when runAt is outside the visible window', () => {
@@ -137,8 +137,8 @@ describe('distributeTasks — runAt placement', () => {
       daysCount: 5,
       weekMonday: WEEK_MONDAY,
     });
-    assert.equal(grid.get('mon').get(9)[0].task.id, 'task-early');
-    assert.equal(grid.get('mon').get(10)[0].task.id, 'task-late');
+    assert.equal(grid.get('mon')!.get(9)![0].task.id, 'task-early');
+    assert.equal(grid.get('mon')!.get(10)![0].task.id, 'task-late');
   });
 
   it('stacks colliding runAt tasks in the same bucket instead of dropping the later one', () => {
@@ -150,11 +150,11 @@ describe('distributeTasks — runAt placement', () => {
       daysCount: 5,
       weekMonday: WEEK_MONDAY,
     });
-    const bucket = grid.get('mon').get(10);
+    const bucket = grid.get('mon')!.get(10)!;
     assert.equal(bucket.length, 2, 'both tasks should be in bucket 10');
     assert.equal(bucket[0].task.id, 'task-first');
     assert.equal(bucket[1].task.id, 'task-second');
-    assert.equal(grid.get('mon').get(9), undefined);
+    assert.equal(grid.get('mon')!.get(9), undefined);
   });
 
   it('falls through when weekMonday is omitted', () => {
@@ -164,7 +164,7 @@ describe('distributeTasks — runAt placement', () => {
       endHour: 18,
       daysCount: 5,
     });
-    assert.equal(grid.get('mon').get(9)[0].task.id, 'task-a');
+    assert.equal(grid.get('mon')!.get(9)![0].task.id, 'task-a');
   });
 });
 
@@ -233,7 +233,7 @@ describe('renderGrid — terminal-width autofit', () => {
       opts: { terminalWidth: 200, cellWidth: 15 },
     });
     // With cellWidth=15, daysCount=5, hourWidth=7, totalWidth = 7 + 16*5 + 1 = 88
-    const headerBorder = text.split('\n').find((l) => l.startsWith('┌'));
+    const headerBorder: any = text.split('\n').find((l: string) => l.startsWith('┌'));
     assert.equal(headerBorder.length, 88);
   });
 });
@@ -300,7 +300,7 @@ describe('renderGrid — variable-height hourly summary', () => {
     });
     // Only the first line of each hour starts with `│HH:00` — the second
     // and third lines start with a blank hour column.
-    const startLines = text.split('\n').filter((l) => /^│\d{2}:00/.test(l));
+    const startLines = text.split('\n').filter((l: string) => /^│\d{2}:00/.test(l));
     assert.ok(startLines[0].includes('○ 1. Deep work block'), startLines[0]);
     assert.ok(startLines[1].includes('○ 1. Deep work block'), startLines[1]);
     assert.ok(startLines[2].includes('○ 1. Deep work block'), startLines[2]);
@@ -318,8 +318,8 @@ describe('renderGrid — variable-height hourly summary', () => {
       opts: { cellWidth: 20, startHour: 9, endHour: 12 },
     });
     const hourSection = text.split('\n');
-    const start = hourSection.findIndex((l) => /Hour/.test(l));
-    const bottom = hourSection.findIndex((l) => l.startsWith('└'));
+    const start = hourSection.findIndex((l: string) => /Hour/.test(l));
+    const bottom = hourSection.findIndex((l: string) => l.startsWith('└'));
     // Hours 9,10,11 → 3 hours × 1 line each = 3 rows.
     const hourRows = bottom - (start + 2);
     assert.equal(hourRows, 3);
@@ -346,7 +346,7 @@ describe('distributeTasks — DST-week placement stays correct in local tz', () 
       tz: 'America/Los_Angeles',
     });
     // Sun 16:00 PDT → column 6 ("sun"), hour 16.
-    assert.equal(grid.get('sun').get(16)?.[0]?.task.id, 't1');
+    assert.equal(grid.get('sun')!.get(16)?.[0]?.task.id, 't1');
   });
 });
 
@@ -369,9 +369,9 @@ describe('distributeTasks / renderGrid — time-zone-aware placement', () => {
       weekMonday: monday,
       tz: 'America/Los_Angeles',
     });
-    assert.equal(grid.get('mon').get(10)?.[0]?.task.id, 't1');
+    assert.equal(grid.get('mon')!.get(10)?.[0]?.task.id, 't1');
     // Not at the UTC hour (17).
-    assert.equal(grid.get('mon').get(17), undefined);
+    assert.equal(grid.get('mon')!.get(17), undefined);
   });
 
   it('surfaces the effective time zone in the header status line', () => {
@@ -396,7 +396,7 @@ describe('distributeTasks / renderGrid — time-zone-aware placement', () => {
       plan: { week: '2026-W17', approved: true, tasks: [] },
       opts: { tz: 'America/Los_Angeles', cellWidth: 14 },
     });
-    const header = text.split('\n').find((l) => l.includes('Hour'));
+    const header: any = text.split('\n').find((l: string) => l.includes('Hour'));
     assert.ok(header.includes('Mon 4/20'), header);
   });
 });
@@ -440,7 +440,7 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
     // No legacy overflow marker remains.
     assert.ok(!/…\+\d+ more/.test(text), 'should not emit "…+N more" marker');
     // Numbered list under the grid still counts every task.
-    const selectLine = text.split('\n').find((l) => l.startsWith('Select a task'));
+    const selectLine: any = text.split('\n').find((l: string) => l.startsWith('Select a task'));
     assert.match(selectLine, /1-5/);
   });
 
@@ -458,10 +458,10 @@ describe('renderGrid — stacked buckets (HH:00 + HH:30)', () => {
     // Recover the Mon (first day) cell contents from each 09:xx line.
     const hourLines = text
       .split('\n')
-      .filter((l) => l.startsWith('│09:00') || l.startsWith('│       '))
+      .filter((l: string) => l.startsWith('│09:00') || l.startsWith('│       '))
       .slice(0, 4);
-    const monCells = hourLines.map((l) => l.split('│')[2] ?? '');
-    const joined = monCells.map((c) => c.trimEnd()).join('');
+    const monCells = hourLines.map((l: string) => l.split('│')[2] ?? '');
+    const joined = monCells.map((c: string) => c.trimEnd()).join('');
     assert.ok(joined.length <= 40, `expected ≤40 visible chars, got ${joined.length}: ${JSON.stringify(joined)}`);
     assert.ok(joined.endsWith('…'), joined);
     assert.ok(joined.startsWith('○ 1. '), joined);
@@ -506,25 +506,25 @@ describe('renderGrid — advisor-mode review slot rendering', () => {
     assert.ok(text.includes(REVIEW_SLOT_ICON), 'expected ◆ icon in grid output');
     // The daily-review task MUST appear in the numbered taskIndex — identical to a work task.
     assert.ok(
-      taskIndex.some((t) => t.id === dailyReviewTask.id),
+      taskIndex.some((t: any) => t.id === dailyReviewTask.id),
       'daily-review task should appear in numbered taskIndex',
     );
     // Work task should also be numbered.
     assert.ok(
-      taskIndex.some((t) => t.id === workTask.id),
+      taskIndex.some((t: any) => t.id === workTask.id),
       'work task should appear in numbered taskIndex',
     );
     // Both tasks have numbers: workTask is #1 (Mon 9:00), dailyReview is #2 (Mon 17:00).
     assert.equal(taskIndex.length, 2, 'taskIndex should contain both work task and review slot');
     // The daily review entry shows its selection number (◆ 2.) in the grid.
-    const reviewNum = taskIndex.findIndex((t) => t.id === dailyReviewTask.id) + 1;
+    const reviewNum = taskIndex.findIndex((t: any) => t.id === dailyReviewTask.id) + 1;
     assert.ok(
       text.includes(`${REVIEW_SLOT_ICON} ${reviewNum}.`),
       `expected ${REVIEW_SLOT_ICON} ${reviewNum}. in grid output`,
     );
     // The display name still appears alongside the number.
     assert.ok(
-      text.includes(REVIEW_DISPLAY_NAMES[DAILY_REVIEW_OBJECTIVE_ID]),
+      text.includes(REVIEW_DISPLAY_NAMES[DAILY_REVIEW_OBJECTIVE_ID] as string),
       'expected Daily Review display name in grid output',
     );
   });
@@ -545,7 +545,7 @@ describe('renderGrid — advisor-mode review slot rendering', () => {
     assert.ok(text.includes(`${REVIEW_SLOT_ICON} 1.`), 'expected ◆ 1. in grid output');
     // The display name still appears alongside the number.
     assert.ok(
-      text.includes(REVIEW_DISPLAY_NAMES[WEEKLY_REVIEW_OBJECTIVE_ID]),
+      text.includes(REVIEW_DISPLAY_NAMES[WEEKLY_REVIEW_OBJECTIVE_ID] as string),
       'expected Weekly Review display name in grid output',
     );
   });
@@ -589,7 +589,6 @@ describe('renderGrid — advisor-mode review slot rendering', () => {
 
   it('places daily-review in the correct day column via runAt', () => {
     // Mon 17:00 UTC → day 0 (mon), hour 17 — outside the 9-18 window so pack picks it up.
-    // Use startHour:9, endHour:18, so hour 17 IS inside the window (9 <= 17 < 18).
     const t = {
       id: 'task-dr',
       title: 'Daily reflection', prompt: 'Daily reflection',
@@ -604,9 +603,9 @@ describe('renderGrid — advisor-mode review slot rendering', () => {
       weekMonday: mondayFromISOWeek('2026-W17'),
     });
     // Must land in mon column at hour 17.
-    const bucket = grid.get('mon').get(17);
+    const bucket = grid.get('mon')!.get(17);
     assert.ok(bucket && bucket.length > 0, 'expected entry in mon@17');
-    assert.equal(bucket[0].task.id, 'task-dr');
+    assert.equal(bucket![0].task.id, 'task-dr');
   });
 
   it('REVIEW_DISPLAY_NAMES covers both reserved objectiveIds', () => {
@@ -634,7 +633,7 @@ describe('renderMarkdownGrid — pipe-table output', () => {
     assert.equal(lines[0], '**Agent One — Week 2026-W17**');
     assert.match(lines[1], /Status: Approved \| Tasks: 2 \| TZ: UTC/);
     // Header + separator
-    const headerIdx = lines.findIndex((l) => l.startsWith('| Hour |'));
+    const headerIdx = lines.findIndex((l: string) => l.startsWith('| Hour |'));
     assert.ok(headerIdx > 0, 'expected header row');
     assert.match(lines[headerIdx + 1], /^\| --- \|/);
     // First data row starts with `| 09:00 |`
@@ -663,7 +662,7 @@ describe('renderMarkdownGrid — pipe-table output', () => {
       ],
     };
     const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
-    const row = text.split('\n').find((l) => l.startsWith('| 10:00 |'));
+    const row: any = text.split('\n').find((l: string) => l.startsWith('| 10:00 |'));
     assert.ok(row, 'expected 10:00 row');
     assert.match(row, /First.*<br>.*Second/);
   });
@@ -680,7 +679,7 @@ describe('renderMarkdownGrid — pipe-table output', () => {
       ],
     };
     const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
-    const row = text.split('\n').find((l) => /^\| 09:00 \|/.test(l));
+    const row: any = text.split('\n').find((l: string) => /^\| 09:00 \|/.test(l));
     assert.match(row, /Alpha \\\| Beta/);
   });
 
@@ -700,7 +699,7 @@ describe('renderMarkdownGrid — pipe-table output', () => {
       ],
     };
     const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
-    const row = text.split('\n').find((l) => l.startsWith('| 17:00 |'));
+    const row: any = text.split('\n').find((l: string) => l.startsWith('| 17:00 |'));
     assert.ok(row, 'expected 17:00 row');
     assert.match(row, new RegExp(`${REVIEW_SLOT_ICON} 1\\. Daily Review`));
   });
@@ -714,7 +713,7 @@ describe('renderMarkdownGrid — pipe-table output', () => {
       plan,
       opts: { showWeekend: true },
     });
-    const header = text.split('\n').find((l) => l.startsWith('| Hour |'));
+    const header: any = text.split('\n').find((l: string) => l.startsWith('| Hour |'));
     assert.match(header, /Sat/);
     assert.match(header, /Sun/);
   });
@@ -732,7 +731,7 @@ describe('renderMarkdownGrid — pipe-table output', () => {
       })),
     };
     const { text } = renderMarkdownGrid({ agent: baseAgent, plan });
-    const hourRows = text.split('\n').filter((l) => /^\| \d\d:00 \|/.test(l));
+    const hourRows = text.split('\n').filter((l: string) => /^\| \d\d:00 \|/.test(l));
     // Every working hour produces exactly one row (9..17 → 9 rows).
     assert.equal(hourRows.length, 9);
   });

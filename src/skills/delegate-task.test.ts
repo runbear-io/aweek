@@ -19,14 +19,18 @@ import {
 } from './delegate-task.js';
 
 /** Minimal valid agent config for test setup — uses createAgentConfig factory */
-function makeAgent(slug) {
+function makeAgent(slug: string): any {
   return createAgentConfig({
     subagentRef: slug,
     weeklyTokenLimit: 100000,
   });
 }
 
-let tmpDir, agentStore, inboxStore, AGENT_A_ID, AGENT_B_ID;
+let tmpDir: string;
+let agentStore: AgentStore;
+let inboxStore: InboxStore;
+let AGENT_A_ID: string;
+let AGENT_B_ID: string;
 
 async function setup() {
   tmpDir = await mkdtemp(join(tmpdir(), 'delegate-task-test-'));

@@ -39,22 +39,18 @@ export const MISSING_SUBAGENT_MARKER = '[subagent missing]';
 /**
  * Count active goals in an agent config.
  * Falls back to the total goals length when no status information is present.
- * @param {object} agentConfig
- * @returns {{ active: number, total: number }}
  */
-export function countGoals(agentConfig) {
+export function countGoals(agentConfig: any): { active: number; total: number } {
   const goals = agentConfig?.goals || [];
   const total = goals.length;
-  const active = goals.filter((g) => !g.status || g.status === 'active').length;
+  const active = goals.filter((g: any) => !g.status || g.status === 'active').length;
   return { active, total };
 }
 
 /**
  * Short human label for agent state (used in the Status column).
- * @param {string} state
- * @returns {string}
  */
-export function stateLabel(state) {
+export function stateLabel(state: string | null | undefined): string {
   switch (state) {
     case 'running': return 'RUNNING';
     case 'active':  return 'ACTIVE';
@@ -66,10 +62,8 @@ export function stateLabel(state) {
 
 /**
  * Render the goals cell value (e.g. "3 active / 5").
- * @param {{ active: number, total: number }} counts
- * @returns {string}
  */
-export function formatGoalsCell({ active, total }) {
+export function formatGoalsCell({ active, total }: { active: number; total: number }): string {
   if (total === 0) return '0';
   if (active === total) return String(total);
   return `${active}/${total}`;
@@ -77,10 +71,16 @@ export function formatGoalsCell({ active, total }) {
 
 /**
  * Render the tasks-this-week cell (e.g. "2/5" — completed / total).
- * @param {{ total: number, byStatus: Record<string, number> }} tasks
- * @returns {string}
  */
-export function formatTasksCell(tasks) {
+export function formatTasksCell(
+  tasks:
+    | {
+        total: number;
+        byStatus?: Record<string, number>;
+      }
+    | null
+    | undefined,
+): string {
   if (!tasks || tasks.total === 0) return '—';
   const completed = tasks.byStatus?.['completed'] || 0;
   return `${completed}/${tasks.total}`;
@@ -88,11 +88,22 @@ export function formatTasksCell(tasks) {
 
 /**
  * Render the budget cell (e.g. "25k/100k (25%)" or "— (no limit)").
- * @param {object} budget - Budget summary slice from status
- * @param {object} usage - Usage summary slice from status
- * @returns {string}
  */
-export function formatBudgetCell(budget, usage) {
+export function formatBudgetCell(
+  budget:
+    | {
+        weeklyTokenLimit?: number;
+        utilizationPct?: number;
+      }
+    | null
+    | undefined,
+  usage:
+    | {
+        totalTokens?: number;
+      }
+    | null
+    | undefined,
+): string {
   if (!budget || !budget.weeklyTokenLimit) {
     return 'no limit';
   }
@@ -105,12 +116,8 @@ export function formatBudgetCell(budget, usage) {
  * .md frontmatter. When the .md is missing we fall back to `slug
  * [subagent missing]` so the row still identifies which aweek agent is
  * orphaned without pretending we know a friendly name we never stored.
- *
- * @param {string} slug - aweek agent id (equals the subagent slug).
- * @param {{ missing: boolean, name: string }} subagent
- * @returns {string}
  */
-export function formatAgentCell(slug, subagent) {
+export function formatAgentCell(slug: string, subagent: { missing?: boolean; name?: string } | null): string {
   if (!subagent || subagent.missing) {
     return `${slug} ${MISSING_SUBAGENT_MARKER}`;
   }
@@ -119,18 +126,12 @@ export function formatAgentCell(slug, subagent) {
 
 /**
  * Build a single dashboard row from a per-agent status summary and its config.
- *
- * The `agent` cell is always sourced from the subagent .md frontmatter — the
- * single source of truth for identity. Callers must pass the live
- * `subagent` payload from {@link readSubagentIdentity}; when it reports
- * `missing: true` the cell renders the slug alongside the missing marker.
- *
- * @param {object} agentStatus - Entry from gatherAllAgentStatuses().agents
- * @param {object} agentConfig - Full agent config (used to count goals)
- * @param {{ missing: boolean, name: string, description?: string }} subagent
- * @returns {{ agent: string, goals: string, tasks: string, budget: string, status: string }}
  */
-export function buildSummaryRow(agentStatus, agentConfig, subagent) {
+export function buildSummaryRow(
+  agentStatus: any,
+  agentConfig: any,
+  subagent: any,
+): { agent: string; goals: string; tasks: string; budget: string; status: string } {
   return {
     agent: formatAgentCell(agentStatus.id, subagent),
     goals: formatGoalsCell(countGoals(agentConfig)),
@@ -150,27 +151,24 @@ const COLUMNS = [
   { key: 'tasks',  header: 'Tasks'  },
   { key: 'budget', header: 'Budget' },
   { key: 'status', header: 'Status' },
-];
+] as const;
 
 /**
  * Render a list of row objects as an ASCII table.
  * Widths expand to fit the widest cell per column.
- *
- * @param {Array<Record<string, string>>} rows
- * @returns {string}
  */
-export function renderTable(rows) {
+export function renderTable(rows: Array<Record<string, string>>): string {
   const widths = COLUMNS.map((col) => {
-    const cellWidth = rows.reduce((max, r) => Math.max(max, String(r[col.key] ?? '').length), 0);
+    const cellWidth = rows.reduce((max: number, r: Record<string, string>) => Math.max(max, String(r[col.key] ?? '').length), 0);
     return Math.max(col.header.length, cellWidth);
   });
 
-  const line = (cells) =>
-    '| ' + cells.map((c, i) => String(c).padEnd(widths[i])).join(' | ') + ' |';
+  const line = (cells: any[]) =>
+    '| ' + cells.map((c, i) => String(c).padEnd(widths[i] ?? 0)).join(' | ') + ' |';
 
   const separator = '|' + widths.map((w) => '-'.repeat(w + 2)).join('|') + '|';
 
-  const out = [];
+  const out: string[] = [];
   out.push(line(COLUMNS.map((c) => c.header)));
   out.push(separator);
   for (const r of rows) {
@@ -183,22 +181,23 @@ export function renderTable(rows) {
 // Top-level entry — the actual skill handler
 // ---------------------------------------------------------------------------
 
+export interface BuildSummaryOpts {
+  dataDir?: string;
+  date?: Date;
+  lockOpts?: any;
+  projectDir?: string;
+}
+
 /**
  * Gather data and format a compact dashboard for all agents.
- *
- * @param {object} opts
- * @param {string} opts.dataDir - Base data directory (e.g., ./.aweek/agents)
- * @param {Date} [opts.date] - Reference date (defaults to now)
- * @param {object} [opts.lockOpts] - Lock manager options { lockDir, maxLockAgeMs }
- * @returns {Promise<{ report: string, rows: object[], week: string, weekMonday: string, agentCount: number }>}
  */
-export async function buildSummary({ dataDir, date, lockOpts, projectDir } = {}) {
+export async function buildSummary({ dataDir, date, lockOpts, projectDir }: BuildSummaryOpts = {}): Promise<{ report: string; rows: any[]; week: string; weekMonday: string; agentCount: number }> {
   if (!dataDir) {
     throw new Error('buildSummary: dataDir is required');
   }
 
   const configs = await listAllAgents({ dataDir });
-  const configMap = new Map(configs.map((c) => [c.id, c]));
+  const configMap = new Map(configs.map((c: any) => [c.id, c]));
 
   const result = await gatherAllAgentStatuses({ dataDir, date, lockOpts });
 
@@ -207,11 +206,11 @@ export async function buildSummary({ dataDir, date, lockOpts, projectDir } = {})
   // Missing files surface as `{ missing: true }` and render the missing
   // marker downstream instead of throwing.
   const subagentEntries = await Promise.all(
-    result.agents.map(async (s) => [s.id, await readSubagentIdentity(s.id, projectDir)])
+    result.agents.map(async (s: any) => [s.id, await readSubagentIdentity(s.id, projectDir)] as [string, any]),
   );
-  const subagentMap = new Map(subagentEntries);
+  const subagentMap = new Map<string, any>(subagentEntries);
 
-  const rows = result.agents.map((s) =>
+  const rows = result.agents.map((s: any) =>
     buildSummaryRow(s, configMap.get(s.id) || { goals: [] }, subagentMap.get(s.id))
   );
   const report = formatSummaryReport({
@@ -232,15 +231,9 @@ export async function buildSummary({ dataDir, date, lockOpts, projectDir } = {})
 
 /**
  * Format the full dashboard (header + table) for the skill output.
- * @param {object} opts
- * @param {Array<object>} opts.rows
- * @param {string} opts.week
- * @param {string} opts.weekMonday
- * @param {number} opts.agentCount
- * @returns {string}
  */
-export function formatSummaryReport({ rows, week, weekMonday, agentCount }) {
-  const lines = [];
+export function formatSummaryReport({ rows, week, weekMonday, agentCount }: { rows: any[]; week: string; weekMonday: string; agentCount: number }): string {
+  const lines: string[] = [];
   lines.push('=== aweek Summary ===');
   lines.push(`Week: ${week} (Monday: ${weekMonday})`);
   lines.push(`Agents: ${agentCount}`);
@@ -259,27 +252,16 @@ export function formatSummaryReport({ rows, week, weekMonday, agentCount }) {
 // Drill-down (AC 7) — interactive deep dive into a single agent
 // ---------------------------------------------------------------------------
 
+export interface GetAgentDrillDownChoicesOpts {
+  dataDir?: string;
+  projectDir?: string;
+}
+
 /**
  * Build a lightweight agent-selection list tailored for the summary
  * drill-down prompt.
- *
- * Returned entries are deliberately minimal — just enough to render the
- * `AskUserQuestion` prompt and disambiguate by id afterwards. A synthetic
- * "no thanks" entry (id: null) is appended so the skill markdown can wire
- * the cancel option into the same choice list without hand-crafting a
- * special-case branch.
- *
- * @param {object} [opts]
- * @param {string} [opts.dataDir]
- * @returns {Promise<Array<{
- *   id: string | null,
- *   name: string,
- *   role: string,
- *   paused: boolean,
- *   label: string,
- * }>>}
  */
-export async function getAgentDrillDownChoices({ dataDir, projectDir } = {}) {
+export async function getAgentDrillDownChoices({ dataDir, projectDir }: GetAgentDrillDownChoicesOpts = {}): Promise<any[]> {
   const configs = await listAllAgents({ dataDir });
 
   // Read each agent's live subagent .md so the choice label reflects the
@@ -287,15 +269,15 @@ export async function getAgentDrillDownChoices({ dataDir, projectDir } = {}) {
   // aweek JSON. A missing file renders the agent with the missing marker so
   // the user can still pick it to investigate.
   const subagents = await Promise.all(
-    configs.map((c) => readSubagentIdentity(c.id, projectDir))
+    configs.map((c: any) => readSubagentIdentity(c.id, projectDir))
   );
 
-  const choices = configs.map((config, i) => {
-    const subagent = subagents[i];
+  const choices: any[] = configs.map((config: any, i: number) => {
+    const subagent: any = subagents[i];
     const displayName = subagent.missing
       ? `${config.id} ${MISSING_SUBAGENT_MARKER}`
       : (subagent.name || config.id);
-    const entry = {
+    const entry: any = {
       id: config.id,
       name: displayName,
       role: subagent.missing ? '' : (subagent.description || ''),
@@ -320,21 +302,18 @@ export async function getAgentDrillDownChoices({ dataDir, projectDir } = {}) {
   return choices;
 }
 
+export interface BuildAgentDrillDownOpts {
+  dataDir?: string;
+  agentId?: string;
+  date?: Date;
+  lockOpts?: any;
+  projectDir?: string;
+}
+
 /**
  * Load and format the long-form status block for a single agent.
- *
- * Reuses `buildAgentStatus` + `formatAgentStatus` from status.js so the
- * drill-down view stays byte-identical to the old /aweek:status report for
- * a single agent — the summary skill is purely a presentation wrapper.
- *
- * @param {object} opts
- * @param {string} opts.dataDir - Base data directory (e.g., `.aweek/agents`)
- * @param {string} opts.agentId - Agent id from the drill-down choices
- * @param {Date}   [opts.date]  - Reference date (defaults to now)
- * @param {object} [opts.lockOpts] - `{ lockDir, maxLockAgeMs }`
- * @returns {Promise<{ agentId: string, name: string, report: string, status: object, week: string, weekMonday: string }>}
  */
-export async function buildAgentDrillDown({ dataDir, agentId, date, lockOpts, projectDir } = {}) {
+export async function buildAgentDrillDown({ dataDir, agentId, date, lockOpts, projectDir }: BuildAgentDrillDownOpts = {}): Promise<any> {
   if (!dataDir) throw new Error('buildAgentDrillDown: dataDir is required');
   if (!agentId) throw new Error('buildAgentDrillDown: agentId is required');
 
@@ -354,7 +333,7 @@ export async function buildAgentDrillDown({ dataDir, agentId, date, lockOpts, pr
   // The subagent .md is the single source of truth for name + description.
   // Read it live so the drill-down view matches whatever the user has in
   // .claude/agents/SLUG.md right now, not stale data from aweek JSON.
-  const subagent = await readSubagentIdentity(agentId, projectDir);
+  const subagent: any = await readSubagentIdentity(agentId, projectDir);
 
   const status = await buildAgentStatus({
     agentConfig,

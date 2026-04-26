@@ -23,12 +23,8 @@ import { currentWeekKey, localParts, mondayOfWeek } from '../time/zone.js';
  * Get the ISO week string (YYYY-Www) for a given date.
  * When `tz` is supplied, the ISO week is computed in that zone; otherwise
  * we use the historical UTC implementation.
- *
- * @param {Date} [date]
- * @param {string} [tz]
- * @returns {string}
  */
-export function getCurrentWeekString(date = new Date(), tz) {
+export function getCurrentWeekString(date: Date = new Date(), tz?: string): string {
   if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
     return currentWeekKey(tz, date);
   }
@@ -37,7 +33,7 @@ export function getCurrentWeekString(date = new Date(), tz) {
   // ISO week: Thursday of the week determines the year
   d.setUTCDate(d.getUTCDate() + 3 - ((d.getUTCDay() + 6) % 7));
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
-  const weekNum = Math.ceil(((d - yearStart) / 86400000 + yearStart.getUTCDay() + 6) / 7);
+  const weekNum = Math.ceil((((d as any) - (yearStart as any)) / 86400000 + yearStart.getUTCDay() + 6) / 7);
   // Pad to 2 digits
   return `${d.getUTCFullYear()}-W${String(weekNum).padStart(2, '0')}`;
 }
@@ -45,12 +41,8 @@ export function getCurrentWeekString(date = new Date(), tz) {
 /**
  * Get the Monday ISO date string for a given date. When `tz` is supplied,
  * the returned date is the Monday of that date's *local* ISO week.
- *
- * @param {Date} [date]
- * @param {string} [tz]
- * @returns {string}
  */
-export function getMondayDate(date = new Date(), tz) {
+export function getMondayDate(date: Date = new Date(), tz?: string): string {
   if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
     const weekKey = currentWeekKey(tz, date);
     const monUtc = mondayOfWeek(weekKey, tz);
@@ -66,14 +58,14 @@ export function getMondayDate(date = new Date(), tz) {
 
 /**
  * Compute task status counts from a weekly plan.
- * @param {object|null} plan - Weekly plan object (may be null)
- * @returns {{ total: number, byStatus: Record<string, number>, approved: boolean }}
  */
-export function computeTaskCounts(plan) {
+export function computeTaskCounts(
+  plan: any,
+): { total: number; byStatus: Record<string, number>; approved: boolean } {
   if (!plan || !plan.tasks) {
     return { total: 0, byStatus: {}, approved: false };
   }
-  const byStatus = {};
+  const byStatus: Record<string, number> = {};
   for (const task of plan.tasks) {
     byStatus[task.status] = (byStatus[task.status] || 0) + 1;
   }
@@ -84,28 +76,29 @@ export function computeTaskCounts(plan) {
   };
 }
 
+export interface BuildAgentStatusOpts {
+  agentConfig: any;
+  week: string;
+  weekMonday: string;
+  stores: any;
+  lockOpts?: any;
+  displayName?: string;
+  displayRole?: string;
+}
+
 /**
  * Build the status summary for a single agent.
  * Gracefully handles missing data — returns partial info when stores are empty.
- *
- * Name and role are overridden by `displayName` / `displayRole` when passed;
- * these come from the subagent .md frontmatter (the single source of truth
- * for identity after the subagent-wrapper refactor). When neither override
- * nor legacy `identity` block is available, `name` falls back to the agent
- * id (which equals the subagent slug) and `role` to an empty string so the
- * caller can still render a sensible missing-marker row.
- *
- * @param {object} opts
- * @param {object} opts.agentConfig - Full agent config from AgentStore
- * @param {string} opts.week - Current ISO week string (YYYY-Www)
- * @param {string} opts.weekMonday - Current Monday date string (YYYY-MM-DD)
- * @param {object} opts.stores - { weeklyPlanStore, activityLogStore, usageStore, inboxStore }
- * @param {object} [opts.lockOpts] - { lockDir, maxLockAgeMs } for lock queries
- * @param {string} [opts.displayName] - Name from live subagent .md (overrides identity).
- * @param {string} [opts.displayRole] - Role/description from live subagent .md (overrides identity).
- * @returns {Promise<object>} Agent status summary
  */
-export async function buildAgentStatus({ agentConfig, week, weekMonday, stores, lockOpts, displayName, displayRole }) {
+export async function buildAgentStatus({
+  agentConfig,
+  week,
+  weekMonday,
+  stores,
+  lockOpts,
+  displayName,
+  displayRole,
+}: BuildAgentStatusOpts): Promise<any> {
   const agentId = agentConfig.id;
 
   // Gather data in parallel — each read is independent
@@ -117,11 +110,11 @@ export async function buildAgentStatus({ agentConfig, week, weekMonday, stores, 
     lockOpts ? queryLock(agentId, lockOpts) : Promise.resolve({ locked: false, status: 'absent' }),
   ]);
 
-  const plan = planResult.status === 'fulfilled' ? planResult.value : null;
-  const activitySummary = activityResult.status === 'fulfilled' ? activityResult.value : { entryCount: 0, byStatus: {}, totalDuration: 0 };
-  const usageSummary = usageResult.status === 'fulfilled' ? usageResult.value : { totalTokens: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, recordCount: 0 };
-  const inboxSummary = inboxResult.status === 'fulfilled' ? inboxResult.value : { total: 0, byStatus: {}, byType: {} };
-  const lockInfo = lockResult.status === 'fulfilled' ? lockResult.value : { locked: false, status: 'unknown' };
+  const plan: any = planResult.status === 'fulfilled' ? planResult.value : null;
+  const activitySummary: any = activityResult.status === 'fulfilled' ? activityResult.value : { entryCount: 0, byStatus: {}, totalDuration: 0 };
+  const usageSummary: any = usageResult.status === 'fulfilled' ? usageResult.value : { totalTokens: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, recordCount: 0 };
+  const inboxSummary: any = inboxResult.status === 'fulfilled' ? inboxResult.value : { total: 0, byStatus: {}, byType: {} };
+  const lockInfo: any = lockResult.status === 'fulfilled' ? lockResult.value : { locked: false, status: 'unknown' };
 
   const taskCounts = computeTaskCounts(plan);
 
@@ -191,16 +184,20 @@ export async function buildAgentStatus({ agentConfig, week, weekMonday, stores, 
   };
 }
 
+export interface GatherAllAgentStatusesOpts {
+  dataDir: string;
+  date?: Date;
+  lockOpts?: any;
+}
+
 /**
  * Gather status for all agents.
- *
- * @param {object} opts
- * @param {string} opts.dataDir - Base data directory (e.g., ./.aweek/agents)
- * @param {Date} [opts.date] - Reference date (defaults to now)
- * @param {object} [opts.lockOpts] - Lock manager options { lockDir, maxLockAgeMs }
- * @returns {Promise<{ agents: object[], timestamp: string, week: string, weekMonday: string }>}
  */
-export async function gatherAllAgentStatuses({ dataDir, date, lockOpts }) {
+export async function gatherAllAgentStatuses({
+  dataDir,
+  date,
+  lockOpts,
+}: GatherAllAgentStatusesOpts): Promise<{ agents: any[]; timestamp: string; week: string; weekMonday: string }> {
   const now = date || new Date();
   const week = getCurrentWeekString(now);
   const weekMonday = getMondayDate(now);
@@ -224,7 +221,7 @@ export async function gatherAllAgentStatuses({ dataDir, date, lockOpts }) {
   }
 
   const statuses = await Promise.all(
-    agents.map((agentConfig) =>
+    agents.map((agentConfig: any) =>
       buildAgentStatus({ agentConfig, week, weekMonday, stores, lockOpts })
     )
   );
@@ -243,19 +240,15 @@ export async function gatherAllAgentStatuses({ dataDir, date, lockOpts }) {
 
 /**
  * Format a number with commas for readability.
- * @param {number} n
- * @returns {string}
  */
-export function formatNumber(n) {
+export function formatNumber(n: number): string {
   return n.toLocaleString('en-US');
 }
 
 /**
  * State emoji/icon for display.
- * @param {string} state
- * @returns {string}
  */
-function stateIcon(state) {
+function stateIcon(state: string): string {
   switch (state) {
     case 'running': return '[RUNNING]';
     case 'active':  return '[ACTIVE]';
@@ -267,12 +260,10 @@ function stateIcon(state) {
 
 /**
  * Format a single agent's status as a text block.
- * @param {object} agentStatus - From buildAgentStatus
- * @returns {string}
  */
-export function formatAgentStatus(agentStatus) {
+export function formatAgentStatus(agentStatus: any): string {
   const s = agentStatus;
-  const lines = [];
+  const lines: string[] = [];
 
   lines.push(`${stateIcon(s.state)} ${s.name} (${s.role})`);
   lines.push(`  ID: ${s.id}`);
@@ -280,7 +271,7 @@ export function formatAgentStatus(agentStatus) {
   // Plan / Tasks
   if (s.plan.tasks.total > 0) {
     const t = s.plan.tasks;
-    const parts = [];
+    const parts: string[] = [];
     if (t.byStatus['completed']) parts.push(`${t.byStatus['completed']} completed`);
     if (t.byStatus['in-progress']) parts.push(`${t.byStatus['in-progress']} in-progress`);
     if (t.byStatus['pending']) parts.push(`${t.byStatus['pending']} pending`);
@@ -305,7 +296,7 @@ export function formatAgentStatus(agentStatus) {
 
   // Inbox
   if (s.inbox.total > 0) {
-    const inboxParts = [];
+    const inboxParts: string[] = [];
     if (s.inbox.pending) inboxParts.push(`${s.inbox.pending} pending`);
     if (s.inbox.accepted) inboxParts.push(`${s.inbox.accepted} accepted`);
     lines.push(`  Inbox: ${s.inbox.total} messages (${inboxParts.join(', ')})`);
@@ -321,11 +312,9 @@ export function formatAgentStatus(agentStatus) {
 
 /**
  * Format the full status report for all agents.
- * @param {object} statusReport - From gatherAllAgentStatuses
- * @returns {string}
  */
-export function formatStatusReport(statusReport) {
-  const lines = [];
+export function formatStatusReport(statusReport: any): string {
+  const lines: string[] = [];
 
   lines.push('=== aweek Agent Status ===');
   lines.push(`Week: ${statusReport.week} (Monday: ${statusReport.weekMonday})`);
@@ -338,21 +327,21 @@ export function formatStatusReport(statusReport) {
   }
 
   // Summary counts
-  const stateCounts = {};
+  const stateCounts: Record<string, number> = {};
   for (const a of statusReport.agents) {
     stateCounts[a.state] = (stateCounts[a.state] || 0) + 1;
   }
-  const summaryParts = [];
-  if (stateCounts.running) summaryParts.push(`${stateCounts.running} running`);
-  if (stateCounts.active) summaryParts.push(`${stateCounts.active} active`);
-  if (stateCounts.paused) summaryParts.push(`${stateCounts.paused} paused`);
-  if (stateCounts.idle) summaryParts.push(`${stateCounts.idle} idle`);
+  const summaryParts: string[] = [];
+  if (stateCounts['running']) summaryParts.push(`${stateCounts['running']} running`);
+  if (stateCounts['active']) summaryParts.push(`${stateCounts['active']} active`);
+  if (stateCounts['paused']) summaryParts.push(`${stateCounts['paused']} paused`);
+  if (stateCounts['idle']) summaryParts.push(`${stateCounts['idle']} idle`);
   if (summaryParts.length > 0) {
     lines.push(`Overview: ${summaryParts.join(', ')}`);
   }
 
   // Total tokens across all agents
-  const totalTokens = statusReport.agents.reduce((sum, a) => sum + a.usage.totalTokens, 0);
+  const totalTokens = statusReport.agents.reduce((sum: number, a: any) => sum + a.usage.totalTokens, 0);
   if (totalTokens > 0) {
     lines.push(`Total tokens this week: ${formatNumber(totalTokens)}`);
   }

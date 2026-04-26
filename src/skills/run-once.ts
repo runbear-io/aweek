@@ -35,13 +35,10 @@ import { extractResources } from '../heartbeat/run.js';
 /**
  * Build the in-memory ephemeral task. Kept as a helper so tests can assert
  * the shape (and it keeps `execute` short). Does NOT touch disk.
- *
- * @param {object} opts
- * @param {string} opts.prompt - The task prompt fed to the CLI session.
- * @param {string} [opts.title] - Short display label; defaults to "Ad-hoc debug run".
- * @returns {{ id: string, title: string, prompt: string, status: 'in-progress' }}
  */
-export function buildAdHocTask({ prompt, title } = {}) {
+export function buildAdHocTask(
+  { prompt, title }: { prompt?: string; title?: string } = {},
+): { id: string; title: string; prompt: string | undefined; status: 'in-progress' } {
   return {
     id: `adhoc-${randomUUID().slice(0, 8)}`,
     title: title || 'Ad-hoc debug run',
@@ -50,42 +47,29 @@ export function buildAdHocTask({ prompt, title } = {}) {
   };
 }
 
+export interface RunOnceOpts {
+  agentId?: string;
+  prompt?: string;
+  title?: string;
+  confirmed?: boolean;
+  projectDir?: string;
+  dataDir?: string;
+  agentStore?: any;
+  usageStore?: any;
+  activityLogStore?: any;
+  executeFn?: any;
+  lockFn?: any;
+  envLoader?: any;
+}
+
 /**
  * Manually dispatch an ad-hoc task to an agent through the same execution
  * path the heartbeat uses.
- *
- * @param {object} opts
- * @param {string} opts.agentId - Target agent id.
- * @param {string} opts.prompt - Prompt the synthetic task carries.
- * @param {string} [opts.title] - Optional short title for the activity entry.
- * @param {boolean} opts.confirmed - Must be `true`. Destructive gate.
- * @param {string} [opts.projectDir] - Project root (default: `process.cwd()`).
- * @param {string} [opts.dataDir] - Override for the `.aweek/agents` root.
- *   Useful for tests; production callers should let it default.
- * @param {AgentStore} [opts.agentStore] - Injectable store (tests).
- * @param {UsageStore} [opts.usageStore] - Injectable store (tests).
- * @param {ActivityLogStore} [opts.activityLogStore] - Injectable store (tests).
- * @param {typeof executeSessionWithTracking} [opts.executeFn] - Injectable
- *   executor. Defaults to the real `executeSessionWithTracking`; tests pass
- *   a stub so no real CLI session is launched.
- * @param {typeof runWithHeartbeatLock} [opts.lockFn] - Injectable lock wrapper.
- *   Defaults to the real heartbeat lock.
- * @param {typeof loadAgentEnv} [opts.envLoader] - Injectable `.env` loader.
- * @returns {Promise<{
- *   agentId: string,
- *   task: object,
- *   execResult: object | null,
- *   activityEntry: object | null,
- *   executionLogBasename: string | null,
- *   durationMs: number,
- *   finalStatus: 'completed' | 'failed',
- *   error?: string,
- * }>}
  */
-export async function execute(opts = {}) {
+export async function execute(opts: RunOnceOpts = {}): Promise<any> {
   // Step 1: Confirmation gate — matches the destructive-op policy.
   if (opts.confirmed !== true) {
-    const err = new Error(
+    const err: any = new Error(
       'run-once requires explicit user confirmation. ' +
         'Collect consent via AskUserQuestion and pass `confirmed: true`.',
     );
@@ -95,7 +79,7 @@ export async function execute(opts = {}) {
 
   const agentId = opts.agentId;
   if (!agentId) {
-    const err = new Error('run-once: agentId is required');
+    const err: any = new Error('run-once: agentId is required');
     err.code = 'ERUN_NOT_CONFIRMED';
     throw err;
   }
@@ -117,11 +101,11 @@ export async function execute(opts = {}) {
   // Step 2: Agent resolution. AgentStore.load throws on ENOENT; promote to
   // the documented `ERUN_UNKNOWN_AGENT` code so the skill markdown can show
   // a helpful message rather than "ENOENT: no such file or directory".
-  let config;
+  let config: any;
   try {
     config = await agentStore.load(agentId);
   } catch (cause) {
-    const err = new Error(`run-once: agent not found: ${agentId}`);
+    const err: any = new Error(`run-once: agent not found: ${agentId}`);
     err.code = 'ERUN_UNKNOWN_AGENT';
     err.cause = cause;
     throw err;
@@ -134,8 +118,8 @@ export async function execute(opts = {}) {
   // Step 4: Wrap the actual run in the per-agent heartbeat lock so a manual
   // dispatch can never collide with a concurrent cron tick. The callback
   // body owns every side effect (env load, executor, activity log).
-  const lockResult = await lockFn(agentId, async () => {
-    let agentEnv = {};
+  const lockResult: any = await lockFn(agentId, async () => {
+    let agentEnv: any = {};
     try {
       agentEnv = await envLoader(agentsDir, agentId);
     } catch {
@@ -143,9 +127,9 @@ export async function execute(opts = {}) {
     }
 
     const startedAt = new Date();
-    let execResult = null;
-    let error = null;
-    let finalStatus = 'completed';
+    let execResult: any = null;
+    let error: any = null;
+    let finalStatus: 'completed' | 'failed' = 'completed';
 
     try {
       execResult = await executeFn(
@@ -185,14 +169,14 @@ export async function execute(opts = {}) {
 
     // Step 5: Activity log — mirror heartbeat/run.js:executeOneSelection so
     // the dashboard drawer can render the ad-hoc run the same way.
-    let activityEntry = null;
+    let activityEntry: any = null;
     try {
       const session = execResult?.sessionResult;
       const stdout = session?.stdout || '';
       const stderr = session?.stderr || '';
       const resources = extractResources(stdout + '\n' + stderr);
 
-      const metadata = {
+      const metadata: any = {
         task: {
           id: task.id,
           title: task.title,
@@ -264,7 +248,7 @@ export async function execute(opts = {}) {
   }
 
   if (lockResult.status === 'skipped') {
-    const err = new Error(
+    const err: any = new Error(
       `run-once: heartbeat lock held by another process (${lockResult.reason})`,
     );
     err.code = 'ERUN_LOCKED';

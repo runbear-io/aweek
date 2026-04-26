@@ -29,7 +29,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeAgent(name, overrides = {}) {
+function makeAgent(name: string, overrides: any = {}): any {
   const config = createAgentConfig({
     subagentRef: String(name).toLowerCase(),
     weeklyTokenLimit: 100000,
@@ -37,21 +37,21 @@ function makeAgent(name, overrides = {}) {
   return { ...config, ...overrides };
 }
 
-function makePlan(week, tasks = [], approved = true) {
+function makePlan(week: string, tasks: any[] = [], approved = true): any {
   const plan = createWeeklyPlan(week, '2026-04', tasks);
   plan.approved = approved;
   if (approved) plan.approvedAt = new Date().toISOString();
   return plan;
 }
 
-function makeTask(id, status = 'pending') {
+function makeTask(id: string, status = 'pending'): any {
   const task = createTask({ title: `Task ${id}`, prompt: `Task ${id}` }, 'obj-1');
   task.id = `task-${id}`;
   task.status = status;
   return task;
 }
 
-let tmpDir;
+let tmpDir: string;
 
 async function setup() {
   tmpDir = await mkdtemp(join(tmpdir(), 'status-test-'));
@@ -384,7 +384,7 @@ describe('gatherAllAgentStatuses', () => {
     assert.equal(result.week, '2026-W16');
     assert.equal(result.weekMonday, '2026-04-13');
 
-    const names = result.agents.map((a) => a.name).sort();
+    const names = result.agents.map((a: any) => a.name).sort();
     assert.deepEqual(names, ['alice', 'bob']);
   });
 
