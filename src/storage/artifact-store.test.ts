@@ -1,6 +1,14 @@
 /**
  * Tests for ArtifactStore — deliverable artifact persistence.
  *
+ * The runtime/contract assertions are unchanged from the original `.js`
+ * test — this file is the strict-mode TypeScript port that lands as part
+ * of seed-03-storage-C-final's storage migration. Types are imported
+ * from the migrated `./artifact-store.js` source via NodeNext extension
+ * resolution; the record shape is inferred from the factory's return
+ * type so the test stays in lockstep with the source without forcing
+ * a hard re-export of an internal type alias.
+ *
  * Covers:
  * - createArtifactRecord() — factory with defaults and optional fields
  * - ArtifactStore.register() — single artifact registration (idempotent)
@@ -27,6 +35,12 @@ import {
   artifactFileExists,
 } from './artifact-store.js';
 import { validateArtifactRecord, validateArtifactManifest } from '../schemas/validator.js';
+
+/**
+ * Inferred from the migrated `createArtifactRecord` factory so the
+ * test stays in lockstep with the source's declared return shape.
+ */
+type ArtifactRecord = ReturnType<typeof createArtifactRecord>;
 
 describe('createArtifactRecord', () => {
   it('creates a valid record with required fields', () => {
@@ -130,7 +144,7 @@ describe('Schema validation', () => {
   });
 
   it('validates a manifest (array of records)', () => {
-    const records = [
+    const records: ArtifactRecord[] = [
       createArtifactRecord({ agentId: 'a', taskId: 't1', filePath: 'f1', fileName: 'f1', type: 'code', description: 'd1' }),
       createArtifactRecord({ agentId: 'a', taskId: 't2', filePath: 'f2', fileName: 'f2', type: 'document', description: 'd2' }),
     ];
@@ -145,7 +159,7 @@ describe('Schema validation', () => {
 });
 
 describe('getFileSize / artifactFileExists', () => {
-  let tmpDir;
+  let tmpDir: string;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'artifact-util-'));
@@ -178,9 +192,9 @@ describe('getFileSize / artifactFileExists', () => {
 });
 
 describe('ArtifactStore', () => {
-  let tmpDir;
-  let projectDir;
-  let store;
+  let tmpDir: string;
+  let projectDir: string;
+  let store: ArtifactStore;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'artifact-store-'));
@@ -287,15 +301,15 @@ describe('ArtifactStore', () => {
 
     it('rejects invalid records', async () => {
       await assert.rejects(
-        () => store.register('agent-1', { id: 'bad', agentId: 'a' }),
-        /Schema validation failed/
+        () => store.register('agent-1', { id: 'bad', agentId: 'a' } as unknown as ArtifactRecord),
+        /Schema validation failed/,
       );
     });
   });
 
   describe('registerBatch', () => {
     it('registers multiple records at once', async () => {
-      const records = [
+      const records: ArtifactRecord[] = [
         createArtifactRecord({ agentId: 'a', taskId: 't1', filePath: 'f1.js', fileName: 'f1.js', type: 'code', description: 'd1' }),
         createArtifactRecord({ agentId: 'a', taskId: 't2', filePath: 'f2.md', fileName: 'f2.md', type: 'document', description: 'd2' }),
       ];
@@ -343,7 +357,7 @@ describe('ArtifactStore', () => {
   });
 
   describe('query', () => {
-    let records;
+    let records: ArtifactRecord[];
 
     beforeEach(async () => {
       records = [
@@ -413,7 +427,7 @@ describe('ArtifactStore', () => {
 
   describe('summary', () => {
     it('returns aggregate counts and size', async () => {
-      const records = [
+      const records: ArtifactRecord[] = [
         createArtifactRecord({ agentId: 'a', taskId: 't1', filePath: 'f1', fileName: 'f1', type: 'code', description: 'd1', sizeBytes: 100 }),
         createArtifactRecord({ agentId: 'a', taskId: 't2', filePath: 'f2', fileName: 'f2', type: 'code', description: 'd2', sizeBytes: 200 }),
         createArtifactRecord({ agentId: 'a', taskId: 't3', filePath: 'f3', fileName: 'f3', type: 'document', description: 'd3', sizeBytes: 50 }),
@@ -499,7 +513,7 @@ describe('ArtifactStore', () => {
       const { existing } = await store.verify('agent-1');
       assert.equal(existing.length, 1);
       assert.equal(existing[0].filePath, 'deliverables/analysis.md');
-      assert.ok(existing[0].sizeBytes > 0, 'sizeBytes should be auto-populated');
+      assert.ok((existing[0].sizeBytes ?? 0) > 0, 'sizeBytes should be auto-populated');
     });
   });
 });

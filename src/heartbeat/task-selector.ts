@@ -39,9 +39,15 @@
 import {
   DAILY_REVIEW_OBJECTIVE_ID,
 } from '../schemas/weekly-plan.schema.js';
+import type {
+  WeeklyTask,
+  WeeklyPlan,
+  WeeklyTaskPriority,
+  WeeklyPlanStore,
+} from '../storage/weekly-plan-store.js';
 
 /** Priority weights — lower number = higher priority */
-const PRIORITY_WEIGHT = {
+const PRIORITY_WEIGHT: Record<WeeklyTaskPriority, number> = {
   critical: 0,
   high: 1,
   medium: 2,
@@ -49,7 +55,37 @@ const PRIORITY_WEIGHT = {
 };
 
 /** Default priority when task has none set */
-const DEFAULT_PRIORITY = 'medium';
+const DEFAULT_PRIORITY: WeeklyTaskPriority = 'medium';
+
+/** Pending-only inbox priority weights for inbox-processor (see below). */
+type PriorityKey = WeeklyTaskPriority;
+
+export interface StaleTaskRef {
+  taskId: string;
+  runAt: string;
+  ageMs: number;
+}
+
+export interface TaskStatusSummary {
+  total: number;
+  pending: number;
+  completed: number;
+  failed: number;
+  inProgress: number;
+  delegated: number;
+  skipped: number;
+}
+
+export interface TickPick {
+  task: WeeklyTask;
+  index: number;
+  trackKey: string;
+}
+
+export interface SelectTickOptions {
+  nowMs?: number;
+  maxAgeMs?: number;
+}
 
 // ---------------------------------------------------------------------------
 // Daily-review recognition
@@ -66,7 +102,7 @@ const DEFAULT_PRIORITY = 'medium';
  * @param {object} [task]
  * @returns {boolean}
  */
-export function isDailyReviewTask(task) {
+export function isDailyReviewTask(task?: Pick<WeeklyTask, 'objectiveId'> | null): boolean {
   return task?.objectiveId === DAILY_REVIEW_OBJECTIVE_ID;
 }
 
@@ -91,14 +127,14 @@ export function isDailyReviewTask(task) {
  * @param {number} nowMs - Current time in milliseconds since epoch
  * @returns {object[]} Tasks with at most one daily-review task included
  */
-function applyDailyReviewOncePerDayRule(eligibleTasks, nowMs) {
+function applyDailyReviewOncePerDayRule(eligibleTasks: WeeklyTask[], _nowMs: number): WeeklyTask[] {
   const dailyReviews = eligibleTasks.filter(isDailyReviewTask);
   if (dailyReviews.length <= 1) return eligibleTasks; // nothing to deduplicate
 
   // Pick the daily-review whose runAt is the most recent (largest) that is
   // still ≤ nowMs. Tasks without a valid runAt receive epoch 0 so they lose
   // to any properly-timestamped task (fails-safe: still eligible, just deprioritised).
-  let mostRecent = dailyReviews[0];
+  let mostRecent: WeeklyTask = dailyReviews[0]!;
   for (const task of dailyReviews) {
     const taskMs = task.runAt ? Date.parse(task.runAt) : 0;
     const bestMs = mostRecent.runAt ? Date.parse(mostRecent.runAt) : 0;
@@ -117,8 +153,9 @@ function applyDailyReviewOncePerDayRule(eligibleTasks, nowMs) {
  * @param {string} [priority] - Priority string
  * @returns {number}
  */
-export function priorityWeight(priority) {
-  return PRIORITY_WEIGHT[priority ?? DEFAULT_PRIORITY] ?? PRIORITY_WEIGHT[DEFAULT_PRIORITY];
+export function priorityWeight(priority?: WeeklyTaskPriority | string | null): number {
+  const key = (priority ?? DEFAULT_PRIORITY) as PriorityKey;
+  return PRIORITY_WEIGHT[key] ?? PRIORITY_WEIGHT[DEFAULT_PRIORITY];
 }
 
 /**
@@ -126,7 +163,7 @@ export function priorityWeight(priority) {
  * @param {object[]} tasks - Array of task objects from a weekly plan
  * @returns {object[]} Pending tasks (new array, no mutation)
  */
-export function filterPendingTasks(tasks) {
+export function filterPendingTasks(tasks: WeeklyTask[] | undefined | null): WeeklyTask[] {
   if (!Array.isArray(tasks)) return [];
   return tasks.filter((t) => t.status === 'pending');
 }
@@ -139,9 +176,9 @@ export function filterPendingTasks(tasks) {
  * @param {object[]} tasks - Array of task objects
  * @returns {object[]} Sorted copy
  */
-export function sortByPriority(tasks) {
+export function sortByPriority(tasks: WeeklyTask[]): WeeklyTask[] {
   // Use index to guarantee stability across engines
-  const indexed = tasks.map((t, i) => ({ task: t, idx: i }));
+  const indexed = tasks.map((t: WeeklyTask, i: number) => ({ task: t, idx: i }));
   indexed.sort((a, b) => {
     const diff = priorityWeight(a.task.priority) - priorityWeight(b.task.priority);
     return diff !== 0 ? diff : a.idx - b.idx;
@@ -156,7 +193,7 @@ export function sortByPriority(tasks) {
  * @param {object} task
  * @returns {string}
  */
-export function trackKeyOf(task) {
+export function trackKeyOf(task?: Pick<WeeklyTask, 'track' | 'objectiveId'> | null): string {
   return task?.track ?? task?.objectiveId ?? '__no_track__';
 }
 
@@ -194,7 +231,11 @@ export const STALE_TASK_WINDOW_MS = 60 * 60 * 1000;
  * @param {number} [opts.maxAgeMs=STALE_TASK_WINDOW_MS] - Skip threshold.
  * @returns {boolean}
  */
-export function isRunAtReady(task, nowMs, { maxAgeMs = STALE_TASK_WINDOW_MS } = {}) {
+export function isRunAtReady(
+  task: Pick<WeeklyTask, 'runAt'> | null | undefined,
+  nowMs: number,
+  { maxAgeMs = STALE_TASK_WINDOW_MS }: { maxAgeMs?: number } = {},
+): boolean {
   if (!task || task.runAt == null) return true;
   const scheduledMs = Date.parse(task.runAt);
   if (Number.isNaN(scheduledMs)) return true;
@@ -214,10 +255,13 @@ export function isRunAtReady(task, nowMs, { maxAgeMs = STALE_TASK_WINDOW_MS } = 
  * @param {number} [opts.maxAgeMs=STALE_TASK_WINDOW_MS]
  * @returns {Array<{ taskId: string, runAt: string, ageMs: number }>}
  */
-export function findStaleTasks(plan, { nowMs = Date.now(), maxAgeMs = STALE_TASK_WINDOW_MS } = {}) {
+export function findStaleTasks(
+  plan: WeeklyPlan | null | undefined,
+  { nowMs = Date.now(), maxAgeMs = STALE_TASK_WINDOW_MS }: SelectTickOptions = {},
+): StaleTaskRef[] {
   if (!plan || !Array.isArray(plan.tasks)) return [];
   const cutoffMs = nowMs - maxAgeMs;
-  const stale = [];
+  const stale: StaleTaskRef[] = [];
   for (const task of plan.tasks) {
     if (!task || task.status !== 'pending') continue;
     if (task.runAt == null) continue;
@@ -248,7 +292,10 @@ export function findStaleTasks(plan, { nowMs = Date.now(), maxAgeMs = STALE_TASK
  * @param {number} [opts.nowMs=Date.now()]
  * @returns {object[]}
  */
-export function filterEligibleTasks(tasks, { nowMs = Date.now(), maxAgeMs } = {}) {
+export function filterEligibleTasks(
+  tasks: WeeklyTask[] | undefined | null,
+  { nowMs = Date.now(), maxAgeMs }: SelectTickOptions = {},
+): WeeklyTask[] {
   const readyOpts = maxAgeMs === undefined ? undefined : { maxAgeMs };
   const pending = filterPendingTasks(tasks).filter((t) => isRunAtReady(t, nowMs, readyOpts));
   return applyDailyReviewOncePerDayRule(pending, nowMs);
@@ -270,28 +317,32 @@ export function filterEligibleTasks(tasks, { nowMs = Date.now(), maxAgeMs } = {}
  * @param {number} [opts.nowMs=Date.now()]
  * @returns {Array<{ task: object, index: number, trackKey: string }>}
  */
-export function selectTasksForTickFromPlan(plan, { nowMs = Date.now(), maxAgeMs } = {}) {
+export function selectTasksForTickFromPlan(
+  plan: WeeklyPlan | null | undefined,
+  { nowMs = Date.now(), maxAgeMs }: SelectTickOptions = {},
+): TickPick[] {
   if (!plan) return [];
   if (!plan.approved) return [];
   if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return [];
 
-  const eligibleOpts = maxAgeMs === undefined ? { nowMs } : { nowMs, maxAgeMs };
+  const eligibleOpts: SelectTickOptions =
+    maxAgeMs === undefined ? { nowMs } : { nowMs, maxAgeMs };
   const eligible = filterEligibleTasks(plan.tasks, eligibleOpts);
   if (eligible.length === 0) return [];
 
   // Group eligible tasks by track key (explicit `track` or objectiveId).
-  const groups = new Map();
+  const groups = new Map<string, WeeklyTask[]>();
   for (const task of eligible) {
     const key = trackKeyOf(task);
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(task);
+    groups.get(key)!.push(task);
   }
 
   // Pick top-priority task per track (stable within priority).
-  const picks = [];
+  const picks: TickPick[] = [];
   for (const [trackKey, tasks] of groups) {
     const sorted = sortByPriority(tasks);
-    const selected = sorted[0];
+    const selected = sorted[0]!;
     const index = plan.tasks.findIndex((t) => t.id === selected.id);
     picks.push({ task: selected, index, trackKey });
   }
@@ -318,11 +369,14 @@ export function selectTasksForTickFromPlan(plan, { nowMs = Date.now(), maxAgeMs 
  * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
  * @returns {{ task: object, index: number } | null}
  */
-export function selectNextTaskFromPlan(plan, opts) {
+export function selectNextTaskFromPlan(
+  plan: WeeklyPlan | null | undefined,
+  opts?: SelectTickOptions,
+): { task: WeeklyTask; index: number } | null {
   const picks = selectTasksForTickFromPlan(plan, opts);
   if (picks.length === 0) return null;
-  const [{ task, index }] = picks;
-  return { task, index };
+  const first = picks[0]!;
+  return { task: first.task, index: first.index };
 }
 
 /**
@@ -332,8 +386,8 @@ export function selectNextTaskFromPlan(plan, opts) {
  * @param {object} plan - A weekly plan object
  * @returns {{ total: number, pending: number, completed: number, failed: number, inProgress: number, delegated: number, skipped: number }}
  */
-export function getTaskStatusSummary(plan) {
-  const summary = {
+export function getTaskStatusSummary(plan: WeeklyPlan | null | undefined): TaskStatusSummary {
+  const summary: TaskStatusSummary = {
     total: 0,
     pending: 0,
     completed: 0,
@@ -376,10 +430,10 @@ export function getTaskStatusSummary(plan) {
  * @param {object} plan - A weekly plan object
  * @returns {boolean}
  */
-export function isAllTasksFinished(plan) {
+export function isAllTasksFinished(plan: WeeklyPlan | null | undefined): boolean {
   if (!plan || !Array.isArray(plan.tasks) || plan.tasks.length === 0) return true;
   return plan.tasks.every(
-    (t) => t.status !== 'pending' && t.status !== 'in-progress'
+    (t: WeeklyTask) => t.status !== 'pending' && t.status !== 'in-progress'
   );
 }
 
@@ -393,7 +447,10 @@ export function isAllTasksFinished(plan) {
  * @param {string} agentId - The agent ID
  * @returns {Promise<{ task: object, index: number, week: string, plan: object } | null>}
  */
-export async function selectNextTask(store, agentId) {
+export async function selectNextTask(
+  store: WeeklyPlanStore,
+  agentId: string,
+): Promise<{ task: WeeklyTask; index: number; week: string; plan: WeeklyPlan } | null> {
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
 
@@ -425,7 +482,10 @@ export async function selectNextTask(store, agentId) {
  *   plan: object | null,
  * }>}
  */
-export async function selectTasksForTick(store, agentId) {
+export async function selectTasksForTick(
+  store: WeeklyPlanStore,
+  agentId: string,
+): Promise<{ picks: TickPick[]; week: string | null; plan: WeeklyPlan | null }> {
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
 
@@ -445,12 +505,16 @@ export async function selectTasksForTick(store, agentId) {
  * @param {string} week - YYYY-Www
  * @returns {Promise<{ task: object, index: number, week: string, plan: object } | null>}
  */
-export async function selectNextTaskForWeek(store, agentId, week) {
+export async function selectNextTaskForWeek(
+  store: WeeklyPlanStore,
+  agentId: string,
+  week: string,
+): Promise<{ task: WeeklyTask; index: number; week: string; plan: WeeklyPlan } | null> {
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
   if (!week) throw new Error('week is required');
 
-  let plan;
+  let plan: WeeklyPlan;
   try {
     plan = await store.load(agentId, week);
   } catch {

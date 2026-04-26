@@ -1,3 +1,14 @@
+/**
+ * Tests for ExecutionStore and execution record schema validation.
+ *
+ * The runtime/contract assertions are unchanged from the original `.js`
+ * test — this file is the strict-mode TypeScript port that lands as part
+ * of seed-03-storage-C-final's storage migration. Types are imported
+ * from the migrated `./execution-store.js` source via NodeNext extension
+ * resolution; the record shape is inferred from the factory's return
+ * type so the test stays in lockstep with the source without forcing
+ * a hard re-export of an internal type alias.
+ */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -12,10 +23,34 @@ import {
 } from './execution-store.js';
 import { validateExecutionRecord, validateExecutionLog } from '../schemas/validator.js';
 
+/**
+ * Inferred from the migrated `createExecutionRecord` factory so the
+ * test stays in lockstep with the source's declared return shape.
+ */
+type ExecutionRecord = ReturnType<typeof createExecutionRecord>;
+
+/**
+ * Loose mutable variant used by negative-path schema assertions that
+ * intentionally smuggle invalid status/id/key strings or extra fields
+ * onto the record before re-validating. Indexing through this record
+ * keeps those mutations type-safe without resorting to `as any`.
+ */
+type MutableRecord = ExecutionRecord & Record<string, unknown>;
+
 // ── Helper ──────────────────────────────────────────────────────────────────
 const AGENT = 'test-agent';
 
-function makeRecord(overrides = {}) {
+interface MakeRecordOverrides {
+  agentId?: string;
+  status?: ExecutionRecord['status'];
+  date?: Date;
+  windowMs?: number;
+  taskId?: string;
+  duration?: number;
+  metadata?: Record<string, unknown>;
+}
+
+function makeRecord(overrides: MakeRecordOverrides = {}): ExecutionRecord {
   return createExecutionRecord({
     agentId: AGENT,
     status: 'completed',
@@ -44,14 +79,15 @@ describe('execution.schema', () => {
   });
 
   it('rejects invalid status', () => {
-    const rec = makeRecord();
+    const rec = makeRecord() as MutableRecord;
     rec.status = 'invalid-status';
     const result = validateExecutionRecord(rec);
     assert.equal(result.valid, false);
   });
 
   it('accepts all valid statuses', () => {
-    for (const status of ['started', 'completed', 'failed', 'skipped']) {
+    const statuses: Array<ExecutionRecord['status']> = ['started', 'completed', 'failed', 'skipped'];
+    for (const status of statuses) {
       const rec = makeRecord({ status });
       const result = validateExecutionRecord(rec);
       assert.equal(result.valid, true, `Status "${status}" should be valid`);
@@ -59,21 +95,21 @@ describe('execution.schema', () => {
   });
 
   it('rejects invalid id pattern', () => {
-    const rec = makeRecord();
+    const rec = makeRecord() as MutableRecord;
     rec.id = 'bad-id';
     const result = validateExecutionRecord(rec);
     assert.equal(result.valid, false);
   });
 
   it('rejects invalid idempotencyKey pattern', () => {
-    const rec = makeRecord();
+    const rec = makeRecord() as MutableRecord;
     rec.idempotencyKey = 'bad-key';
     const result = validateExecutionRecord(rec);
     assert.equal(result.valid, false);
   });
 
   it('validates an execution log (array)', () => {
-    const log = [makeRecord(), makeRecord({ status: 'failed' })];
+    const log: ExecutionRecord[] = [makeRecord(), makeRecord({ status: 'failed' })];
     const result = validateExecutionLog(log);
     assert.equal(result.valid, true, JSON.stringify(result.errors));
   });
@@ -84,7 +120,7 @@ describe('execution.schema', () => {
   });
 
   it('rejects additional properties', () => {
-    const rec = makeRecord();
+    const rec = makeRecord() as MutableRecord;
     rec.extraField = 'nope';
     const result = validateExecutionRecord(rec);
     assert.equal(result.valid, false);
@@ -195,8 +231,8 @@ describe('createExecutionRecord', () => {
 
 // ── ExecutionStore ──────────────────────────────────────────────────────────
 describe('ExecutionStore', () => {
-  let tmpDir;
-  let store;
+  let tmpDir: string;
+  let store: ExecutionStore;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'exec-store-'));
@@ -271,7 +307,7 @@ describe('ExecutionStore', () => {
 
     it('validates record before storing', async () => {
       await assert.rejects(
-        () => store.record(AGENT, { id: 'bad' }),
+        () => store.record(AGENT, { id: 'bad' } as unknown as ExecutionRecord),
         /Schema validation failed/,
       );
     });

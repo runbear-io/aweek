@@ -17,12 +17,15 @@ import { join } from 'node:path';
 import { readdir, writeFile, mkdir } from 'node:fs/promises';
 import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
+import type { WeeklyTask } from '../storage/weekly-plan-store.js';
 import { ExecutionStore, createExecutionRecord } from '../storage/execution-store.js';
 import { UsageStore } from '../storage/usage-store.js';
 import { ActivityLogStore, createLogEntry } from '../storage/activity-log-store.js';
+import type { ActivityLogStatus } from '../storage/activity-log-store.js';
 import { InboxStore } from '../storage/inbox-store.js';
 import { createScheduler } from './scheduler.js';
 import { tickAgent } from './heartbeat-task-runner.js';
+import type { TaskTickResult } from './heartbeat-task-runner.js';
 import {
   selectTasksForTickFromPlan,
   trackKeyOf,
@@ -36,9 +39,57 @@ import { WEEKLY_REVIEW_OBJECTIVE_ID, DAILY_REVIEW_OBJECTIVE_ID } from '../schema
 import { generateWeeklyReview, nextISOWeek } from '../services/weekly-review-orchestrator.js';
 import { generateDailyReview, utcToLocalDate } from '../services/daily-review-writer.js';
 import { MonthlyPlanStore } from '../storage/monthly-plan-store.js';
+import type { MonthlyPlan } from '../storage/monthly-plan-store.js';
 import { generateWeeklyPlan } from '../services/weekly-plan-generator.js';
 import { readPlan } from '../storage/plan-markdown-store.js';
 import { loadAgentEnv } from '../storage/agent-env-store.js';
+
+interface RunHeartbeatForAgentOptions {
+  projectDir?: string;
+}
+
+interface ExecutionContext {
+  agentId: string;
+  subagentRef: string;
+  projectDir: string;
+  dataDir: string;
+  agentsDir: string;
+  weeklyPlanStore: WeeklyPlanStore;
+  usageStore: UsageStore;
+  activityLogStore: ActivityLogStore;
+  agentStore: AgentStore;
+  inboxStore: InboxStore;
+}
+
+interface TaskSelection {
+  task: WeeklyTask;
+  week: string;
+}
+
+interface ExecuteOneSelectionResult {
+  execResult: unknown;
+  error: Error | null;
+  finalStatus: 'completed' | 'failed';
+  chainResult?: ChainNextWeekResult | null;
+}
+
+interface ChainNextWeekResult {
+  nextWeek: string | null;
+  chained: boolean;
+  reason?: string;
+}
+
+interface SweepStaleArgs {
+  agentId: string;
+  weeklyPlanStore: WeeklyPlanStore;
+  activityLogStore?: ActivityLogStore;
+  now?: Date;
+}
+
+const errMsg = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
+const toError = (err: unknown): Error =>
+  err instanceof Error ? err : new Error(String(err));
 
 /**
  * Extract URLs and file paths from session stdout.
@@ -47,7 +98,7 @@ import { loadAgentEnv } from '../storage/agent-env-store.js';
  * @param {string} text
  * @returns {{ urls: string[], filePaths: string[] }}
  */
-export function extractResources(text) {
+export function extractResources(text: string | null | undefined): { urls: string[]; filePaths: string[] } {
   if (!text || typeof text !== 'string') return { urls: [], filePaths: [] };
 
   const urlRe = /https?:\/\/[^\s<>")\]]+/g;
@@ -57,10 +108,10 @@ export function extractResources(text) {
   const absPathRe = /(?:^|\s|=|"|')(\/[A-Za-z0-9._~/-]+)(?=[\s"'.,;)\]:]|$)/g;
   const relPathRe = /(?:^|\s|=|"|')([A-Za-z0-9._-]+\/[A-Za-z0-9._/-]+\.[A-Za-z0-9]{1,6})(?=[\s"'.,;)\]:]|$)/g;
 
-  const filePaths = new Set();
-  let match;
-  while ((match = absPathRe.exec(text)) !== null) filePaths.add(match[1]);
-  while ((match = relPathRe.exec(text)) !== null) filePaths.add(match[1]);
+  const filePaths = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = absPathRe.exec(text)) !== null) filePaths.add(match[1]!);
+  while ((match = relPathRe.exec(text)) !== null) filePaths.add(match[1]!);
 
   return { urls, filePaths: Array.from(filePaths) };
 }
@@ -73,7 +124,15 @@ export function extractResources(text) {
  * @param {object} [opts]
  * @param {string} [opts.projectDir] - Project root (default: cwd)
  */
-export async function runHeartbeatForAgent(agentId, opts = {}) {
+export async function runHeartbeatForAgent(
+  agentId: string,
+  opts: RunHeartbeatForAgentOptions = {},
+): Promise<TaskTickResult | {
+  tickResult: TaskTickResult;
+  execResult: unknown;
+  extraResults: ExecuteOneSelectionResult[];
+  drainedTrackCount: number;
+}> {
   const projectDir = opts.projectDir || process.cwd();
   const dataDir = join(projectDir, '.aweek');
 
@@ -127,11 +186,16 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
     return tickResult;
   }
 
+  // task_selected guarantees task and week are populated; narrow for TS.
+  if (!tickResult.task || !tickResult.week) {
+    return tickResult;
+  }
+
   // Step 2: Run the first task through the full per-task pipeline.
   const config = await agentStore.load(agentId);
   const subagentRef = config.subagentRef || agentId;
 
-  const execCtx = {
+  const execCtx: ExecutionContext = {
     agentId,
     subagentRef,
     projectDir,
@@ -152,8 +216,8 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
   // Track which "tracks" have already fired a task this tick so the
   // drain loop picks from DIFFERENT tracks rather than the next task in
   // the same track — that's the whole point of the track primitive.
-  const firedTrackKeys = new Set([trackKeyOf(tickResult.task)]);
-  const extraResults = [];
+  const firedTrackKeys = new Set<string>([trackKeyOf(tickResult.task)]);
+  const extraResults: ExecuteOneSelectionResult[] = [];
   const firstError = firstResult.error;
 
   // Step 3: Drain other tracks within this tick.
@@ -213,9 +277,12 @@ export async function runHeartbeatForAgent(agentId, opts = {}) {
  * @param {import('../storage/agent-store.js').AgentStore} ctx.agentStore
  * @returns {Promise<{ nextWeek: string | null, chained: boolean, reason?: string }>}
  */
-export async function chainNextWeekPlanner(currentWeek, ctx) {
+export async function chainNextWeekPlanner(
+  currentWeek: string,
+  ctx: ExecutionContext,
+): Promise<ChainNextWeekResult> {
   const { agentId, agentsDir, weeklyPlanStore, agentStore } = ctx;
-  let nextWeek = null;
+  let nextWeek: string | null = null;
 
   try {
     nextWeek = nextISOWeek(currentWeek);
@@ -237,10 +304,9 @@ export async function chainNextWeekPlanner(currentWeek, ctx) {
     }
 
     // Load agent config for goals.
-    let goals = [];
-    let agentConfig;
+    let goals: unknown[] = [];
     try {
-      agentConfig = await agentStore.load(agentId);
+      const agentConfig = await agentStore.load(agentId);
       goals = Array.isArray(agentConfig.goals) ? agentConfig.goals : [];
     } catch {
       // Graceful: missing goals → plan will have only review tasks.
@@ -265,7 +331,11 @@ export async function chainNextWeekPlanner(currentWeek, ctx) {
     // Load the monthly plan. Prefer the exact month for next week; fall back
     // to the currently active plan; fall back to empty objectives.
     const monthlyPlanStore = new MonthlyPlanStore(agentsDir);
-    let monthlyPlan = { objectives: [] };
+    let monthlyPlan: MonthlyPlan = {
+      month: nextMonth,
+      objectives: [],
+      status: 'active',
+    };
     try {
       monthlyPlan = await monthlyPlanStore.load(agentId, nextMonth);
     } catch {
@@ -286,11 +356,15 @@ export async function chainNextWeekPlanner(currentWeek, ctx) {
     }
 
     // Generate the next week's plan.
+    // Cast at the boundary: generateWeeklyPlan declares its own structurally
+    // identical local Goal/MonthlyPlan/WeeklyPlan interfaces (not imported from
+    // ../storage/*), so explicit casts bridge the two parallel type universes
+    // without introducing `any`.
     const { plan, meta } = generateWeeklyPlan({
       week: nextWeek,
       month: nextMonth,
-      goals,
-      monthlyPlan,
+      goals: goals as unknown as Parameters<typeof generateWeeklyPlan>[0]['goals'],
+      monthlyPlan: monthlyPlan as unknown as Parameters<typeof generateWeeklyPlan>[0]['monthlyPlan'],
       options: { planMarkdown, tz },
     });
 
@@ -300,7 +374,10 @@ export async function chainNextWeekPlanner(currentWeek, ctx) {
     plan.approvedAt = new Date().toISOString();
 
     // Persist the auto-approved plan.
-    await weeklyPlanStore.save(agentId, plan);
+    await weeklyPlanStore.save(
+      agentId,
+      plan as unknown as Parameters<WeeklyPlanStore['save']>[1],
+    );
 
     console.log(
       `[${agentId}] auto-chained next-week plan for ${nextWeek}: ` +
@@ -309,8 +386,9 @@ export async function chainNextWeekPlanner(currentWeek, ctx) {
 
     return { nextWeek, chained: true };
   } catch (err) {
-    console.warn(`[${agentId}] next-week planner chain error: ${err.message}`);
-    return { nextWeek, chained: false, reason: err.message };
+    const m = errMsg(err);
+    console.warn(`[${agentId}] next-week planner chain error: ${m}`);
+    return { nextWeek, chained: false, reason: m };
   }
 }
 
@@ -332,7 +410,10 @@ export async function chainNextWeekPlanner(currentWeek, ctx) {
  * @param {object} ctx - Stores + paths from runHeartbeatForAgent.
  * @returns {Promise<{ execResult: null, error: Error | null, finalStatus: 'completed' | 'failed' }>}
  */
-async function executeDailyReviewTask(selection, ctx) {
+async function executeDailyReviewTask(
+  selection: TaskSelection,
+  ctx: ExecutionContext,
+): Promise<ExecuteOneSelectionResult> {
   const {
     agentId,
     agentsDir,
@@ -355,14 +436,14 @@ async function executeDailyReviewTask(selection, ctx) {
   // Derive the local review date from task.runAt (always set on daily-review
   // tasks by the weekly-plan generator). Falls back to today's UTC date when
   // runAt is missing so an orphaned task still produces a valid document.
-  const reviewDate = task.runAt
-    ? utcToLocalDate(task.runAt, tz)
-    : new Date().toISOString().slice(0, 10);
+  const reviewDate: string =
+    (task.runAt ? utcToLocalDate(task.runAt, tz) : null) ??
+    new Date().toISOString().slice(0, 10);
 
   console.log(`[${agentId}] generating daily review for ${reviewDate}`);
 
-  let error = null;
-  let finalStatus = 'completed';
+  let error: Error | null = null;
+  let finalStatus: 'completed' | 'failed' = 'completed';
 
   try {
     const deps = { agentStore, weeklyPlanStore, activityLogStore };
@@ -378,16 +459,16 @@ async function executeDailyReviewTask(selection, ctx) {
 
     console.log(`[${agentId}] daily review written for ${reviewDate}`);
   } catch (err) {
-    error = err;
+    error = toError(err);
     finalStatus = 'failed';
-    console.error(`[${agentId}] daily review error: ${err.message}`);
+    console.error(`[${agentId}] daily review error: ${error.message}`);
   }
 
   // Always update the task status — completed on success, failed on error.
   await weeklyPlanStore
     .updateTaskStatus(agentId, week, task.id, finalStatus)
-    .catch((e) =>
-      console.warn(`[${agentId}] daily review status update warning: ${e.message}`),
+    .catch((e: unknown) =>
+      console.warn(`[${agentId}] daily review status update warning: ${errMsg(e)}`),
     );
 
   return { execResult: null, error, finalStatus };
@@ -412,7 +493,10 @@ async function executeDailyReviewTask(selection, ctx) {
  *   chainResult: { nextWeek: string | null, chained: boolean, reason?: string } | null,
  * }>}
  */
-async function executeWeeklyReviewTask(selection, ctx) {
+async function executeWeeklyReviewTask(
+  selection: TaskSelection,
+  ctx: ExecutionContext,
+): Promise<ExecuteOneSelectionResult> {
   const {
     agentId,
     agentsDir,
@@ -429,9 +513,9 @@ async function executeWeeklyReviewTask(selection, ctx) {
 
   console.log(`[${agentId}] generating weekly review for ${week}`);
 
-  let error = null;
-  let finalStatus = 'completed';
-  let chainResult = null;
+  let error: Error | null = null;
+  let finalStatus: 'completed' | 'failed' = 'completed';
+  let chainResult: ChainNextWeekResult | null = null;
 
   try {
     const deps = {
@@ -444,7 +528,15 @@ async function executeWeeklyReviewTask(selection, ctx) {
 
     // Generate the full review document. persist: false so we control the path
     // (heartbeat writes to reviews/weekly-YYYY-Www.md, not reviews/YYYY-Www.md).
-    const result = await generateWeeklyReview(deps, agentId, week, { persist: false });
+    // Cast at boundary: weekly-review-orchestrator declares its own structurally
+    // looser OrchestratorDeps interface; the runtime contract is satisfied by
+    // our concrete stores.
+    const result = await generateWeeklyReview(
+      deps as unknown as Parameters<typeof generateWeeklyReview>[0],
+      agentId,
+      week,
+      { persist: false },
+    );
 
     // Write to reviews/weekly-YYYY-Www.md inside the per-agent data directory.
     await mkdir(reviewDir, { recursive: true });
@@ -458,16 +550,16 @@ async function executeWeeklyReviewTask(selection, ctx) {
     // throws, so chain failures do NOT affect finalStatus.
     chainResult = await chainNextWeekPlanner(week, ctx);
   } catch (err) {
-    error = err;
+    error = toError(err);
     finalStatus = 'failed';
-    console.error(`[${agentId}] weekly review error: ${err.message}`);
+    console.error(`[${agentId}] weekly review error: ${error.message}`);
   }
 
   // Always update the task status — completed on success, failed on error.
   await weeklyPlanStore
     .updateTaskStatus(agentId, week, task.id, finalStatus)
-    .catch((e) =>
-      console.warn(`[${agentId}] weekly review status update warning: ${e.message}`),
+    .catch((e: unknown) =>
+      console.warn(`[${agentId}] weekly review status update warning: ${errMsg(e)}`),
     );
 
   return { execResult: null, error, finalStatus, chainResult };
@@ -492,7 +584,10 @@ async function executeWeeklyReviewTask(selection, ctx) {
  * @param {object} ctx - Stores + paths captured from runHeartbeatForAgent.
  * @returns {Promise<{ execResult: object | null, error: Error | null, finalStatus: 'completed' | 'failed' }>}
  */
-async function executeOneSelection(selection, ctx) {
+async function executeOneSelection(
+  selection: TaskSelection,
+  ctx: ExecutionContext,
+): Promise<ExecuteOneSelectionResult> {
   const {
     agentId,
     subagentRef,
@@ -521,15 +616,15 @@ async function executeOneSelection(selection, ctx) {
   console.log(`[${agentId}] executing task: ${task.title}`);
 
   const startedAt = new Date();
-  let execResult = null;
-  let error = null;
-  let finalStatus = 'completed';
+  let execResult: Awaited<ReturnType<typeof executeSessionWithTracking>> | null = null;
+  let error: Error | null = null;
+  let finalStatus: 'completed' | 'failed' = 'completed';
 
-  let agentEnv = {};
+  let agentEnv: Record<string, string> = {};
   try {
     agentEnv = await loadAgentEnv(agentsDir, agentId);
   } catch (err) {
-    console.error(`[${agentId}] failed to load agent env: ${err.message}`);
+    console.error(`[${agentId}] failed to load agent env: ${errMsg(err)}`);
   }
 
   try {
@@ -557,9 +652,9 @@ async function executeOneSelection(selection, ctx) {
       },
     );
   } catch (err) {
-    error = err;
+    error = toError(err);
     finalStatus = 'failed';
-    console.error(`[${agentId}] execution error: ${err.message}`);
+    console.error(`[${agentId}] execution error: ${error.message}`);
   }
 
   const completedAt = new Date();
@@ -579,7 +674,7 @@ async function executeOneSelection(selection, ctx) {
     const stderr = session?.stderr || '';
     const resources = extractResources(stdout + '\n' + stderr);
 
-    const metadata = {
+    const metadata: Record<string, unknown> = {
       task: {
         id: task.id,
         title: task.title,
@@ -619,24 +714,24 @@ async function executeOneSelection(selection, ctx) {
       createLogEntry({
         agentId,
         taskId: task.id,
-        status: finalStatus,
+        status: finalStatus as ActivityLogStatus,
         title: task.title,
         duration: durationMs,
         metadata,
       }),
     );
   } catch (logErr) {
-    console.warn(`[${agentId}] activity log warning: ${logErr.message}`);
+    console.warn(`[${agentId}] activity log warning: ${errMsg(logErr)}`);
   }
 
   try {
     await enforceBudget(agentId, {
       agentStore,
       usageStore,
-      alertDir: join(dataDir, 'alerts'),
+      baseDir: agentsDir,
     });
   } catch (err) {
-    console.warn(`[${agentId}] budget enforcement warning: ${err.message}`);
+    console.warn(`[${agentId}] budget enforcement warning: ${errMsg(err)}`);
   }
 
   return { execResult, error, finalStatus };
@@ -647,7 +742,7 @@ async function executeOneSelection(selection, ctx) {
  * Used to abort the per-track drain once a session exhausts the
  * weekly token budget.
  */
-async function _isAgentPaused(agentStore, agentId) {
+async function _isAgentPaused(agentStore: AgentStore, agentId: string): Promise<boolean> {
   try {
     const fresh = await agentStore.load(agentId);
     return fresh?.budget?.paused === true;
@@ -662,7 +757,11 @@ async function _isAgentPaused(agentStore, agentId) {
  * tickAgent's idempotency guard; follow-up drains record their own so
  * operators can count how many tasks a tick ran.
  */
-async function _recordStarted(executionStore, agentId, taskId) {
+async function _recordStarted(
+  executionStore: ExecutionStore,
+  agentId: string,
+  taskId: string,
+): Promise<void> {
   try {
     const record = createExecutionRecord({
       agentId,
@@ -692,12 +791,17 @@ async function _recordStarted(executionStore, agentId, taskId) {
  * @param {object} [args.activityLogStore]
  * @param {Date} [args.now]
  */
-async function _sweepStaleTasks({ agentId, weeklyPlanStore, activityLogStore, now = new Date() }) {
-  let plan;
+async function _sweepStaleTasks({
+  agentId,
+  weeklyPlanStore,
+  activityLogStore,
+  now = new Date(),
+}: SweepStaleArgs): Promise<void> {
+  let plan: Awaited<ReturnType<WeeklyPlanStore['loadLatestApproved']>>;
   try {
     plan = await weeklyPlanStore.loadLatestApproved(agentId);
   } catch (err) {
-    console.warn(`[${agentId}] stale-sweep: load failed: ${err.message}`);
+    console.warn(`[${agentId}] stale-sweep: load failed: ${errMsg(err)}`);
     return;
   }
   if (!plan) return;
@@ -710,7 +814,7 @@ async function _sweepStaleTasks({ agentId, weeklyPlanStore, activityLogStore, no
       await weeklyPlanStore.updateTaskStatus(agentId, plan.week, item.taskId, 'skipped');
     } catch (err) {
       console.warn(
-        `[${agentId}] stale-sweep: failed to skip ${item.taskId}: ${err.message}`,
+        `[${agentId}] stale-sweep: failed to skip ${item.taskId}: ${errMsg(err)}`,
       );
       continue;
     }
@@ -721,7 +825,7 @@ async function _sweepStaleTasks({ agentId, weeklyPlanStore, activityLogStore, no
     );
 
     if (activityLogStore) {
-      const task = plan.tasks.find((t) => t.id === item.taskId);
+      const task = plan.tasks.find((t: WeeklyTask) => t.id === item.taskId);
       try {
         await activityLogStore.append(
           agentId,
@@ -739,7 +843,7 @@ async function _sweepStaleTasks({ agentId, weeklyPlanStore, activityLogStore, no
           }),
         );
       } catch (err) {
-        console.warn(`[${agentId}] stale-sweep log warning: ${err.message}`);
+        console.warn(`[${agentId}] stale-sweep log warning: ${errMsg(err)}`);
       }
     }
   }
@@ -751,7 +855,9 @@ async function _sweepStaleTasks({ agentId, weeklyPlanStore, activityLogStore, no
  * @param {object} [opts]
  * @param {string} [opts.projectDir] - Project root (default: cwd)
  */
-export async function runHeartbeatForAll(opts = {}) {
+export async function runHeartbeatForAll(
+  opts: RunHeartbeatForAgentOptions = {},
+): Promise<Array<{ agentId: string; result?: unknown; error?: string }>> {
   const projectDir = opts.projectDir || process.cwd();
   const agentsDir = join(projectDir, '.aweek', 'agents');
 
@@ -797,14 +903,15 @@ export async function runHeartbeatForAll(opts = {}) {
 
   console.log(`Running heartbeat for ${agentIds.length} agent(s)...`);
 
-  const results = [];
+  const results: Array<{ agentId: string; result?: unknown; error?: string }> = [];
   for (const agentId of agentIds) {
     try {
       const result = await runHeartbeatForAgent(agentId, { projectDir });
       results.push({ agentId, result });
     } catch (err) {
-      console.error(`[${agentId}] heartbeat error: ${err.message}`);
-      results.push({ agentId, error: err.message });
+      const m = errMsg(err);
+      console.error(`[${agentId}] heartbeat error: ${m}`);
+      results.push({ agentId, error: m });
     }
   }
 

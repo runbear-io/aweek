@@ -11,15 +11,15 @@ import {
   readExecutionLogLines,
 } from './execution-log-store.js';
 
-async function makeAgentsDir() {
+async function makeAgentsDir(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'aweek-execution-log-'));
   const agentsDir = join(root, 'agents');
   await mkdir(agentsDir, { recursive: true });
   return agentsDir;
 }
 
-async function collect(it) {
-  const out = [];
+async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
   for await (const v of it) out.push(v);
   return out;
 }

@@ -20,18 +20,101 @@ import { currentWeekKey, localParts, mondayOfWeek } from '../time/zone.js';
 const RECORD_SCHEMA_ID = 'aweek://schemas/usage-record';
 const LOG_SCHEMA_ID = 'aweek://schemas/usage-log';
 
-/** Generate a short random hex ID */
-const shortId = () => randomBytes(4).toString('hex');
+/**
+ * Canonical shape of a single usage record — mirrors `usageRecordSchema`
+ * in `src/schemas/usage.schema.js`. Required vs. optional matches the
+ * schema's `required` array exactly.
+ */
+export interface UsageRecord {
+  /** Unique usage record identifier (`usage-<hex>`). */
+  id: string;
+  /** ISO-8601 datetime when the session completed. */
+  timestamp: string;
+  /** Agent ID that consumed the tokens. */
+  agentId: string;
+  /** Weekly-plan task ID that was executed. */
+  taskId: string;
+  /** Opaque session identifier for deduplication. */
+  sessionId?: string;
+  /** Number of input (prompt) tokens consumed (integer >= 0). */
+  inputTokens: number;
+  /** Number of output (completion) tokens consumed (integer >= 0). */
+  outputTokens: number;
+  /** Sum of input + output tokens (integer >= 0). */
+  totalTokens: number;
+  /** Estimated cost in USD (>= 0). Omitted when zero. */
+  costUsd?: number;
+  /** Wall-clock session duration in ms (integer >= 0). */
+  durationMs?: number;
+  /** Model used for the session (if known). */
+  model?: string;
+  /** Budget week key (ISO Monday date, e.g. "2026-04-13"). */
+  week: string;
+}
+
+/** Inputs accepted by `createUsageRecord`. */
+export interface CreateUsageRecordOptions {
+  /** Agent that ran the session. */
+  agentId: string;
+  /** Task that was executed. */
+  taskId: string;
+  /** Opaque session identifier. */
+  sessionId?: string;
+  /** Input tokens consumed. */
+  inputTokens: number;
+  /** Output tokens consumed. */
+  outputTokens: number;
+  /** Estimated cost in USD (default 0). Omitted from the record when 0. */
+  costUsd?: number;
+  /** Wall-clock duration in ms. */
+  durationMs?: number;
+  /** Model used. */
+  model?: string;
+  /** Explicit week key (defaults to current Monday). */
+  week?: string;
+  /** Explicit timestamp (defaults to now). */
+  timestamp?: string;
+}
+
+/** Optional filters for `UsageStore.query()`. */
+export interface UsageQueryFilters {
+  /** Specific week (defaults to current Monday). */
+  weekMonday?: string;
+  /** Filter by task ID. */
+  taskId?: string;
+  /** Filter by model. */
+  model?: string;
+}
+
+/** Aggregated weekly totals returned by `UsageStore.weeklyTotal()`. */
+export interface UsageWeeklyTotal {
+  /** Monday date string for the budget week. */
+  weekMonday: string;
+  /** Number of records contributing to the totals. */
+  recordCount: number;
+  /** Sum of `inputTokens` across the week. */
+  inputTokens: number;
+  /** Sum of `outputTokens` across the week. */
+  outputTokens: number;
+  /** Sum of `totalTokens` across the week. */
+  totalTokens: number;
+  /** Sum of `costUsd` across the week, rounded to 6 decimals. */
+  costUsd: number;
+}
+
+/** Generate a short random hex ID. */
+const shortId = (): string => randomBytes(4).toString('hex');
 
 /**
  * Get the Monday ISO date string for a given date (budget period key).
  * When `tz` is supplied, the Monday is the Monday of that date's *local*
  * ISO week in the given zone.
- * @param {Date} [date]
- * @param {string} [tz]
- * @returns {string} e.g. "2026-04-13"
+ *
+ * @param date Date to bucket (defaults to now).
+ * @param tz Optional IANA zone name; UTC is used when omitted/empty.
+ * @returns e.g. "2026-04-13"
  */
-export function getMondayDate(date = new Date(), tz) {
+export function getMondayDate(date: Date = new Date(), tz?: string): string {
   if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
     const weekKey = currentWeekKey(tz, date);
     const monUtc = mondayOfWeek(weekKey, tz);
@@ -47,18 +130,6 @@ export function getMondayDate(date = new Date(), tz) {
 
 /**
  * Create a new usage record from session results and parsed token data.
- * @param {object} opts
- * @param {string} opts.agentId - Agent that ran the session
- * @param {string} opts.taskId - Task that was executed
- * @param {string} [opts.sessionId] - Opaque session identifier
- * @param {number} opts.inputTokens - Input tokens consumed
- * @param {number} opts.outputTokens - Output tokens consumed
- * @param {number} [opts.costUsd=0] - Estimated cost in USD
- * @param {number} [opts.durationMs] - Wall-clock duration in ms
- * @param {string} [opts.model] - Model used
- * @param {string} [opts.week] - Explicit week key (defaults to current Monday)
- * @param {string} [opts.timestamp] - Explicit timestamp (defaults to now)
- * @returns {object} A valid usage record
  */
 export function createUsageRecord({
   agentId,
@@ -71,10 +142,10 @@ export function createUsageRecord({
   model,
   week,
   timestamp,
-}) {
+}: CreateUsageRecordOptions): UsageRecord {
   const ts = timestamp || new Date().toISOString();
   const weekKey = week || getMondayDate(new Date(ts));
-  const record = {
+  const record: UsageRecord = {
     id: `usage-${shortId()}`,
     timestamp: ts,
     agentId,
@@ -92,55 +163,42 @@ export function createUsageRecord({
 }
 
 export class UsageStore {
-  /**
-   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
-   */
-  constructor(baseDir) {
+  /** Root data directory (e.g., ./.aweek/agents). */
+  readonly baseDir: string;
+
+  constructor(baseDir: string) {
     this.baseDir = baseDir;
   }
 
-  /**
-   * Directory for an agent's usage data.
-   * @param {string} agentId
-   */
-  _usageDir(agentId) {
+  /** Directory for an agent's usage data. */
+  _usageDir(agentId: string): string {
     return join(this.baseDir, agentId, 'usage');
   }
 
-  /**
-   * Path to a specific week's usage file.
-   * @param {string} agentId
-   * @param {string} weekMonday - ISO date string for Monday
-   */
-  _filePath(agentId, weekMonday) {
+  /** Path to a specific week's usage file. */
+  _filePath(agentId: string, weekMonday: string): string {
     return join(this._usageDir(agentId), `${weekMonday}.json`);
   }
 
-  /**
-   * Ensure the usage directory for an agent exists.
-   * @param {string} agentId
-   */
-  async init(agentId) {
+  /** Ensure the usage directory for an agent exists. */
+  async init(agentId: string): Promise<void> {
     await mkdir(this._usageDir(agentId), { recursive: true });
   }
 
   /**
    * Load usage records for a given week.
    * Returns empty array if no usage file exists yet.
-   * @param {string} agentId
-   * @param {string} [weekMonday] - Defaults to current week
-   * @returns {Promise<object[]>} Array of usage records
    */
-  async load(agentId, weekMonday) {
+  async load(agentId: string, weekMonday?: string): Promise<UsageRecord[]> {
     const monday = weekMonday || getMondayDate();
     const filePath = this._filePath(agentId, monday);
     try {
       const raw = await readFile(filePath, 'utf-8');
-      const records = JSON.parse(raw);
+      const records = JSON.parse(raw) as UsageRecord[];
       assertValid(LOG_SCHEMA_ID, records);
       return records;
     } catch (err) {
-      if (err.code === 'ENOENT') return [];
+      if (isErrnoException(err) && err.code === 'ENOENT') return [];
       throw err;
     }
   }
@@ -149,11 +207,8 @@ export class UsageStore {
    * Append a usage record for the appropriate week.
    * Idempotent: if a record with the same ID already exists, it is not duplicated.
    * Validates the record before writing.
-   * @param {string} agentId
-   * @param {object} record - Usage record
-   * @returns {Promise<object>} The appended record
    */
-  async append(agentId, record) {
+  async append(agentId: string, record: UsageRecord): Promise<UsageRecord> {
     assertValid(RECORD_SCHEMA_ID, record);
     const weekMonday = record.week;
     await this.init(agentId);
@@ -173,10 +228,9 @@ export class UsageStore {
 
   /**
    * List all available week keys (Monday dates) for an agent's usage.
-   * @param {string} agentId
-   * @returns {Promise<string[]>} Sorted array of Monday date strings
+   * @returns Sorted array of Monday date strings
    */
-  async listWeeks(agentId) {
+  async listWeeks(agentId: string): Promise<string[]> {
     await this.init(agentId);
     const entries = await readdir(this._usageDir(agentId));
     return entries
@@ -185,13 +239,11 @@ export class UsageStore {
       .sort();
   }
 
-  /**
-   * Get total token usage for a given week (budget period).
-   * @param {string} agentId
-   * @param {string} [weekMonday] - Defaults to current week
-   * @returns {Promise<{ weekMonday: string, recordCount: number, inputTokens: number, outputTokens: number, totalTokens: number, costUsd: number }>}
-   */
-  async weeklyTotal(agentId, weekMonday) {
+  /** Get total token usage for a given week (budget period). */
+  async weeklyTotal(
+    agentId: string,
+    weekMonday?: string,
+  ): Promise<UsageWeeklyTotal> {
     const monday = weekMonday || getMondayDate();
     const records = await this.load(agentId, monday);
     let inputTokens = 0;
@@ -216,16 +268,11 @@ export class UsageStore {
     };
   }
 
-  /**
-   * Query usage records with optional filters.
-   * @param {string} agentId
-   * @param {object} [filters]
-   * @param {string} [filters.weekMonday] - Specific week (defaults to current)
-   * @param {string} [filters.taskId] - Filter by task ID
-   * @param {string} [filters.model] - Filter by model
-   * @returns {Promise<object[]>} Matching records
-   */
-  async query(agentId, filters = {}) {
+  /** Query usage records with optional filters. */
+  async query(
+    agentId: string,
+    filters: UsageQueryFilters = {},
+  ): Promise<UsageRecord[]> {
     const records = await this.load(agentId, filters.weekMonday);
     return records.filter((r) => {
       if (filters.taskId && r.taskId !== filters.taskId) return false;
@@ -233,4 +280,13 @@ export class UsageStore {
       return true;
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Narrow `unknown` to a Node `ErrnoException` so we can read the `code` field. */
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && typeof (err as NodeJS.ErrnoException).code === 'string';
 }

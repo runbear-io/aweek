@@ -41,13 +41,15 @@ export interface WeeklyTotals {
 }
 
 export interface UsageRecordShape {
+  /** Unique usage record identifier (`usage-<hex>`). */
+  id: string;
   agentId: string;
   taskId: string;
   sessionId?: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  costUsd: number;
+  costUsd?: number;
   durationMs?: number;
   model?: string;
   week: string;

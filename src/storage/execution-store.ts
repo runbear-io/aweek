@@ -18,18 +18,117 @@ import { currentWeekKey, localParts, mondayOfWeek } from '../time/zone.js';
 const RECORD_SCHEMA_ID = 'aweek://schemas/execution-record';
 const LOG_SCHEMA_ID = 'aweek://schemas/execution-log';
 
-/** Generate a short random hex ID */
-const shortId = () => randomBytes(4).toString('hex');
+/**
+ * Outcome statuses recognised by `executionRecordSchema` — kept in sync with
+ * `EXECUTION_STATUSES` in `src/schemas/execution.schema.js`.
+ */
+export type ExecutionStatus = 'started' | 'completed' | 'failed' | 'skipped';
+
+/**
+ * Canonical shape of a single execution record — mirrors
+ * `executionRecordSchema` in `src/schemas/execution.schema.js`. Required vs.
+ * optional matches the schema's `required` array exactly.
+ */
+export interface ExecutionRecord {
+  /** Unique execution identifier (`exec-<hex>`). */
+  id: string;
+  /** Hash key (or random key for tick records) — `idem-<hex>`. */
+  idempotencyKey: string;
+  /** Agent that was executed. */
+  agentId: string;
+  /** ISO-8601 datetime when execution started. */
+  timestamp: string;
+  /** ISO-8601 datetime of the time-window start. */
+  windowStart: string;
+  /** ISO-8601 datetime of the time-window end. */
+  windowEnd: string;
+  /** Outcome of the execution. */
+  status: ExecutionStatus;
+  /** Weekly-plan task ID that was executed (if applicable). */
+  taskId?: string;
+  /** Wall-clock milliseconds the execution took. */
+  duration?: number;
+  /** Free-form metadata bag (token counts, error info, etc.). */
+  metadata?: Record<string, unknown>;
+}
+
+/** Inputs accepted by `createExecutionRecord`. */
+export interface CreateExecutionRecordOptions {
+  /** Agent that was executed. */
+  agentId: string;
+  /** Execution timestamp (defaults to now). */
+  date?: Date;
+  /** Time-window size in ms (defaults to 1 hour). */
+  windowMs?: number;
+  /** Outcome of the execution. */
+  status: ExecutionStatus;
+  /** Weekly-plan task ID (if applicable). */
+  taskId?: string;
+  /** Wall-clock milliseconds the execution took. */
+  duration?: number;
+  /** Optional metadata. */
+  metadata?: Record<string, unknown>;
+}
+
+/** Inputs accepted by `createTickExecutionRecord`. */
+export interface CreateTickExecutionRecordOptions {
+  /** Agent that was executed. */
+  agentId: string;
+  /** Execution timestamp (defaults to now). */
+  date?: Date;
+  /** Outcome of the execution. */
+  status: ExecutionStatus;
+  /** Weekly-plan task ID (if applicable). */
+  taskId?: string;
+  /** Wall-clock milliseconds the execution took. */
+  duration?: number;
+  /** Optional metadata. */
+  metadata?: Record<string, unknown>;
+}
+
+/** Filters accepted by `ExecutionStore.listRecent()`. */
+export interface ExecutionListRecentFilters {
+  /** Specific week (defaults to current Monday). */
+  weekMonday?: string;
+  /** Filter by status. */
+  status?: ExecutionStatus;
+  /** Max records to return (most recent first). */
+  limit?: number;
+}
+
+/** Aggregated weekly summary returned by `ExecutionStore.summary()`. */
+export interface ExecutionSummary {
+  /** Monday date string for the summary week. */
+  weekMonday: string;
+  /** Number of records contributing to the totals. */
+  recordCount: number;
+  /** Counts of records grouped by status. */
+  byStatus: Partial<Record<ExecutionStatus, number>>;
+  /** Sum of `duration` across the records that have one. */
+  totalDuration: number;
+}
+
+/** Result of `ExecutionStore.record()`. */
+export interface ExecutionRecordResult {
+  /** The record as written (or the duplicate that was already present). */
+  record: ExecutionRecord;
+  /** True when the idempotency key was already present and nothing was written. */
+  duplicate: boolean;
+}
+
+/** Generate a short random hex ID. */
+const shortId = (): string => randomBytes(4).toString('hex');
 
 /**
  * Get the Monday ISO date string for a given date.
  * When `tz` is supplied, the Monday belongs to that date's *local* ISO
  * week in the supplied zone.
- * @param {Date} [date]
- * @param {string} [tz]
- * @returns {string} e.g. "2026-04-13"
+ *
+ * @param date Date to bucket (defaults to now).
+ * @param tz Optional IANA zone name; UTC is used when omitted/empty.
+ * @returns e.g. "2026-04-13"
  */
-export function getMondayDate(date = new Date(), tz) {
+export function getMondayDate(date: Date = new Date(), tz?: string): string {
   if (typeof tz === 'string' && tz.length > 0 && tz !== 'UTC') {
     const weekKey = currentWeekKey(tz, date);
     const monUtc = mondayOfWeek(weekKey, tz);
@@ -47,11 +146,11 @@ export function getMondayDate(date = new Date(), tz) {
  * Compute the time-window boundaries for a given timestamp.
  * Default window is 1 hour (3600000ms).
  * The window start is floored to the nearest window boundary.
- * @param {Date} date
- * @param {number} [windowMs=3600000] - Window size in milliseconds
- * @returns {{ windowStart: string, windowEnd: string }}
  */
-export function computeTimeWindow(date, windowMs = 3600000) {
+export function computeTimeWindow(
+  date: Date,
+  windowMs: number = 3_600_000,
+): { windowStart: string; windowEnd: string } {
   const ts = date.getTime();
   const windowStartMs = Math.floor(ts / windowMs) * windowMs;
   const windowEndMs = windowStartMs + windowMs;
@@ -65,11 +164,12 @@ export function computeTimeWindow(date, windowMs = 3600000) {
  * Generate an idempotency key from agent ID and time-window start.
  * The key is a deterministic hash so repeated heartbeats in the same window
  * always produce the same key.
- * @param {string} agentId
- * @param {string} windowStart - ISO-8601 datetime of the window start
- * @returns {string} e.g. "idem-a1b2c3d4e5f6"
+ *
+ * @param agentId Agent identifier.
+ * @param windowStart ISO-8601 datetime of the window start.
+ * @returns e.g. "idem-a1b2c3d4e5f6"
  */
-export function generateIdempotencyKey(agentId, windowStart) {
+export function generateIdempotencyKey(agentId: string, windowStart: string): string {
   const hash = createHash('sha256')
     .update(`${agentId}:${windowStart}`)
     .digest('hex')
@@ -78,23 +178,22 @@ export function generateIdempotencyKey(agentId, windowStart) {
 }
 
 /**
- * Create a new execution record.
- * @param {object} opts
- * @param {string} opts.agentId - Agent that was executed
- * @param {Date}   [opts.date]  - Execution timestamp (defaults to now)
- * @param {number} [opts.windowMs=3600000] - Time window size in ms
- * @param {string} opts.status - One of: started, completed, failed, skipped
- * @param {string} [opts.taskId] - Weekly-plan task ID (if applicable)
- * @param {number} [opts.duration] - Wall-clock milliseconds
- * @param {object} [opts.metadata] - Optional extra data
- * @returns {object} A valid execution record
+ * Create a new execution record bucketed into a deterministic time window.
  */
-export function createExecutionRecord({ agentId, date, windowMs, status, taskId, duration, metadata }) {
+export function createExecutionRecord({
+  agentId,
+  date,
+  windowMs,
+  status,
+  taskId,
+  duration,
+  metadata,
+}: CreateExecutionRecordOptions): ExecutionRecord {
   const now = date || new Date();
   const { windowStart, windowEnd } = computeTimeWindow(now, windowMs);
   const idempotencyKey = generateIdempotencyKey(agentId, windowStart);
 
-  const record = {
+  const record: ExecutionRecord = {
     id: `exec-${shortId()}`,
     idempotencyKey,
     agentId,
@@ -124,22 +223,20 @@ export function createExecutionRecord({ agentId, date, windowMs, status, taskId,
  *
  * `windowStart`/`windowEnd` are required by the stored schema, so we set
  * them to the tick timestamp (zero-width window) to satisfy validation.
- *
- * @param {object} opts
- * @param {string} opts.agentId
- * @param {Date}   [opts.date]
- * @param {string} opts.status
- * @param {string} [opts.taskId]
- * @param {number} [opts.duration]
- * @param {object} [opts.metadata]
- * @returns {object} A valid execution record with a unique idempotencyKey.
  */
-export function createTickExecutionRecord({ agentId, date, status, taskId, duration, metadata }) {
+export function createTickExecutionRecord({
+  agentId,
+  date,
+  status,
+  taskId,
+  duration,
+  metadata,
+}: CreateTickExecutionRecordOptions): ExecutionRecord {
   const now = date || new Date();
   const timestamp = now.toISOString();
   const idempotencyKey = `idem-${randomBytes(6).toString('hex')}`;
 
-  const record = {
+  const record: ExecutionRecord = {
     id: `exec-${shortId()}`,
     idempotencyKey,
     agentId,
@@ -155,80 +252,66 @@ export function createTickExecutionRecord({ agentId, date, status, taskId, durat
 }
 
 export class ExecutionStore {
-  /**
-   * @param {string} baseDir - Root data directory (e.g., ./.aweek/agents)
-   */
-  constructor(baseDir) {
+  /** Root data directory (e.g., ./.aweek/agents). */
+  readonly baseDir: string;
+
+  constructor(baseDir: string) {
     this.baseDir = baseDir;
   }
 
-  /**
-   * Directory for an agent's execution records.
-   * @param {string} agentId
-   */
-  _execDir(agentId) {
+  /** Directory for an agent's execution records. */
+  _execDir(agentId: string): string {
     return join(this.baseDir, agentId, 'executions');
   }
 
   /**
    * Path to a specific week's execution file.
-   * @param {string} agentId
-   * @param {string} weekMonday - ISO date string for Monday (e.g. "2026-04-13")
+   *
+   * @param weekMonday ISO date string for Monday (e.g. "2026-04-13")
    */
-  _filePath(agentId, weekMonday) {
+  _filePath(agentId: string, weekMonday: string): string {
     return join(this._execDir(agentId), `${weekMonday}.json`);
   }
 
-  /**
-   * Ensure the executions directory for an agent exists.
-   * @param {string} agentId
-   */
-  async init(agentId) {
+  /** Ensure the executions directory for an agent exists. */
+  async init(agentId: string): Promise<void> {
     await mkdir(this._execDir(agentId), { recursive: true });
   }
 
   /**
    * Load execution records for a given week.
    * Returns empty array if no file exists yet.
-   * @param {string} agentId
-   * @param {string} [weekMonday] - Defaults to current week
-   * @returns {Promise<object[]>} Array of execution records
    */
-  async load(agentId, weekMonday) {
+  async load(agentId: string, weekMonday?: string): Promise<ExecutionRecord[]> {
     const monday = weekMonday || getMondayDate();
     const filePath = this._filePath(agentId, monday);
     try {
       const raw = await readFile(filePath, 'utf-8');
-      const records = JSON.parse(raw);
+      const records = JSON.parse(raw) as ExecutionRecord[];
       assertValid(LOG_SCHEMA_ID, records);
       return records;
     } catch (err) {
-      if (err.code === 'ENOENT') return [];
+      if (isErrnoException(err) && err.code === 'ENOENT') return [];
       throw err;
     }
   }
 
-  /**
-   * Check if an idempotency key already exists for a given week.
-   * @param {string} agentId
-   * @param {string} idempotencyKey
-   * @param {string} [weekMonday] - Defaults to current week
-   * @returns {Promise<boolean>}
-   */
-  async exists(agentId, idempotencyKey, weekMonday) {
+  /** Check if an idempotency key already exists for a given week. */
+  async exists(
+    agentId: string,
+    idempotencyKey: string,
+    weekMonday?: string,
+  ): Promise<boolean> {
     const records = await this.load(agentId, weekMonday);
     return records.some((r) => r.idempotencyKey === idempotencyKey);
   }
 
   /**
    * Record an execution entry for the appropriate week.
-   * Idempotent: if an entry with the same idempotency key already exists, it is not duplicated.
-   * Validates the record before writing.
-   * @param {string} agentId
-   * @param {object} record - Execution record
-   * @returns {Promise<{ record: object, duplicate: boolean }>}
+   * Idempotent: if an entry with the same idempotency key already exists, it
+   * is not duplicated. Validates the record before writing.
    */
-  async record(agentId, record) {
+  async record(agentId: string, record: ExecutionRecord): Promise<ExecutionRecordResult> {
     assertValid(RECORD_SCHEMA_ID, record);
     const monday = getMondayDate(new Date(record.timestamp));
     await this.init(agentId);
@@ -248,10 +331,10 @@ export class ExecutionStore {
 
   /**
    * List all available week keys (Monday dates) for an agent.
-   * @param {string} agentId
-   * @returns {Promise<string[]>} Sorted array of Monday date strings
+   *
+   * @returns Sorted array of Monday date strings
    */
-  async listWeeks(agentId) {
+  async listWeeks(agentId: string): Promise<string[]> {
     await this.init(agentId);
     const entries = await readdir(this._execDir(agentId));
     return entries
@@ -260,16 +343,11 @@ export class ExecutionStore {
       .sort();
   }
 
-  /**
-   * List recent execution records with optional filters.
-   * @param {string} agentId
-   * @param {object} [filters]
-   * @param {string} [filters.weekMonday] - Specific week (defaults to current)
-   * @param {string} [filters.status] - Filter by status
-   * @param {number} [filters.limit] - Max records to return (most recent first)
-   * @returns {Promise<object[]>} Matching records
-   */
-  async listRecent(agentId, filters = {}) {
+  /** List recent execution records with optional filters. */
+  async listRecent(
+    agentId: string,
+    filters: ExecutionListRecentFilters = {},
+  ): Promise<ExecutionRecord[]> {
     const records = await this.load(agentId, filters.weekMonday);
     let filtered = records.filter((r) => {
       if (filters.status && r.status !== filters.status) return false;
@@ -283,15 +361,10 @@ export class ExecutionStore {
     return filtered;
   }
 
-  /**
-   * Get a summary of executions for a given week.
-   * @param {string} agentId
-   * @param {string} [weekMonday]
-   * @returns {Promise<object>} Summary with counts by status, total duration, record count
-   */
-  async summary(agentId, weekMonday) {
+  /** Get a summary of executions for a given week. */
+  async summary(agentId: string, weekMonday?: string): Promise<ExecutionSummary> {
     const records = await this.load(agentId, weekMonday);
-    const byStatus = {};
+    const byStatus: Partial<Record<ExecutionStatus, number>> = {};
     let totalDuration = 0;
 
     for (const record of records) {
@@ -306,4 +379,13 @@ export class ExecutionStore {
       totalDuration,
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Narrow `unknown` to a Node `ErrnoException` so we can read the `code` field. */
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && typeof (err as NodeJS.ErrnoException).code === 'string';
 }

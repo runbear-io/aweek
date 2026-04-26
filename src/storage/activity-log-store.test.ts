@@ -6,7 +6,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ActivityLogStore, createLogEntry, getMondayDate } from './activity-log-store.js';
+import {
+  ActivityLogStore,
+  createLogEntry,
+  getMondayDate,
+  type ActivityLogEntry,
+} from './activity-log-store.js';
 import { validateActivityLogEntry, validateActivityLog } from '../schemas/validator.js';
 
 describe('getMondayDate', () => {
@@ -166,7 +171,7 @@ describe('activityLog (array) schema validation', () => {
   });
 
   it('validates an array of valid entries', () => {
-    const entries = [
+    const entries: ActivityLogEntry[] = [
       createLogEntry({ agentId: 'agent-a-1234abcd', status: 'started', title: 'Begin' }),
       createLogEntry({ agentId: 'agent-a-1234abcd', status: 'completed', title: 'Done', duration: 5000 }),
     ];
@@ -181,8 +186,8 @@ describe('activityLog (array) schema validation', () => {
 });
 
 describe('ActivityLogStore', () => {
-  let tmpDir;
-  let store;
+  let tmpDir: string;
+  let store: ActivityLogStore;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'aweek-log-test-'));
@@ -228,7 +233,7 @@ describe('ActivityLogStore', () => {
       const monday = getMondayDate(new Date(entry.timestamp));
       const loaded = await store.load(AGENT_ID, monday);
       assert.equal(loaded.length, 1);
-      assert.equal(loaded[0].id, entry.id);
+      assert.equal(loaded[0]?.id, entry.id);
     });
   });
 
@@ -287,8 +292,8 @@ describe('ActivityLogStore', () => {
 
     it('rejects invalid entries', async () => {
       await assert.rejects(
-        () => store.append(AGENT_ID, { bad: 'data' }),
-        /Schema validation failed/
+        () => store.append(AGENT_ID, { bad: 'data' } as unknown as ActivityLogEntry),
+        /Schema validation failed/,
       );
     });
 
@@ -325,7 +330,7 @@ describe('ActivityLogStore', () => {
 
       const weeks = await store.listWeeks(AGENT_ID);
       assert.equal(weeks.length, 1);
-      assert.match(weeks[0], /^\d{4}-\d{2}-\d{2}$/);
+      assert.match(weeks[0] as string, /^\d{4}-\d{2}-\d{2}$/);
     });
   });
 
@@ -350,7 +355,7 @@ describe('ActivityLogStore', () => {
 
       const results = await store.query(AGENT_ID, { status: 'completed' });
       assert.equal(results.length, 1);
-      assert.equal(results[0].status, 'completed');
+      assert.equal(results[0]?.status, 'completed');
     });
 
     it('filters by taskId', async () => {
@@ -361,7 +366,7 @@ describe('ActivityLogStore', () => {
 
       const results = await store.query(AGENT_ID, { taskId: 'task-aaa' });
       assert.equal(results.length, 1);
-      assert.equal(results[0].taskId, 'task-aaa');
+      assert.equal(results[0]?.taskId, 'task-aaa');
     });
 
     it('combines status and taskId filters', async () => {
@@ -374,7 +379,7 @@ describe('ActivityLogStore', () => {
 
       const results = await store.query(AGENT_ID, { taskId: 'task-aaa', status: 'completed' });
       assert.equal(results.length, 1);
-      assert.equal(results[0].title, 'B');
+      assert.equal(results[0]?.title, 'B');
     });
 
     it('returns empty when no matches', async () => {
