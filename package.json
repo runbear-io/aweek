@@ -21,10 +21,10 @@
     "test:spa:watch": "vitest --config vitest.config.js",
     "typecheck": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:spa": "tsc --noEmit -p tsconfig.spa.json",
-    "dev": "node scripts/dev.mjs",
+    "dev": "tsx scripts/dev.mts",
     "dev:spa": "vite --config vite.config.js",
     "lint": "node --check src/**/*.js",
-    "build": "node scripts/build.mjs",
+    "build": "tsx scripts/build.mts",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [

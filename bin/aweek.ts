@@ -8,6 +8,12 @@
  *   aweek heartbeat --all [--project-dir <dir>]
  *   aweek exec <module> <fn> [--input-json - | <file>] [--format json|text]
  *   aweek serve [--port <n>] [--host <addr>] [--no-open] [--project-dir <dir>]
+ *
+ * TypeScript migration note (seed-10-glue-final): mechanical rename from
+ * `.js` → `.ts`. The shebang above is preserved so `dist/bin/aweek.js`
+ * (emitted by `tsconfig.build.json`) stays directly executable. JSDoc
+ * parameter annotations have been promoted to lightweight TS signatures;
+ * the runtime behaviour is unchanged.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -27,8 +33,19 @@ import {
   isNoAweekDirError,
 } from '../src/serve/server.js';
 
-const args = process.argv.slice(2);
-const command = args[0];
+/**
+ * Narrow shape of the `ENOAWEEKDIR` error thrown by the serve pipeline.
+ * Matches the public surface exposed by `src/serve/errors.ts` and consumed
+ * by {@link formatNoAweekDirMessage} below.
+ */
+interface NoAweekDirError extends Error {
+  code?: string;
+  dataDir?: string;
+  projectDir?: string;
+}
+
+const args: string[] = process.argv.slice(2);
+const command: string | undefined = args[0];
 
 if (!command || command === '--help' || command === '-h') {
   console.log(`
@@ -62,8 +79,9 @@ if (command === 'exec') {
     await runExec(args.slice(1));
     process.exit(0);
   } catch (err) {
-    const code = err && err.code ? ` [${err.code}]` : '';
-    console.error(`Error${code}: ${err && err.message ? err.message : err}`);
+    const e = err as { code?: string; message?: string } | undefined;
+    const code = e && e.code ? ` [${e.code}]` : '';
+    console.error(`Error${code}: ${e && e.message ? e.message : err}`);
     process.exit(1);
   }
 }
@@ -79,12 +97,14 @@ if (command === 'serve') {
     // "Serve failed [CODE]: ..." one-liner for the multi-line friendly
     // block so the next step (init / --project-dir) is obvious.
     if (isNoAweekDirError(err)) {
+      const e = err as NoAweekDirError;
       console.error(
-        formatNoAweekDirMessage({ dataDir: err.dataDir, projectDir: err.projectDir }),
+        formatNoAweekDirMessage({ dataDir: e.dataDir ?? '', projectDir: e.projectDir ?? '' }),
       );
     } else {
-      const code = err && err.code ? ` [${err.code}]` : '';
-      console.error(`Serve failed${code}: ${err && err.message ? err.message : err}`);
+      const e = err as { code?: string; message?: string } | undefined;
+      const code = e && e.code ? ` [${e.code}]` : '';
+      console.error(`Serve failed${code}: ${e && e.message ? e.message : err}`);
     }
     process.exit(1);
   }
@@ -96,19 +116,19 @@ if (command === 'serve') {
   process.exit(1);
 }
 
-async function runHeartbeat(heartbeatArgs) {
-  let projectDir = process.cwd();
-  let agentId = null;
+async function runHeartbeat(heartbeatArgs: string[]): Promise<void> {
+  let projectDir: string = process.cwd();
+  let agentId: string | null = null;
   let runAll = false;
 
   for (let i = 0; i < heartbeatArgs.length; i++) {
     if (heartbeatArgs[i] === '--project-dir' && heartbeatArgs[i + 1]) {
-      projectDir = resolve(heartbeatArgs[i + 1]);
+      projectDir = resolve(heartbeatArgs[i + 1]!);
       i++;
     } else if (heartbeatArgs[i] === '--all') {
       runAll = true;
-    } else if (!heartbeatArgs[i].startsWith('-')) {
-      agentId = heartbeatArgs[i];
+    } else if (!heartbeatArgs[i]!.startsWith('-')) {
+      agentId = heartbeatArgs[i]!;
     }
   }
 
@@ -122,30 +142,31 @@ async function runHeartbeat(heartbeatArgs) {
     if (runAll) {
       await runHeartbeatForAll({ projectDir });
     } else {
-      await runHeartbeatForAgent(agentId, { projectDir });
+      await runHeartbeatForAgent(agentId!, { projectDir });
     }
   } catch (err) {
-    console.error(`Heartbeat failed: ${err.message}`);
+    const e = err as { message?: string } | undefined;
+    console.error(`Heartbeat failed: ${e && e.message ? e.message : err}`);
     process.exit(1);
   }
 }
 
-async function runServe(serveArgs) {
-  let port;
-  let host;
+async function runServe(serveArgs: string[]): Promise<void> {
+  let port: string | undefined;
+  let host: string | undefined;
   let open = true;
-  let projectDir = process.cwd();
+  let projectDir: string = process.cwd();
 
   for (let i = 0; i < serveArgs.length; i++) {
     const arg = serveArgs[i];
     if (arg === '--port' && serveArgs[i + 1]) {
-      port = serveArgs[++i];
+      port = serveArgs[++i]!;
     } else if (arg === '--host' && serveArgs[i + 1]) {
-      host = serveArgs[++i];
+      host = serveArgs[++i]!;
     } else if (arg === '--no-open') {
       open = false;
     } else if (arg === '--project-dir' && serveArgs[i + 1]) {
-      projectDir = resolve(serveArgs[++i]);
+      projectDir = resolve(serveArgs[++i]!);
     } else if (arg === '--help' || arg === '-h') {
       console.log(
         `Usage: aweek serve [--port <n>] [--host <addr>] [--no-open] [--project-dir <dir>]`,
@@ -193,13 +214,14 @@ async function runServe(serveArgs) {
   if (open) {
     const result = await openBrowser(url);
     if (!result.opened) {
-      const reason = result.error && result.error.message ? `: ${result.error.message}` : '';
+      const errAny = result.error as { message?: string } | undefined;
+      const reason = errAny && errAny.message ? `: ${errAny.message}` : '';
       console.log(`  Could not auto-open a browser${reason}. Open ${url} manually.`);
     }
   }
 }
 
-async function runExec(execArgs) {
+async function runExec(execArgs: string[]): Promise<void> {
   const [moduleKey, fnName, ...flagArgs] = execArgs;
 
   if (!moduleKey || moduleKey === '--help' || moduleKey === '-h') {
@@ -223,8 +245,8 @@ async function runExec(execArgs) {
     return;
   }
 
-  let format = 'json';
-  let input = {};
+  let format: 'json' | 'text' = 'json';
+  let input: unknown = {};
 
   for (let i = 0; i < flagArgs.length; i++) {
     const arg = flagArgs[i];
@@ -253,34 +275,36 @@ async function runExec(execArgs) {
   writeResult(result, format);
 }
 
-async function readStdinJson() {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
+async function readStdinJson(): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const raw = Buffer.concat(chunks).toString('utf-8').trim();
   if (!raw) return {};
   try {
     return JSON.parse(raw);
   } catch (err) {
-    throw Object.assign(new Error(`Invalid JSON on stdin: ${err.message}`), {
+    const e = err as { message?: string };
+    throw Object.assign(new Error(`Invalid JSON on stdin: ${e.message ?? String(err)}`), {
       code: 'EINPUT_JSON',
     });
   }
 }
 
-async function readFileJson(path) {
+async function readFileJson(path: string): Promise<unknown> {
   const raw = (await readFile(path, 'utf-8')).trim();
   if (!raw) return {};
   try {
     return JSON.parse(raw);
   } catch (err) {
+    const e = err as { message?: string };
     throw Object.assign(
-      new Error(`Invalid JSON in ${path}: ${err.message}`),
+      new Error(`Invalid JSON in ${path}: ${e.message ?? String(err)}`),
       { code: 'EINPUT_JSON' },
     );
   }
 }
 
-function writeResult(result, format) {
+function writeResult(result: unknown, format: 'json' | 'text'): void {
   if (format === 'text') {
     const text = typeof result === 'string' ? result : String(result ?? '');
     process.stdout.write(text);

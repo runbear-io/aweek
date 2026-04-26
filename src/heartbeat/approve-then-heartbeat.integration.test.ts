@@ -161,7 +161,7 @@ describe('AC 7 — approval → heartbeat handoff (no per-agent crontab)', () =>
     });
     assert.equal(approveResult.success, true);
 
-    // Drive the same code path bin/aweek.js calls for `aweek heartbeat --all`.
+    // Drive the same code path bin/aweek.ts calls for `aweek heartbeat --all`.
     // We pre-mark the task as completed so the post-selection CLI launch is
     // a no-op (no Claude binary needed in unit tests). The narrow assertion
     // is "the heartbeat saw the agent and tried to act on the approved
