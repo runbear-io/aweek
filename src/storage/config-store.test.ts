@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { DEFAULT_TZ } from '../time/zone.js';
 import { configPath, loadConfig, saveConfig } from './config-store.js';
 
-async function tempDataDir() {
+async function tempDataDir(): Promise<{ base: string; dataDir: string }> {
   const base = await mkdtemp(join(tmpdir(), 'aweek-config-'));
   const dataDir = join(base, '.aweek', 'agents');
   await mkdir(dataDir, { recursive: true });

@@ -1,3 +1,12 @@
+/**
+ * Tests for the per-agent dotenv loader.
+ *
+ * Migrated to TypeScript as part of seed-01-storage-A. The test file is
+ * excluded from `tsc --noEmit -p tsconfig.node.json` (see the
+ * `src/**\/*.test.ts` glob in that config's `exclude` block), so this
+ * module is parsed by `tsx` at test time but does not participate in the
+ * type-check pass — keeping the type surface lightweight is fine here.
+ */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
@@ -11,7 +20,7 @@ import {
   loadAgentEnv,
 } from './agent-env-store.js';
 
-async function makeAgentsDir() {
+async function makeAgentsDir(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'aweek-env-'));
   const agentsDir = join(root, 'agents');
   await mkdir(agentsDir, { recursive: true });
