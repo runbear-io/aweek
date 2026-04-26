@@ -1,5 +1,10 @@
 /**
  * Tests for agent model builder — goals and monthly plan management helpers.
+ *
+ * Migrated to TypeScript as part of seed-04-subagents-models-time. The
+ * companion source module at `./agent.js` is migrated to `.ts` in the same
+ * diff (sibling task), so this file imports its public surface verbatim
+ * via the canonical `.js` extension preserved by NodeNext resolution.
  */
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,19 +33,40 @@ import {
   addObjectiveToMonthlyPlan,
 } from './agent.js';
 import { validateAgentConfig } from '../schemas/validator.js';
+import type { Agent } from '../schemas/agent.js';
 
-/** Helper: create a fully populated agent config for testing */
-function makeTestAgent() {
+/**
+ * Loose alias for the in-test agent config. The canonical `Agent` interface
+ * (from `../schemas/agent.js`) types `goals`, `monthlyPlans`, and `inbox` as
+ * placeholder `Record<string, unknown>[]` arrays — the canonical interfaces
+ * for those nested entities will be wired in by later sub-AC migrations.
+ * Tests need to read `goal.status`, `goal.completedAt`, `plan.objectives`,
+ * etc. through the placeholder shape, so we widen the array element type to
+ * an indexable record. This stays compatible with the canonical `Agent`
+ * shape (covariant array assignment) and avoids any new `as any` casts.
+ */
+type TestAgent = Agent & {
+  goals: Array<Record<string, unknown>>;
+  monthlyPlans: Array<Record<string, unknown> & { objectives: Array<Record<string, unknown>>; updatedAt?: string }>;
+};
+
+/** Helper: create a fully populated agent config for testing. */
+function makeTestAgent(): {
+  config: TestAgent;
+  goals: Array<Record<string, unknown>>;
+  objectives: Array<Record<string, unknown>>;
+  plan: Record<string, unknown>;
+} {
   const config = createAgentConfig({
     subagentRef: 'testbot',
-  });
+  }) as TestAgent;
   const g1 = createGoal('Short-term goal', '1mo');
   const g2 = createGoal('Medium-term goal', '3mo');
   const g3 = createGoal('Long-term goal', '1yr');
   config.goals.push(g1, g2, g3);
 
-  const obj1 = createObjective('Objective for short-term', g1.id);
-  const obj2 = createObjective('Objective for medium-term', g2.id);
+  const obj1 = createObjective('Objective for short-term', g1.id as string);
+  const obj2 = createObjective('Objective for medium-term', g2.id as string);
   const plan = createMonthlyPlan('2026-04', [obj1, obj2]);
   config.monthlyPlans.push(plan);
 
@@ -62,12 +88,12 @@ describe('agent model — factory functions', () => {
     assert.equal(config.id, config.subagentRef);
     // Identity (name/role/systemPrompt) lives only in .claude/agents/SLUG.md now;
     // it MUST NOT appear on the aweek config.
-    assert.equal(config.identity, undefined);
+    assert.equal((config as Record<string, unknown>).identity, undefined);
     assert.deepStrictEqual(config.goals, []);
     assert.deepStrictEqual(config.monthlyPlans, []);
     // `weeklyPlans` is no longer a field on the agent config — weekly
     // plans live in the per-week `WeeklyPlanStore` file store.
-    assert.equal(config.weeklyPlans, undefined);
+    assert.equal((config as Record<string, unknown>).weeklyPlans, undefined);
     assert.equal(config.budget.weeklyTokenLimit, 500_000);
     assert.equal(config.budget.paused, false);
   });
@@ -115,14 +141,17 @@ describe('agent model — factory functions', () => {
 
   it('createAgentConfig rejects a missing slug', () => {
     assert.throws(
-      () => createAgentConfig({}),
+      // Cast to the factory's parameter shape with subagentRef stripped — the
+      // assertion is precisely that the runtime guard fires when it's absent.
+      () => createAgentConfig({} as Parameters<typeof createAgentConfig>[0]),
       /subagentRef must be a valid slug/,
     );
   });
 
   it('createAgentConfig rejects a non-string slug', () => {
     assert.throws(
-      () => createAgentConfig({ subagentRef: 42 }),
+      // Intentionally pass a number to exercise the runtime type guard.
+      () => createAgentConfig({ subagentRef: 42 as unknown as string }),
       /subagentRef must be a valid slug/,
     );
   });
@@ -131,7 +160,7 @@ describe('agent model — factory functions', () => {
     const g = createGoal('Some goal');
     assert.equal(g.horizon, '3mo');
     assert.equal(g.status, 'active');
-    assert.ok(g.id.startsWith('goal-'));
+    assert.ok((g.id as string).startsWith('goal-'));
   });
 
   it('createObjective references a goalId', () => {
@@ -142,16 +171,16 @@ describe('agent model — factory functions', () => {
 
   it('createMonthlyPlan defaults to active status', () => {
     const goal = createGoal('G', '1mo');
-    const obj = createObjective('O', goal.id);
+    const obj = createObjective('O', goal.id as string);
     const plan = createMonthlyPlan('2026-04', [obj]);
     assert.equal(plan.status, 'active');
     assert.equal(plan.month, '2026-04');
-    assert.equal(plan.objectives.length, 1);
+    assert.equal((plan.objectives as unknown[]).length, 1);
   });
 
   it('createInboxMessage builds a pending message', () => {
     const msg = createInboxMessage('agent-x-1234', 'agent-y-5678', 'Do something');
-    assert.ok(msg.id.startsWith('msg-'));
+    assert.ok((msg.id as string).startsWith('msg-'));
     assert.equal(msg.from, 'agent-x-1234');
     assert.equal(msg.to, 'agent-y-5678');
     assert.equal(msg.type, 'task-delegation');
@@ -172,12 +201,12 @@ describe('agent model — factory functions', () => {
 // ---------------------------------------------------------------------------
 
 describe('agent model — goal management', () => {
-  let config;
+  let config: TestAgent;
 
   beforeEach(() => {
     config = createAgentConfig({
       subagentRef: 'goalbot',
-    });
+    }) as TestAgent;
   });
 
   describe('addGoal', () => {
@@ -185,21 +214,21 @@ describe('agent model — goal management', () => {
       const goal = createGoal('New goal', '1mo');
       const result = addGoal(config, goal);
       assert.equal(config.goals.length, 1);
-      assert.equal(config.goals[0].id, goal.id);
+      assert.equal(config.goals[0]!.id, goal.id);
       assert.equal(result, goal);
     });
 
     it('should update updatedAt timestamp', () => {
-      const before = config.updatedAt;
+      const before = config.updatedAt!;
       const goal = createGoal('Goal', '3mo');
       addGoal(config, goal);
-      assert.ok(config.updatedAt >= before);
+      assert.ok(config.updatedAt! >= before);
     });
 
     it('should produce a valid agent config after adding', () => {
       addGoal(config, createGoal('Valid goal', '1yr'));
       // Add a monthly plan so the config is fully populated
-      const obj = createObjective('Obj', config.goals[0].id);
+      const obj = createObjective('Obj', config.goals[0]!.id as string);
       config.monthlyPlans.push(createMonthlyPlan('2026-04', [obj]));
       const result = validateAgentConfig(config);
       assert.equal(result.valid, true);
@@ -210,17 +239,17 @@ describe('agent model — goal management', () => {
     it('should update status of an existing goal', () => {
       const goal = createGoal('Updatable goal', '3mo');
       addGoal(config, goal);
-      const updated = updateGoalStatus(config, goal.id, 'paused');
-      assert.equal(updated.status, 'paused');
-      assert.equal(config.goals[0].status, 'paused');
+      const updated = updateGoalStatus(config, goal.id as string, 'paused');
+      assert.equal(updated!.status, 'paused');
+      assert.equal(config.goals[0]!.status, 'paused');
     });
 
     it('should set completedAt when status is completed', () => {
       const goal = createGoal('Completable', '1mo');
       addGoal(config, goal);
       assert.equal(goal.completedAt, undefined);
-      updateGoalStatus(config, goal.id, 'completed');
-      assert.ok(config.goals[0].completedAt);
+      updateGoalStatus(config, goal.id as string, 'completed');
+      assert.ok(config.goals[0]!.completedAt);
     });
 
     it('should return null for non-existent goal', () => {
@@ -231,9 +260,9 @@ describe('agent model — goal management', () => {
     it('should update agent updatedAt', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const before = config.updatedAt;
-      updateGoalStatus(config, goal.id, 'dropped');
-      assert.ok(config.updatedAt >= before);
+      const before = config.updatedAt!;
+      updateGoalStatus(config, goal.id as string, 'dropped');
+      assert.ok(config.updatedAt! >= before);
     });
   });
 
@@ -242,7 +271,7 @@ describe('agent model — goal management', () => {
       const goal = createGoal('Removable', '1yr');
       addGoal(config, goal);
       assert.equal(config.goals.length, 1);
-      const removed = removeGoal(config, goal.id);
+      const removed = removeGoal(config, goal.id as string);
       assert.equal(removed, true);
       assert.equal(config.goals.length, 0);
     });
@@ -254,9 +283,9 @@ describe('agent model — goal management', () => {
     it('should update updatedAt on removal', () => {
       const goal = createGoal('G', '1mo');
       addGoal(config, goal);
-      const before = config.updatedAt;
-      removeGoal(config, goal.id);
-      assert.ok(config.updatedAt >= before);
+      const before = config.updatedAt!;
+      removeGoal(config, goal.id as string);
+      assert.ok(config.updatedAt! >= before);
     });
   });
 
@@ -286,17 +315,17 @@ describe('agent model — goal management', () => {
       addGoal(config, g1);
       addGoal(config, g2);
       addGoal(config, g3);
-      updateGoalStatus(config, g3.id, 'paused');
+      updateGoalStatus(config, g3.id as string, 'paused');
 
       const active = getActiveGoals(config);
       assert.equal(active.length, 2);
-      assert.ok(active.every((g) => g.status === 'active'));
+      assert.ok(active.every((g: Record<string, unknown>) => g.status === 'active'));
     });
 
     it('should return empty array when no active goals', () => {
       const g = createGoal('Done', '3mo');
       addGoal(config, g);
-      updateGoalStatus(config, g.id, 'completed');
+      updateGoalStatus(config, g.id as string, 'completed');
       assert.deepStrictEqual(getActiveGoals(config), []);
     });
   });
@@ -307,33 +336,36 @@ describe('agent model — goal management', () => {
 // ---------------------------------------------------------------------------
 
 describe('agent model — monthly plan management', () => {
-  let config;
+  let config: TestAgent;
 
   beforeEach(() => {
     config = createAgentConfig({
       subagentRef: 'planbot',
-    });
+    }) as TestAgent;
   });
 
   describe('addMonthlyPlan', () => {
     it('should add a monthly plan to agent config', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const obj = createObjective('O', goal.id);
+      const obj = createObjective('O', goal.id as string);
       const plan = createMonthlyPlan('2026-04', [obj]);
 
       const result = addMonthlyPlan(config, plan);
       assert.equal(config.monthlyPlans.length, 1);
-      assert.equal(config.monthlyPlans[0].month, '2026-04');
+      assert.equal(config.monthlyPlans[0]!.month, '2026-04');
       assert.equal(result, plan);
     });
 
     it('should update updatedAt', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const before = config.updatedAt;
-      addMonthlyPlan(config, createMonthlyPlan('2026-05', [createObjective('O', goal.id)]));
-      assert.ok(config.updatedAt >= before);
+      const before = config.updatedAt!;
+      addMonthlyPlan(
+        config,
+        createMonthlyPlan('2026-05', [createObjective('O', goal.id as string)]),
+      );
+      assert.ok(config.updatedAt! >= before);
     });
   });
 
@@ -341,12 +373,15 @@ describe('agent model — monthly plan management', () => {
     it('should find plan by month', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const obj = createObjective('O', goal.id);
+      const obj = createObjective('O', goal.id as string);
       addMonthlyPlan(config, createMonthlyPlan('2026-04', [obj]));
-      addMonthlyPlan(config, createMonthlyPlan('2026-05', [createObjective('O2', goal.id)]));
+      addMonthlyPlan(
+        config,
+        createMonthlyPlan('2026-05', [createObjective('O2', goal.id as string)]),
+      );
 
       const found = getMonthlyPlan(config, '2026-05');
-      assert.equal(found.month, '2026-05');
+      assert.equal(found!.month, '2026-05');
     });
 
     it('should return undefined for non-existent month', () => {
@@ -358,19 +393,27 @@ describe('agent model — monthly plan management', () => {
     it('should return the active monthly plan', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const obj = createObjective('O', goal.id);
+      const obj = createObjective('O', goal.id as string);
       addMonthlyPlan(config, createMonthlyPlan('2026-03', [obj], { status: 'archived' }));
-      addMonthlyPlan(config, createMonthlyPlan('2026-04', [createObjective('O2', goal.id)]));
+      addMonthlyPlan(
+        config,
+        createMonthlyPlan('2026-04', [createObjective('O2', goal.id as string)]),
+      );
 
       const active = getActiveMonthlyPlan(config);
-      assert.equal(active.month, '2026-04');
-      assert.equal(active.status, 'active');
+      assert.equal(active!.month, '2026-04');
+      assert.equal(active!.status, 'active');
     });
 
     it('should return undefined when no active plan', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      addMonthlyPlan(config, createMonthlyPlan('2026-03', [createObjective('O', goal.id)], { status: 'completed' }));
+      addMonthlyPlan(
+        config,
+        createMonthlyPlan('2026-03', [createObjective('O', goal.id as string)], {
+          status: 'completed',
+        }),
+      );
       assert.equal(getActiveMonthlyPlan(config), undefined);
     });
   });
@@ -379,11 +422,14 @@ describe('agent model — monthly plan management', () => {
     it('should update plan status', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      addMonthlyPlan(config, createMonthlyPlan('2026-04', [createObjective('O', goal.id)]));
+      addMonthlyPlan(
+        config,
+        createMonthlyPlan('2026-04', [createObjective('O', goal.id as string)]),
+      );
 
       const updated = updateMonthlyPlanStatus(config, '2026-04', 'completed');
-      assert.equal(updated.status, 'completed');
-      assert.equal(config.monthlyPlans[0].status, 'completed');
+      assert.equal(updated!.status, 'completed');
+      assert.equal(config.monthlyPlans[0]!.status, 'completed');
     });
 
     it('should return null for non-existent month', () => {
@@ -393,14 +439,14 @@ describe('agent model — monthly plan management', () => {
     it('should update timestamps', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const plan = createMonthlyPlan('2026-04', [createObjective('O', goal.id)]);
+      const plan = createMonthlyPlan('2026-04', [createObjective('O', goal.id as string)]);
       addMonthlyPlan(config, plan);
-      const beforePlan = plan.updatedAt;
-      const beforeConfig = config.updatedAt;
+      const beforePlan = plan.updatedAt as string;
+      const beforeConfig = config.updatedAt!;
 
       updateMonthlyPlanStatus(config, '2026-04', 'archived');
-      assert.ok(plan.updatedAt >= beforePlan);
-      assert.ok(config.updatedAt >= beforeConfig);
+      assert.ok((plan.updatedAt as string) >= beforePlan);
+      assert.ok(config.updatedAt! >= beforeConfig);
     });
   });
 
@@ -408,20 +454,20 @@ describe('agent model — monthly plan management', () => {
     it('should update objective status across plans', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const obj = createObjective('Updatable obj', goal.id);
+      const obj = createObjective('Updatable obj', goal.id as string);
       addMonthlyPlan(config, createMonthlyPlan('2026-04', [obj]));
 
-      const updated = updateObjectiveStatus(config, obj.id, 'in-progress');
-      assert.equal(updated.status, 'in-progress');
+      const updated = updateObjectiveStatus(config, obj.id as string, 'in-progress');
+      assert.equal(updated!.status, 'in-progress');
     });
 
     it('should set completedAt when status is completed', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const obj = createObjective('Complete me', goal.id);
+      const obj = createObjective('Complete me', goal.id as string);
       addMonthlyPlan(config, createMonthlyPlan('2026-04', [obj]));
 
-      updateObjectiveStatus(config, obj.id, 'completed');
+      updateObjectiveStatus(config, obj.id as string, 'completed');
       assert.ok(obj.completedAt);
     });
 
@@ -432,21 +478,21 @@ describe('agent model — monthly plan management', () => {
 
   describe('getObjectivesForGoal', () => {
     it('should find objectives tracing back to a goal', () => {
-      const { config: tc, goals, objectives } = makeTestAgent();
-      const found = getObjectivesForGoal(tc, goals[0].id);
+      const { config: tc, goals } = makeTestAgent();
+      const found = getObjectivesForGoal(tc, goals[0]!.id as string);
       assert.equal(found.length, 1);
-      assert.equal(found[0].goalId, goals[0].id);
+      assert.equal(found[0]!.goalId, goals[0]!.id);
     });
 
     it('should find objectives across multiple monthly plans', () => {
       const goal = createGoal('Multi-plan goal', '3mo');
       addGoal(config, goal);
-      const obj1 = createObjective('April obj', goal.id);
-      const obj2 = createObjective('May obj', goal.id);
+      const obj1 = createObjective('April obj', goal.id as string);
+      const obj2 = createObjective('May obj', goal.id as string);
       addMonthlyPlan(config, createMonthlyPlan('2026-04', [obj1]));
       addMonthlyPlan(config, createMonthlyPlan('2026-05', [obj2]));
 
-      const found = getObjectivesForGoal(config, goal.id);
+      const found = getObjectivesForGoal(config, goal.id as string);
       assert.equal(found.length, 2);
     });
 
@@ -460,29 +506,36 @@ describe('agent model — monthly plan management', () => {
     it('should add objective to an existing plan', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      const obj1 = createObjective('First', goal.id);
+      const obj1 = createObjective('First', goal.id as string);
       addMonthlyPlan(config, createMonthlyPlan('2026-04', [obj1]));
 
-      const obj2 = createObjective('Second', goal.id);
+      const obj2 = createObjective('Second', goal.id as string);
       const result = addObjectiveToMonthlyPlan(config, '2026-04', obj2);
       assert.equal(result, obj2);
-      assert.equal(config.monthlyPlans[0].objectives.length, 2);
+      assert.equal(config.monthlyPlans[0]!.objectives.length, 2);
     });
 
     it('should return null for non-existent plan month', () => {
       const goal = createGoal('G', '3mo');
-      const obj = createObjective('Orphan', goal.id);
+      const obj = createObjective('Orphan', goal.id as string);
       assert.equal(addObjectiveToMonthlyPlan(config, '2099-01', obj), null);
     });
 
     it('should update timestamps', () => {
       const goal = createGoal('G', '3mo');
       addGoal(config, goal);
-      addMonthlyPlan(config, createMonthlyPlan('2026-04', [createObjective('O', goal.id)]));
-      const before = config.updatedAt;
+      addMonthlyPlan(
+        config,
+        createMonthlyPlan('2026-04', [createObjective('O', goal.id as string)]),
+      );
+      const before = config.updatedAt!;
 
-      addObjectiveToMonthlyPlan(config, '2026-04', createObjective('New', goal.id));
-      assert.ok(config.updatedAt >= before);
+      addObjectiveToMonthlyPlan(
+        config,
+        '2026-04',
+        createObjective('New', goal.id as string),
+      );
+      assert.ok(config.updatedAt! >= before);
     });
   });
 });
@@ -498,15 +551,21 @@ describe('agent model — plan traceability', () => {
     // Weekly plans live in their own file store — assert traceability
     // on the in-memory task/objective/goal references without mutating
     // the agent config.
-    const task1 = createTask({ title: 'Task for obj1', prompt: 'Task for obj1' }, objectives[0].id);
-    const task2 = createTask({ title: 'Task for obj2', prompt: 'Task for obj2' }, objectives[1].id);
+    const task1 = createTask(
+      { title: 'Task for obj1', prompt: 'Task for obj1' },
+      objectives[0]!.id as string,
+    );
+    const task2 = createTask(
+      { title: 'Task for obj2', prompt: 'Task for obj2' },
+      objectives[1]!.id as string,
+    );
     createWeeklyPlan('2026-W16', '2026-04', [task1, task2]);
 
     // Verify traceability: task -> objective -> goal
-    assert.equal(task1.objectiveId, objectives[0].id);
-    assert.equal(objectives[0].goalId, goals[0].id);
-    assert.equal(task2.objectiveId, objectives[1].id);
-    assert.equal(objectives[1].goalId, goals[1].id);
+    assert.equal(task1.objectiveId, objectives[0]!.id);
+    assert.equal(objectives[0]!.goalId, goals[0]!.id);
+    assert.equal(task2.objectiveId, objectives[1]!.id);
+    assert.equal(objectives[1]!.goalId, goals[1]!.id);
 
     // Verify full config is schema-valid (weeklyPlans is NOT a field).
     const result = validateAgentConfig(config);
@@ -517,7 +576,10 @@ describe('agent model — plan traceability', () => {
     const { config, objectives } = makeTestAgent();
     // Build a weekly plan but do NOT attach it to the config — the new
     // schema forbids `weeklyPlans` on the agent JSON.
-    const task = createTask({ title: 'Weekly task', prompt: 'Weekly task' }, objectives[0].id);
+    const task = createTask(
+      { title: 'Weekly task', prompt: 'Weekly task' },
+      objectives[0]!.id as string,
+    );
     createWeeklyPlan('2026-W16', '2026-04', [task]);
 
     const result = validateAgentConfig(config);
@@ -527,20 +589,20 @@ describe('agent model — plan traceability', () => {
   it('getObjectivesForGoal returns correct traceability after mutations', () => {
     const config = createAgentConfig({
       subagentRef: 'tracebot',
-    });
+    }) as TestAgent;
     const goal = createGoal('Traced goal', '3mo');
     addGoal(config, goal);
 
-    const obj1 = createObjective('Month 4 work', goal.id);
+    const obj1 = createObjective('Month 4 work', goal.id as string);
     addMonthlyPlan(config, createMonthlyPlan('2026-04', [obj1]));
 
     // Add a second month with another objective for the same goal
-    const obj2 = createObjective('Month 5 work', goal.id);
+    const obj2 = createObjective('Month 5 work', goal.id as string);
     addMonthlyPlan(config, createMonthlyPlan('2026-05', [obj2]));
 
-    const traced = getObjectivesForGoal(config, goal.id);
+    const traced = getObjectivesForGoal(config, goal.id as string);
     assert.equal(traced.length, 2);
-    assert.ok(traced.some((o) => o.id === obj1.id));
-    assert.ok(traced.some((o) => o.id === obj2.id));
+    assert.ok(traced.some((o: Record<string, unknown>) => o.id === obj1.id));
+    assert.ok(traced.some((o: Record<string, unknown>) => o.id === obj2.id));
   });
 });

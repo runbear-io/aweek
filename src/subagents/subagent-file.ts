@@ -38,20 +38,126 @@ import { SUBAGENT_SLUG_PATTERN } from '../schemas/agent.schema.js';
  * `~/.claude/agents/` is intentionally out of scope: aweek must never write
  * to the user-level directory so per-project configuration stays per-project.
  */
-export const SUBAGENTS_DIR_RELATIVE = join('.claude', 'agents');
+export const SUBAGENTS_DIR_RELATIVE: string = join('.claude', 'agents');
 
 const SLUG_REGEX = new RegExp(SUBAGENT_SLUG_PATTERN);
 
 /**
+ * Result shape returned by every validator in this module. The `valid`
+ * boolean is the primary signal; `errors` carries human-readable strings
+ * that the wizard surfaces verbatim to the operator.
+ */
+export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+/**
+ * Parameters for {@link buildSubagentMarkdown} and {@link writeSubagentFile}.
+ * The wizard's "minimal" contract: only three fields, no model/tools/skills.
+ */
+export interface SubagentMarkdownParams {
+  /** Subagent slug; written as the `name` field in YAML frontmatter. */
+  name: string;
+  /** Single-line description rendered as the `description` frontmatter value. */
+  description: string;
+  /** System-prompt body written verbatim after the closing `---` fence. */
+  systemPrompt: string;
+}
+
+/**
+ * Parameters accepted by {@link writeSubagentFile}. Matches
+ * {@link SubagentMarkdownParams} but uses `slug` (the aweek id) rather than
+ * `name`, and lets callers override the project root.
+ */
+export interface WriteSubagentFileParams {
+  slug: string;
+  description: string;
+  systemPrompt: string;
+  projectDir?: string;
+}
+
+/**
+ * Successful outcome of {@link writeSubagentFile}. The `content` payload is
+ * the exact bytes written to disk so callers can echo the contents back to
+ * the wizard without an extra read.
+ */
+export interface WriteSubagentFileSuccess {
+  success: true;
+  path: string;
+  slug: string;
+  content: string;
+}
+
+/**
+ * Failure outcome of {@link writeSubagentFile}. `alreadyExists: true` means
+ * the wizard should pivot to the adopt-existing path; otherwise the failure
+ * is a validation error and `errors` lists the offending fields.
+ */
+export interface WriteSubagentFileFailure {
+  success: false;
+  errors: string[];
+  path?: string;
+  alreadyExists?: boolean;
+}
+
+/** Discriminated union covering the two outcomes of {@link writeSubagentFile}. */
+export type WriteSubagentFileResult =
+  | WriteSubagentFileSuccess
+  | WriteSubagentFileFailure;
+
+/**
+ * Outcome of {@link parseSubagentFrontmatter}. Only `name` and `description`
+ * are surfaced — extra YAML keys (e.g. `model`, `allowed-tools`) are dropped
+ * silently so hand-edited subagents still parse cleanly.
+ */
+export interface SubagentFrontmatter {
+  name: string;
+  description: string;
+}
+
+/**
+ * Outcome of {@link readSubagentIdentity}. Carries enough to render the
+ * summary dashboard's missing-marker (`missing` + `path`) AND to populate
+ * the SPA Profile tab (`name`, `description`, `body`) without a second read.
+ */
+export interface SubagentIdentity {
+  missing: boolean;
+  name: string;
+  description: string;
+  body: string;
+  path: string;
+}
+
+/** Optional projectDir + home overrides for {@link resolveSubagentFile}. */
+export interface ResolveSubagentFileOptions {
+  projectDir?: string;
+  home?: string;
+}
+
+/**
+ * Outcome of {@link resolveSubagentFile}. `location` is `'project'` when the
+ * project-level file exists, `'user'` when only the user-level file exists,
+ * and `null` when neither does. Both candidate paths are returned so the
+ * heartbeat log can show the operator exactly where the lookup failed.
+ */
+export interface ResolveSubagentFileResult {
+  exists: boolean;
+  location: 'project' | 'user' | null;
+  projectPath: string;
+  userPath: string;
+}
+
+/**
  * Resolve the absolute path to the project-level subagent directory.
  *
- * @param {string} [projectDir] - Override for the project root (used by tests
- *   and by callers that already know the working directory). When omitted,
- *   falls back to `process.cwd()` — evaluated on every call so tests that
+ * @param projectDir - Override for the project root (used by tests and by
+ *   callers that already know the working directory). When omitted, falls
+ *   back to `process.cwd()` — evaluated on every call so tests that
  *   `process.chdir()` around see the fresh value.
- * @returns {string} Absolute path to `<projectDir>/.claude/agents`.
+ * @returns Absolute path to `<projectDir>/.claude/agents`.
  */
-export function resolveSubagentsDir(projectDir) {
+export function resolveSubagentsDir(projectDir?: string): string {
   const base = projectDir || process.cwd();
   return resolve(base, SUBAGENTS_DIR_RELATIVE);
 }
@@ -59,11 +165,10 @@ export function resolveSubagentsDir(projectDir) {
 /**
  * Build the absolute path to a specific subagent .md file.
  *
- * @param {string} slug - Subagent slug (filesystem basename minus `.md`).
- * @param {string} [projectDir] - Optional project-root override.
- * @returns {string}
+ * @param slug - Subagent slug (filesystem basename minus `.md`).
+ * @param projectDir - Optional project-root override.
  */
-export function subagentFilePath(slug, projectDir) {
+export function subagentFilePath(slug: string, projectDir?: string): string {
   return join(resolveSubagentsDir(projectDir), `${slug}.md`);
 }
 
@@ -74,11 +179,8 @@ export function subagentFilePath(slug, projectDir) {
  * AND as the aweek agent id, so it must match `SUBAGENT_SLUG_PATTERN` —
  * lowercase alphanumeric with single hyphens, no leading/trailing hyphen,
  * no consecutive hyphens.
- *
- * @param {string} slug
- * @returns {{ valid: boolean, errors: string[] }}
  */
-export function validateSubagentSlug(slug) {
+export function validateSubagentSlug(slug: unknown): ValidationResult {
   if (typeof slug !== 'string' || slug.length === 0) {
     return {
       valid: false,
@@ -104,11 +206,10 @@ export function validateSubagentSlug(slug) {
  * should always re-run {@link validateSubagentSlug} on the result because an
  * empty or all-symbol input collapses to `""`, which is not a valid slug.
  *
- * @param {string} name
- * @returns {string} Slug string, possibly empty if the input had no
- *   alphanumeric characters.
+ * @returns Slug string, possibly empty if the input had no alphanumeric
+ *   characters.
  */
-export function slugifyName(name) {
+export function slugifyName(name: unknown): string {
   if (typeof name !== 'string') return '';
   return name
     .toLowerCase()
@@ -122,11 +223,8 @@ export function slugifyName(name) {
  * The Claude Code subagent spec requires a non-empty `description`. We keep
  * it on a single line so the emitted YAML stays trivially parseable — the
  * wizard asks for a brief one-sentence summary.
- *
- * @param {string} description
- * @returns {{ valid: boolean, errors: string[] }}
  */
-export function validateDescription(description) {
+export function validateDescription(description: unknown): ValidationResult {
   if (typeof description !== 'string' || description.trim().length === 0) {
     return {
       valid: false,
@@ -145,11 +243,8 @@ export function validateDescription(description) {
 /**
  * Validate a system-prompt body. Non-empty string — that's the only hard
  * requirement. The wizard trims trailing whitespace at render time.
- *
- * @param {string} systemPrompt
- * @returns {{ valid: boolean, errors: string[] }}
  */
-export function validateSystemPrompt(systemPrompt) {
+export function validateSystemPrompt(systemPrompt: unknown): ValidationResult {
   if (typeof systemPrompt !== 'string' || systemPrompt.trim().length === 0) {
     return {
       valid: false,
@@ -167,11 +262,8 @@ export function validateSystemPrompt(systemPrompt) {
  * emitted frontmatter readable for the common case (plain ASCII
  * descriptions) while staying correct for apostrophes, colons, and the
  * occasional emoji.
- *
- * @param {string} value
- * @returns {string}
  */
-function yamlQuoteIfNeeded(value) {
+function yamlQuoteIfNeeded(value: unknown): string {
   const s = String(value ?? '');
   // Characters that are safe to emit as a YAML plain scalar on one line.
   // Keep the set conservative; anything else gets double-quoted.
@@ -192,15 +284,15 @@ function yamlQuoteIfNeeded(value) {
  *
  * The system prompt is written verbatim into the body. The function
  * guarantees exactly one trailing newline so subsequent appends are clean.
- *
- * @param {object} params
- * @param {string} params.name - Subagent slug; written as the `name` field.
- * @param {string} params.description - One-line description for frontmatter.
- * @param {string} params.systemPrompt - Body text (the prompt itself).
- * @returns {string} Full markdown document.
  */
-export function buildSubagentMarkdown({ name, description, systemPrompt }) {
-  const body = String(systemPrompt ?? '').replace(/[ \t]+$/gm, '').replace(/\s+$/, '');
+export function buildSubagentMarkdown({
+  name,
+  description,
+  systemPrompt,
+}: SubagentMarkdownParams): string {
+  const body = String(systemPrompt ?? '')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\s+$/, '');
   return [
     '---',
     `name: ${name}`,
@@ -217,12 +309,11 @@ export function buildSubagentMarkdown({ name, description, systemPrompt }) {
  *
  * Used by the hire wizard to detect the "collision" case and pivot to the
  * adopt-existing path instead of clobbering an existing subagent.
- *
- * @param {string} slug
- * @param {string} [projectDir]
- * @returns {Promise<boolean>}
  */
-export async function subagentFileExists(slug, projectDir) {
+export async function subagentFileExists(
+  slug: string,
+  projectDir?: string,
+): Promise<boolean> {
   try {
     await access(subagentFilePath(slug, projectDir), fsConstants.F_OK);
     return true;
@@ -232,7 +323,8 @@ export async function subagentFileExists(slug, projectDir) {
 }
 
 /**
- * Build the absolute path to a user-level subagent .md file (`~/.claude/agents/<slug>.md`).
+ * Build the absolute path to a user-level subagent .md file
+ * (`~/.claude/agents/<slug>.md`).
  *
  * aweek NEVER writes to this location (per the non-destructive-defaults
  * constraint), but at heartbeat time we must honour Claude Code's resolution
@@ -240,12 +332,11 @@ export async function subagentFileExists(slug, projectDir) {
  * or the user-level file exists. This helper centralises the user-level path
  * resolution so tests can stub `home` without monkey-patching `os.homedir`.
  *
- * @param {string} slug
- * @param {string} [home] - Override for the user home directory (tests only).
- *   When omitted, falls back to `os.homedir()`.
- * @returns {string}
+ * @param slug
+ * @param home - Override for the user home directory (tests only). When
+ *   omitted, falls back to `os.homedir()`.
  */
-export function userSubagentFilePath(slug, home) {
+export function userSubagentFilePath(slug: string, home?: string): string {
   const base = home || homedir();
   return join(base, '.claude', 'agents', `${slug}.md`);
 }
@@ -262,14 +353,11 @@ export function userSubagentFilePath(slug, home) {
  * Returns a structured result so callers can surface the checked paths in
  * error messages (crucial for the summary dashboard's "missing" marker and
  * for the heartbeat log).
- *
- * @param {string} slug
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root override.
- * @param {string} [opts.home] - User home override (tests only).
- * @returns {Promise<{ exists: boolean, location: 'project'|'user'|null, projectPath: string, userPath: string }>}
  */
-export async function resolveSubagentFile(slug, opts = {}) {
+export async function resolveSubagentFile(
+  slug: string,
+  opts: ResolveSubagentFileOptions = {},
+): Promise<ResolveSubagentFileResult> {
   const { projectDir, home } = opts;
   const projectPath = subagentFilePath(slug, projectDir);
   const userPath = userSubagentFilePath(slug, home);
@@ -297,12 +385,12 @@ export async function resolveSubagentFile(slug, opts = {}) {
  * dashboard, heartbeat error reporting) that need to display or parse the
  * frontmatter.
  *
- * @param {string} slug
- * @param {string} [projectDir]
- * @returns {Promise<string>}
  * @throws If the file does not exist.
  */
-export async function readSubagentFile(slug, projectDir) {
+export async function readSubagentFile(
+  slug: string,
+  projectDir?: string,
+): Promise<string> {
   return readFile(subagentFilePath(slug, projectDir), 'utf8');
 }
 
@@ -313,11 +401,8 @@ export async function readSubagentFile(slug, projectDir) {
  *   - plain (unquoted) — returned verbatim after trimming outer whitespace.
  *   - double-quoted — `\\` and `\"` are unescaped.
  *   - single-quoted — doubled single quotes (`''`) are collapsed.
- *
- * @param {string} raw
- * @returns {string}
  */
-function unquoteYamlScalar(raw) {
+function unquoteYamlScalar(raw: unknown): string {
   const s = String(raw ?? '').trim();
   if (s.length === 0) return '';
   if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
@@ -340,11 +425,10 @@ function unquoteYamlScalar(raw) {
  * without error so hand-edited subagents (e.g. ones that set `model:` or
  * `allowed-tools:`) still parse cleanly.
  *
- * @param {string} content - Full .md file contents.
- * @returns {{ name: string, description: string }}
+ * @param content - Full .md file contents.
  */
-export function parseSubagentFrontmatter(content) {
-  const out = { name: '', description: '' };
+export function parseSubagentFrontmatter(content: unknown): SubagentFrontmatter {
+  const out: SubagentFrontmatter = { name: '', description: '' };
   if (typeof content !== 'string' || content.length === 0) return out;
 
   // Tolerate BOM + leading blank lines before the opening fence.
@@ -352,12 +436,12 @@ export function parseSubagentFrontmatter(content) {
   const match = normalized.match(/^\s*---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!match) return out;
 
-  const body = match[1];
+  const body = match[1] ?? '';
   for (const line of body.split(/\r?\n/)) {
     const kv = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
     if (!kv) continue;
     const key = kv[1];
-    const value = kv[2];
+    const value = kv[2] ?? '';
     if (key === 'name') out.name = unquoteYamlScalar(value);
     else if (key === 'description') out.description = unquoteYamlScalar(value);
   }
@@ -374,17 +458,12 @@ export function parseSubagentFrontmatter(content) {
  * Used by the SPA Profile tab so users can read the live system prompt
  * without opening the .md on disk. Matches the body written by
  * {@link buildSubagentMarkdown} so writer/reader round-trips are lossless.
- *
- * @param {string} content
- * @returns {string}
  */
-export function parseSubagentBody(content) {
+export function parseSubagentBody(content: unknown): string {
   if (typeof content !== 'string' || content.length === 0) return '';
   const normalized = content.replace(/^\uFEFF/, '');
-  const match = normalized.match(
-    /^\s*---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,
-  );
-  let body;
+  const match = normalized.match(/^\s*---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/);
+  let body: string;
   if (!match) {
     // No frontmatter — treat the whole content as the body.
     body = normalized;
@@ -410,12 +489,11 @@ export function parseSubagentBody(content) {
  * SPA Profile tab can render the live prompt without a second file read.
  * Existing callers that only destructure `{ name, description, path }`
  * continue to work unchanged — the extra field is purely additive.
- *
- * @param {string} slug
- * @param {string} [projectDir]
- * @returns {Promise<{ missing: boolean, name: string, description: string, body: string, path: string }>}
  */
-export async function readSubagentIdentity(slug, projectDir) {
+export async function readSubagentIdentity(
+  slug: string,
+  projectDir?: string,
+): Promise<SubagentIdentity> {
   const path = subagentFilePath(slug, projectDir);
   try {
     const content = await readFile(path, 'utf8');
@@ -429,7 +507,12 @@ export async function readSubagentIdentity(slug, projectDir) {
       path,
     };
   } catch (err) {
-    if (err && err.code === 'ENOENT') {
+    if (
+      err !== null &&
+      typeof err === 'object' &&
+      'code' in err &&
+      (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
       return { missing: true, name: '', description: '', body: '', path };
     }
     throw err;
@@ -453,24 +536,12 @@ export async function readSubagentIdentity(slug, projectDir) {
  *
  * The returned `content` is the exact bytes written — useful in tests and
  * summary output so callers don't need to re-read the file.
- *
- * @param {object} params
- * @param {string} params.slug
- * @param {string} params.description
- * @param {string} params.systemPrompt
- * @param {string} [params.projectDir]
- * @returns {Promise<
- *   | { success: true, path: string, slug: string, content: string }
- *   | { success: false, errors: string[], path?: string, alreadyExists?: boolean }
- * >}
  */
-export async function writeSubagentFile({
-  slug,
-  description,
-  systemPrompt,
-  projectDir,
-} = {}) {
-  const errors = [];
+export async function writeSubagentFile(
+  params: WriteSubagentFileParams = {} as WriteSubagentFileParams,
+): Promise<WriteSubagentFileResult> {
+  const { slug, description, systemPrompt, projectDir } = params;
+  const errors: string[] = [];
 
   const slugResult = validateSubagentSlug(slug);
   if (!slugResult.valid) errors.push(...slugResult.errors);

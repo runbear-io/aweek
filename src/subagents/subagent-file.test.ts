@@ -1,5 +1,5 @@
 /**
- * Tests for subagent-file.js — minimal Claude Code subagent `.md` primitives.
+ * Tests for subagent-file.ts — minimal Claude Code subagent `.md` primitives.
  *
  * The create-new path of the hire wizard (see hire-create-new.js) writes
  * exactly one file: `.claude/agents/<slug>.md`, with minimal frontmatter
@@ -30,6 +30,10 @@ import {
   readSubagentIdentity,
   userSubagentFilePath,
   resolveSubagentFile,
+} from './subagent-file.js';
+import type {
+  WriteSubagentFileSuccess,
+  WriteSubagentFileResult,
 } from './subagent-file.js';
 
 describe('subagent-file — path helpers', () => {
@@ -163,7 +167,7 @@ describe('subagent-file — buildSubagentMarkdown', () => {
       systemPrompt: 'Do research.',
     });
     // A bare colon in the value would break YAML — the helper must quote.
-    const descLine = md.split('\n').find((l) => l.startsWith('description:'));
+    const descLine = md.split('\n').find((l: string) => l.startsWith('description:'));
     assert.ok(descLine?.startsWith('description: "'));
     assert.ok(descLine?.endsWith('"'));
     assert.ok(descLine?.includes('\\"quotes\\"'));
@@ -191,8 +195,20 @@ describe('subagent-file — buildSubagentMarkdown', () => {
   });
 });
 
+/**
+ * Narrowing helper: assert the result is the success branch of the discriminated
+ * union and return it strongly-typed so subsequent property accesses are safe.
+ */
+function expectWriteSuccess(
+  result: WriteSubagentFileResult,
+): WriteSubagentFileSuccess {
+  assert.equal(result.success, true);
+  if (!result.success) throw new Error('expected write success');
+  return result;
+}
+
 describe('subagent-file — filesystem operations', () => {
-  let tmpDir;
+  let tmpDir: string;
 
   before(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'aweek-subagent-file-'));
@@ -241,8 +257,8 @@ describe('subagent-file — filesystem operations', () => {
       systemPrompt: 'You are minimal.',
       projectDir: tmpDir,
     });
-    assert.equal(result.success, true);
-    const bytes = await readFile(result.path, 'utf8');
+    const ok = expectWriteSuccess(result);
+    const bytes = await readFile(ok.path, 'utf8');
     // Exact content check — locks the minimal-frontmatter contract.
     assert.equal(
       bytes,
@@ -260,13 +276,13 @@ describe('subagent-file — filesystem operations', () => {
 
   it('writeSubagentFile refuses to overwrite an existing file', async () => {
     // First create it.
-    const first = await writeSubagentFile({
+    const firstResult = await writeSubagentFile({
       slug: 'dup',
       description: 'Original',
       systemPrompt: 'First version.',
       projectDir: tmpDir,
     });
-    assert.equal(first.success, true);
+    const first = expectWriteSuccess(firstResult);
 
     // Then try again with different content.
     const second = await writeSubagentFile({
@@ -276,8 +292,9 @@ describe('subagent-file — filesystem operations', () => {
       projectDir: tmpDir,
     });
     assert.equal(second.success, false);
+    if (second.success) throw new Error('expected failure');
     assert.equal(second.alreadyExists, true);
-    assert.ok(second.errors.some((e) => e.toLowerCase().includes('already exists')));
+    assert.ok(second.errors.some((e: string) => e.toLowerCase().includes('already exists')));
     assert.equal(second.path, first.path);
 
     // And the on-disk bytes are unchanged.
@@ -294,6 +311,7 @@ describe('subagent-file — filesystem operations', () => {
       projectDir: tmpDir,
     });
     assert.equal(result.success, false);
+    if (result.success) throw new Error('expected failure');
     assert.ok(result.errors.length >= 3);
     assert.equal(await subagentFileExists('Bad Slug', tmpDir), false);
   });
@@ -308,10 +326,10 @@ describe('subagent-file — filesystem operations', () => {
       systemPrompt: 'Only in project.',
       projectDir: tmpDir,
     });
-    assert.equal(result.success, true);
+    const ok = expectWriteSuccess(result);
     assert.ok(
-      result.path.startsWith(tmpDir),
-      `expected ${result.path} to live under ${tmpDir}`,
+      ok.path.startsWith(tmpDir),
+      `expected ${ok.path} to live under ${tmpDir}`,
     );
   });
 
@@ -322,10 +340,10 @@ describe('subagent-file — filesystem operations', () => {
       systemPrompt: 'You are readable.',
       projectDir: tmpDir,
     });
-    assert.equal(result.success, true);
+    const ok = expectWriteSuccess(result);
 
     const bytes = await readSubagentFile('reader', tmpDir);
-    assert.equal(bytes, result.content);
+    assert.equal(bytes, ok.content);
   });
 
   it('readSubagentFile throws when the file is missing', async () => {
@@ -435,7 +453,7 @@ describe('subagent-file — parseSubagentBody', () => {
 });
 
 describe('subagent-file — readSubagentIdentity', () => {
-  let tmpDir;
+  let tmpDir: string;
 
   before(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'aweek-read-identity-'));
@@ -552,8 +570,8 @@ describe('subagent-file — userSubagentFilePath', () => {
 });
 
 describe('subagent-file — resolveSubagentFile', () => {
-  let projectDir;
-  let homeDir;
+  let projectDir: string;
+  let homeDir: string;
 
   before(async () => {
     projectDir = await mkdtemp(join(tmpdir(), 'aweek-resolve-proj-'));
@@ -570,13 +588,13 @@ describe('subagent-file — resolveSubagentFile', () => {
     await rm(join(homeDir, '.claude'), { recursive: true, force: true });
   });
 
-  async function writeProject(slug) {
+  async function writeProject(slug: string): Promise<void> {
     const dir = join(projectDir, '.claude', 'agents');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${slug}.md`), '---\nname: x\n---\n', 'utf8');
   }
 
-  async function writeUser(slug) {
+  async function writeUser(slug: string): Promise<void> {
     const dir = join(homeDir, '.claude', 'agents');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `${slug}.md`), '---\nname: x\n---\n', 'utf8');
@@ -794,7 +812,7 @@ describe('subagent-file — buildSubagentMarkdown (body formatting)', () => {
       description: "It's complicated",
       systemPrompt: 'Body.',
     });
-    const descLine = md.split('\n').find((l) => l.startsWith('description:'));
+    const descLine = md.split('\n').find((l: string) => l.startsWith('description:'));
     // Apostrophe is outside the plain-scalar alphabet → must be double-quoted.
     assert.ok(descLine?.startsWith('description: "'));
     assert.ok(descLine?.endsWith('"'));
@@ -802,7 +820,7 @@ describe('subagent-file — buildSubagentMarkdown (body formatting)', () => {
 });
 
 describe('subagent-file — writeSubagentFile + parser round-trip', () => {
-  let tmpDir;
+  let tmpDir: string;
 
   before(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'aweek-subagent-roundtrip-'));
@@ -849,13 +867,13 @@ describe('subagent-file — writeSubagentFile + parser round-trip', () => {
 
   it('is idempotent across delete + re-create with different content', async () => {
     // Create.
-    const first = await writeSubagentFile({
+    const firstResult = await writeSubagentFile({
       slug: 'recycled',
       description: 'First',
       systemPrompt: 'First body.',
       projectDir: tmpDir,
     });
-    assert.equal(first.success, true);
+    const first = expectWriteSuccess(firstResult);
 
     // Delete just the .md file (simulate the user removing it).
     await rm(first.path, { force: true });
@@ -880,9 +898,9 @@ describe('subagent-file — writeSubagentFile + parser round-trip', () => {
       systemPrompt: 'You echo.',
       projectDir: tmpDir,
     });
-    assert.equal(result.success, true);
-    const bytes = await readFile(result.path, 'utf8');
-    assert.equal(result.content, bytes);
+    const ok = expectWriteSuccess(result);
+    const bytes = await readFile(ok.path, 'utf8');
+    assert.equal(ok.content, bytes);
   });
 
   it('aggregates ALL validation errors before bailing (slug + description + prompt)', async () => {
@@ -893,6 +911,7 @@ describe('subagent-file — writeSubagentFile + parser round-trip', () => {
       projectDir: tmpDir,
     });
     assert.equal(result.success, false);
+    if (result.success) throw new Error('expected failure');
     // Each validator contributes at least one error; the writer must surface
     // all of them, not bail at the first failure.
     assert.ok(result.errors.length >= 3, `expected at least 3 errors, got ${result.errors.length}`);

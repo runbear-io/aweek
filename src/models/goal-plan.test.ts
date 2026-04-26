@@ -5,6 +5,12 @@
  *   - Construction: correct field population from arguments
  *   - Defaults: default values applied when optional params omitted
  *   - Serialization: JSON round-trip preserves validity and structure
+ *
+ * Migrated to TypeScript as part of seed-04-subagents-models-time. This is
+ * a standalone test (no `.js` sibling on disk) — the source it exercises
+ * lives in `./agent.ts` (migrated by the sibling agent task in the same
+ * seed). NodeNext resolution preserves the `.js` import suffix so the
+ * extension keeps working through the migration.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,34 +31,82 @@ import {
 } from '../schemas/validator.js';
 
 // ---------------------------------------------------------------------------
+// Loose record-shaped views over factory return values.
+//
+// `agent.ts` types its factory return values via the canonical `Agent` /
+// `Budget` interfaces from `../schemas/agent.ts`, but the nested goal /
+// objective / monthly-plan / task / weekly-plan / inbox shapes are still
+// modeled as `Record<string, unknown>` placeholders pending sub-AC 5.2 –
+// 5.4 of the migration plan. The tests here read concrete fields
+// (`g.id.startsWith('goal-')`, `plan.objectives.length`, etc.) through
+// those placeholders, so we widen the view at the test boundary to a
+// structured record shape. This stays compatible with the canonical
+// placeholder type (covariant assignment) and avoids any new `as any`
+// casts.
+// ---------------------------------------------------------------------------
+
+/** Placeholder-compatible row shape that exposes commonly-asserted fields. */
+type FactoryRecord = Record<string, unknown> & {
+  id?: string;
+  description?: string;
+  horizon?: string;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+  targetDate?: string;
+  goalId?: string;
+  month?: string;
+  summary?: string;
+  objectives?: FactoryRecord[];
+  title?: string;
+  prompt?: string;
+  objectiveId?: string;
+  delegatedTo?: string;
+  week?: string;
+  tasks?: FactoryRecord[];
+  approved?: boolean;
+  approvedAt?: string;
+  from?: string;
+  to?: string;
+  taskDescription?: string;
+  context?: string;
+  type?: string;
+  priority?: string;
+};
+
+// ---------------------------------------------------------------------------
 // createGoal — construction, defaults, serialization
 // ---------------------------------------------------------------------------
 
 describe('createGoal — construction', () => {
   it('populates all required fields from arguments', () => {
-    const g = createGoal('Ship v2 of the API', '1yr');
+    const g = createGoal('Ship v2 of the API', '1yr') as FactoryRecord;
     assert.equal(g.description, 'Ship v2 of the API');
     assert.equal(g.horizon, '1yr');
     assert.equal(g.status, 'active');
-    assert.ok(g.id.startsWith('goal-'));
+    assert.ok(typeof g.id === 'string' && g.id.startsWith('goal-'));
     assert.ok(g.createdAt);
   });
 
   it('generates unique IDs across multiple calls', () => {
-    const ids = new Set(Array.from({ length: 20 }, () => createGoal('G').id));
+    const ids = new Set(
+      Array.from({ length: 20 }, () => (createGoal('G') as FactoryRecord).id),
+    );
     assert.equal(ids.size, 20, 'Expected 20 unique goal IDs');
   });
 
   it('stores an ISO 8601 createdAt timestamp', () => {
-    const g = createGoal('G');
+    const g = createGoal('G') as FactoryRecord;
     // Must parse without NaN
-    const parsed = new Date(g.createdAt);
+    const parsed = new Date(g.createdAt as string);
     assert.ok(!Number.isNaN(parsed.getTime()), 'createdAt should be a valid date');
   });
 
   it('accepts each valid horizon value', () => {
-    for (const h of ['1mo', '3mo', '1yr']) {
-      const g = createGoal('G', h);
+    const horizons: Array<'1mo' | '3mo' | '1yr'> = ['1mo', '3mo', '1yr'];
+    for (const h of horizons) {
+      const g = createGoal('G', h) as FactoryRecord;
       assert.equal(g.horizon, h);
       assert.equal(validateGoal(g).valid, true, `horizon '${h}' should produce a valid goal`);
     }
@@ -61,17 +115,17 @@ describe('createGoal — construction', () => {
 
 describe('createGoal — defaults', () => {
   it('defaults horizon to 3mo when omitted', () => {
-    const g = createGoal('Default horizon goal');
+    const g = createGoal('Default horizon goal') as FactoryRecord;
     assert.equal(g.horizon, '3mo');
   });
 
   it('defaults status to active', () => {
-    const g = createGoal('Active by default');
+    const g = createGoal('Active by default') as FactoryRecord;
     assert.equal(g.status, 'active');
   });
 
   it('does not include optional fields (targetDate, completedAt) by default', () => {
-    const g = createGoal('No extras');
+    const g = createGoal('No extras') as FactoryRecord;
     assert.equal(g.targetDate, undefined);
     assert.equal(g.completedAt, undefined);
   });
@@ -105,15 +159,15 @@ describe('createGoal — serialization', () => {
 
 describe('createObjective — construction', () => {
   it('populates description and goalId from arguments', () => {
-    const obj = createObjective('Build REST endpoints', 'goal-abc12345');
+    const obj = createObjective('Build REST endpoints', 'goal-abc12345') as FactoryRecord;
     assert.equal(obj.description, 'Build REST endpoints');
     assert.equal(obj.goalId, 'goal-abc12345');
-    assert.ok(obj.id.startsWith('obj-'));
+    assert.ok(typeof obj.id === 'string' && obj.id.startsWith('obj-'));
   });
 
   it('generates unique IDs across multiple calls', () => {
     const ids = new Set(
-      Array.from({ length: 20 }, () => createObjective('O', 'goal-x').id),
+      Array.from({ length: 20 }, () => (createObjective('O', 'goal-x') as FactoryRecord).id),
     );
     assert.equal(ids.size, 20);
   });
@@ -127,12 +181,12 @@ describe('createObjective — construction', () => {
 
 describe('createObjective — defaults', () => {
   it('defaults status to planned', () => {
-    const obj = createObjective('Planned by default', 'goal-x');
+    const obj = createObjective('Planned by default', 'goal-x') as FactoryRecord;
     assert.equal(obj.status, 'planned');
   });
 
   it('does not include completedAt by default', () => {
-    const obj = createObjective('Not done yet', 'goal-x');
+    const obj = createObjective('Not done yet', 'goal-x') as FactoryRecord;
     assert.equal(obj.completedAt, undefined);
   });
 });
@@ -158,18 +212,18 @@ describe('createObjective — serialization', () => {
 
 describe('createMonthlyPlan — construction', () => {
   it('populates month and objectives from arguments', () => {
-    const obj = createObjective('O', 'goal-aaa11111');
-    const plan = createMonthlyPlan('2026-04', [obj]);
+    const obj = createObjective('O', 'goal-aaa11111') as FactoryRecord;
+    const plan = createMonthlyPlan('2026-04', [obj]) as FactoryRecord;
     assert.equal(plan.month, '2026-04');
-    assert.equal(plan.objectives.length, 1);
-    assert.equal(plan.objectives[0].id, obj.id);
+    assert.equal(plan.objectives?.length, 1);
+    assert.equal(plan.objectives?.[0]?.id, obj.id);
   });
 
   it('stores ISO 8601 timestamps for createdAt and updatedAt', () => {
     const obj = createObjective('O', 'goal-aaa11111');
-    const plan = createMonthlyPlan('2026-04', [obj]);
-    assert.ok(!Number.isNaN(new Date(plan.createdAt).getTime()));
-    assert.ok(!Number.isNaN(new Date(plan.updatedAt).getTime()));
+    const plan = createMonthlyPlan('2026-04', [obj]) as FactoryRecord;
+    assert.ok(!Number.isNaN(new Date(plan.createdAt as string).getTime()));
+    assert.ok(!Number.isNaN(new Date(plan.updatedAt as string).getTime()));
   });
 
   it('accepts multiple objectives', () => {
@@ -178,24 +232,29 @@ describe('createMonthlyPlan — construction', () => {
       createObjective('B', 'goal-bbb22222'),
       createObjective('C', 'goal-aaa11111'),
     ];
-    const plan = createMonthlyPlan('2026-05', objs);
-    assert.equal(plan.objectives.length, 3);
+    const plan = createMonthlyPlan('2026-05', objs) as FactoryRecord;
+    assert.equal(plan.objectives?.length, 3);
   });
 
   it('accepts optional summary', () => {
     const obj = createObjective('O', 'goal-aaa11111');
-    const plan = createMonthlyPlan('2026-06', [obj], { summary: 'Focus on API work' });
+    const plan = createMonthlyPlan('2026-06', [obj], { summary: 'Focus on API work' }) as FactoryRecord;
     assert.equal(plan.summary, 'Focus on API work');
   });
 
   it('accepts optional status override', () => {
     const obj = createObjective('O', 'goal-aaa11111');
-    const plan = createMonthlyPlan('2026-06', [obj], { status: 'draft' });
+    const plan = createMonthlyPlan('2026-06', [obj], { status: 'draft' }) as FactoryRecord;
     assert.equal(plan.status, 'draft');
   });
 
   it('passes schema validation with all valid statuses', () => {
-    const statuses = ['draft', 'active', 'completed', 'archived'];
+    const statuses: Array<'draft' | 'active' | 'completed' | 'archived'> = [
+      'draft',
+      'active',
+      'completed',
+      'archived',
+    ];
     for (const status of statuses) {
       const obj = createObjective('O', 'goal-aaa11111');
       const plan = createMonthlyPlan('2026-04', [obj], { status });
@@ -208,19 +267,19 @@ describe('createMonthlyPlan — construction', () => {
 describe('createMonthlyPlan — defaults', () => {
   it('defaults status to active', () => {
     const obj = createObjective('O', 'goal-aaa11111');
-    const plan = createMonthlyPlan('2026-04', [obj]);
+    const plan = createMonthlyPlan('2026-04', [obj]) as FactoryRecord;
     assert.equal(plan.status, 'active');
   });
 
   it('does not include summary when omitted', () => {
     const obj = createObjective('O', 'goal-aaa11111');
-    const plan = createMonthlyPlan('2026-04', [obj]);
+    const plan = createMonthlyPlan('2026-04', [obj]) as FactoryRecord;
     assert.equal(plan.summary, undefined);
   });
 
   it('defaults without opts object at all', () => {
     const obj = createObjective('O', 'goal-aaa11111');
-    const plan = createMonthlyPlan('2026-04', [obj]);
+    const plan = createMonthlyPlan('2026-04', [obj]) as FactoryRecord;
     assert.equal(plan.status, 'active');
     assert.equal(plan.summary, undefined);
   });
@@ -259,15 +318,18 @@ describe('createMonthlyPlan — serialization', () => {
 
 describe('createTask — construction', () => {
   it('populates description and objectiveId from arguments', () => {
-    const task = createTask({ title: 'Implement login', prompt: 'Implement login' }, 'obj-abc12345');
+    const task = createTask({ title: 'Implement login', prompt: 'Implement login' }, 'obj-abc12345') as FactoryRecord;
     assert.equal(task.title, 'Implement login');
     assert.equal(task.objectiveId, 'obj-abc12345');
-    assert.ok(task.id.startsWith('task-'));
+    assert.ok(typeof task.id === 'string' && task.id.startsWith('task-'));
   });
 
   it('generates unique IDs across multiple calls', () => {
     const ids = new Set(
-      Array.from({ length: 20 }, () => createTask({ title: 'T', prompt: 'T' }, 'obj-x').id),
+      Array.from(
+        { length: 20 },
+        () => (createTask({ title: 'T', prompt: 'T' }, 'obj-x') as FactoryRecord).id,
+      ),
     );
     assert.equal(ids.size, 20);
   });
@@ -275,12 +337,12 @@ describe('createTask — construction', () => {
 
 describe('createTask — defaults', () => {
   it('defaults status to pending', () => {
-    const task = createTask({ title: 'Pending task', prompt: 'Pending task' }, 'obj-abc12345');
+    const task = createTask({ title: 'Pending task', prompt: 'Pending task' }, 'obj-abc12345') as FactoryRecord;
     assert.equal(task.status, 'pending');
   });
 
   it('does not include optional fields (completedAt, delegatedTo) by default', () => {
-    const task = createTask({ title: 'Simple task', prompt: 'Simple task' }, 'obj-abc12345');
+    const task = createTask({ title: 'Simple task', prompt: 'Simple task' }, 'obj-abc12345') as FactoryRecord;
     assert.equal(task.completedAt, undefined);
     assert.equal(task.delegatedTo, undefined);
   });
@@ -309,20 +371,20 @@ describe('createTask — serialization', () => {
 describe('createWeeklyPlan — construction', () => {
   it('populates week, month, and tasks from arguments', () => {
     const task = createTask({ title: 'T', prompt: 'T' }, 'obj-abc12345');
-    const plan = createWeeklyPlan('2026-W16', '2026-04', [task]);
+    const plan = createWeeklyPlan('2026-W16', '2026-04', [task]) as FactoryRecord;
     assert.equal(plan.week, '2026-W16');
     assert.equal(plan.month, '2026-04');
-    assert.equal(plan.tasks.length, 1);
+    assert.equal(plan.tasks?.length, 1);
   });
 
   it('stores ISO 8601 timestamps', () => {
-    const plan = createWeeklyPlan('2026-W16', '2026-04', []);
-    assert.ok(!Number.isNaN(new Date(plan.createdAt).getTime()));
-    assert.ok(!Number.isNaN(new Date(plan.updatedAt).getTime()));
+    const plan = createWeeklyPlan('2026-W16', '2026-04', []) as FactoryRecord;
+    assert.ok(!Number.isNaN(new Date(plan.createdAt as string).getTime()));
+    assert.ok(!Number.isNaN(new Date(plan.updatedAt as string).getTime()));
   });
 
   it('accepts empty tasks array', () => {
-    const plan = createWeeklyPlan('2026-W16', '2026-04', []);
+    const plan = createWeeklyPlan('2026-W16', '2026-04', []) as FactoryRecord;
     assert.deepStrictEqual(plan.tasks, []);
     const result = validateWeeklyPlan(plan);
     assert.equal(result.valid, true);
@@ -334,19 +396,19 @@ describe('createWeeklyPlan — construction', () => {
       createTask({ title: 'B', prompt: 'B' }, 'obj-bbb22222'),
       createTask({ title: 'C', prompt: 'C' }, 'obj-aaa11111'),
     ];
-    const plan = createWeeklyPlan('2026-W16', '2026-04', tasks);
-    assert.equal(plan.tasks.length, 3);
+    const plan = createWeeklyPlan('2026-W16', '2026-04', tasks) as FactoryRecord;
+    assert.equal(plan.tasks?.length, 3);
   });
 });
 
 describe('createWeeklyPlan — defaults', () => {
   it('defaults approved to true', () => {
-    const plan = createWeeklyPlan('2026-W16', '2026-04', []);
+    const plan = createWeeklyPlan('2026-W16', '2026-04', []) as FactoryRecord;
     assert.equal(plan.approved, true);
   });
 
   it('does not include approvedAt by default', () => {
-    const plan = createWeeklyPlan('2026-W16', '2026-04', []);
+    const plan = createWeeklyPlan('2026-W16', '2026-04', []) as FactoryRecord;
     assert.equal(plan.approvedAt, undefined);
   });
 });
@@ -384,27 +446,40 @@ describe('createWeeklyPlan — serialization', () => {
 
 describe('createInboxMessage — construction', () => {
   it('populates from, to, taskDescription from arguments', () => {
-    const msg = createInboxMessage('agent-helper-abc123', 'agent-recv-xyz789', 'Review PR #42');
+    const msg = createInboxMessage(
+      'agent-helper-abc123',
+      'agent-recv-xyz789',
+      'Review PR #42',
+    ) as FactoryRecord;
     assert.equal(msg.from, 'agent-helper-abc123');
     assert.equal(msg.to, 'agent-recv-xyz789');
     assert.equal(msg.taskDescription, 'Review PR #42');
-    assert.ok(msg.id.startsWith('msg-'));
+    assert.ok(typeof msg.id === 'string' && msg.id.startsWith('msg-'));
   });
 
   it('generates unique IDs across multiple calls', () => {
     const ids = new Set(
-      Array.from({ length: 20 }, () => createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M').id),
+      Array.from(
+        { length: 20 },
+        () =>
+          (createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M') as FactoryRecord).id,
+      ),
     );
     assert.equal(ids.size, 20);
   });
 
   it('stores an ISO 8601 createdAt timestamp', () => {
-    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M');
-    assert.ok(!Number.isNaN(new Date(msg.createdAt).getTime()));
+    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M') as FactoryRecord;
+    assert.ok(!Number.isNaN(new Date(msg.createdAt as string).getTime()));
   });
 
   it('includes context when provided via opts', () => {
-    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'Do X', { context: 'Extra context here' });
+    const msg = createInboxMessage(
+      'agent-x-12345678',
+      'agent-y-12345678',
+      'Do X',
+      { context: 'Extra context here' },
+    ) as FactoryRecord;
     assert.equal(msg.context, 'Extra context here');
   });
 
@@ -415,7 +490,12 @@ describe('createInboxMessage — construction', () => {
   });
 
   it('passes schema validation with context', () => {
-    const msg = createInboxMessage('agent-helper-abc123', 'agent-recv-xyz789', 'With context', { context: 'Some ctx' });
+    const msg = createInboxMessage(
+      'agent-helper-abc123',
+      'agent-recv-xyz789',
+      'With context',
+      { context: 'Some ctx' },
+    );
     const result = validateInboxMessage(msg);
     assert.equal(result.valid, true, JSON.stringify(result.errors));
   });
@@ -423,22 +503,26 @@ describe('createInboxMessage — construction', () => {
 
 describe('createInboxMessage — defaults', () => {
   it('defaults status to pending', () => {
-    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M');
+    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M') as FactoryRecord;
     assert.equal(msg.status, 'pending');
   });
 
   it('defaults type to task-delegation', () => {
-    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M');
+    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M') as FactoryRecord;
     assert.equal(msg.type, 'task-delegation');
   });
 
   it('defaults priority to medium', () => {
-    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M');
+    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'M') as FactoryRecord;
     assert.equal(msg.priority, 'medium');
   });
 
   it('does not include context when omitted', () => {
-    const msg = createInboxMessage('agent-x-12345678', 'agent-y-12345678', 'No context');
+    const msg = createInboxMessage(
+      'agent-x-12345678',
+      'agent-y-12345678',
+      'No context',
+    ) as FactoryRecord;
     assert.equal(msg.context, undefined);
   });
 });
@@ -451,7 +535,12 @@ describe('createInboxMessage — serialization', () => {
   });
 
   it('survives JSON round-trip with context', () => {
-    const original = createInboxMessage('agent-helper-abc123', 'agent-recv-xyz789', 'RT msg', { context: 'ctx' });
+    const original = createInboxMessage(
+      'agent-helper-abc123',
+      'agent-recv-xyz789',
+      'RT msg',
+      { context: 'ctx' },
+    );
     const restored = JSON.parse(JSON.stringify(original));
     assert.deepStrictEqual(restored, original);
   });
@@ -470,8 +559,8 @@ describe('createInboxMessage — serialization', () => {
 
 describe('full plan hierarchy — serialization', () => {
   it('goal -> objective -> monthly plan round-trips correctly', () => {
-    const goal = createGoal('Ship feature', '1mo');
-    const obj = createObjective('Build backend', goal.id);
+    const goal = createGoal('Ship feature', '1mo') as FactoryRecord;
+    const obj = createObjective('Build backend', goal.id as string);
     const plan = createMonthlyPlan('2026-04', [obj]);
 
     const hierarchy = { goal, plan };
@@ -484,9 +573,9 @@ describe('full plan hierarchy — serialization', () => {
   });
 
   it('goal -> objective -> task -> weekly plan round-trips correctly', () => {
-    const goal = createGoal('Quarterly OKR', '3mo');
-    const obj = createObjective('Sprint deliverable', goal.id);
-    const task = createTask({ title: 'Write tests', prompt: 'Write tests' }, obj.id);
+    const goal = createGoal('Quarterly OKR', '3mo') as FactoryRecord;
+    const obj = createObjective('Sprint deliverable', goal.id as string) as FactoryRecord;
+    const task = createTask({ title: 'Write tests', prompt: 'Write tests' }, obj.id as string);
     const weeklyPlan = createWeeklyPlan('2026-W16', '2026-04', [task]);
     const monthlyPlan = createMonthlyPlan('2026-04', [obj]);
 
@@ -504,15 +593,15 @@ describe('full plan hierarchy — serialization', () => {
   });
 
   it('complex multi-goal, multi-plan hierarchy serializes correctly', () => {
-    const g1 = createGoal('Short-term', '1mo');
-    const g2 = createGoal('Long-term', '1yr');
-    const obj1 = createObjective('Obj for g1', g1.id);
-    const obj2 = createObjective('Obj for g2', g2.id);
-    const obj3 = createObjective('Another for g1', g1.id);
+    const g1 = createGoal('Short-term', '1mo') as FactoryRecord;
+    const g2 = createGoal('Long-term', '1yr') as FactoryRecord;
+    const obj1 = createObjective('Obj for g1', g1.id as string) as FactoryRecord;
+    const obj2 = createObjective('Obj for g2', g2.id as string) as FactoryRecord;
+    const obj3 = createObjective('Another for g1', g1.id as string);
     const mp1 = createMonthlyPlan('2026-04', [obj1, obj2]);
     const mp2 = createMonthlyPlan('2026-05', [obj3], { summary: 'Follow-up month' });
-    const t1 = createTask({ title: 'Task A', prompt: 'Task A' }, obj1.id);
-    const t2 = createTask({ title: 'Task B', prompt: 'Task B' }, obj2.id);
+    const t1 = createTask({ title: 'Task A', prompt: 'Task A' }, obj1.id as string);
+    const t2 = createTask({ title: 'Task B', prompt: 'Task B' }, obj2.id as string);
     const wp = createWeeklyPlan('2026-W16', '2026-04', [t1, t2]);
 
     // This is a pure serialisation test — the hierarchy is kept as a

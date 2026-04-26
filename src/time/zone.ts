@@ -20,27 +20,92 @@
  * `getUTCHours` / `getUTCDay` outside this module.
  */
 
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/**
+ * Anything we accept as a UTC instant: a `Date`, an ISO string, or a number
+ * of milliseconds since the epoch. The `toMs` coercion centralises this so
+ * the rest of the module can speak in raw ms.
+ */
+export type TimestampInput = Date | string | number;
+
+/**
+ * The output of {@link localParts}: a UTC instant projected into a named
+ * IANA zone, broken into integer date/time fields. `weekday` is 1..7 with
+ * Monday=1 (ISO 8601), or 0 if the underlying `Intl` formatter returned an
+ * unexpected weekday string.
+ */
+export interface LocalParts {
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+/**
+ * The minimum subset of {@link LocalParts} that uniquely identifies an
+ * ISO week. Exists so {@link mondayOfWeek}'s internal helper can accept a
+ * subset of the full `LocalParts` shape.
+ */
+export interface IsoWeekInput {
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+}
+
+/**
+ * Output of the internal ISO-week computation: the ISO year that owns
+ * the given local date plus the ISO week number (1..53).
+ */
+export interface IsoWeekResult {
+  isoYear: number;
+  isoWeek: number;
+}
+
+/**
+ * Wall-clock input accepted by {@link localWallClockToUtc}. `hour`,
+ * `minute`, and `second` default to 0 when omitted, matching the JS
+ * implementation's `wc.hour ?? 0` semantics.
+ */
+export interface WallClock {
+  year: number;
+  month: number;
+  day: number;
+  hour?: number;
+  minute?: number;
+  second?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Zone detection / validation
+// ---------------------------------------------------------------------------
+
 /**
  * Detect the system IANA time zone. Used as the implicit default when the
  * user hasn't written one into `.aweek/config.json` yet.
- * @returns {string}
  */
-export function detectSystemTimeZone() {
+export function detectSystemTimeZone(): string {
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (tz && typeof tz === 'string') return tz;
-  } catch {}
+  } catch {
+    // fall through to the safe default
+  }
   return 'UTC';
 }
 
-export const DEFAULT_TZ = detectSystemTimeZone();
+export const DEFAULT_TZ: string = detectSystemTimeZone();
 
 /**
  * Return true if the given string is a recognizable IANA time-zone name.
- * @param {unknown} tz
- * @returns {boolean}
  */
-export function isValidTimeZone(tz) {
+export function isValidTimeZone(tz: unknown): tz is string {
   if (typeof tz !== 'string' || tz.length === 0) return false;
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: tz });
@@ -50,13 +115,15 @@ export function isValidTimeZone(tz) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
 /**
  * Coerce the input to an instant in ms since epoch.
  * Accepts: Date, ISO string, number (ms).
- * @param {Date|string|number} input
- * @returns {number}
  */
-function toMs(input) {
+function toMs(input: TimestampInput): number {
   if (input instanceof Date) return input.getTime();
   if (typeof input === 'number') return input;
   if (typeof input === 'string') {
@@ -69,16 +136,19 @@ function toMs(input) {
   throw new TypeError(`Unsupported timestamp input: ${typeof input}`);
 }
 
+// ---------------------------------------------------------------------------
+// Local projection
+// ---------------------------------------------------------------------------
+
 /**
  * Project a UTC instant into the given IANA time zone and return the
  * individual date/time fields as integers. `weekday` is 1..7 with Monday=1
  * (ISO 8601 convention).
  *
- * @param {Date|string|number} input - Any UTC instant
- * @param {string} tz - IANA zone name
- * @returns {{year:number, month:number, day:number, weekday:number, hour:number, minute:number, second:number}}
+ * @param input - Any UTC instant
+ * @param tz - IANA zone name
  */
-export function localParts(input, tz) {
+export function localParts(input: TimestampInput, tz: string): LocalParts {
   if (!isValidTimeZone(tz)) {
     throw new TypeError(`Invalid time zone: ${JSON.stringify(tz)}`);
   }
@@ -94,11 +164,19 @@ export function localParts(input, tz) {
     minute: '2-digit',
     second: '2-digit',
   });
-  const parts = Object.fromEntries(
+  const parts: Record<string, string> = Object.fromEntries(
     fmt.formatToParts(new Date(ms)).map((p) => [p.type, p.value]),
   );
 
-  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+  const weekdayMap: Record<string, number> = {
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+    Sun: 7,
+  };
 
   let hour = parseInt(parts.hour, 10);
   // Intl returns 24 for midnight in some locales; normalize to 0.
@@ -117,10 +195,10 @@ export function localParts(input, tz) {
 
 /**
  * Compute the ISO week number for a date projected into `tz`.
- * @param {{year:number, month:number, day:number, weekday:number}} parts - output of localParts
- * @returns {{isoYear:number, isoWeek:number}}
+ *
+ * @param parts - output of {@link localParts}
  */
-function isoWeekFromLocalParts({ year, month, day, weekday }) {
+function isoWeekFromLocalParts({ year, month, day, weekday }: IsoWeekInput): IsoWeekResult {
   // Use UTC arithmetic on the Y/M/D triple — the zone projection is
   // already baked into the triple, so we can safely stay in UTC here.
   const dateUtc = new Date(Date.UTC(year, month - 1, day));
@@ -141,11 +219,11 @@ function isoWeekFromLocalParts({ year, month, day, weekday }) {
 
 /**
  * Return the current ISO-week key ("YYYY-Www") for the given zone.
- * @param {string} tz
- * @param {Date|string|number} [now] - defaults to the current wall clock
- * @returns {string}
+ *
+ * @param tz - IANA zone name
+ * @param now - defaults to the current wall clock
  */
-export function currentWeekKey(tz, now = Date.now()) {
+export function currentWeekKey(tz: string, now: TimestampInput = Date.now()): string {
   const parts = localParts(now, tz);
   const { isoYear, isoWeek } = isoWeekFromLocalParts(parts);
   return `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
@@ -156,11 +234,10 @@ export function currentWeekKey(tz, now = Date.now()) {
  * time of `weekKey` in `tz`. The result is suitable for subtracting
  * millisecond offsets against other UTC instants.
  *
- * @param {string} weekKey - e.g. "2026-W17"
- * @param {string} tz
- * @returns {Date}
+ * @param weekKey - e.g. "2026-W17"
+ * @param tz - IANA zone name
  */
-export function mondayOfWeek(weekKey, tz) {
+export function mondayOfWeek(weekKey: string, tz: string): Date {
   const m = /^(\d{4})-W(\d{2})$/.exec(weekKey);
   if (!m) throw new TypeError(`Invalid ISO week key: ${JSON.stringify(weekKey)}`);
   const isoYear = parseInt(m[1], 10);
@@ -192,11 +269,8 @@ export function mondayOfWeek(weekKey, tz) {
 
 /**
  * Return the hour-of-day (0..23) for a UTC instant projected into `tz`.
- * @param {Date|string|number} iso
- * @param {string} tz
- * @returns {number}
  */
-export function localHour(iso, tz) {
+export function localHour(iso: TimestampInput, tz: string): number {
   return localParts(iso, tz).hour;
 }
 
@@ -205,12 +279,15 @@ export function localHour(iso, tz) {
  * the local-zone `weekMondayUtc` anchor. Returns a negative number or
  * ≥7 when the instant falls outside the anchor's week.
  *
- * @param {Date|string|number} iso
- * @param {Date|number} weekMondayUtc - output of `mondayOfWeek`
- * @param {string} tz
- * @returns {number}
+ * @param iso - any UTC instant
+ * @param weekMondayUtc - output of {@link mondayOfWeek}
+ * @param tz - IANA zone name
  */
-export function localDayOffset(iso, weekMondayUtc, tz) {
+export function localDayOffset(
+  iso: TimestampInput,
+  weekMondayUtc: Date | number,
+  tz: string,
+): number {
   if (!isValidTimeZone(tz)) {
     throw new TypeError(`Invalid time zone: ${JSON.stringify(tz)}`);
   }
@@ -243,12 +320,8 @@ export function localDayOffset(iso, weekMondayUtc, tz) {
  * seams (return either); both match for ambiguous fall-back wall clocks
  * (return the earlier one); neither matches inside a spring-forward gap
  * (return the later one so we land at-or-after the gap).
- *
- * @param {{year:number, month:number, day:number, hour?:number, minute?:number, second?:number}} wc
- * @param {string} tz
- * @returns {Date}
  */
-export function localWallClockToUtc(wc, tz) {
+export function localWallClockToUtc(wc: WallClock, tz: string): Date {
   if (!isValidTimeZone(tz)) {
     throw new TypeError(`Invalid time zone: ${JSON.stringify(tz)}`);
   }
@@ -257,13 +330,13 @@ export function localWallClockToUtc(wc, tz) {
   const wantMs = Date.UTC(year, month - 1, day, hour, minute, second);
 
   // offsetAt(ms): zone offset in ms (local - utc) at `ms`.
-  const offsetAt = (ms) => {
+  const offsetAt = (ms: number): number => {
     const p = localParts(ms, tz);
     const localMs = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
     return localMs - ms;
   };
 
-  const projectionMatches = (ms) => {
+  const projectionMatches = (ms: number): boolean => {
     const p = localParts(ms, tz);
     return (
       p.year === year &&
@@ -305,12 +378,8 @@ export function localWallClockToUtc(wc, tz) {
  *   - Full ISO "YYYY-MM-DDTHH:MM[:SS]"
  *   - "YYYY-MM-DD HH:MM"
  *   - Splits on the first space or 'T'.
- *
- * @param {string} input
- * @param {string} tz
- * @returns {Date}
  */
-export function parseLocalWallClock(input, tz) {
+export function parseLocalWallClock(input: string, tz: string): Date {
   if (typeof input !== 'string') {
     throw new TypeError(`parseLocalWallClock expects a string, got ${typeof input}`);
   }

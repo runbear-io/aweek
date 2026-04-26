@@ -49,6 +49,7 @@ import {
   resolveSubagentsDir,
 } from './subagent-file.js';
 import { listAllAgents } from '../storage/agent-helpers.js';
+import type { AgentStore } from '../storage/agent-store.js';
 import { isPluginSubagent } from '../skills/hire-route.js';
 
 /**
@@ -58,33 +59,84 @@ import { isPluginSubagent } from '../skills/hire-route.js';
  * user picking between a project-level and user-level subagent with the same
  * base name deserves to see which one they're adopting.
  */
-export const USER_SUBAGENT_SCOPE = 'user';
-export const PROJECT_SUBAGENT_SCOPE = 'project';
+export const USER_SUBAGENT_SCOPE = 'user' as const;
+export const PROJECT_SUBAGENT_SCOPE = 'project' as const;
+
+/**
+ * The two scopes Claude Code loads subagents from.
+ */
+export type SubagentScope =
+  | typeof USER_SUBAGENT_SCOPE
+  | typeof PROJECT_SUBAGENT_SCOPE;
+
+/** Optional `userHome` override accepted by the user-scope helpers. */
+export interface UserHomeOptions {
+  /**
+   * Override for the home directory. Defaults to `os.homedir()`. The override
+   * exists so tests can point discovery at a temp directory without mutating
+   * `$HOME` process-wide.
+   */
+  userHome?: string;
+}
+
+/**
+ * Options accepted by {@link discoverSubagents}. See the function JSDoc for
+ * field semantics.
+ */
+export interface DiscoverSubagentsOptions extends UserHomeOptions {
+  /** Project root override (for `.claude/agents/`). */
+  projectDir?: string;
+  /** aweek data directory override (for `.aweek/agents/*.json`). */
+  dataDir?: string;
+  /** Pre-constructed store (test hook). */
+  agentStore?: AgentStore;
+  /**
+   * When true, keep entries whose slug already has a matching aweek JSON.
+   * Defaults to `false` — the hire wizard wants only fresh subagents.
+   */
+  includeHired?: boolean;
+  /**
+   * When true, keep plugin-namespaced slugs (oh-my-claudecode, geo, ...).
+   * Defaults to `false` per the v1 constraint.
+   */
+  includePlugins?: boolean;
+}
+
+/**
+ * One entry in the merged discovery output.
+ */
+export interface DiscoveredSubagent {
+  /** Validated subagent slug (the .md basename without the extension). */
+  slug: string;
+  /** Whether the surfaced .md lives in the project or the user home. */
+  scope: SubagentScope;
+  /** Absolute filesystem path to the surfaced .md file. */
+  path: string;
+  /** True iff an `.aweek/agents/<slug>.json` already exists for this slug. */
+  hired: boolean;
+}
 
 /**
  * Resolve the absolute path to the user-level subagent directory
  * (`~/.claude/agents`).
  *
- * @param {object} [opts]
- * @param {string} [opts.userHome] - Override for the home directory. Defaults
- *   to `os.homedir()`. The override exists so tests can point discovery at a
- *   temp directory without mutating `$HOME` process-wide.
- * @returns {string} Absolute path to `<userHome>/.claude/agents`.
+ * @param opts - Optional `userHome` override (test hook).
+ * @returns Absolute path to `<userHome>/.claude/agents`.
  */
-export function resolveUserSubagentsDir({ userHome } = {}) {
+export function resolveUserSubagentsDir(
+  { userHome }: UserHomeOptions = {},
+): string {
   const base = userHome || homedir();
   return resolve(base, SUBAGENTS_DIR_RELATIVE);
 }
 
 /**
  * Absolute path to a specific user-level subagent .md file.
- *
- * @param {string} slug
- * @param {object} [opts]
- * @param {string} [opts.userHome]
- * @returns {string}
  */
-export function userSubagentFilePath(slug, { userHome } = {}) {
+export function userSubagentFilePath(
+  slug: string,
+  { userHome }: UserHomeOptions = {},
+): string {
   return join(resolveUserSubagentsDir({ userHome }), `${slug}.md`);
 }
 
@@ -98,17 +150,16 @@ export function userSubagentFilePath(slug, { userHome } = {}) {
  * rather than throwing — fresh projects and users without a personal subagent
  * dir are both valid states.
  *
- * @param {string} dir - Absolute directory path.
- * @returns {Promise<string[]>}
+ * @param dir - Absolute directory path.
  */
-async function scanSubagentSlugsIn(dir) {
-  let entries;
+async function scanSubagentSlugsIn(dir: string): Promise<string[]> {
+  let entries: string[];
   try {
     entries = await readdir(dir);
   } catch {
     return [];
   }
-  const slugs = [];
+  const slugs: string[] = [];
   for (const entry of entries) {
     if (!entry.endsWith('.md')) continue;
     const slug = entry.slice(0, -'.md'.length);
@@ -127,12 +178,10 @@ async function scanSubagentSlugsIn(dir) {
  * `hire-route.js`) so the two can be composed without surprises: sorted
  * alphabetically, hand-named files with invalid slugs dropped, missing dir
  * returns `[]`.
- *
- * @param {object} [opts]
- * @param {string} [opts.userHome] - Override for the home directory (test hook).
- * @returns {Promise<string[]>}
  */
-export async function listUserSubagentSlugs({ userHome } = {}) {
+export async function listUserSubagentSlugs(
+  { userHome }: UserHomeOptions = {},
+): Promise<string[]> {
   return scanSubagentSlugsIn(resolveUserSubagentsDir({ userHome }));
 }
 
@@ -155,24 +204,6 @@ export async function listUserSubagentSlugs({ userHome } = {}) {
  *   - `includePlugins: false` (default) — drop plugin-namespaced slugs per
  *     the v1 constraint. Plugin subagents (oh-my-claudecode, geo) are not
  *     hireable in v1 even if a project copies the .md into its agents dir.
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir] - Project root override (for `.claude/agents/`).
- * @param {string} [opts.userHome] - Home-dir override (for `~/.claude/agents/`).
- * @param {string} [opts.dataDir] - aweek data directory override (for
- *   `.aweek/agents/*.json`).
- * @param {import('../storage/agent-store.js').AgentStore} [opts.agentStore]
- *   Pre-constructed store (test hook).
- * @param {boolean} [opts.includeHired=false] - When true, keep entries whose
- *   slug already has a matching aweek JSON.
- * @param {boolean} [opts.includePlugins=false] - When true, keep plugin-
- *   namespaced slugs.
- * @returns {Promise<Array<{
- *   slug: string,
- *   scope: 'project' | 'user',
- *   path: string,
- *   hired: boolean,
- * }>>}
  */
 export async function discoverSubagents({
   projectDir,
@@ -181,7 +212,7 @@ export async function discoverSubagents({
   agentStore,
   includeHired = false,
   includePlugins = false,
-} = {}) {
+}: DiscoverSubagentsOptions = {}): Promise<DiscoveredSubagent[]> {
   const projectDirAbs = resolveSubagentsDir(projectDir);
   const userDirAbs = resolveUserSubagentsDir({ userHome });
 
@@ -191,12 +222,12 @@ export async function discoverSubagents({
     listAllAgents({ dataDir, agentStore }),
   ]);
 
-  const hiredIds = new Set(hired.map((c) => c.id));
+  const hiredIds = new Set<string>(hired.map((c) => c.id));
 
   // Seed with user-scope entries first, then overwrite with project-scope on
   // collision — project wins because that is the scope Claude Code itself
   // resolves to when both are present.
-  const bySlug = new Map();
+  const bySlug = new Map<string, DiscoveredSubagent>();
   for (const slug of userSlugs) {
     bySlug.set(slug, {
       slug,
@@ -214,7 +245,7 @@ export async function discoverSubagents({
     });
   }
 
-  const out = [];
+  const out: DiscoveredSubagent[] = [];
   for (const entry of bySlug.values()) {
     if (!includeHired && entry.hired) continue;
     if (!includePlugins && isPluginSubagent(entry.slug)) continue;
