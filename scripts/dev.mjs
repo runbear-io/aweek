@@ -61,9 +61,16 @@ function pipe(child, tag, color) {
 
 const { projectDir, apiPort, vitePort } = parseArgs(process.argv.slice(2));
 
+// `--import tsx` registers the tsx ESM loader for the child Node
+// process so `bin/aweek.js` can resolve `.js` import paths that
+// have been migrated to `.ts` source (e.g. `src/heartbeat/run.js` →
+// `run.ts`). Drop this flag once the dist/ build pipeline ships a
+// pre-compiled `dist/bin/aweek.js`.
 const backend = spawn(
   process.execPath,
   [
+    '--import',
+    'tsx',
     resolve(ROOT, 'bin/aweek.js'),
     'serve',
     '--port',
