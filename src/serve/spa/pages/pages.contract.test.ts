@@ -153,6 +153,12 @@ const CASES = [
       'onCloseBasename',
     ],
   },
+  {
+    name: 'AgentReviewsPage',
+    file: 'agent-reviews-page.tsx',
+    hook: 'useAgentReviews',
+    allowedProps: ['slug', 'baseUrl', 'fetch'],
+  },
 ];
 
 describe('SPA pages — Sub-AC 3.3 data contract', () => {

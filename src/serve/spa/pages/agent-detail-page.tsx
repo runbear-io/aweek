@@ -67,6 +67,7 @@ import { AgentActivityPage as AgentActivityPageJs } from './agent-activity-page.
 import { AgentCalendarPage as AgentCalendarPageJs } from './agent-calendar-page.jsx';
 import { AgentPlanPage as AgentPlanPageJs } from './agent-plan-page.jsx';
 import { AgentProfilePage as AgentProfilePageJs } from './agent-profile-page.jsx';
+import { AgentReviewsPage as AgentReviewsPageJs } from './agent-reviews-page.jsx';
 
 // ── Cross-boundary shims for still-`.jsx` shadcn/ui primitives ──────
 //
@@ -173,6 +174,11 @@ const AgentProfilePage = AgentProfilePageJs as React.ComponentType<{
   baseUrl?: string;
   fetch?: typeof fetch;
 }>;
+const AgentReviewsPage = AgentReviewsPageJs as React.ComponentType<{
+  slug: string;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+}>;
 
 // ── Domain types ────────────────────────────────────────────────────
 //
@@ -188,7 +194,7 @@ type AgentProfile = import('../lib/api-client.js').AgentProfile;
  * The four tab values rendered inside `<AgentDetailPage>`. Mirrors the
  * `Calendar / Activity / Strategy / Profile` row defined by AC 2.
  */
-export type AgentTabValue = 'calendar' | 'activities' | 'strategy' | 'profile';
+export type AgentTabValue = 'calendar' | 'activities' | 'reviews' | 'strategy' | 'profile';
 
 /**
  * Fixed tab order — matches the Calendar/Activity/Strategy/Profile row
@@ -201,6 +207,7 @@ export const AGENT_DETAIL_TABS: ReadonlyArray<{
 }> = Object.freeze([
   { value: 'calendar', label: 'Calendar' },
   { value: 'activities', label: 'Activity' },
+  { value: 'reviews', label: 'Reviews' },
   { value: 'strategy', label: 'Strategy' },
   { value: 'profile', label: 'Profile' },
 ] as const);
@@ -387,6 +394,9 @@ export function AgentDetailPage({
             onOpenBasename={onActivityOpen}
             onCloseBasename={onActivityClose}
           />
+        </TabsContent>
+        <TabsContent value="reviews">
+          <AgentReviewsPage slug={slug} baseUrl={baseUrl} fetch={fetchImpl} />
         </TabsContent>
         <TabsContent value="strategy">
           <AgentPlanPage slug={slug} baseUrl={baseUrl} fetch={fetchImpl} />

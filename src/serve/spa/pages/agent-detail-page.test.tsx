@@ -341,11 +341,12 @@ describe('AgentDetailPage — breadcrumb trail', () => {
 // ── Pure helpers ─────────────────────────────────────────────────────
 
 describe('AgentDetailPage — exported helpers', () => {
-  it('AGENT_DETAIL_TABS is a frozen 4-tab row in the documented order', () => {
+  it('AGENT_DETAIL_TABS is a frozen 5-tab row in the documented order', () => {
     expect(Object.isFrozen(AGENT_DETAIL_TABS)).toBe(true);
     expect(AGENT_DETAIL_TABS.map((t) => t.value)).toEqual([
       'calendar',
       'activities',
+      'reviews',
       'strategy',
       'profile',
     ]);

@@ -29,7 +29,7 @@ import './styles/globals.css';
  * the routing file does not have to consume a typedef from a `.jsx` module
  * during the incremental TS migration.
  */
-type AgentTabValue = 'calendar' | 'activities' | 'strategy' | 'profile';
+type AgentTabValue = 'calendar' | 'activities' | 'reviews' | 'strategy' | 'profile';
 
 /**
  * Route-segment params consumed by `<AgentDetailRoute>`. `slug` is required
