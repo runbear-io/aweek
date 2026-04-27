@@ -16,7 +16,7 @@
  */
 
 import { join } from 'node:path';
-import { listAllAgents } from '../../storage/agent-helpers.js';
+import { listAllAgentsPartial } from '../../storage/agent-helpers.js';
 import { readPlan } from '../../storage/plan-markdown-store.js';
 import { WeeklyPlanStore } from '../../storage/weekly-plan-store.js';
 import type { WeeklyPlan } from '../../storage/weekly-plan-store.js';
@@ -57,7 +57,7 @@ export async function gatherAgentPlan(
   if (!slug) throw new Error('gatherAgentPlan: slug is required');
   const agentsDir = join(projectDir, '.aweek', 'agents');
 
-  const configs = await listAllAgents({ dataDir: agentsDir });
+  const { agents: configs } = await listAllAgentsPartial({ dataDir: agentsDir });
   const config = configs.find((c) => c.id === slug);
   if (!config) return null;
 
