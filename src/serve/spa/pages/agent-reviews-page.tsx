@@ -86,6 +86,75 @@ function parseMarkdown(md: string): MarkdownBlockNode[] {
   return blocks;
 }
 
+/**
+ * Frontmatter pair extracted from a review body's preamble.
+ *
+ * Reviews don't carry YAML frontmatter — the orchestrator writes a
+ * block of `**Key:** value` lines between the H1 and the first
+ * horizontal rule (see `weekly-review-orchestrator.ts`). We surface
+ * that block as a structured table so users get the at-a-glance
+ * metadata view instead of a wall of bold text.
+ */
+export interface FrontmatterEntry {
+  key: string;
+  value: string;
+}
+
+/**
+ * Split a review body into its preamble metadata + remaining markdown.
+ *
+ * Preamble shape produced by the review pipeline:
+ *
+ *   # Daily Review: <slug> — <day>, <date>
+ *
+ *   **Date:** 2026-04-23 (Thursday)
+ *   **Week:** 2026-W17
+ *   **Agent:** content-writer
+ *   **Generated:** 2026-04-24T00:00:40.055Z
+ *
+ *   ---
+ *
+ * Returns the H1 + the entries plus the rest of the body (everything
+ * past the first `---` rule). Falls back to `{ entries: [], rest: md }`
+ * when the markdown doesn't match the shape so unstructured reviews
+ * still render unchanged.
+ */
+export function splitReviewPreamble(md: string): {
+  title: string | null;
+  entries: FrontmatterEntry[];
+  rest: string;
+} {
+  if (typeof md !== 'string' || md.length === 0) {
+    return { title: null, entries: [], rest: '' };
+  }
+  const lines = md.split(/\r?\n/);
+  let i = 0;
+  let title: string | null = null;
+  while (i < lines.length && /^\s*$/.test(lines[i] as string)) i++;
+  const headingMatch = /^#\s+(.+?)\s*$/.exec((lines[i] || '') as string);
+  if (headingMatch) {
+    title = headingMatch[1] ?? null;
+    i++;
+  }
+  while (i < lines.length && /^\s*$/.test(lines[i] as string)) i++;
+  const entries: FrontmatterEntry[] = [];
+  const pairRe = /^\s*\*\*([^*]+?):\*\*\s*(.*)$/;
+  while (i < lines.length) {
+    const line = lines[i] as string;
+    const m = pairRe.exec(line);
+    if (!m) break;
+    entries.push({ key: (m[1] || '').trim(), value: (m[2] || '').trim() });
+    i++;
+  }
+  if (entries.length === 0) {
+    return { title, entries: [], rest: title ? lines.slice(1).join('\n') : md };
+  }
+  while (i < lines.length && /^\s*$/.test(lines[i] as string)) i++;
+  if (i < lines.length && /^\s*-{3,}\s*$/.test(lines[i] as string)) i++;
+  const rest = lines.slice(i).join('\n');
+  return { title, entries, rest };
+}
+
 function parseBlocks(md: string): MarkdownBlockNode[] {
   const lines = md.split(/\r?\n/);
   const blocks: MarkdownBlockNode[] = [];
@@ -304,25 +373,78 @@ function ReviewBody({ entry }: ReviewBodyProps): React.ReactElement {
       </Card>
     );
   }
-  const blocks = parseMarkdown(entry.markdown);
+  const { title, entries, rest } = splitReviewPreamble(entry.markdown);
+  const blocks = parseMarkdown(rest);
   return (
     <Card data-review-body={entry.week}>
-      <CardHeader className="space-y-0 border-b bg-muted/50 px-4 py-2">
+      <CardHeader className="space-y-1 border-b bg-muted/50 px-4 py-3">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           {entry.week}
           {entry.generatedAt
             ? ` · ${new Date(entry.generatedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}`
             : ''}
         </p>
+        {title ? (
+          <h1 className="text-base font-semibold leading-tight text-foreground">
+            {title}
+          </h1>
+        ) : null}
       </CardHeader>
       <CardContent className="p-4 pt-4 sm:p-6 sm:pt-6">
-        <article className="max-w-none text-sm leading-6 text-foreground" data-review-content="true">
+        {entries.length > 0 ? (
+          <FrontmatterTable entries={entries} />
+        ) : null}
+        <article
+          className="max-w-none text-sm leading-6 text-foreground"
+          data-review-content="true"
+        >
           {blocks.map((block, idx) => (
             <MarkdownBlock key={idx} block={block} />
           ))}
         </article>
       </CardContent>
     </Card>
+  );
+}
+
+interface FrontmatterTableProps {
+  entries: FrontmatterEntry[];
+}
+
+/**
+ * Tabular render of the review's preamble metadata block. Stock shadcn
+ * design tokens (`bg-muted`, `border-border`, `text-muted-foreground`)
+ * so the table re-themes correctly in light + dark.
+ */
+function FrontmatterTable({
+  entries,
+}: FrontmatterTableProps): React.ReactElement {
+  return (
+    <div
+      className="mb-4 overflow-hidden rounded-md border"
+      data-review-frontmatter="true"
+    >
+      <table className="w-full text-xs">
+        <tbody>
+          {entries.map((entry, idx) => (
+            <tr
+              key={`${entry.key}-${idx}`}
+              className="border-b last:border-b-0 even:bg-muted/30"
+            >
+              <th
+                scope="row"
+                className="w-32 px-3 py-1.5 text-left font-medium uppercase tracking-wider text-[10px] text-muted-foreground align-top"
+              >
+                {entry.key}
+              </th>
+              <td className="px-3 py-1.5 text-foreground tabular-nums">
+                {renderInline(entry.value)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
