@@ -975,9 +975,6 @@ function Backlog({
                   >
                     {icon}
                   </span>
-                  <span className="font-semibold tabular-nums text-muted-foreground">
-                    {numbering.get(task.id)}.
-                  </span>
                   <span className="flex-1">{label}</span>
                   {task.runAt ? (
                     <time
