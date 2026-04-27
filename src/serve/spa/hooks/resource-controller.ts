@@ -22,24 +22,23 @@
  * @module serve/spa/hooks/resource-controller
  */
 
-/**
- * @template T
- * @typedef {object} ResourceState
- * @property {T | null} data     Last successful payload, or `null` until first success.
- * @property {Error | null} error Last error from a non-aborted, current-generation load.
- * @property {boolean} loading   `true` while a load is in flight.
- */
+export interface ResourceState<T> {
+  /** Last successful payload, or `null` until first success. */
+  data: T | null;
+  /** Last error from a non-aborted, current-generation load. */
+  error: Error | null;
+  /** `true` while a load is in flight. */
+  loading: boolean;
+}
 
-/**
- * @template T
- * @typedef {object} ResourceController
- * @property {() => ResourceState<T>} getState
- * @property {(listener: (state: ResourceState<T>) => void) => () => void} subscribe
- * @property {() => Promise<void>} refresh
- * @property {() => void} destroy
- */
+export interface ResourceController<T> {
+  getState: () => ResourceState<T>;
+  subscribe: (listener: (state: ResourceState<T>) => void) => () => void;
+  refresh: () => Promise<void>;
+  destroy: () => void;
+}
 
-const INITIAL_STATE = Object.freeze({ data: null, error: null, loading: false });
+const INITIAL_STATE: ResourceState<never> = Object.freeze({ data: null, error: null, loading: false });
 
 /**
  * Detect the two flavors of abort errors emitted by `fetch` / `AbortController`
@@ -48,12 +47,13 @@ const INITIAL_STATE = Object.freeze({ data: null, error: null, loading: false })
  * @param {unknown} err
  * @returns {boolean}
  */
-function isAbortError(err) {
+function isAbortError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
+  const e = err as Record<string, unknown>;
   // DOMException-ish (browser + Node 20+ fetch)
-  if (/** @type {any} */ (err).name === 'AbortError') return true;
+  if (e['name'] === 'AbortError') return true;
   // Node < 20 style
-  if (/** @type {any} */ (err).code === 'ABORT_ERR') return true;
+  if (e['code'] === 'ABORT_ERR') return true;
   return false;
 }
 
@@ -64,19 +64,17 @@ function isAbortError(err) {
  * @param {(opts: { signal: AbortSignal }) => Promise<T>} loader
  * @returns {ResourceController<T>}
  */
-export function createResourceController(loader) {
+export function createResourceController<T>(loader: (opts: { signal: AbortSignal }) => Promise<T>): ResourceController<T> {
   if (typeof loader !== 'function') {
     throw new TypeError('createResourceController: loader must be a function');
   }
 
-  /** @type {ResourceState<T>} */
-  let state = { ...INITIAL_STATE };
-  /** @type {Set<(state: ResourceState<T>) => void>} */
-  const listeners = new Set();
+  let state: ResourceState<T> = { ...INITIAL_STATE } as ResourceState<T>;
+  const listeners = new Set<(state: ResourceState<T>) => void>();
   /** Monotonic generation counter — lets us discard stale responses. */
   let generation = 0;
   /** @type {AbortController | null} */
-  let currentAbort = null;
+  let currentAbort: AbortController | null = null;
   let destroyed = false;
 
   /**
@@ -85,7 +83,7 @@ export function createResourceController(loader) {
    *
    * @param {Partial<ResourceState<T>>} patch
    */
-  function setState(patch) {
+  function setState(patch: Partial<ResourceState<T>>) {
     state = { ...state, ...patch };
     for (const listener of listeners) {
       // Swallow listener errors — a faulty subscriber must not poison
@@ -108,7 +106,7 @@ export function createResourceController(loader) {
    * @param {(state: ResourceState<T>) => void} listener
    * @returns {() => void}
    */
-  function subscribe(listener) {
+  function subscribe(listener: (state: ResourceState<T>) => void) {
     if (typeof listener !== 'function') {
       throw new TypeError('subscribe: listener must be a function');
     }
