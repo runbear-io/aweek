@@ -34,6 +34,8 @@ import { assertValid } from '../schemas/validator.js';
 import { detectDayLayout } from './day-layout-detector.js';
 import { composeAdvisorBrief } from './advisor-brief-composer.js';
 import { parsePlanMarkdownSections } from '../storage/plan-markdown-store.js';
+import { emitPlanReadyNotification } from './plan-ready-notifier.js';
+import type { NotificationStore } from '../storage/notification-store.js';
 import {
   DAILY_REVIEW_OBJECTIVE_ID,
   WEEKLY_REVIEW_OBJECTIVE_ID,
@@ -632,17 +634,50 @@ export function generateWeeklyPlan({
  * Generate a weekly plan and save it via a WeeklyPlanStore.
  * Convenience wrapper that generates + persists in one call.
  *
+ * When a `notificationStore` is supplied AND the saved plan is in the
+ * pending-approval state (`approved: false`, the default for freshly
+ * generated plans), this also auto-emits a `plan-ready` system notification
+ * so the user sees the new plan in the dashboard inbox without having to
+ * poll. The sender slug is the agent whose plan needs approval — see
+ * {@link emitPlanReadyNotification} for the dedup contract. Emission is
+ * best-effort and never fails plan persistence.
+ *
+ * The `notificationStore` parameter is optional so existing callers (and
+ * unit tests that don't care about notifications) keep working unchanged.
+ *
  * @param {object} params - Same as generateWeeklyPlan params
  * @param {import('../storage/weekly-plan-store.js').WeeklyPlanStore} store
  * @param {string} agentId
+ * @param {object} [opts]
+ * @param {import('../storage/notification-store.js').NotificationStore} [opts.notificationStore]
+ *   Optional notification store. When supplied, a `plan-ready` system
+ *   notification is auto-emitted for pending plans.
  * @returns {Promise<{ plan: object, meta: object }>}
  */
+export interface GenerateAndSaveOptions {
+  notificationStore?: NotificationStore;
+}
+
 export async function generateAndSaveWeeklyPlan(
   params: GenerateParams,
   store: WeeklyPlanStoreLike,
   agentId: string,
+  opts: GenerateAndSaveOptions = {},
 ): Promise<{ plan: WeeklyPlan; meta: GenerateMeta }> {
   const result = generateWeeklyPlan(params);
   await store.save(agentId, result.plan);
+
+  // Auto-emit the plan-ready system notification when:
+  //   - a notification store was provided (no-op for legacy callers); and
+  //   - the plan is in the pending-approval state (auto-approved chains
+  //     handle their own no-op via `plan.approved === true` inside the
+  //     emitter).
+  // Emission is best-effort and the emitter swallows its own failures, so
+  // we don't need a try/catch here — but we also intentionally don't await
+  // anything that could throw at the boundary of plan persistence.
+  if (opts.notificationStore) {
+    await emitPlanReadyNotification(opts.notificationStore, agentId, result.plan);
+  }
+
   return result;
 }

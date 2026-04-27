@@ -25,6 +25,7 @@ import { cn } from '../lib/cn.js';
 import { AgentDetailSidebar, AppSidebar } from './app-sidebar.jsx';
 import { Footer } from './footer.jsx';
 import { Header } from './header.jsx';
+import { NotificationBell } from './notification-bell.js';
 import * as SidebarModule from './ui/sidebar.jsx';
 
 // ── Cross-boundary shims for still-`.jsx` shadcn/ui primitives ──────
@@ -77,12 +78,18 @@ export function Layout({
   children,
   defaultSidebarOpen = true,
 }: LayoutProps = {}): React.ReactElement {
+  // Bell + caller-supplied trailing slot share the right edge of the
+  // header so the bell stays a persistent affordance across routes
+  // (per AC 8 sub-AC 3 — "header bell trigger with unread count badge").
+  // The bell sits to the *right* of any caller-supplied controls so it
+  // anchors to the same spot regardless of how many extras the page pushes.
   const actions = (
     <>
       <SidebarTrigger className="-ml-1" />
-      {headerActions ? (
-        <div className="ml-auto flex items-center gap-2">{headerActions}</div>
-      ) : null}
+      <div className="ml-auto flex items-center gap-2">
+        {headerActions}
+        <NotificationBell />
+      </div>
     </>
   );
   return (

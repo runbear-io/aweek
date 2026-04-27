@@ -48,7 +48,11 @@ import {
   gatherAgentLogs,
   streamExecutionLogLines,
   gatherAgentReviews,
+  gatherAllNotifications,
+  gatherAgentNotifications,
 } from './data/index.js';
+import type { NotificationSource, NotificationSystemEvent } from '../storage/notification-store.js';
+import { NotificationStore } from '../storage/notification-store.js';
 // The /api/summary endpoint intentionally reuses the terminal
 // `/aweek:summary` composer so the SPA Overview tab shows byte-identical
 // cells (Agent / Goals / Tasks / Budget / Status) to the CLI baseline.
@@ -106,6 +110,17 @@ const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '::0']);
  * the SPA sidebar plus the per-agent detail routes — so accidental
  * typos / probe requests don't silently serve the shell and mask real
  * 404s in operator logs.
+ *
+ * Notification routes (AC 18):
+ *   - `/notifications` — the global inbox view (header bell + sidebar
+ *     entry both navigate here). Mirrors the global feed surfaced by
+ *     `GET /api/notifications`.
+ *   - `/notifications/:agent/:id` — per-row deep link so a notification
+ *     can be opened directly from a copied URL or a future external
+ *     push channel that links into the dashboard.
+ *   The per-agent notifications tab (`/agents/:slug/notifications`)
+ *   is already covered by the `/agents/:slug/<anything>` pattern below
+ *   and does not need its own entry here.
  */
 const CLIENT_ROUTE_PATTERNS = [
   /^\/$/,
@@ -114,8 +129,11 @@ const CLIENT_ROUTE_PATTERNS = [
   /^\/activity\/?$/,
   /^\/strategy\/?$/,
   /^\/profile\/?$/,
-  // /agents/:slug and /agents/:slug/<anything>
+  // /agents/:slug and /agents/:slug/<anything> (covers the per-agent
+  // notifications tab at /agents/:slug/notifications too).
   /^\/agents\/[^/]+(?:\/.*)?$/,
+  // /notifications and /notifications/<anything> (global inbox + deep link).
+  /^\/notifications(?:\/.*)?$/,
 ];
 
 /**
@@ -331,6 +349,36 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
   const rawUrl = req.url || '/';
   const pathname = rawUrl.split('?')[0];
 
+  // Notification mutation endpoints (AC 12 / 13). The dashboard's
+  // read-only-server invariant for src/serve/data/ is intentionally
+  // relaxed here so clicking a notification can flip its `read` flag and
+  // a "mark all read" action can clear an agent's unread badge. Writes
+  // flow through `NotificationStore.markRead` / `markAllRead`, which
+  // perform the same atomic write-then-rename used by every other store.
+  if (method === 'POST') {
+    const markReadMatch = pathname.match(
+      /^\/api\/notifications\/([^/]+)\/([^/]+)\/read\/?$/,
+    );
+    if (markReadMatch) {
+      const slug = decodeSlug(markReadMatch[1]);
+      const notificationId = decodeSlug(markReadMatch[2]);
+      if (slug === null || notificationId === null) {
+        sendJson(res, 400, { error: 'Invalid agent slug or notification id' });
+        return;
+      }
+      await handleNotificationMarkRead(res, ctx, slug, notificationId);
+      return;
+    }
+
+    if (
+      pathname === '/api/notifications/read-all' ||
+      pathname === '/api/notifications/read-all/'
+    ) {
+      await handleNotificationMarkAllRead(res, ctx);
+      return;
+    }
+  }
+
   if (method !== 'GET' && method !== 'HEAD') {
     res.statusCode = 405;
     res.setHeader('Allow', 'GET, HEAD');
@@ -354,6 +402,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
 
   if (pathname === '/api/agents' || pathname === '/api/agents/') {
     await handleAgentsList(res, ctx);
+    return;
+  }
+
+  if (pathname === '/api/notifications' || pathname === '/api/notifications/') {
+    const queryString = rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : '';
+    await handleNotificationsList(res, ctx, new URLSearchParams(queryString));
+    return;
+  }
+
+  const agentNotificationsMatch = pathname.match(/^\/api\/agents\/([^/]+)\/notifications\/?$/);
+  if (agentNotificationsMatch) {
+    const slug = decodeSlug(agentNotificationsMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    await handleAgentNotifications(res, ctx, slug);
     return;
   }
 
@@ -766,6 +831,174 @@ async function handleAgentReviews(res: ServerResponse, ctx: RequestContext, slug
   } catch (err) {
     sendJson(res, 500, {
       error: err && (err as Error).message ? (err as Error).message : 'Failed to load reviews',
+    });
+  }
+}
+
+/**
+ * GET /api/notifications — return the global notification feed.
+ *
+ * Delegates to `gatherAllNotifications`, which walks every per-agent
+ * notifications file under `.aweek/agents/<slug>/notifications.json`,
+ * merges them newest-first, and pairs them with a global unread count.
+ *
+ * Query params (all optional): source, systemEvent, read (true/false), limit.
+ */
+async function handleNotificationsList(
+  res: ServerResponse,
+  ctx: RequestContext,
+  params: URLSearchParams,
+): Promise<void> {
+  try {
+    const sourceParam = params.get('source');
+    const source: NotificationSource | undefined =
+      sourceParam === 'agent' || sourceParam === 'system' ? sourceParam : undefined;
+
+    const systemEventParam = params.get('systemEvent');
+    const systemEvent = (systemEventParam || undefined) as NotificationSystemEvent | undefined;
+
+    const readParam = params.get('read');
+    const read = readParam === 'true' ? true : readParam === 'false' ? false : undefined;
+
+    const limitParam = params.get('limit');
+    const parsedLimit = limitParam ? Number(limitParam) : NaN;
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+
+    const payload = await gatherAllNotifications({
+      projectDir: ctx.projectDir,
+      source,
+      systemEvent,
+      read,
+      limit,
+    });
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load notifications',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/notifications — return the per-agent feed.
+ *
+ * Returns 404 when the slug does not exist on disk.
+ */
+async function handleAgentNotifications(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+): Promise<void> {
+  try {
+    const payload = await gatherAgentNotifications({ projectDir: ctx.projectDir, slug });
+    if (!payload) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load notifications',
+    });
+  }
+}
+
+/**
+ * POST /api/notifications/:slug/:id/read — mark a single notification as read.
+ *
+ * Flips `read: true` and stamps `readAt` via `NotificationStore.markRead`,
+ * which performs an atomic write-then-rename so concurrent dashboard reads
+ * never see a partial file. Idempotent: a no-op if the notification is
+ * already read (the store returns the unchanged record).
+ *
+ * Per the v1 contract this is one of the two server-side mutation endpoints
+ * the dashboard exposes (the other is `POST /api/notifications/read-all`).
+ * The mutation is intentionally not surfaced through the read-only
+ * `src/serve/data/` layer — writes go straight through the storage class
+ * so the data layer's import-allowlist test stays green.
+ *
+ * Response shape:
+ *   200 { notification: { id, agentId, source, ..., read: true, readAt } }
+ *   400 { error: 'Invalid agent slug or notification id' }
+ *   404 { error: 'Notification not found: <id>' }
+ *   500 { error: string }
+ */
+async function handleNotificationMarkRead(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+  notificationId: string,
+): Promise<void> {
+  try {
+    const agentsDir = join(ctx.projectDir, '.aweek', 'agents');
+    const store = new NotificationStore(agentsDir);
+    const updated = await store.markRead(slug, notificationId);
+    if (!updated) {
+      sendJson(res, 404, {
+        error: `Notification not found: ${notificationId}`,
+      });
+      return;
+    }
+    sendJson(res, 200, { notification: updated });
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to mark notification read',
+    });
+  }
+}
+
+/**
+ * POST /api/notifications/read-all — mark every unread notification across
+ * every agent as read in a single call.
+ *
+ * Walks every per-agent notifications file via `NotificationStore.listAgents`
+ * and flips the unread → read transition through `NotificationStore.markAllRead`,
+ * which performs an atomic write-then-rename per agent so concurrent dashboard
+ * reads never see a partial file. Idempotent: a no-op for agents whose feed is
+ * already fully read (the store returns a flipped count of 0).
+ *
+ * Per the v1 contract this is the second of the two server-side mutation
+ * endpoints the dashboard exposes (the other is
+ * `POST /api/notifications/:slug/:id/read`). The mutation is intentionally
+ * not surfaced through the read-only `src/serve/data/` layer — writes go
+ * straight through the storage class so the data layer's import-allowlist
+ * test stays green.
+ *
+ * Response shape:
+ *   200 { flipped: number, byAgent: { [slug]: number } }
+ *     - `flipped` is the global total of unread→read transitions across
+ *       every agent.
+ *     - `byAgent` carries a per-agent breakdown so the SPA can refresh
+ *       individual agent badges without re-fetching the global feed.
+ *       Agents whose feed had no unread rows are still listed (with 0)
+ *       so the SPA can clear cached badges deterministically.
+ *   500 { error: string }
+ */
+async function handleNotificationMarkAllRead(
+  res: ServerResponse,
+  ctx: RequestContext,
+): Promise<void> {
+  try {
+    const agentsDir = join(ctx.projectDir, '.aweek', 'agents');
+    const store = new NotificationStore(agentsDir);
+    const slugs = await store.listAgents();
+    const byAgent: Record<string, number> = {};
+    let flipped = 0;
+    for (const slug of slugs) {
+      const count = await store.markAllRead(slug);
+      byAgent[slug] = count;
+      flipped += count;
+    }
+    sendJson(res, 200, { flipped, byAgent });
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to mark all notifications read',
     });
   }
 }
