@@ -901,19 +901,38 @@ export async function runHeartbeatForAll(
     return [];
   }
 
-  console.log(`Running heartbeat for ${agentIds.length} agent(s)...`);
+  console.log(`Running heartbeat for ${agentIds.length} agent(s) in parallel...`);
 
-  const results: Array<{ agentId: string; result?: unknown; error?: string }> = [];
-  for (const agentId of agentIds) {
-    try {
-      const result = await runHeartbeatForAgent(agentId, { projectDir });
-      results.push({ agentId, result });
-    } catch (err) {
-      const m = errMsg(err);
-      console.error(`[${agentId}] heartbeat error: ${m}`);
-      results.push({ agentId, error: m });
-    }
-  }
-
-  return results;
+  // Run agents concurrently — each per-agent invocation is already
+  // sequential internally (inbox drain → queue drain → main task), and
+  // the per-agent file lock in `lock-manager.ts` protects against two
+  // ticks racing on the same agent. Crossing agents in parallel saves
+  // wall-clock time on multi-agent fleets without changing per-agent
+  // semantics. Failures are absorbed via `Promise.allSettled` so one
+  // agent's crash doesn't abort siblings (matches the previous
+  // `try/catch` per-agent guard).
+  const settled = await Promise.allSettled(
+    agentIds.map((agentId) =>
+      runHeartbeatForAgent(agentId, { projectDir }).then(
+        (result) => ({ agentId, result }),
+        (err: unknown) => {
+          const m = errMsg(err);
+          console.error(`[${agentId}] heartbeat error: ${m}`);
+          return { agentId, error: m };
+        },
+      ),
+    ),
+  );
+  // `Promise.allSettled` only rejects when the array itself rejects,
+  // never when an inner promise rejects. The inner mapper above already
+  // converts both branches to a fulfilled value, so every entry here is
+  // a fulfilled `{ agentId, … }` record.
+  return settled.map(
+    (s) =>
+      (s.status === 'fulfilled' ? s.value : { agentId: '', error: 'unknown' }) as {
+        agentId: string;
+        result?: unknown;
+        error?: string;
+      },
+  );
 }
