@@ -67,3 +67,8 @@ export {
   type ActivityLogEntry,
   type ExecutionRecord,
 } from './use-agent-logs.js';
+export {
+  useAgentReviews,
+  type UseAgentReviewsOptions,
+  type AgentReviews,
+} from './use-agent-reviews.js';
