@@ -178,6 +178,18 @@ async function makeFixtureProject() {
   const agentsDir = join(root, '.aweek', 'agents');
   await mkdir(agentsDir, { recursive: true });
 
+  // Pin the timezone to UTC so the gatherers' Monday-of-the-week math
+  // matches the test fixtures' Monday-of-the-week math regardless of
+  // when (and where) the suite runs. Without this, `loadConfig`
+  // defaults to the system tz (e.g. America/Los_Angeles) and the
+  // budget/calendar/usage tests flake on the LA-evening / UTC-Monday
+  // boundary every Sunday night.
+  await writeFile(
+    join(root, '.aweek', 'config.json'),
+    JSON.stringify({ timeZone: 'UTC' }, null, 2) + '\n',
+    'utf-8',
+  );
+
   const agentId = 'fixture-agent';
   const now = new Date().toISOString();
   const weekMonday = mondayIso(new Date());
