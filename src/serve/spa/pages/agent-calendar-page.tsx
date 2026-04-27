@@ -62,6 +62,7 @@ import * as SheetModule from '../components/ui/sheet.jsx';
 import * as ExecutionLogViewModule from '../components/execution-log-view.jsx';
 import * as CalendarGridModule from '../components/calendar-grid.jsx';
 import { cn } from '../lib/cn.js';
+import { addIsoWeeks } from '../lib/iso-week.js';
 import { useAgentCalendar } from '../hooks/use-agent-calendar.js';
 import { useExecutionLog } from '../hooks/use-execution-log.js';
 
@@ -191,10 +192,24 @@ export interface AgentCalendarPageProps {
   onOpenTaskId?: (taskId: string) => void;
   /** Close the drawer (URL-driven). */
   onCloseTaskId?: () => void;
+  /**
+   * Notify the parent router that the user navigated to a different week.
+   * Pass `null` to clear the override and fall back to "current week".
+   * URL-driven; the parent updates `?week=` and the hook re-fetches.
+   */
+  onWeekChange?: (week: string | null) => void;
 }
 
 interface CalendarSectionProps {
   calendar: AgentCalendar;
+}
+
+interface CalendarHeaderProps {
+  calendar: AgentCalendar;
+  /** Active ISO week from the URL — `null` when the URL has no `?week=`. */
+  activeWeek: string | null;
+  /** Notify the parent that the user picked a different week. */
+  onWeekChange?: (week: string | null) => void;
 }
 
 interface StatusLegendProps {
@@ -279,6 +294,7 @@ export function AgentCalendarPage({
   selectedTaskId,
   onOpenTaskId,
   onCloseTaskId,
+  onWeekChange,
 }: AgentCalendarPageProps): React.ReactElement {
   const { data, error, loading, refresh } = useAgentCalendar(slug, {
     week,
@@ -320,7 +336,11 @@ export function AgentCalendarPage({
         data-agent-slug={data.agentId}
         data-state="no-plan"
       >
-        <CalendarHeader calendar={data} />
+        <CalendarHeader
+        calendar={data}
+        activeWeek={week ?? null}
+        onWeekChange={onWeekChange}
+      />
         {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
         <Card className="border-dashed" data-state="no-plan">
           <CardContent className="p-6 text-sm italic text-muted-foreground">
@@ -351,7 +371,11 @@ export function AgentCalendarPage({
       data-agent-slug={data.agentId}
       data-week={data.week ?? undefined}
     >
-      <CalendarHeader calendar={data} />
+      <CalendarHeader
+        calendar={data}
+        activeWeek={week ?? null}
+        onWeekChange={onWeekChange}
+      />
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
       <StatusLegend tasks={data.tasks} counts={data.counts} />
       <CalendarGrid
@@ -685,15 +709,70 @@ export default AgentCalendarPage;
  */
 function CalendarHeader({
   calendar,
-}: CalendarSectionProps): React.ReactElement {
+  activeWeek,
+  onWeekChange,
+}: CalendarHeaderProps): React.ReactElement {
+  // Pivot week for prev/next math: prefer the URL's `?week=` (so navigation
+  // is stable while the data is loading), then the response's `week`, then
+  // — for fresh empty agents — `null` (we hide prev/next in that case).
+  const pivot = activeWeek || calendar.week || null;
+  const canStep = Boolean(pivot && onWeekChange);
+  const prevWeek = canStep && pivot ? addIsoWeeks(pivot, -1) : null;
+  const nextWeek = canStep && pivot ? addIsoWeeks(pivot, 1) : null;
+  const onCurrent = onWeekChange ? () => onWeekChange(null) : undefined;
   return (
     <header
       className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
       data-calendar-header="true"
     >
+      {onWeekChange ? (
+        <div
+          className="flex items-center gap-1"
+          data-calendar-week-nav="true"
+          aria-label="Week navigation"
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2"
+            onClick={prevWeek ? () => onWeekChange(prevWeek) : undefined}
+            disabled={!prevWeek}
+            aria-label={prevWeek ? `Previous week (${prevWeek})` : 'Previous week'}
+            data-calendar-prev-week={prevWeek ?? undefined}
+          >
+            ←
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            onClick={onCurrent}
+            disabled={activeWeek === null}
+            aria-label="Current week"
+            data-calendar-current-week="true"
+          >
+            Current
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2"
+            onClick={nextWeek ? () => onWeekChange(nextWeek) : undefined}
+            disabled={!nextWeek}
+            aria-label={nextWeek ? `Next week (${nextWeek})` : 'Next week'}
+            data-calendar-next-week={nextWeek ?? undefined}
+          >
+            →
+          </Button>
+        </div>
+      ) : null}
       {calendar.week ? (
         <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
           {calendar.week}
+        </code>
+      ) : activeWeek ? (
+        <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+          {activeWeek}
         </code>
       ) : null}
       <ApprovalBadge approved={calendar.approved} />
