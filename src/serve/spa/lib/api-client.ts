@@ -154,6 +154,14 @@ export interface WeeklyPlan {
   [key: string]: unknown;
 }
 
+/** A single strategy document returned within `AgentPlan`. */
+export interface AgentStrategyEntry {
+  /** Basename without extension, e.g. `"2026-W17-strategy"`. */
+  name: string;
+  /** Raw markdown body. */
+  markdown: string;
+}
+
 /**
  * Plan payload returned by `GET /api/agents/:slug/plan`.
  */
@@ -166,6 +174,10 @@ export interface AgentPlan {
   /** Sorted ascending by week. */
   weeklyPlans: WeeklyPlan[];
   latestApproved: WeeklyPlan | null;
+  /** Watchlist from `.aweek/agents/<slug>/watchlist.md`. */
+  watchlist: { hasWatchlist: boolean; markdown: string };
+  /** Per-strategy docs from `.aweek/agents/<slug>/strategies/*.md`. */
+  strategies: AgentStrategyEntry[];
 }
 
 /**
@@ -697,6 +709,53 @@ export async function fetchAgentLogs(
     });
   }
   return body.logs;
+}
+
+/**
+ * A single review entry returned by `GET /api/agents/:slug/reviews`.
+ */
+export interface AgentReviewEntry {
+  /** Week/date key — basename without extension, e.g. `"2026-W17"`. */
+  week: string;
+  /** Raw markdown body. Empty string when the file is missing. */
+  markdown: string;
+  /** Parsed JSON metadata sidecar, or `null` when missing/unreadable. */
+  metadata: Record<string, unknown> | null;
+  /** `generatedAt` from metadata for convenience, or `null`. */
+  generatedAt: string | null;
+}
+
+/**
+ * Reviews payload returned by `GET /api/agents/:slug/reviews`.
+ */
+export interface AgentReviews {
+  slug: string;
+  /** Sorted newest-first, capped at 26 entries. */
+  reviews: AgentReviewEntry[];
+}
+
+/**
+ * `GET /api/agents/:slug/reviews` — review list for the Reviews tab.
+ *
+ * Throws `ApiError` with `status: 404` when the slug does not exist.
+ */
+export async function fetchAgentReviews(
+  slug: string,
+  opts: RequestOptions = {},
+): Promise<AgentReviews> {
+  const safeSlug = assertValidSlug(slug);
+  const body = await getJson<{ reviews?: AgentReviews }>(
+    `/api/agents/${encodeURIComponent(safeSlug)}/reviews`,
+    opts,
+  );
+  if (!body || typeof body !== 'object' || !body.reviews) {
+    throw new ApiError('Malformed reviews payload (missing `reviews` envelope)', {
+      status: 200,
+      endpoint: `/api/agents/${safeSlug}/reviews`,
+      body,
+    });
+  }
+  return body.reviews;
 }
 
 // ── Test-facing internals ────────────────────────────────────────────

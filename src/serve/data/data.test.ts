@@ -82,7 +82,9 @@ const ALLOWED_IMPORT_PREFIXES = [
   './activity.js',
   './execution-log.js',
   './logs.js',
+  './reviews.js',
   './index.js',
+  '../../storage/review-file-reader.js',
 ];
 
 async function listDataModules() {
@@ -157,6 +159,7 @@ test('data layer: barrel re-exports every expected gatherer', () => {
     'gatherAgentActivity',
     'gatherAgentLogs',
     'streamExecutionLogLines',
+    'gatherAgentReviews',
   ];
   for (const name of expected) {
     assert.equal(
@@ -997,6 +1000,8 @@ test('SPA contract: gatherAgentPlan matches AgentPlan typedef', async () => {
         markdown: 'string',
         weeklyPlans: 'array',
         latestApproved: 'nullable-object',
+        watchlist: 'object',
+        strategies: 'array',
       },
       'AgentPlan',
     );
@@ -1490,6 +1495,81 @@ test('streamExecutionLogLines yields nothing for unsafe or missing inputs', asyn
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('gatherAgentReviews returns null for unknown slug', async () => {
+  const { root } = await makeFixtureProject();
+  try {
+    const missing = await dataIndex.gatherAgentReviews({
+      projectDir: root,
+      slug: 'does-not-exist',
+    });
+    assert.equal(missing, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('gatherAgentReviews returns empty reviews when dir missing', async () => {
+  const { root, agentId } = await makeFixtureProject();
+  try {
+    const result = await dataIndex.gatherAgentReviews({
+      projectDir: root,
+      slug: agentId,
+    });
+    assert.ok(result, 'expected non-null payload');
+    assert.equal(result.slug, agentId);
+    assert.deepEqual(result.reviews, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('gatherAgentReviews happy path: reads .md + .json sidecar', async () => {
+  const { root, agentId } = await makeFixtureProject();
+  try {
+    const agentsDir = join(root, '.aweek', 'agents');
+    const reviewsDir = join(agentsDir, agentId, 'reviews');
+    await mkdir(reviewsDir, { recursive: true });
+
+    const metadata = { agentId, week: '2026-W17', generatedAt: '2026-04-28T00:00:00.000Z', summary: {} };
+    await writeFile(join(reviewsDir, '2026-W17.md'), '# Review\n\nGreat week.', 'utf-8');
+    await writeFile(join(reviewsDir, '2026-W17.json'), JSON.stringify(metadata), 'utf-8');
+    // Older review — only .md, no .json sidecar (partial absorption test).
+    await writeFile(join(reviewsDir, '2026-W16.md'), '# Old review', 'utf-8');
+
+    const result = await dataIndex.gatherAgentReviews({
+      projectDir: root,
+      slug: agentId,
+    });
+    assert.ok(result, 'expected non-null payload');
+    assert.equal(result.slug, agentId);
+    // Sorted newest-first: W17 before W16.
+    assert.equal(result.reviews.length, 2);
+    assert.equal(result.reviews[0].week, '2026-W17');
+    assert.match(result.reviews[0].markdown, /Great week/);
+    assert.ok(result.reviews[0].metadata, 'W17 should have metadata');
+    assert.equal(result.reviews[0].generatedAt, '2026-04-28T00:00:00.000Z');
+
+    assert.equal(result.reviews[1].week, '2026-W16');
+    assert.match(result.reviews[1].markdown, /Old review/);
+    // No .json sidecar → metadata null (absorbed, not thrown).
+    assert.equal(result.reviews[1].metadata, null);
+    assert.equal(result.reviews[1].generatedAt, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('gatherAgentReviews requires projectDir and slug', async () => {
+  await assert.rejects(
+    () => dataIndex.gatherAgentReviews({}),
+    /projectDir is required/,
+  );
+  await assert.rejects(
+    () => dataIndex.gatherAgentReviews({ projectDir: '/tmp/x' }),
+    /slug is required/,
+  );
 });
 
 // Silence the unused-import lint: dynamic fs APIs (readdir, writeFile,
