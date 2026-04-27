@@ -31,7 +31,7 @@ const NOISE_SYSTEM_SUBTYPES = new Set(['hook_started', 'hook_response']);
  * @param {string | string[]} input
  * @returns {Array<{ type: string, subtype?: string, parsed?: object | null, raw: string }>}
  */
-export function parseExecutionLog(input) {
+export function parseExecutionLog(input: string | string[]) {
   const lines = Array.isArray(input) ? input : String(input || '').split('\n');
   const events = [];
   for (const line of lines) {
@@ -69,10 +69,10 @@ export function parseExecutionLog(input) {
  *   filteredCount: number,
  * }}
  */
-export function buildExecutionLogSummary(events) {
-  const resultEvent = findLast(events, (e) => e.type === 'result');
+export function buildExecutionLogSummary(events: ReturnType<typeof parseExecutionLog>) {
+  const resultEvent = findLast(events, (e: ReturnType<typeof parseExecutionLog>[number]) => e.type === 'result');
   const initEvent = events.find(
-    (e) => e.type === 'system' && e.subtype === 'init',
+    (e: ReturnType<typeof parseExecutionLog>[number]) => e.type === 'system' && e.subtype === 'init',
   );
 
   const headline = buildHeadline({ resultEvent, initEvent });
@@ -155,7 +155,9 @@ export function buildExecutionLogSummary(events) {
   };
 }
 
-function buildHeadline({ resultEvent, initEvent }) {
+type ParsedEvent = ReturnType<typeof parseExecutionLog>[number];
+
+function buildHeadline({ resultEvent, initEvent }: { resultEvent: ParsedEvent | null; initEvent: ParsedEvent | undefined }) {
   const r = resultEvent?.parsed ?? null;
   const i = initEvent?.parsed ?? null;
   const usage = r?.usage || {};
@@ -198,38 +200,40 @@ function buildHeadline({ resultEvent, initEvent }) {
   };
 }
 
-function buildAssistantTimelineItem(block) {
+function buildAssistantTimelineItem(block: unknown) {
   if (!block || typeof block !== 'object') return null;
-  if (block.type === 'thinking' && typeof block.thinking === 'string') {
-    return { kind: 'thinking', icon: '💭', label: 'Thinking', meta: '', detail: block.thinking };
+  const b = block as Record<string, unknown>;
+  if (b['type'] === 'thinking' && typeof b['thinking'] === 'string') {
+    return { kind: 'thinking', icon: '💭', label: 'Thinking', meta: '', detail: b['thinking'] };
   }
-  if (block.type === 'text' && typeof block.text === 'string') {
-    return { kind: 'text', icon: '💬', label: 'Assistant message', meta: '', detail: block.text };
+  if (b['type'] === 'text' && typeof b['text'] === 'string') {
+    return { kind: 'text', icon: '💬', label: 'Assistant message', meta: '', detail: b['text'] };
   }
-  if (block.type === 'tool_use') {
-    const input = block.input || {};
+  if (b['type'] === 'tool_use') {
+    const input = b['input'] || {};
     return {
       kind: 'tool_use',
       icon: '🔧',
-      label: `Tool: ${block.name || '?'}`,
-      meta: summarizeToolInput(block.name, input),
-      detail: safeStringify({ id: block.id, name: block.name, input }),
+      label: `Tool: ${b['name'] || '?'}`,
+      meta: summarizeToolInput(b['name'] as string, input),
+      detail: safeStringify({ id: b['id'], name: b['name'], input }),
     };
   }
   return {
     kind: 'other',
     icon: '•',
-    label: `assistant:${block.type || 'unknown'}`,
+    label: `assistant:${b['type'] || 'unknown'}`,
     meta: '',
-    detail: safeStringify(block),
+    detail: safeStringify(b),
   };
 }
 
-function buildUserTimelineItem(block) {
+function buildUserTimelineItem(block: unknown) {
   if (!block || typeof block !== 'object') return null;
-  if (block.type === 'tool_result') {
-    const isError = block.is_error === true;
-    const contentStr = toolResultText(block.content);
+  const b = block as Record<string, unknown>;
+  if (b['type'] === 'tool_result') {
+    const isError = b['is_error'] === true;
+    const contentStr = toolResultText(b['content']);
     return {
       kind: 'tool_result',
       icon: isError ? '✗' : '↩',
@@ -238,13 +242,13 @@ function buildUserTimelineItem(block) {
       detail: contentStr,
     };
   }
-  if (block.type === 'text' && typeof block.text === 'string') {
-    return { kind: 'user_text', icon: '📝', label: 'User message', meta: '', detail: block.text };
+  if (b['type'] === 'text' && typeof b['text'] === 'string') {
+    return { kind: 'user_text', icon: '📝', label: 'User message', meta: '', detail: b['text'] };
   }
   return null;
 }
 
-function toolResultText(content) {
+function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
@@ -258,7 +262,7 @@ function toolResultText(content) {
   return safeStringify(content);
 }
 
-export function summarizeToolInput(name, input) {
+export function summarizeToolInput(name: string, input: unknown): string {
   if (!input || typeof input !== 'object') return '';
   const candidates = [
     'file_path',
@@ -270,21 +274,22 @@ export function summarizeToolInput(name, input) {
     'prompt',
     'description',
   ];
+  const inp = input as Record<string, unknown>;
   for (const k of candidates) {
-    if (typeof input[k] === 'string' && input[k].length > 0) {
-      return oneLine(input[k], 120);
+    if (typeof inp[k] === 'string' && (inp[k] as string).length > 0) {
+      return oneLine(inp[k] as string, 120);
     }
   }
   return oneLine(safeStringify(input), 120);
 }
 
-export function oneLine(text, max) {
+export function oneLine(text: string, max: number): string {
   if (typeof text !== 'string') return '';
   const compact = text.replace(/\s+/g, ' ').trim();
   return compact.length <= max ? compact : compact.slice(0, max - 1) + '…';
 }
 
-export function safeStringify(value) {
+export function safeStringify(value: unknown): string {
   try {
     return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   } catch {
@@ -292,18 +297,18 @@ export function safeStringify(value) {
   }
 }
 
-function findLast(arr, predicate) {
-  for (let i = arr.length - 1; i >= 0; i--) if (predicate(arr[i])) return arr[i];
+function findLast<T>(arr: T[], predicate: (item: T) => boolean): T | null {
+  for (let i = arr.length - 1; i >= 0; i--) if (predicate(arr[i]!)) return arr[i]!;
   return null;
 }
 
-function firstKey(obj) {
+function firstKey(obj: unknown): string | null {
   if (!obj || typeof obj !== 'object') return null;
   const keys = Object.keys(obj);
-  return keys.length > 0 ? keys[0] : null;
+  return keys.length > 0 ? keys[0]! : null;
 }
 
-export function formatDuration(ms) {
+export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms)) return '';
   if (ms < 1000) return `${ms}ms`;
   const s = Math.floor(ms / 1000);
@@ -313,11 +318,11 @@ export function formatDuration(ms) {
   return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
 }
 
-export function formatInt(n) {
+export function formatInt(n: number): string {
   return Number(n).toLocaleString('en-US');
 }
 
-export function statusLabel(status, subtype) {
+export function statusLabel(status: string, subtype: string | null | undefined): string {
   if (status === 'completed') return '✓ Completed';
   if (status === 'error') return `✗ ${subtype || 'Error'}`;
   if (status === 'incomplete') return '… Incomplete';

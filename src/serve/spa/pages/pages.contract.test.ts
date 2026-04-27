@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** Read a page source file relative to this directory. */
-function readPage(name) {
+function readPage(name: string) {
   return readFileSync(join(HERE, name), 'utf8');
 }
 
@@ -40,7 +40,7 @@ function readPage(name) {
  * intact — we want to catch e.g. `JSON.parse(document.getElementById(...))`
  * even when wrapped in a template literal.
  */
-function stripComments(src) {
+function stripComments(src: string) {
   // Block comments (non-greedy, flag s).
   const noBlock = src.replace(/\/\*[\s\S]*?\*\//g, '');
   // Line comments — we only scrub from `//` to end-of-line when not
@@ -243,6 +243,6 @@ describe('SPA pages — Sub-AC 3.3 data contract', () => {
  * file name (`use-agent-profile`). Matches the convention in
  * `../hooks/`.
  */
-function kebab(name) {
+function kebab(name: string) {
   return name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 }
