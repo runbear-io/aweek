@@ -21,6 +21,7 @@ import * as React from 'react';
 import * as ButtonModule from '../components/ui/button.jsx';
 import * as CardModule from '../components/ui/card.jsx';
 import { useAgentReviews } from '../hooks/use-agent-reviews.js';
+import { Markdown } from '../lib/markdown.js';
 
 // ── Cross-boundary shims for still-`.jsx` shadcn/ui primitives ──────
 
@@ -52,39 +53,6 @@ const CardTitle = CardModule.CardTitle as React.ComponentType<CardTitleProps>;
 
 type AgentReviews = import('../lib/api-client.js').AgentReviews;
 type AgentReviewEntry = import('../lib/api-client.js').AgentReviewEntry;
-
-// ── Markdown block model (mirrors agent-plan-page.tsx) ────────────────
-
-type HeadingLevel = 1 | 2 | 3 | 4;
-interface HeadingBlock { type: 'heading'; level: HeadingLevel; text: string }
-interface ParagraphBlock { type: 'p'; text: string }
-interface ListBlock { type: 'ul' | 'ol'; items: string[] }
-interface QuoteBlock { type: 'quote'; children: MarkdownBlockNode[] }
-interface CodeBlock { type: 'code'; lang: string; body: string }
-type MarkdownBlockNode = HeadingBlock | ParagraphBlock | ListBlock | QuoteBlock | CodeBlock;
-
-interface InlineToken {
-  re: RegExp;
-  build: (m: RegExpExecArray) => React.ReactNode;
-}
-
-function parseMarkdown(md: string): MarkdownBlockNode[] {
-  if (typeof md !== 'string' || md.length === 0) return [];
-  const stripped = md.replace(/<!--[\s\S]*?-->/g, '');
-  const blocks: MarkdownBlockNode[] = [];
-  const fenceRe = /```(\w*)\r?\n([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = fenceRe.exec(stripped)) !== null) {
-    const before = stripped.slice(lastIndex, match.index);
-    if (before.trim()) blocks.push(...parseBlocks(before));
-    blocks.push({ type: 'code', lang: (match[1] || '').trim(), body: match[2] || '' });
-    lastIndex = match.index + match[0].length;
-  }
-  const tail = stripped.slice(lastIndex);
-  if (tail.trim()) blocks.push(...parseBlocks(tail));
-  return blocks;
-}
 
 /**
  * Frontmatter pair extracted from a review body's preamble.
@@ -153,155 +121,6 @@ export function splitReviewPreamble(md: string): {
   if (i < lines.length && /^\s*-{3,}\s*$/.test(lines[i] as string)) i++;
   const rest = lines.slice(i).join('\n');
   return { title, entries, rest };
-}
-
-function parseBlocks(md: string): MarkdownBlockNode[] {
-  const lines = md.split(/\r?\n/);
-  const blocks: MarkdownBlockNode[] = [];
-  let i = 0;
-  const isHeading = (l: string) => /^#{1,6}\s+/.test(l);
-  const isUl = (l: string) => /^\s*[-*]\s+/.test(l);
-  const isOl = (l: string) => /^\s*\d+\.\s+/.test(l);
-  const isQuote = (l: string) => /^\s*>\s?/.test(l);
-  const isBlank = (l: string) => /^\s*$/.test(l);
-  while (i < lines.length) {
-    const line = lines[i] as string;
-    if (isBlank(line)) { i++; continue; }
-    if (isHeading(line)) {
-      const m = /^(#{1,6})\s+(.*)$/.exec(line);
-      if (m) blocks.push({ type: 'heading', level: Math.min(m[1]!.length, 4) as HeadingLevel, text: m[2] || '' });
-      i++; continue;
-    }
-    if (isUl(line)) {
-      const items: string[] = [];
-      while (i < lines.length && isUl(lines[i] as string)) { items.push((lines[i] as string).replace(/^\s*[-*]\s+/, '')); i++; }
-      blocks.push({ type: 'ul', items }); continue;
-    }
-    if (isOl(line)) {
-      const items: string[] = [];
-      while (i < lines.length && isOl(lines[i] as string)) { items.push((lines[i] as string).replace(/^\s*\d+\.\s+/, '')); i++; }
-      blocks.push({ type: 'ol', items }); continue;
-    }
-    if (isQuote(line)) {
-      const quoted: string[] = [];
-      while (i < lines.length && isQuote(lines[i] as string)) { quoted.push((lines[i] as string).replace(/^\s*>\s?/, '')); i++; }
-      blocks.push({ type: 'quote', children: parseMarkdown(quoted.join('\n')) }); continue;
-    }
-    const para: string[] = [];
-    while (i < lines.length && !isBlank(lines[i] as string) && !isHeading(lines[i] as string) && !isUl(lines[i] as string) && !isOl(lines[i] as string) && !isQuote(lines[i] as string)) {
-      para.push(lines[i] as string); i++;
-    }
-    if (para.length > 0) blocks.push({ type: 'p', text: para.join(' ') });
-  }
-  return blocks;
-}
-
-function MarkdownBlock({ block }: { block: MarkdownBlockNode }): React.ReactElement | null {
-  switch (block.type) {
-    case 'heading': {
-      // Tailwind preflight strips default heading sizes/weights, so the
-      // tags need explicit classes or they render as plain inline text.
-      const headingClasses: Record<HeadingLevel, string> = {
-        1: 'mt-6 mb-3 text-lg font-semibold leading-tight first:mt-0',
-        2: 'mt-5 mb-2 text-base font-semibold leading-tight border-b pb-1 first:mt-0',
-        3: 'mt-4 mb-2 text-sm font-semibold leading-tight first:mt-0',
-        4: 'mt-3 mb-1.5 text-sm font-medium uppercase tracking-wider text-muted-foreground first:mt-0',
-      };
-      const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3' | 'h4';
-      return <Tag className={headingClasses[block.level]}>{renderInline(block.text)}</Tag>;
-    }
-    case 'p':
-      return <p className="my-2 first:mt-0 last:mb-0">{renderInline(block.text)}</p>;
-    case 'ul':
-      return (
-        <ul className="my-2 ml-5 list-disc space-y-1 marker:text-muted-foreground">
-          {block.items.map((t, i) => <li key={i}>{renderInline(t)}</li>)}
-        </ul>
-      );
-    case 'ol':
-      return (
-        <ol className="my-2 ml-5 list-decimal space-y-1 marker:text-muted-foreground">
-          {block.items.map((t, i) => <li key={i}>{renderInline(t)}</li>)}
-        </ol>
-      );
-    case 'quote':
-      return (
-        <blockquote className="my-3 border-l-4 border-border pl-3 text-muted-foreground">
-          {block.children.map((c, i) => <MarkdownBlock key={i} block={c} />)}
-        </blockquote>
-      );
-    case 'code':
-      return (
-        <pre className="my-3 overflow-x-auto rounded-md border bg-muted/40 p-3 text-xs leading-5">
-          <code className={block.lang ? `language-${block.lang}` : undefined}>
-            {block.body}
-          </code>
-        </pre>
-      );
-    default:
-      return null;
-  }
-}
-
-function renderInline(text: string): React.ReactNode[] {
-  if (!text) return [];
-  const nodes: React.ReactNode[] = [];
-  let remaining = text;
-  let key = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const tokens: InlineToken[] = [
-      // Inline code → mono-spaced chip with a subtle background. Without
-      // a class, Tailwind preflight collapses `<code>` to body text.
-      {
-        re: /`([^`]+)`/,
-        build: (m) => (
-          <code
-            key={key++}
-            className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground"
-          >
-            {m[1]}
-          </code>
-        ),
-      },
-      {
-        re: /\[([^\]]+)\]\(([^)\s]+)\)/,
-        build: (m) => (
-          <a
-            key={key++}
-            href={m[2]}
-            className="text-primary underline underline-offset-2 hover:text-primary/80"
-          >
-            {m[1]}
-          </a>
-        ),
-      },
-      { re: /\*\*([^*\n]+?)\*\*/, build: (m) => <strong key={key++} className="font-semibold">{m[1]}</strong> },
-      { re: /(^|[^*])\*([^*\n]+?)\*(?!\*)/, build: (m) => <React.Fragment key={key++}>{m[1]}<em>{m[2]}</em></React.Fragment> },
-      // Underscore italics — used heavily by the review writers
-      // (e.g. `_(status:completed)_`). Same word-boundary guard as the
-      // asterisk pattern so we don't wrap `snake_case` identifiers.
-      {
-        re: /(^|[^_\w])_([^_\n]+?)_(?!\w)/,
-        build: (m) => (
-          <React.Fragment key={key++}>
-            {m[1]}
-            <em>{m[2]}</em>
-          </React.Fragment>
-        ),
-      },
-    ];
-    let earliest: { m: RegExpExecArray; build: InlineToken['build'] } | null = null;
-    for (const tok of tokens) {
-      const m = tok.re.exec(remaining);
-      if (m && (earliest === null || m.index < earliest.m.index)) earliest = { m, build: tok.build };
-    }
-    if (!earliest) { if (remaining) nodes.push(remaining); break; }
-    if (earliest.m.index > 0) nodes.push(remaining.slice(0, earliest.m.index));
-    nodes.push(earliest.build(earliest.m));
-    remaining = remaining.slice(earliest.m.index + earliest.m[0].length);
-  }
-  return nodes;
 }
 
 // ── Prop types ───────────────────────────────────────────────────────
@@ -441,7 +260,6 @@ function ReviewBody({ entry }: ReviewBodyProps): React.ReactElement {
     );
   }
   const { title, entries, rest } = splitReviewPreamble(entry.markdown);
-  const blocks = parseMarkdown(rest);
   return (
     <Card data-review-body={entry.week}>
       <CardHeader className="space-y-1 border-b bg-muted/50 px-4 py-3">
@@ -465,9 +283,7 @@ function ReviewBody({ entry }: ReviewBodyProps): React.ReactElement {
           className="max-w-none text-sm leading-6 text-foreground"
           data-review-content="true"
         >
-          {blocks.map((block, idx) => (
-            <MarkdownBlock key={idx} block={block} />
-          ))}
+          <Markdown source={rest} />
         </article>
       </CardContent>
     </Card>
@@ -505,7 +321,7 @@ function FrontmatterTable({
                 {entry.key}
               </th>
               <td className="px-3 py-1.5 text-foreground tabular-nums">
-                {renderInline(entry.value)}
+                {entry.value}
               </td>
             </tr>
           ))}
