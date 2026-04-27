@@ -24,7 +24,7 @@
  */
 
 import { join } from 'node:path';
-import { listAllAgents, listAllAgentsPartial } from '../../storage/agent-helpers.js';
+import { listAllAgentsPartial } from '../../storage/agent-helpers.js';
 import { UsageStore, getMondayDate } from '../../storage/usage-store.js';
 import { WeeklyPlanStore } from '../../storage/weekly-plan-store.js';
 import { loadConfig } from '../../storage/config-store.js';
@@ -237,7 +237,12 @@ export async function gatherAgentProfile(
   if (!slug) throw new Error('gatherAgentProfile: slug is required');
   const dataDir = join(projectDir, '.aweek', 'agents');
 
-  const configs = await listAllAgents({ dataDir });
+  // Use the partial loader so a single drifted/invalid agent file (e.g.
+  // a hand-edited `pausedReason` that violates the enum) doesn't take
+  // down every per-agent endpoint. The list endpoint already does this
+  // — without the same tolerance here, one bad file 404s every detail
+  // route.
+  const { agents: configs } = await listAllAgentsPartial({ dataDir });
   const config = configs.find((c) => c.id === slug);
   if (!config) return null;
 
