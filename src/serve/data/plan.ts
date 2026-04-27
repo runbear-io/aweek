@@ -21,11 +21,20 @@ import { readPlan } from '../../storage/plan-markdown-store.js';
 import { WeeklyPlanStore } from '../../storage/weekly-plan-store.js';
 import type { WeeklyPlan } from '../../storage/weekly-plan-store.js';
 import { readSubagentIdentity } from '../../subagents/subagent-file.js';
+import { readWatchlistAndStrategies } from '../../storage/review-file-reader.js';
 
 /** Options accepted by {@link gatherAgentPlan}. */
 export interface GatherAgentPlanOptions {
   projectDir?: string;
   slug?: string;
+}
+
+/** A single strategy document read from `.aweek/agents/<slug>/strategies/`. */
+export interface AgentStrategyEntry {
+  /** Basename without extension (e.g. `"2026-W17-strategy"`). */
+  name: string;
+  /** Raw markdown body. */
+  markdown: string;
 }
 
 /** Plan payload returned to the SPA. */
@@ -36,6 +45,10 @@ export interface AgentPlanPayload {
   markdown: string;
   weeklyPlans: WeeklyPlan[];
   latestApproved: WeeklyPlan | null;
+  /** Watchlist surface. `hasWatchlist` is false when the file is missing or unreadable. */
+  watchlist: { hasWatchlist: boolean; markdown: string };
+  /** Per-strategy documents from `.aweek/agents/<slug>/strategies/*.md`. */
+  strategies: AgentStrategyEntry[];
 }
 
 /**
@@ -74,12 +87,12 @@ export async function gatherAgentPlan(
   // single week file is malformed; we catch so a bad row doesn't null
   // out the whole response. `loadAll` already sorts by week key.
   const weeklyPlanStore = new WeeklyPlanStore(agentsDir);
-  const weeklyPlans = await weeklyPlanStore
-    .loadAll(slug)
-    .catch(() => [] as WeeklyPlan[]);
-  const latestApproved = await weeklyPlanStore
-    .loadLatestApproved(slug)
-    .catch(() => null);
+  const [weeklyPlans, latestApproved, { watchlist, strategies }] =
+    await Promise.all([
+      weeklyPlanStore.loadAll(slug).catch(() => [] as WeeklyPlan[]),
+      weeklyPlanStore.loadLatestApproved(slug).catch(() => null),
+      readWatchlistAndStrategies(join(agentsDir, slug)),
+    ]);
 
   return {
     slug,
@@ -88,5 +101,7 @@ export async function gatherAgentPlan(
     markdown: body,
     weeklyPlans,
     latestApproved,
+    watchlist,
+    strategies,
   };
 }
