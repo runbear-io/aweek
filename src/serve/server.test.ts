@@ -32,6 +32,7 @@ import {
   formatDashboardUrl,
   formatLanHints,
   getLanAddresses,
+  isWhitelistedClientRoute,
   isWildcardHost,
   normaliseServeOptions,
   openBrowser,
@@ -276,6 +277,57 @@ describe('resolveSafeFile()', () => {
     assert.equal(
       resolveSafeFile('/tmp/build', '/../build-evil/x'),
       null,
+    );
+  });
+});
+
+// ── isWhitelistedClientRoute ───────────────────────────────────────────────
+
+describe('isWhitelistedClientRoute()', () => {
+  it('admits the canonical sidebar tabs', () => {
+    assert.equal(isWhitelistedClientRoute('/'), true);
+    assert.equal(isWhitelistedClientRoute('/agents'), true);
+    assert.equal(isWhitelistedClientRoute('/agents/'), true);
+    assert.equal(isWhitelistedClientRoute('/calendar'), true);
+    assert.equal(isWhitelistedClientRoute('/activity'), true);
+    assert.equal(isWhitelistedClientRoute('/strategy'), true);
+    assert.equal(isWhitelistedClientRoute('/profile'), true);
+  });
+
+  it('admits per-agent detail and tab routes', () => {
+    assert.equal(isWhitelistedClientRoute('/agents/writer'), true);
+    assert.equal(isWhitelistedClientRoute('/agents/writer/calendar'), true);
+    assert.equal(isWhitelistedClientRoute('/agents/writer/notifications'), true);
+    assert.equal(
+      isWhitelistedClientRoute('/agents/writer/activities/run-1'),
+      true,
+    );
+  });
+
+  it('admits the global inbox + deep-link notification routes (AC 18)', () => {
+    // Global inbox feed — header bell + sidebar entry both navigate here.
+    assert.equal(isWhitelistedClientRoute('/notifications'), true);
+    assert.equal(isWhitelistedClientRoute('/notifications/'), true);
+    // Deep link to a specific notification (e.g.
+    // `/notifications/<agent>/<id>` — see notification-list.tsx onSelect).
+    assert.equal(
+      isWhitelistedClientRoute('/notifications/writer/notif-abc'),
+      true,
+    );
+  });
+
+  it('rejects unrelated and typo-shaped routes (no silent SPA fallback)', () => {
+    assert.equal(isWhitelistedClientRoute('/xyz'), false);
+    assert.equal(isWhitelistedClientRoute('/api'), false);
+    assert.equal(isWhitelistedClientRoute('/api/'), false);
+    // `/notification` (no trailing 's') is a typo and should NOT silently
+    // serve the shell — operators need to see the 404 in logs.
+    assert.equal(isWhitelistedClientRoute('/notification'), false);
+    assert.equal(isWhitelistedClientRoute('/notifs'), false);
+    // Falsy / non-string inputs short-circuit to false.
+    assert.equal(
+      isWhitelistedClientRoute(undefined as unknown as string),
+      false,
     );
   });
 });
@@ -1958,5 +2010,202 @@ describe('GET /api/agents/:slug/logs', () => {
       body.logs.entries.map((e) => e.title),
       ['Newest', 'Newer', 'Older'],
     );
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// POST /api/notifications/:slug/:id/read — AC 12.
+//
+// Clicking a notification in the dashboard inbox flips its `read` flag to
+// true via this endpoint. The mutation flows through
+// `NotificationStore.markRead`, which performs an atomic write-then-rename
+// so concurrent dashboard reads never see a partial file. These tests pin:
+//
+//   - The happy path returns the updated row with `read: true` + `readAt`.
+//   - The endpoint is idempotent — re-POSTing on a read row is a no-op.
+//   - Unknown slug or id maps to 404 (so the SPA can recover from a stale
+//     list view without crashing).
+//   - Slug / id traversal segments (`..`, `/`, NUL) are rejected at 400
+//     before they ever reach the storage layer.
+//   - The legacy 405 guard still rejects POSTs to unrelated paths so the
+//     read-only contract for the rest of the API stays intact.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe('POST /api/notifications/:slug/:id/read', () => {
+  let projectDir;
+  let buildDir;
+  let handle;
+
+  afterEach(async () => {
+    if (handle) {
+      await handle.close();
+      handle = undefined;
+    }
+    if (buildDir) {
+      await rm(buildDir, { recursive: true, force: true });
+      buildDir = undefined;
+    }
+    if (projectDir) {
+      await rm(projectDir, { recursive: true, force: true });
+      projectDir = undefined;
+    }
+  });
+
+  /**
+   * Seed a notification through the real `NotificationStore` so the test
+   * exercises the same code path the production endpoint uses. Returns
+   * the persisted row so the test can read its `id`.
+   */
+  async function seedNotification(slug) {
+    const { NotificationStore } = await import(
+      '../storage/notification-store.js'
+    );
+    const agentsDir = join(projectDir, '.aweek', 'agents');
+    const store = new NotificationStore(agentsDir);
+    return store.send(slug, {
+      title: 'Click me',
+      body: 'Click body.',
+    });
+  }
+
+  it('flips read=true, stamps readAt, and returns the updated row', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const seeded = await seedNotification('writer');
+    assert.equal(seeded.read, false);
+
+    const res = await httpGet(
+      `${handle.url}api/notifications/writer/${seeded.id}/read`,
+      { method: 'POST' },
+    );
+    assert.equal(res.statusCode, 200);
+    assert.match(res.headers['content-type'] || '', /application\/json/);
+    assert.match(res.headers['cache-control'] || '', /no-store/);
+    const body = JSON.parse(res.body);
+    assert.equal(body.notification.id, seeded.id);
+    assert.equal(body.notification.read, true);
+    assert.equal(typeof body.notification.readAt, 'string');
+    assert.match(
+      body.notification.readAt,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+    );
+  });
+
+  it('persists the flip on disk so subsequent reads see read=true', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const seeded = await seedNotification('writer');
+    const res = await httpGet(
+      `${handle.url}api/notifications/writer/${seeded.id}/read`,
+      { method: 'POST' },
+    );
+    assert.equal(res.statusCode, 200);
+
+    // Re-read through the store to confirm the on-disk feed was actually
+    // mutated (atomic write-then-rename in `_save`).
+    const { NotificationStore } = await import(
+      '../storage/notification-store.js'
+    );
+    const agentsDir = join(projectDir, '.aweek', 'agents');
+    const store = new NotificationStore(agentsDir);
+    const refetched = await store.get('writer', seeded.id);
+    assert.equal(refetched.read, true);
+    assert.equal(typeof refetched.readAt, 'string');
+  });
+
+  it('is idempotent: re-POSTing on a read row returns the unchanged record', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const seeded = await seedNotification('writer');
+    const url = `${handle.url}api/notifications/writer/${seeded.id}/read`;
+
+    const first = await httpGet(url, { method: 'POST' });
+    assert.equal(first.statusCode, 200);
+    const firstBody = JSON.parse(first.body);
+    const firstReadAt = firstBody.notification.readAt;
+
+    const second = await httpGet(url, { method: 'POST' });
+    assert.equal(second.statusCode, 200);
+    const secondBody = JSON.parse(second.body);
+    assert.equal(secondBody.notification.read, true);
+    // Idempotent: no fresh stamp on a no-op flip — the original readAt
+    // is preserved so the SPA does not see a phantom "just read" event.
+    assert.equal(secondBody.notification.readAt, firstReadAt);
+  });
+
+  it('returns 404 when the slug has no matching notification id', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const res = await httpGet(
+      `${handle.url}api/notifications/writer/notif-missing/read`,
+      { method: 'POST' },
+    );
+    assert.equal(res.statusCode, 404);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /Notification not found/);
+  });
+
+  it('returns 404 for an unknown agent slug (no notifications.json on disk)', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const res = await httpGet(
+      `${handle.url}api/notifications/ghost-agent/notif-x/read`,
+      { method: 'POST' },
+    );
+    assert.equal(res.statusCode, 404);
+  });
+
+  it('rejects path-segment traversal at 400 before hitting the store', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    // `..` and a NUL byte are both rejected by `decodeSlug` — these never
+    // reach the storage layer.
+    const dotdot = await httpGet(
+      `${handle.url}api/notifications/..%2F../notif-x/read`,
+      { method: 'POST' },
+    );
+    assert.equal(dotdot.statusCode, 400);
+
+    const nul = await httpGet(
+      `${handle.url}api/notifications/writer/%00bad/read`,
+      { method: 'POST' },
+    );
+    assert.equal(nul.statusCode, 400);
+  });
+
+  it('does NOT relax the 405 guard for unrelated POST paths', async () => {
+    // The notifications POST handler is the only relaxation. A regression
+    // that accidentally allowed POSTs through the global 405 fallback
+    // would be caught here — `/api/summary` must still 405 on POST.
+    const fx = await makeProjectWithAgent({ slug: 'writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const summary = await httpGet(`${handle.url}api/summary`, { method: 'POST' });
+    assert.equal(summary.statusCode, 405);
+    assert.match(summary.headers.allow || '', /GET/);
+    assert.match(summary.headers.allow || '', /HEAD/);
+
+    const agents = await httpGet(`${handle.url}api/agents`, { method: 'POST' });
+    assert.equal(agents.statusCode, 405);
   });
 });
