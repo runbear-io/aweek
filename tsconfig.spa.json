@@ -82,7 +82,9 @@
     // ----- DOM / browser libs -----
     // The SPA targets the browser: pull in the standard DOM lib + the
     // iterable DOM types so `for...of` over `NodeList` etc. type-checks.
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    // ES2022 is needed so `new Error(msg, { cause })` typechecks on the
+    // backend modules the SPA imports through (e.g. agent-helpers.ts).
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
 
     // ----- React / JSX -----
     // React 17+ automatic runtime — matches `vite.config.js`
