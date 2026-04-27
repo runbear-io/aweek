@@ -11,7 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        # Node 20 is dropped: its `--test` doesn't expand glob patterns,
+        # so the test script requires Node 22+ where globs are honored.
+        # Node 20 LTS goes EoL 2026-04-30 anyway.
+        node: [22]
     steps:
       - uses: actions/checkout@v4
 
