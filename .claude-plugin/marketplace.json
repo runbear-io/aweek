@@ -1,0 +1,14 @@
+{
+  "name": "aweek-local",
+  "owner": {
+    "name": "Runbear, Inc.",
+    "email": "snow@runbear.io"
+  },
+  "plugins": [
+    {
+      "name": "aweek",
+      "source": "./",
+      "description": "Claude Code plugin for managing multiple AI agents on scheduled weekly plans."
+    }
+  ]
+}
