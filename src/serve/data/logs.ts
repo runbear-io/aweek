@@ -28,7 +28,7 @@
  */
 
 import { join } from 'node:path';
-import { listAllAgents } from '../../storage/agent-helpers.js';
+import { listAllAgentsPartial } from '../../storage/agent-helpers.js';
 import { ActivityLogStore } from '../../storage/activity-log-store.js';
 import type { ActivityLogEntry } from '../../storage/activity-log-store.js';
 import { ExecutionStore } from '../../storage/execution-store.js';
@@ -87,7 +87,7 @@ export async function gatherAgentLogs({
   if (!slug) throw new Error('gatherAgentLogs: slug is required');
   const agentsDir = join(projectDir, '.aweek', 'agents');
 
-  const configs = await listAllAgents({ dataDir: agentsDir });
+  const { agents: configs } = await listAllAgentsPartial({ dataDir: agentsDir });
   const exists = configs.some((c) => c.id === slug);
   if (!exists) return null;
 

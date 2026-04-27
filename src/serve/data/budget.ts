@@ -14,7 +14,7 @@
  */
 
 import { join } from 'node:path';
-import { listAllAgents } from '../../storage/agent-helpers.js';
+import { listAllAgentsPartial } from '../../storage/agent-helpers.js';
 import { UsageStore, getMondayDate } from '../../storage/usage-store.js';
 import type { UsageWeeklyTotal } from '../../storage/usage-store.js';
 import { loadConfig } from '../../storage/config-store.js';
@@ -81,7 +81,7 @@ export async function gatherBudgetList(
   if (!projectDir) throw new Error('gatherBudgetList: projectDir is required');
   const dataDir = join(projectDir, '.aweek', 'agents');
 
-  const configs = await listAllAgents({ dataDir });
+  const { agents: configs } = await listAllAgentsPartial({ dataDir });
   if (configs.length === 0) return [];
 
   let timeZone: string | undefined;
@@ -181,7 +181,7 @@ export async function gatherAgentUsage(
   if (!slug) throw new Error('gatherAgentUsage: slug is required');
   const dataDir = join(projectDir, '.aweek', 'agents');
 
-  const configs = await listAllAgents({ dataDir });
+  const { agents: configs } = await listAllAgentsPartial({ dataDir });
   const config = configs.find((c) => c.id === slug);
   if (!config) return null;
 
