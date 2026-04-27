@@ -208,6 +208,18 @@ interface PlanResolution {
   loadError: string | null;
 }
 
+/**
+ * `true` for "the file doesn't exist" — that's a perfectly normal state
+ * (next week's plan hasn't been generated yet), not a load failure. The
+ * gatherer surfaces it as `noPlan: true` with a `null` `loadError` so
+ * the SPA renders the soft empty state, not the destructive banner.
+ */
+function isMissingFileError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  return code === 'ENOENT';
+}
+
 function describeLoadError(err: unknown, week: string): string {
   const base = err instanceof Error && err.message ? err.message : String(err);
   return `Weekly plan for ${week} failed to load: ${base}`;
@@ -225,6 +237,11 @@ async function resolvePlan(
       const plan = await store.load(agentId, requested);
       return { plan: plan ?? null, loadError: null };
     } catch (err) {
+      // Missing file is a normal state for a not-yet-generated week —
+      // surface it as `noPlan` rather than a destructive validator banner.
+      if (isMissingFileError(err)) {
+        return { plan: null, loadError: null };
+      }
       return { plan: null, loadError: describeLoadError(err, requested) };
     }
   }
@@ -234,7 +251,9 @@ async function resolvePlan(
   try {
     direct = (await store.load(agentId, week)) ?? null;
   } catch (err) {
-    directLoadError = describeLoadError(err, week);
+    if (!isMissingFileError(err)) {
+      directLoadError = describeLoadError(err, week);
+    }
   }
   if (direct) return { plan: direct, loadError: null };
   const approved = await store.loadLatestApproved(agentId).catch(() => null);
