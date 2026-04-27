@@ -84,6 +84,7 @@ const CardTitle = CardModule.CardTitle as React.ComponentType<CardTitleProps>;
 
 type AgentPlan = import('../lib/api-client.js').AgentPlan;
 type WeeklyPlan = import('../lib/api-client.js').WeeklyPlan;
+type AgentStrategyEntry = import('../lib/api-client.js').AgentStrategyEntry;
 
 export interface AgentPlanPageProps {
   /** Agent slug — selects which agent's plan the page loads. */
@@ -107,6 +108,14 @@ interface PlanSectionProps {
 interface WeeklyPlanRowProps {
   week: WeeklyPlan;
   isLatestApproved: boolean;
+}
+
+interface WatchlistSectionProps {
+  watchlist: { hasWatchlist: boolean; markdown: string };
+}
+
+interface StrategiesSectionProps {
+  strategies: AgentStrategyEntry[];
 }
 
 interface ApprovalBadgeProps {
@@ -199,6 +208,8 @@ export function AgentPlanPage({
       <PlanHeader plan={data} loading={loading} onRefresh={refresh} />
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
       <PlanMarkdown plan={data} />
+      {data.watchlist?.hasWatchlist ? <WatchlistSection watchlist={data.watchlist} /> : null}
+      {data.strategies && data.strategies.length > 0 ? <StrategiesSection strategies={data.strategies} /> : null}
       <WeeklyPlansList plan={data} />
     </section>
   );
@@ -544,6 +555,76 @@ function renderInline(text: string): React.ReactNode[] {
     remaining = remaining.slice(earliest.m.index + earliest.m[0].length);
   }
   return nodes;
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────
+
+function WatchlistSection({ watchlist }: WatchlistSectionProps): React.ReactElement {
+  const blocks = parseMarkdown(watchlist.markdown);
+  return (
+    <Card data-plan-card="watchlist">
+      <CardHeader className="pb-2">
+        <CardTitle
+          as="h2"
+          className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+        >
+          Watchlist
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
+        <article className="max-w-none text-sm leading-6 text-foreground" data-watchlist-body="true">
+          {blocks.map((block, idx) => (
+            <MarkdownBlock key={idx} block={block} />
+          ))}
+        </article>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Strategies ────────────────────────────────────────────────────────
+
+function StrategiesSection({ strategies }: StrategiesSectionProps): React.ReactElement {
+  return (
+    <Card data-plan-card="strategies">
+      <CardHeader className="pb-2">
+        <CardTitle
+          as="h2"
+          className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+        >
+          Strategies
+        </CardTitle>
+        <CardDescription className="text-xs">
+          {strategies.length} strategy document{strategies.length === 1 ? '' : 's'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
+        <div className="flex flex-col gap-4">
+          {strategies.map((strategy) => {
+            const blocks = parseMarkdown(strategy.markdown);
+            return (
+              <details
+                key={strategy.name}
+                className="group rounded-md border bg-muted/40"
+                data-strategy-name={strategy.name}
+              >
+                <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold text-foreground">
+                  {strategy.name}
+                </summary>
+                <div className="border-t px-3 py-3">
+                  <article className="max-w-none text-sm leading-6 text-foreground">
+                    {blocks.map((block, idx) => (
+                      <MarkdownBlock key={idx} block={block} />
+                    ))}
+                  </article>
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 // ── Empty / loading / error ──────────────────────────────────────────
