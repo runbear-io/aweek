@@ -46,6 +46,7 @@ import * as BadgeModule from '../components/ui/badge.jsx';
 import * as ButtonModule from '../components/ui/button.jsx';
 import * as CardModule from '../components/ui/card.jsx';
 import { useAgentPlan } from '../hooks/use-agent-plan.js';
+import { Markdown } from '../lib/markdown.js';
 
 // ── Cross-boundary shims for still-`.jsx` shadcn/ui primitives ──────
 
@@ -129,44 +130,6 @@ interface EmptyProps {
 interface ErrorBannerProps {
   error: Error | { message?: string } | null;
   onRetry: () => void | Promise<void>;
-}
-
-// ── Markdown block model ────────────────────────────────────────────
-
-type HeadingLevel = 1 | 2 | 3 | 4;
-
-interface HeadingBlock {
-  type: 'heading';
-  level: HeadingLevel;
-  text: string;
-}
-interface ParagraphBlock {
-  type: 'p';
-  text: string;
-}
-interface ListBlock {
-  type: 'ul' | 'ol';
-  items: string[];
-}
-interface QuoteBlock {
-  type: 'quote';
-  children: MarkdownBlockNode[];
-}
-interface CodeBlock {
-  type: 'code';
-  lang: string;
-  body: string;
-}
-type MarkdownBlockNode =
-  | HeadingBlock
-  | ParagraphBlock
-  | ListBlock
-  | QuoteBlock
-  | CodeBlock;
-
-interface InlineToken {
-  re: RegExp;
-  build: (m: RegExpExecArray) => React.ReactNode;
 }
 
 /**
@@ -267,7 +230,6 @@ function PlanMarkdown({ plan }: PlanSectionProps): React.ReactElement {
       </Card>
     );
   }
-  const blocks = parseMarkdown(plan.markdown);
   return (
     <Card data-plan-card="markdown">
       <CardContent className="p-4 pt-4 sm:p-6 sm:pt-6">
@@ -275,9 +237,7 @@ function PlanMarkdown({ plan }: PlanSectionProps): React.ReactElement {
           className="max-w-none text-sm leading-6 text-foreground"
           data-plan-body="true"
         >
-          {blocks.map((block, idx) => (
-            <MarkdownBlock key={idx} block={block} />
-          ))}
+          <Markdown source={plan.markdown} />
         </article>
       </CardContent>
     </Card>
@@ -354,213 +314,9 @@ function ApprovalBadge({ approved }: ApprovalBadgeProps): React.ReactElement {
   );
 }
 
-// ── Markdown ─────────────────────────────────────────────────────────
-//
-// Minimal CommonMark subset rendered as React elements — escapes first,
-// then applies inline/block transforms. Kept intentionally small until a
-// full-fat markdown library (remark/marked) is wired in.
-
-function parseMarkdown(md: string): MarkdownBlockNode[] {
-  if (typeof md !== 'string' || md.length === 0) return [];
-  const stripped = md.replace(/<!--[\s\S]*?-->/g, '');
-
-  const blocks: MarkdownBlockNode[] = [];
-  const fenceRe = /```(\w*)\r?\n([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = fenceRe.exec(stripped)) !== null) {
-    const before = stripped.slice(lastIndex, match.index);
-    if (before.trim()) blocks.push(...parseBlocks(before));
-    blocks.push({
-      type: 'code',
-      lang: (match[1] || '').trim(),
-      body: match[2] || '',
-    });
-    lastIndex = match.index + match[0].length;
-  }
-  const tail = stripped.slice(lastIndex);
-  if (tail.trim()) blocks.push(...parseBlocks(tail));
-  return blocks;
-}
-
-function parseBlocks(md: string): MarkdownBlockNode[] {
-  const lines = md.split(/\r?\n/);
-  const blocks: MarkdownBlockNode[] = [];
-  let i = 0;
-  const isHeading = (l: string): boolean => /^#{1,6}\s+/.test(l);
-  const isUl = (l: string): boolean => /^\s*[-*]\s+/.test(l);
-  const isOl = (l: string): boolean => /^\s*\d+\.\s+/.test(l);
-  const isQuote = (l: string): boolean => /^\s*>\s?/.test(l);
-  const isBlank = (l: string): boolean => /^\s*$/.test(l);
-
-  while (i < lines.length) {
-    const line = lines[i] as string;
-    if (isBlank(line)) {
-      i += 1;
-      continue;
-    }
-    if (isHeading(line)) {
-      const m = /^(#{1,6})\s+(.*)$/.exec(line);
-      if (m) {
-        const level = Math.min(m[1]!.length, 4) as HeadingLevel;
-        blocks.push({ type: 'heading', level, text: m[2] || '' });
-      }
-      i += 1;
-      continue;
-    }
-    if (isUl(line)) {
-      const items: string[] = [];
-      while (i < lines.length && isUl(lines[i] as string)) {
-        items.push((lines[i] as string).replace(/^\s*[-*]\s+/, ''));
-        i += 1;
-      }
-      blocks.push({ type: 'ul', items });
-      continue;
-    }
-    if (isOl(line)) {
-      const items: string[] = [];
-      while (i < lines.length && isOl(lines[i] as string)) {
-        items.push((lines[i] as string).replace(/^\s*\d+\.\s+/, ''));
-        i += 1;
-      }
-      blocks.push({ type: 'ol', items });
-      continue;
-    }
-    if (isQuote(line)) {
-      const quoted: string[] = [];
-      while (i < lines.length && isQuote(lines[i] as string)) {
-        quoted.push((lines[i] as string).replace(/^\s*>\s?/, ''));
-        i += 1;
-      }
-      blocks.push({ type: 'quote', children: parseMarkdown(quoted.join('\n')) });
-      continue;
-    }
-    const para: string[] = [];
-    while (
-      i < lines.length &&
-      !isBlank(lines[i] as string) &&
-      !isHeading(lines[i] as string) &&
-      !isUl(lines[i] as string) &&
-      !isOl(lines[i] as string) &&
-      !isQuote(lines[i] as string)
-    ) {
-      para.push(lines[i] as string);
-      i += 1;
-    }
-    if (para.length > 0) blocks.push({ type: 'p', text: para.join(' ') });
-  }
-  return blocks;
-}
-
-function MarkdownBlock({
-  block,
-}: {
-  block: MarkdownBlockNode;
-}): React.ReactElement | null {
-  switch (block.type) {
-    case 'heading': {
-      const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3' | 'h4';
-      return <Tag>{renderInline(block.text)}</Tag>;
-    }
-    case 'p':
-      return <p>{renderInline(block.text)}</p>;
-    case 'ul':
-      return (
-        <ul>
-          {block.items.map((t, i) => (
-            <li key={i}>{renderInline(t)}</li>
-          ))}
-        </ul>
-      );
-    case 'ol':
-      return (
-        <ol>
-          {block.items.map((t, i) => (
-            <li key={i}>{renderInline(t)}</li>
-          ))}
-        </ol>
-      );
-    case 'quote':
-      return (
-        <blockquote>
-          {block.children.map((child, i) => (
-            <MarkdownBlock key={i} block={child} />
-          ))}
-        </blockquote>
-      );
-    case 'code':
-      return (
-        <pre>
-          <code className={block.lang ? `language-${block.lang}` : undefined}>
-            {block.body}
-          </code>
-        </pre>
-      );
-    default:
-      return null;
-  }
-}
-
-/**
- * Render a line of inline markdown safely. React escapes text children
- * by default so we only need to interpret structure (no manual HTML
- * escaping). Returns an array of React nodes.
- */
-function renderInline(text: string): React.ReactNode[] {
-  if (!text) return [];
-  const nodes: React.ReactNode[] = [];
-  let remaining = text;
-  let key = 0;
-  // Pattern order: inline code → link → bold → italic.
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const tokens: InlineToken[] = [
-      { re: /`([^`]+)`/, build: (m) => <code key={key++}>{m[1]}</code> },
-      {
-        re: /\[([^\]]+)\]\(([^)\s]+)\)/,
-        build: (m) => (
-          <a key={key++} href={m[2]}>
-            {m[1]}
-          </a>
-        ),
-      },
-      {
-        re: /\*\*([^*\n]+?)\*\*/,
-        build: (m) => <strong key={key++}>{m[1]}</strong>,
-      },
-      {
-        re: /(^|[^*])\*([^*\n]+?)\*(?!\*)/,
-        build: (m) => (
-          <React.Fragment key={key++}>
-            {m[1]}
-            <em>{m[2]}</em>
-          </React.Fragment>
-        ),
-      },
-    ];
-    let earliest: { m: RegExpExecArray; build: InlineToken['build'] } | null =
-      null;
-    for (const tok of tokens) {
-      const m = tok.re.exec(remaining);
-      if (m && (earliest === null || m.index < earliest.m.index)) {
-        earliest = { m, build: tok.build };
-      }
-    }
-    if (!earliest) {
-      if (remaining) nodes.push(remaining);
-      break;
-    }
-    if (earliest.m.index > 0) nodes.push(remaining.slice(0, earliest.m.index));
-    nodes.push(earliest.build(earliest.m));
-    remaining = remaining.slice(earliest.m.index + earliest.m[0].length);
-  }
-  return nodes;
-}
-
 // ── Watchlist ─────────────────────────────────────────────────────────
 
 function WatchlistSection({ watchlist }: WatchlistSectionProps): React.ReactElement {
-  const blocks = parseMarkdown(watchlist.markdown);
   return (
     <Card data-plan-card="watchlist">
       <CardHeader className="pb-2">
@@ -573,9 +329,7 @@ function WatchlistSection({ watchlist }: WatchlistSectionProps): React.ReactElem
       </CardHeader>
       <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
         <article className="max-w-none text-sm leading-6 text-foreground" data-watchlist-body="true">
-          {blocks.map((block, idx) => (
-            <MarkdownBlock key={idx} block={block} />
-          ))}
+          <Markdown source={watchlist.markdown} />
         </article>
       </CardContent>
     </Card>
@@ -600,27 +354,22 @@ function StrategiesSection({ strategies }: StrategiesSectionProps): React.ReactE
       </CardHeader>
       <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
         <div className="flex flex-col gap-4">
-          {strategies.map((strategy) => {
-            const blocks = parseMarkdown(strategy.markdown);
-            return (
-              <details
-                key={strategy.name}
-                className="group rounded-md border bg-muted/40"
-                data-strategy-name={strategy.name}
-              >
-                <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold text-foreground">
-                  {strategy.name}
-                </summary>
-                <div className="border-t px-3 py-3">
-                  <article className="max-w-none text-sm leading-6 text-foreground">
-                    {blocks.map((block, idx) => (
-                      <MarkdownBlock key={idx} block={block} />
-                    ))}
-                  </article>
-                </div>
-              </details>
-            );
-          })}
+          {strategies.map((strategy) => (
+            <details
+              key={strategy.name}
+              className="group rounded-md border bg-muted/40"
+              data-strategy-name={strategy.name}
+            >
+              <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold text-foreground">
+                {strategy.name}
+              </summary>
+              <div className="border-t px-3 py-3">
+                <article className="max-w-none text-sm leading-6 text-foreground">
+                  <Markdown source={strategy.markdown} />
+                </article>
+              </div>
+            </details>
+          ))}
         </div>
       </CardContent>
     </Card>
