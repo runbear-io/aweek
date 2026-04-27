@@ -199,15 +199,47 @@ function parseBlocks(md: string): MarkdownBlockNode[] {
 function MarkdownBlock({ block }: { block: MarkdownBlockNode }): React.ReactElement | null {
   switch (block.type) {
     case 'heading': {
+      // Tailwind preflight strips default heading sizes/weights, so the
+      // tags need explicit classes or they render as plain inline text.
+      const headingClasses: Record<HeadingLevel, string> = {
+        1: 'mt-6 mb-3 text-lg font-semibold leading-tight first:mt-0',
+        2: 'mt-5 mb-2 text-base font-semibold leading-tight border-b pb-1 first:mt-0',
+        3: 'mt-4 mb-2 text-sm font-semibold leading-tight first:mt-0',
+        4: 'mt-3 mb-1.5 text-sm font-medium uppercase tracking-wider text-muted-foreground first:mt-0',
+      };
       const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3' | 'h4';
-      return <Tag>{renderInline(block.text)}</Tag>;
+      return <Tag className={headingClasses[block.level]}>{renderInline(block.text)}</Tag>;
     }
-    case 'p': return <p>{renderInline(block.text)}</p>;
-    case 'ul': return <ul>{block.items.map((t, i) => <li key={i}>{renderInline(t)}</li>)}</ul>;
-    case 'ol': return <ol>{block.items.map((t, i) => <li key={i}>{renderInline(t)}</li>)}</ol>;
-    case 'quote': return <blockquote>{block.children.map((c, i) => <MarkdownBlock key={i} block={c} />)}</blockquote>;
-    case 'code': return <pre><code className={block.lang ? `language-${block.lang}` : undefined}>{block.body}</code></pre>;
-    default: return null;
+    case 'p':
+      return <p className="my-2 first:mt-0 last:mb-0">{renderInline(block.text)}</p>;
+    case 'ul':
+      return (
+        <ul className="my-2 ml-5 list-disc space-y-1 marker:text-muted-foreground">
+          {block.items.map((t, i) => <li key={i}>{renderInline(t)}</li>)}
+        </ul>
+      );
+    case 'ol':
+      return (
+        <ol className="my-2 ml-5 list-decimal space-y-1 marker:text-muted-foreground">
+          {block.items.map((t, i) => <li key={i}>{renderInline(t)}</li>)}
+        </ol>
+      );
+    case 'quote':
+      return (
+        <blockquote className="my-3 border-l-4 border-border pl-3 text-muted-foreground">
+          {block.children.map((c, i) => <MarkdownBlock key={i} block={c} />)}
+        </blockquote>
+      );
+    case 'code':
+      return (
+        <pre className="my-3 overflow-x-auto rounded-md border bg-muted/40 p-3 text-xs leading-5">
+          <code className={block.lang ? `language-${block.lang}` : undefined}>
+            {block.body}
+          </code>
+        </pre>
+      );
+    default:
+      return null;
   }
 }
 
@@ -219,10 +251,45 @@ function renderInline(text: string): React.ReactNode[] {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const tokens: InlineToken[] = [
-      { re: /`([^`]+)`/, build: (m) => <code key={key++}>{m[1]}</code> },
-      { re: /\[([^\]]+)\]\(([^)\s]+)\)/, build: (m) => <a key={key++} href={m[2]}>{m[1]}</a> },
-      { re: /\*\*([^*\n]+?)\*\*/, build: (m) => <strong key={key++}>{m[1]}</strong> },
+      // Inline code → mono-spaced chip with a subtle background. Without
+      // a class, Tailwind preflight collapses `<code>` to body text.
+      {
+        re: /`([^`]+)`/,
+        build: (m) => (
+          <code
+            key={key++}
+            className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground"
+          >
+            {m[1]}
+          </code>
+        ),
+      },
+      {
+        re: /\[([^\]]+)\]\(([^)\s]+)\)/,
+        build: (m) => (
+          <a
+            key={key++}
+            href={m[2]}
+            className="text-primary underline underline-offset-2 hover:text-primary/80"
+          >
+            {m[1]}
+          </a>
+        ),
+      },
+      { re: /\*\*([^*\n]+?)\*\*/, build: (m) => <strong key={key++} className="font-semibold">{m[1]}</strong> },
       { re: /(^|[^*])\*([^*\n]+?)\*(?!\*)/, build: (m) => <React.Fragment key={key++}>{m[1]}<em>{m[2]}</em></React.Fragment> },
+      // Underscore italics — used heavily by the review writers
+      // (e.g. `_(status:completed)_`). Same word-boundary guard as the
+      // asterisk pattern so we don't wrap `snake_case` identifiers.
+      {
+        re: /(^|[^_\w])_([^_\n]+?)_(?!\w)/,
+        build: (m) => (
+          <React.Fragment key={key++}>
+            {m[1]}
+            <em>{m[2]}</em>
+          </React.Fragment>
+        ),
+      },
     ];
     let earliest: { m: RegExpExecArray; build: InlineToken['build'] } | null = null;
     for (const tok of tokens) {
