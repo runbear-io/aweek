@@ -129,6 +129,33 @@ export const weeklyTaskSchema = {
         'pinning — the two compose.',
     },
     completedAt: { type: 'string', format: 'date-time' },
+    consecutiveFailures: {
+      type: 'integer',
+      minimum: 0,
+      description:
+        'Number of consecutive times this task has transitioned to ' +
+        '`failed` without successfully completing or being replaced. ' +
+        'Used by the repeated-task-failure system-event emitter to fire ' +
+        'a notification once a configured threshold (currently 2) is ' +
+        'reached. Reset to 0 (or omitted) whenever the task transitions ' +
+        'to any non-failed status (success, skipped, delegated, etc.) ' +
+        'or when the task is replaced/the next-week plan supersedes it. ' +
+        'Optional so legacy plans validate cleanly; absence is equivalent ' +
+        'to 0.',
+    },
+    failureNotificationEmitted: {
+      type: 'boolean',
+      description:
+        'Latch flag — set to `true` after the repeated-task-failure ' +
+        'notification has been emitted for the current failing streak. ' +
+        'Prevents the heartbeat from re-emitting another notification ' +
+        'while the task is still in the failing state. Cleared (set to ' +
+        'false or omitted) on transition to a non-failed status (success, ' +
+        'rejection, replacement) so that a future re-failure of the same ' +
+        'task ID can fire a fresh notification once the threshold is ' +
+        'crossed again. Optional so legacy plans validate cleanly; ' +
+        'absence is equivalent to false.',
+    },
   },
   additionalProperties: false,
 };

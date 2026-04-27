@@ -191,6 +191,21 @@ export {
   generateTasksForObjective,
   buildReviewTasks,
 } from './services/weekly-plan-generator.js';
+// Plan-ready system-event emitter — fires a `plan-ready` notification when a
+// pending weekly plan (`approved: false`) is persisted, so the user is
+// surfaced the approval prompt in the dashboard inbox without polling. The
+// sender slug is the agent whose plan needs approval. See AC 6.
+export {
+  emitPlanReadyNotification,
+  planReadyDedupKey,
+  planReadyTitle,
+  planReadyBody,
+} from './services/plan-ready-notifier.js';
+export type {
+  EmitPlanReadyOptions,
+  EmitPlanReadyResult,
+  PlanReadyPlanShape,
+} from './services/plan-ready-notifier.js';
 // Next-week context assembler — reads plan.md, the just-written retrospective
 // file, and the activity log for the completed week, then returns a context
 // object ready to spread into generateWeeklyPlan's options parameter.
@@ -268,6 +283,46 @@ export {
 } from './lock/lock-manager.js';
 // Inbox store — file-based inter-agent task delegation queue
 export { InboxStore } from './storage/inbox-store.js';
+// Notification store — file-based one-way agent → user notification feed.
+// The store also exposes a delivery-channel subscription API so future
+// external push channels (Slack, email, OS push, webhooks) can hook into
+// `append()` writes without re-architecting the store. v1 ships with the
+// dashboard inbox as the only surface, but the seam is in place. See AC 17.
+export {
+  NotificationStore,
+  createNotification,
+} from './storage/notification-store.js';
+export type {
+  Notification,
+  NotificationSource,
+  NotificationSystemEvent,
+  NotificationSummary,
+  NotificationWithAgent,
+  NotificationQueryFilters,
+  CreateNotificationOptions,
+  SendNotificationOptions,
+  NotificationDeliveryChannel,
+  NotificationChannelErrorHandler,
+  NotificationStoreOptions,
+  NotificationLink,
+  NotificationLinkObject,
+} from './storage/notification-store.js';
+export {
+  NOTIFICATION_SOURCES,
+  NOTIFICATION_SYSTEM_EVENTS,
+  notificationSchema,
+  notificationFeedSchema,
+  notificationLinkSchema,
+} from './schemas/notification.schema.js';
+// Typed wrapper for the notification schema — sibling-types-file pattern
+// (notification.schema.js owns the runtime AJV schema; notification.ts
+// owns the canonical TypeScript types for the link union plus the typed
+// validator entry points). See AC 1 sub-AC 1.
+export {
+  validateNotification,
+  validateNotificationFeed,
+  validateNotificationLink,
+} from './schemas/notification.js';
 // Activity log — structured JSON entries for agent activity tracking
 export {
   ActivityLogStore,
@@ -308,6 +363,21 @@ export {
   delegateTask,
   formatDelegationResult,
 } from './skills/delegate-task.js';
+// Notify skill — `aweek exec notify send` entry point. Validates a free-form
+// agent-authored notification payload, verifies the sender agent exists, and
+// hands off to NotificationStore.send() which auto-populates id, agentId,
+// createdAt, and read=false. v1 is dashboard-only; future external push
+// channels register through NotificationStore.subscribe(). See AC 1.
+export {
+  validateSendParams as validateNotifySendParams,
+  sendNotification,
+  formatNotificationResult,
+} from './skills/notify.js';
+export type {
+  SendNotificationParams,
+  ValidatedSendParams,
+  SendNotificationDeps,
+} from './skills/notify.js';
 // Run-once skill — manually dispatch an ad-hoc debug task through the same
 // execution path the heartbeat uses (per-agent lock, .env, session executor
 // with dangerouslySkipPermissions, activity log). See src/skills/run-once.js.
@@ -528,6 +598,19 @@ export {
   alertsDir,
   createBudgetEnforcer,
 } from './services/budget-enforcer.js';
+// Repeated-task-failure system-event emitter — fires a `repeated-task-failure`
+// notification after a weekly task has hit `consecutiveFailures >= 2`. Wired
+// into the heartbeat's `executeOneSelection` failure path; safe to call from
+// any caller that runs after `weeklyPlanStore.updateTaskStatus(..., 'failed')`.
+export {
+  REPEATED_FAILURE_THRESHOLD,
+  buildDedupKey as buildRepeatedFailureDedupKey,
+  maybeEmitRepeatedFailureNotification,
+} from './services/repeated-failure-notifier.js';
+export type {
+  MaybeEmitRepeatedFailureOptions,
+  RepeatedFailureEmitOutcome,
+} from './services/repeated-failure-notifier.js';
 // Weekly calendar renderer — visual text-based calendar display
 export {
   statusIcon,

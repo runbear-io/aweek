@@ -59,6 +59,24 @@ export interface WeeklyTask {
   runAt?: string;
   /** ISO-8601 date-time when status became `completed`. */
   completedAt?: string;
+  /**
+   * Number of consecutive times this task has transitioned to `failed`
+   * without an intervening success / replacement. Used by the
+   * repeated-task-failure system-event emitter to fire a notification
+   * once the threshold (currently 2) is reached. Reset to 0 / omitted on
+   * any transition to a non-failed status, or when the task is replaced
+   * by a new weekly plan. Absent value is equivalent to 0.
+   */
+  consecutiveFailures?: number;
+  /**
+   * Latch flag — set to `true` after the repeated-task-failure
+   * notification has been emitted for the current failing streak.
+   * Prevents the heartbeat from re-emitting another notification while
+   * the task is still in the failing state. Cleared on transition to a
+   * non-failed status so a future re-failure of the same task ID can
+   * fire a fresh notification.
+   */
+  failureNotificationEmitted?: boolean;
 }
 
 /**
@@ -210,7 +228,27 @@ export class WeeklyPlanStore {
 
   /**
    * Update a task's status within a weekly plan.
-   * Sets completedAt when status becomes 'completed'.
+   *
+   * Side effects on top of the basic status assignment:
+   *   - When `status === 'completed'`, stamps `completedAt`.
+   *   - When `status === 'failed'`, increments `consecutiveFailures`
+   *     (treats absent / non-numeric as 0). The `failureNotificationEmitted`
+   *     latch is left as-is so the system-event emitter can decide whether
+   *     to fire — once it does, it should call
+   *     {@link markFailureNotificationEmitted} to set the flag.
+   *   - On transition to ANY non-failed status (`pending`, `in-progress`,
+   *     `completed`, `delegated`, `skipped`), the consecutive-failure
+   *     tracker is reset by deleting both `consecutiveFailures` and
+   *     `failureNotificationEmitted`. This is the "success or task change"
+   *     reset path called out by the repeated-task-failure dedup contract:
+   *     the next time the task fails, the streak starts fresh and a new
+   *     notification can fire once the threshold is crossed again.
+   *
+   * Per-task-ID failure tracking is naturally bounded by the weekly plan's
+   * lifetime — when next week's plan supersedes the current one (a "task
+   * change" via plan replacement), the tracker simply doesn't carry over,
+   * which satisfies the second half of the reset contract.
+   *
    * @returns The updated task, or null if not found
    */
   async updateTaskStatus(
@@ -227,9 +265,88 @@ export class WeeklyPlanStore {
     if (status === 'completed') {
       task.completedAt = new Date().toISOString();
     }
+    if (status === 'failed') {
+      const prev =
+        typeof task.consecutiveFailures === 'number' &&
+        Number.isFinite(task.consecutiveFailures) &&
+        task.consecutiveFailures >= 0
+          ? task.consecutiveFailures
+          : 0;
+      task.consecutiveFailures = prev + 1;
+      // Leave failureNotificationEmitted as-is — the system-event emitter
+      // is responsible for setting it via markFailureNotificationEmitted()
+      // once the notification has actually been written. That separation
+      // keeps the storage layer ignorant of notification semantics.
+    } else {
+      // Reset on any transition out of the failing state — success
+      // (`completed`), replanning (`pending`), retry (`in-progress`),
+      // hand-off (`delegated`), or explicit `skipped`.
+      delete task.consecutiveFailures;
+      delete task.failureNotificationEmitted;
+    }
     plan.updatedAt = new Date().toISOString();
     await this.save(agentId, plan);
     return task;
+  }
+
+  /**
+   * Set a task's `failureNotificationEmitted` latch to `true`.
+   *
+   * Called by the repeated-task-failure system-event emitter AFTER the
+   * notification has been successfully written through the notification
+   * store. Prevents the heartbeat from re-emitting another notification
+   * for the same failing streak. The flag is cleared automatically on
+   * the next non-failed status transition by {@link updateTaskStatus}.
+   *
+   * Idempotent: calling this on a task that already has the flag set is
+   * a no-op (no rewrite of the plan file).
+   *
+   * @returns The updated task, or null if not found.
+   */
+  async markFailureNotificationEmitted(
+    agentId: string,
+    week: string,
+    taskId: string,
+  ): Promise<WeeklyTask | null> {
+    const plan = await this.load(agentId, week);
+    const task = plan.tasks.find((t) => t.id === taskId);
+    if (!task) return null;
+    if (task.failureNotificationEmitted === true) return task;
+    task.failureNotificationEmitted = true;
+    plan.updatedAt = new Date().toISOString();
+    await this.save(agentId, plan);
+    return task;
+  }
+
+  /**
+   * Read-only view of a task's failure-tracking state. Returns the
+   * absent-fields-as-zero defaults so callers don't need to repeat the
+   * "treat undefined as 0/false" logic at every site.
+   *
+   * @returns
+   *   - `null` if the plan or task does not exist.
+   *   - `{ consecutiveFailures, notificationEmitted }` otherwise.
+   */
+  async getFailureTracker(
+    agentId: string,
+    week: string,
+    taskId: string,
+  ): Promise<{ consecutiveFailures: number; notificationEmitted: boolean } | null> {
+    let plan: WeeklyPlan;
+    try {
+      plan = await this.load(agentId, week);
+    } catch {
+      return null;
+    }
+    const task = plan.tasks.find((t) => t.id === taskId);
+    if (!task) return null;
+    return {
+      consecutiveFailures:
+        typeof task.consecutiveFailures === 'number' && task.consecutiveFailures >= 0
+          ? task.consecutiveFailures
+          : 0,
+      notificationEmitted: task.failureNotificationEmitted === true,
+    };
   }
 
   /** Add a task to an existing weekly plan. */

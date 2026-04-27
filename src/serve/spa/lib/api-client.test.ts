@@ -30,6 +30,7 @@ import {
   fetchAgentPlan,
   fetchAgentUsage,
   fetchAgentLogs,
+  markNotificationRead,
   __test,
   type AgentListRow,
   type AgentProfile,
@@ -37,6 +38,7 @@ import {
   type AgentUsage,
   type AgentLogs,
   type AgentsListResponse,
+  type NotificationRow,
 } from './api-client.js';
 
 const { assertValidSlug, joinUrl } = __test;
@@ -436,6 +438,135 @@ describe('transport errors', () => {
       name: 'ApiError',
       message: expect.stringMatching(/parse JSON/i),
     });
+  });
+});
+
+// ── markNotificationRead ──────────────────────────────────────────────
+// AC 12: clicking a notification flips it to read via
+// `POST /api/notifications/:slug/:id/read`. The api-client wrapper
+// constructs the URL, sends an empty-body POST, and unwraps the
+// `{ notification }` envelope. These tests pin every facet of the
+// contract so a regression in URL construction or error handling shows
+// up before the SPA tries to wire a click handler.
+
+describe('markNotificationRead()', () => {
+  const sampleRow: NotificationRow = {
+    id: 'notif-abc12345',
+    agentId: 'writer',
+    source: 'agent',
+    title: 'Hello',
+    body: 'Body text.',
+    createdAt: '2026-04-22T10:00:00.000Z',
+    read: true,
+    readAt: '2026-04-22T11:00:00.000Z',
+  };
+
+  it('POSTs to /api/notifications/:slug/:id/read and unwraps the envelope', async () => {
+    const { fetch, calls } = makeFetchStub({
+      ok: true,
+      status: 200,
+      body: { notification: sampleRow },
+    });
+    const result = await markNotificationRead('writer', 'notif-abc12345', {
+      fetch,
+    });
+    expect(result).toEqual(sampleRow);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(
+      '/api/notifications/writer/notif-abc12345/read',
+    );
+    expect(calls[0].init.method).toBe('POST');
+  });
+
+  it('encodes path segments and joins the configured baseUrl', async () => {
+    const { fetch, calls } = makeFetchStub({
+      ok: true,
+      status: 200,
+      body: { notification: sampleRow },
+    });
+    await markNotificationRead('weird slug', 'notif-xyz', {
+      fetch,
+      baseUrl: 'http://localhost:3000',
+    });
+    expect(calls[0].url).toBe(
+      'http://localhost:3000/api/notifications/weird%20slug/notif-xyz/read',
+    );
+  });
+
+  it('throws TypeError on invalid slug or id (no fetch)', async () => {
+    const { fetch, calls } = makeFetchStub([]);
+    await expect(
+      markNotificationRead('', 'notif-x', { fetch }),
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      markNotificationRead('writer', '', { fetch }),
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      markNotificationRead('writer', '../escape', { fetch }),
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      markNotificationRead('writer', 'has/slash', { fetch }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('propagates 404 as ApiError so the SPA can render a stale-list state', async () => {
+    const { fetch } = makeFetchStub({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      body: { error: 'Notification not found: notif-missing' },
+    });
+    await expect(
+      markNotificationRead('writer', 'notif-missing', { fetch }),
+    ).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 404,
+      message: /not found/i,
+    });
+  });
+
+  it('rejects with ApiError on a malformed envelope (no `notification` key)', async () => {
+    const { fetch } = makeFetchStub({
+      ok: true,
+      status: 200,
+      body: { unexpected: true },
+    });
+    await expect(
+      markNotificationRead('writer', 'notif-x', { fetch }),
+    ).rejects.toMatchObject({
+      name: 'ApiError',
+      message: /missing.*notification.*envelope/i,
+    });
+  });
+
+  it('forwards AbortSignal to the underlying fetch and propagates AbortError', async () => {
+    const ac = new AbortController();
+    const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const { fetch, calls } = makeFetchStub(abortErr);
+    ac.abort();
+    await expect(
+      markNotificationRead('writer', 'notif-x', { fetch, signal: ac.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls[0].init.signal).toBe(ac.signal);
+  });
+
+  it('idempotent on the wire: re-POSTing returns the same row', async () => {
+    // Server-side `markRead` is idempotent — flipping a read=true row is a
+    // no-op and returns the unchanged record. The wrapper must surface
+    // that through unchanged so the SPA can blindly POST on every click.
+    const { fetch } = makeFetchStub([
+      { ok: true, status: 200, body: { notification: sampleRow } },
+      { ok: true, status: 200, body: { notification: sampleRow } },
+    ]);
+    const first = await markNotificationRead('writer', 'notif-abc12345', {
+      fetch,
+    });
+    const second = await markNotificationRead('writer', 'notif-abc12345', {
+      fetch,
+    });
+    expect(first).toEqual(second);
+    expect(first.read).toBe(true);
   });
 });
 

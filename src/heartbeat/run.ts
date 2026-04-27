@@ -23,6 +23,7 @@ import { UsageStore } from '../storage/usage-store.js';
 import { ActivityLogStore, createLogEntry } from '../storage/activity-log-store.js';
 import type { ActivityLogStatus } from '../storage/activity-log-store.js';
 import { InboxStore } from '../storage/inbox-store.js';
+import { NotificationStore } from '../storage/notification-store.js';
 import { createScheduler } from './scheduler.js';
 import { tickAgent } from './heartbeat-task-runner.js';
 import type { TaskTickResult } from './heartbeat-task-runner.js';
@@ -33,6 +34,7 @@ import {
 } from './task-selector.js';
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
+import { maybeEmitRepeatedFailureNotification } from '../services/repeated-failure-notifier.js';
 import { loadConfig } from '../storage/config-store.js';
 import { detectSystemTimeZone, mondayOfWeek } from '../time/zone.js';
 import { WEEKLY_REVIEW_OBJECTIVE_ID, DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
@@ -59,6 +61,7 @@ interface ExecutionContext {
   activityLogStore: ActivityLogStore;
   agentStore: AgentStore;
   inboxStore: InboxStore;
+  notificationStore: NotificationStore;
 }
 
 interface TaskSelection {
@@ -143,6 +146,7 @@ export async function runHeartbeatForAgent(
   const usageStore = new UsageStore(agentsDir);
   const activityLogStore = new ActivityLogStore(agentsDir);
   const inboxStore = new InboxStore(agentsDir);
+  const notificationStore = new NotificationStore(agentsDir);
   const lockDir = join(dataDir, 'locks');
 
   const scheduler = createScheduler({ lockDir });
@@ -206,6 +210,7 @@ export async function runHeartbeatForAgent(
     activityLogStore,
     agentStore,
     inboxStore,
+    notificationStore,
   };
 
   const firstResult = await executeOneSelection(
@@ -668,6 +673,42 @@ async function executeOneSelection(
   );
   console.log(`[${agentId}] task ${finalStatus}: ${task.id}`);
 
+  // Repeated-task-failure detector — fires after the failure counter has
+  // been incremented by `updateTaskStatus`. Best-effort: a failing task
+  // must still log activity and trip the budget enforcer below even if
+  // the notification surface is broken. The emitter is itself idempotent
+  // (latch + dedupKey) so an extra invocation is safe; we only call it
+  // on the failure branch to keep the success path zero-overhead.
+  if (finalStatus === 'failed') {
+    try {
+      const outcome = await maybeEmitRepeatedFailureNotification({
+        weeklyPlanStore,
+        notificationStore: ctx.notificationStore,
+        agentId,
+        week,
+        task: {
+          id: task.id,
+          title: task.title,
+          objectiveId: task.objectiveId,
+        },
+      });
+      if (outcome.fired) {
+        console.log(
+          `[${agentId}] repeated-task-failure notification emitted ` +
+            `(${outcome.consecutiveFailures} consecutive failures, id=${outcome.notificationId})`,
+        );
+      } else if (outcome.reason === 'send_failed') {
+        console.warn(
+          `[${agentId}] repeated-task-failure notification send failed: ${outcome.error.message}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[${agentId}] repeated-task-failure notifier warning: ${errMsg(err)}`,
+      );
+    }
+  }
+
   try {
     const session = execResult?.sessionResult;
     const stdout = session?.stdout || '';
@@ -729,6 +770,7 @@ async function executeOneSelection(
       agentStore,
       usageStore,
       baseDir: agentsDir,
+      notificationStore: ctx.notificationStore,
     });
   } catch (err) {
     console.warn(`[${agentId}] budget enforcement warning: ${errMsg(err)}`);

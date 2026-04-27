@@ -32,6 +32,11 @@ import {
   executionRecordSchema,
   executionLogSchema,
 } from './execution.schema.js';
+import {
+  notificationLinkSchema,
+  notificationSchema,
+  notificationFeedSchema,
+} from './notification.schema.js';
 
 const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
@@ -54,6 +59,11 @@ ajv.addSchema(artifactRecordSchema);
 ajv.addSchema(artifactManifestSchema);
 ajv.addSchema(executionRecordSchema);
 ajv.addSchema(executionLogSchema);
+// notificationLinkSchema is registered BEFORE notificationSchema because the
+// latter references it via `$ref: 'aweek://schemas/notification-link'`.
+ajv.addSchema(notificationLinkSchema);
+ajv.addSchema(notificationSchema);
+ajv.addSchema(notificationFeedSchema);
 ajv.addSchema(agentConfigSchema);
 
 /**
@@ -103,3 +113,6 @@ export const validateArtifactRecord = (data) => validate('aweek://schemas/artifa
 export const validateArtifactManifest = (data) => validate('aweek://schemas/artifact-manifest', data);
 export const validateExecutionRecord = (data) => validate('aweek://schemas/execution-record', data);
 export const validateExecutionLog = (data) => validate('aweek://schemas/execution-log', data);
+export const validateNotification = (data) => validate('aweek://schemas/notification', data);
+export const validateNotificationFeed = (data) => validate('aweek://schemas/notification-feed', data);
+export const validateNotificationLink = (data) => validate('aweek://schemas/notification-link', data);
