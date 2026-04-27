@@ -453,14 +453,15 @@ export function TaskChip({
     title: titleText,
   } as const;
 
+  // Numbering is preserved on `data-task-number` (used by tests + the
+  // layout helpers) but no longer rendered as visible chip prefix —
+  // task chips read better at a glance with just the icon + label.
+  void number;
   const innerContent = (
     <div className="flex items-start gap-1">
       <span aria-hidden="true" className="font-mono">
         {icon}
       </span>
-      {number != null ? (
-        <span className="font-semibold tabular-nums">{number}.</span>
-      ) : null}
       <span className="line-clamp-2 break-words">{label}</span>
       {minuteBadge ? (
         <span
