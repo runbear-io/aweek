@@ -47,6 +47,7 @@ import {
   gatherAgentUsage,
   gatherAgentLogs,
   streamExecutionLogLines,
+  gatherAgentReviews,
 } from './data/index.js';
 // The /api/summary endpoint intentionally reuses the terminal
 // `/aweek:summary` composer so the SPA Overview tab shows byte-identical
@@ -420,6 +421,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
     return;
   }
 
+  const agentReviewsMatch = pathname.match(/^\/api\/agents\/([^/]+)\/reviews\/?$/);
+  if (agentReviewsMatch) {
+    const slug = decodeSlug(agentReviewsMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    await handleAgentReviews(res, ctx, slug);
+    return;
+  }
+
   const agentExecLogMatch = pathname.match(
     /^\/api\/agents\/([^/]+)\/executions\/([^/]+)\/?$/,
   );
@@ -726,6 +738,34 @@ async function handleAgentLogs(
   } catch (err) {
     sendJson(res, 500, {
       error: err && (err as Error).message ? (err as Error).message : 'Failed to load logs',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/reviews — return the reviews payload for an agent.
+ *
+ * Delegates to `gatherAgentReviews`, which scans `.aweek/agents/<slug>/reviews/`
+ * for `.md` files (with optional `.json` sidecars) and returns them sorted
+ * newest-first, capped at 26 entries. Returns `null` (→ 404) when the slug
+ * does not exist on disk.
+ *
+ * Response shape:
+ *   200 { reviews: { slug, reviews: [{ week, markdown, metadata, generatedAt }, ...] } }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ */
+async function handleAgentReviews(res: ServerResponse, ctx: RequestContext, slug: string): Promise<void> {
+  try {
+    const reviews = await gatherAgentReviews({ projectDir: ctx.projectDir, slug });
+    if (!reviews) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, { reviews });
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load reviews',
     });
   }
 }

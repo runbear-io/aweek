@@ -61,3 +61,5 @@ export {
 } from './execution-log.js';
 
 export { gatherAgentLogs } from './logs.js';
+
+export { gatherAgentReviews } from './reviews.js';
