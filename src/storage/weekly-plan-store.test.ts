@@ -635,3 +635,283 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
     assert.equal(review[0]?.objectiveId, DAILY_REVIEW_OBJECTIVE_ID);
   });
 });
+
+// =============================================================================
+// Consecutive-failure tracking — Sub-AC 1 of AC 5
+//
+// Repeated task failure notifications fire after 2 consecutive failures of the
+// same weekly-task ID, and do not re-emit until the task transitions out of the
+// failing state (success, rejection, or replacement by a new plan). The state
+// (counter + last-emitted flag) lives on the WeeklyTask itself so atomic
+// status updates carry the tracker forward in the same write.
+// =============================================================================
+
+describe('WeeklyPlanStore — consecutive-failure tracking (Sub-AC 1 of AC 5)', () => {
+  let trackerStore: WeeklyPlanStore;
+  let trackerTmpDir: string;
+  const AGENT = 'agent-failtracker-test-abcd';
+
+  before(async () => {
+    trackerTmpDir = await mkdtemp(join(tmpdir(), 'aweek-failtracker-'));
+    trackerStore = new WeeklyPlanStore(trackerTmpDir);
+  });
+
+  after(async () => {
+    await rm(trackerTmpDir, { recursive: true, force: true });
+  });
+
+  // Helper: build a plan with one task and persist it.
+  async function setupPlan(week: string): Promise<WeeklyTask> {
+    const goal = createGoal('Test goal');
+    const obj = createObjective('Test obj', goal.id);
+    const task = createTask(
+      { title: 'Failing task', prompt: 'Failing task' },
+      obj.id,
+    ) as WeeklyTask;
+    const plan = createWeeklyPlan(week, '2026-04', [task]) as WeeklyPlan;
+    await trackerStore.save(AGENT, plan);
+    return task;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Counter increments on consecutive failures
+  // ---------------------------------------------------------------------------
+
+  it('initializes consecutiveFailures to 1 on first failed transition', async () => {
+    const task = await setupPlan('2026-W18');
+    const updated = await trackerStore.updateTaskStatus(AGENT, '2026-W18', task.id, 'failed');
+    assert.ok(updated);
+    assert.equal(updated.status, 'failed');
+    assert.equal(updated.consecutiveFailures, 1);
+    // Latch flag must NOT be auto-set by the storage layer — the emitter owns it.
+    assert.equal(updated.failureNotificationEmitted, undefined);
+  });
+
+  it('increments consecutiveFailures across consecutive failed transitions', async () => {
+    const task = await setupPlan('2026-W19');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W19', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W19', task.id, 'failed');
+    const third = await trackerStore.updateTaskStatus(AGENT, '2026-W19', task.id, 'failed');
+    assert.ok(third);
+    assert.equal(third.consecutiveFailures, 3);
+  });
+
+  it('persists consecutiveFailures to disk so the count survives reload', async () => {
+    const task = await setupPlan('2026-W20');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W20', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W20', task.id, 'failed');
+
+    const reloaded = await trackerStore.load(AGENT, '2026-W20');
+    const reloadedTask = reloaded.tasks.find((t) => t.id === task.id);
+    assert.ok(reloadedTask);
+    assert.equal(reloadedTask.consecutiveFailures, 2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reset on transition to a non-failed status
+  // ---------------------------------------------------------------------------
+
+  it('resets the tracker when status transitions to completed (success)', async () => {
+    const task = await setupPlan('2026-W21');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W21', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W21', task.id, 'failed');
+    // Mark notification emitted to verify the latch is cleared on reset
+    await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W21', task.id);
+
+    const succeeded = await trackerStore.updateTaskStatus(AGENT, '2026-W21', task.id, 'completed');
+    assert.ok(succeeded);
+    assert.equal(succeeded.status, 'completed');
+    assert.equal(succeeded.consecutiveFailures, undefined);
+    assert.equal(succeeded.failureNotificationEmitted, undefined);
+    assert.ok(succeeded.completedAt);
+  });
+
+  it('resets the tracker when status transitions to in-progress (retry)', async () => {
+    const task = await setupPlan('2026-W22');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W22', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W22', task.id, 'failed');
+    await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W22', task.id);
+
+    const retried = await trackerStore.updateTaskStatus(AGENT, '2026-W22', task.id, 'in-progress');
+    assert.ok(retried);
+    assert.equal(retried.consecutiveFailures, undefined);
+    assert.equal(retried.failureNotificationEmitted, undefined);
+  });
+
+  it('resets the tracker when status transitions to delegated', async () => {
+    const task = await setupPlan('2026-W23');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W23', task.id, 'failed');
+    const delegated = await trackerStore.updateTaskStatus(AGENT, '2026-W23', task.id, 'delegated');
+    assert.ok(delegated);
+    assert.equal(delegated.consecutiveFailures, undefined);
+  });
+
+  it('resets the tracker when status transitions to skipped', async () => {
+    const task = await setupPlan('2026-W24');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W24', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W24', task.id, 'failed');
+    const skipped = await trackerStore.updateTaskStatus(AGENT, '2026-W24', task.id, 'skipped');
+    assert.ok(skipped);
+    assert.equal(skipped.consecutiveFailures, undefined);
+    assert.equal(skipped.failureNotificationEmitted, undefined);
+  });
+
+  it('resets the tracker when status transitions to pending (rejected/replanned)', async () => {
+    const task = await setupPlan('2026-W25');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W25', task.id, 'failed');
+    const repending = await trackerStore.updateTaskStatus(AGENT, '2026-W25', task.id, 'pending');
+    assert.ok(repending);
+    assert.equal(repending.consecutiveFailures, undefined);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Re-failure after reset starts a fresh streak
+  // ---------------------------------------------------------------------------
+
+  it('starts a fresh streak after a successful run, allowing a new notification later', async () => {
+    const task = await setupPlan('2026-W26');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W26', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W26', task.id, 'failed');
+    await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W26', task.id);
+    await trackerStore.updateTaskStatus(AGENT, '2026-W26', task.id, 'completed');
+
+    // New failing streak should start at 1, latch cleared
+    const refailed = await trackerStore.updateTaskStatus(AGENT, '2026-W26', task.id, 'failed');
+    assert.ok(refailed);
+    assert.equal(refailed.consecutiveFailures, 1);
+    assert.equal(refailed.failureNotificationEmitted, undefined);
+  });
+
+  // ---------------------------------------------------------------------------
+  // markFailureNotificationEmitted
+  // ---------------------------------------------------------------------------
+
+  it('markFailureNotificationEmitted sets the latch flag', async () => {
+    const task = await setupPlan('2026-W27');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W27', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W27', task.id, 'failed');
+
+    const flagged = await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W27', task.id);
+    assert.ok(flagged);
+    assert.equal(flagged.failureNotificationEmitted, true);
+    // The streak counter must NOT be touched
+    assert.equal(flagged.consecutiveFailures, 2);
+
+    const reloaded = await trackerStore.load(AGENT, '2026-W27');
+    const reloadedTask = reloaded.tasks.find((t) => t.id === task.id);
+    assert.equal(reloadedTask?.failureNotificationEmitted, true);
+  });
+
+  it('markFailureNotificationEmitted is idempotent', async () => {
+    const task = await setupPlan('2026-W28');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W28', task.id, 'failed');
+    await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W28', task.id);
+    const first = await trackerStore.load(AGENT, '2026-W28');
+    const firstUpdatedAt = first.updatedAt;
+
+    // Second call must not change the file or throw
+    await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W28', task.id);
+    const second = await trackerStore.load(AGENT, '2026-W28');
+    assert.equal(second.updatedAt, firstUpdatedAt, 'idempotent call must not bump updatedAt');
+  });
+
+  it('markFailureNotificationEmitted returns null for an unknown task id', async () => {
+    await setupPlan('2026-W29');
+    const result = await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W29', 'task-nope');
+    assert.equal(result, null);
+  });
+
+  // ---------------------------------------------------------------------------
+  // getFailureTracker convenience reader
+  // ---------------------------------------------------------------------------
+
+  it('getFailureTracker returns absent-as-zero defaults for an untouched task', async () => {
+    const task = await setupPlan('2026-W30');
+    const state = await trackerStore.getFailureTracker(AGENT, '2026-W30', task.id);
+    assert.deepStrictEqual(state, { consecutiveFailures: 0, notificationEmitted: false });
+  });
+
+  it('getFailureTracker reflects the live counter and latch flag', async () => {
+    const task = await setupPlan('2026-W31');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W31', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W31', task.id, 'failed');
+    await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W31', task.id);
+
+    const state = await trackerStore.getFailureTracker(AGENT, '2026-W31', task.id);
+    assert.deepStrictEqual(state, { consecutiveFailures: 2, notificationEmitted: true });
+  });
+
+  it('getFailureTracker returns null for a missing plan or task', async () => {
+    assert.equal(await trackerStore.getFailureTracker(AGENT, '1999-W01', 'task-nope'), null);
+    const task = await setupPlan('2026-W32');
+    assert.equal(
+      await trackerStore.getFailureTracker(AGENT, '2026-W32', 'task-nonexistent'),
+      null,
+    );
+    // Sanity — the existing task is reachable
+    assert.ok(await trackerStore.getFailureTracker(AGENT, '2026-W32', task.id));
+  });
+
+  // ---------------------------------------------------------------------------
+  // Schema acceptance — both fields must round-trip through validate/save/load
+  // ---------------------------------------------------------------------------
+
+  it('validates and round-trips a plan that already carries tracker fields', async () => {
+    const goal = createGoal('Round-trip goal');
+    const obj = createObjective('Round-trip obj', goal.id);
+    const task = createTask({ title: 'Pre-failed', prompt: 'Pre-failed' }, obj.id) as WeeklyTask;
+    task.status = 'failed';
+    task.consecutiveFailures = 2;
+    task.failureNotificationEmitted = true;
+    const plan = createWeeklyPlan('2026-W33', '2026-04', [task]) as WeeklyPlan;
+
+    // The schema must accept the tracker fields
+    const result = validateWeeklyPlan(plan);
+    assert.equal(result.valid, true, JSON.stringify(result.errors));
+
+    await trackerStore.save(AGENT, plan);
+    const loaded = await trackerStore.load(AGENT, '2026-W33');
+    const reloaded = loaded.tasks.find((t) => t.id === task.id);
+    assert.ok(reloaded);
+    assert.equal(reloaded.consecutiveFailures, 2);
+    assert.equal(reloaded.failureNotificationEmitted, true);
+  });
+
+  it('rejects a negative consecutiveFailures value at the schema boundary', () => {
+    const goal = createGoal('Bad tracker goal');
+    const obj = createObjective('Bad tracker obj', goal.id);
+    const task = createTask({ title: 'Bad', prompt: 'Bad' }, obj.id) as WeeklyTask;
+    task.consecutiveFailures = -1;
+    const plan = createWeeklyPlan('2026-W34', '2026-04', [task]) as WeeklyPlan;
+    const result = validateWeeklyPlan(plan);
+    assert.equal(result.valid, false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Task-change reset — replacing the plan drops the tracker naturally
+  // ---------------------------------------------------------------------------
+
+  it('replaced plan (task-change) does not carry the tracker forward', async () => {
+    const task = await setupPlan('2026-W35');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W35', task.id, 'failed');
+    await trackerStore.updateTaskStatus(AGENT, '2026-W35', task.id, 'failed');
+    await trackerStore.markFailureNotificationEmitted(AGENT, '2026-W35', task.id);
+
+    // Next week's plan with a brand-new task ID — old tracker is naturally gone
+    const newGoal = createGoal('Next week goal');
+    const newObj = createObjective('Next week obj', newGoal.id);
+    const replacementTask = createTask(
+      { title: 'Replacement', prompt: 'Replacement' },
+      newObj.id,
+    ) as WeeklyTask;
+    const newPlan = createWeeklyPlan('2026-W36', '2026-09', [replacementTask]) as WeeklyPlan;
+    await trackerStore.save(AGENT, newPlan);
+
+    const tracker = await trackerStore.getFailureTracker(
+      AGENT,
+      '2026-W36',
+      replacementTask.id,
+    );
+    assert.deepStrictEqual(tracker, { consecutiveFailures: 0, notificationEmitted: false });
+  });
+});

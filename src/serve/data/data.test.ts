@@ -83,6 +83,7 @@ const ALLOWED_IMPORT_PREFIXES = [
   './execution-log.js',
   './logs.js',
   './reviews.js',
+  './notifications.js',
   './index.js',
   '../../storage/review-file-reader.js',
 ];
@@ -160,6 +161,7 @@ test('data layer: barrel re-exports every expected gatherer', () => {
     'gatherAgentLogs',
     'streamExecutionLogLines',
     'gatherAgentReviews',
+    'gatherAllNotifications',
   ];
   for (const name of expected) {
     assert.equal(
@@ -1570,6 +1572,180 @@ test('gatherAgentReviews requires projectDir and slug', async () => {
     () => dataIndex.gatherAgentReviews({ projectDir: '/tmp/x' }),
     /slug is required/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Notifications: global feed gatherer.
+//
+// `gatherAllNotifications` walks every per-agent notifications.json under
+// `<projectDir>/.aweek/agents/` via NotificationStore.loadAll() and
+// returns a single reverse-chronological feed plus the unread total.
+// These tests pin the contract: empty-project safety, multi-agent merge,
+// newest-first sort, filter pass-through, limit behaviour, and the
+// unfiltered unread count.
+// ---------------------------------------------------------------------------
+
+test('gatherAllNotifications: empty project returns empty feed + zero unread', async () => {
+  const { root } = await makeFixtureProject();
+  try {
+    const result = await dataIndex.gatherAllNotifications({ projectDir: root });
+    assert.deepEqual(result, { notifications: [], unreadCount: 0 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('gatherAllNotifications: requires projectDir', async () => {
+  await assert.rejects(
+    () => dataIndex.gatherAllNotifications({}),
+    /projectDir is required/,
+  );
+});
+
+test('gatherAllNotifications: merges multiple agents and sorts newest-first', async () => {
+  const { root, agentId } = await makeFixtureProject();
+  try {
+    const { NotificationStore } = await import(
+      '../../storage/notification-store.js'
+    );
+    const agentsDir = join(root, '.aweek', 'agents');
+    const store = new NotificationStore(agentsDir);
+
+    // Seed a second agent with its own subdirectory so listAgents()
+    // discovers both feeds.
+    const secondId = 'second-agent';
+    await mkdir(join(agentsDir, secondId), { recursive: true });
+
+    // Out-of-order writes across two agents — older / newer interleaved.
+    await store.send(agentId, {
+      title: 'First',
+      body: 'First body',
+      createdAt: '2026-04-20T10:00:00.000Z',
+    });
+    await store.send(secondId, {
+      title: 'Second',
+      body: 'Second body',
+      createdAt: '2026-04-22T10:00:00.000Z',
+    });
+    await store.send(agentId, {
+      title: 'Third',
+      body: 'Third body',
+      createdAt: '2026-04-21T10:00:00.000Z',
+    });
+
+    const result = await dataIndex.gatherAllNotifications({ projectDir: root });
+    assert.equal(result.notifications.length, 3);
+    // Reverse-chronological order regardless of which agent owns the row.
+    const titles = result.notifications.map((n) => n.title);
+    assert.deepEqual(titles, ['Second', 'Third', 'First']);
+    // Each row carries its owning agent slug for sender attribution.
+    const owners = result.notifications.map((n) => n.agent);
+    assert.deepEqual(owners, [secondId, agentId, agentId]);
+    // All freshly seeded → unread count equals total emitted.
+    assert.equal(result.unreadCount, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('gatherAllNotifications: filters pass through to the store; unreadCount stays unfiltered', async () => {
+  const { root, agentId } = await makeFixtureProject();
+  try {
+    const { NotificationStore } = await import(
+      '../../storage/notification-store.js'
+    );
+    const agentsDir = join(root, '.aweek', 'agents');
+    const store = new NotificationStore(agentsDir);
+
+    // Mix of agent and system sources, plus one read entry.
+    await store.send(agentId, {
+      title: 'Agent ping',
+      body: 'agent',
+      createdAt: '2026-04-20T10:00:00.000Z',
+    });
+    const sys = await store.send(agentId, {
+      source: 'system',
+      systemEvent: 'budget-exhausted',
+      title: 'Budget exhausted',
+      body: 'system',
+      createdAt: '2026-04-21T10:00:00.000Z',
+    });
+    await store.send(agentId, {
+      source: 'system',
+      systemEvent: 'plan-ready',
+      title: 'Plan ready',
+      body: 'system',
+      createdAt: '2026-04-22T10:00:00.000Z',
+    });
+    await store.markRead(agentId, sys.id);
+
+    // Filter to system events only.
+    const sysOnly = await dataIndex.gatherAllNotifications({
+      projectDir: root,
+      source: 'system',
+    });
+    assert.equal(sysOnly.notifications.length, 2);
+    assert.ok(sysOnly.notifications.every((n) => n.source === 'system'));
+    // unreadCount is independent of the filter — 2 unread overall (the
+    // agent ping + the plan-ready system event); the budget-exhausted
+    // event was marked read above.
+    assert.equal(sysOnly.unreadCount, 2);
+
+    // Filter to unread only.
+    const unread = await dataIndex.gatherAllNotifications({
+      projectDir: root,
+      read: false,
+    });
+    assert.equal(unread.notifications.length, 2);
+    assert.ok(unread.notifications.every((n) => n.read === false));
+    assert.equal(unread.unreadCount, 2);
+
+    // Filter to a specific system event.
+    const planOnly = await dataIndex.gatherAllNotifications({
+      projectDir: root,
+      systemEvent: 'plan-ready',
+    });
+    assert.equal(planOnly.notifications.length, 1);
+    assert.equal(planOnly.notifications[0].systemEvent, 'plan-ready');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('gatherAllNotifications: limit caps the feed after the global sort', async () => {
+  const { root, agentId } = await makeFixtureProject();
+  try {
+    const { NotificationStore } = await import(
+      '../../storage/notification-store.js'
+    );
+    const agentsDir = join(root, '.aweek', 'agents');
+    const store = new NotificationStore(agentsDir);
+
+    // Seed five notifications at known timestamps.
+    for (let i = 0; i < 5; i++) {
+      await store.send(agentId, {
+        title: `n-${i}`,
+        body: `body ${i}`,
+        // Timestamps strictly ascending so reverse-chrono gives n-4 first.
+        createdAt: `2026-04-2${i}T00:00:00.000Z`,
+      });
+    }
+
+    const limited = await dataIndex.gatherAllNotifications({
+      projectDir: root,
+      limit: 2,
+    });
+    assert.equal(limited.notifications.length, 2);
+    // Newest-first: n-4 before n-3.
+    assert.deepEqual(
+      limited.notifications.map((n) => n.title),
+      ['n-4', 'n-3'],
+    );
+    // unreadCount reflects all 5 emitted, not just the 2 returned rows.
+    assert.equal(limited.unreadCount, 5);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 // Silence the unused-import lint: dynamic fs APIs (readdir, writeFile,

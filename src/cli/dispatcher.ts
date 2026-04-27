@@ -32,6 +32,7 @@ import * as summary from '../skills/summary.js';
 import * as query from '../skills/query.js';
 import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
+import * as notify from '../skills/notify.js';
 import * as execution from '../skills/execution.js';
 import * as planAmbiguity from '../skills/plan-ambiguity.js';
 import * as planInterviewStore from '../storage/plan-interview-store.js';
@@ -220,6 +221,21 @@ const REGISTRY_LITERAL = Object.freeze({
     delegateTask: delegateTask.delegateTask,
     formatDelegationResult: (input: any) =>
       delegateTask.formatDelegationResult(input?.message ?? input),
+  },
+  // Agent → user notification skill — `aweek exec notify send` is the
+  // canonical write entry point for agents (and system-event emitters that
+  // shell out via the CLI). Mirrors the `delegate-task` shape: `send` is the
+  // main async action, `validate` is a pure pre-flight, and `format` shapes
+  // the persisted notification for human-readable CLI output. The skill's
+  // `sendNotification` already takes a single options-object so we register
+  // it by direct reference; the formatter gets a thin adapter that accepts
+  // either `{notification}` or the raw notification object so the skill
+  // markdown can pipe `send` output back into `format` without unwrapping.
+  notify: {
+    send: notify.sendNotification,
+    validateSendParams: notify.validateSendParams,
+    formatNotificationResult: (input: any) =>
+      notify.formatNotificationResult(input?.notification ?? input),
   },
   // Free-form per-agent plan.md — authored by the user, read by skills as
   // context for weekly-plan generation. Each adapter promotes the

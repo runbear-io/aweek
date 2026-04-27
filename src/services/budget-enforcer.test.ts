@@ -18,6 +18,7 @@ import {
 } from './budget-enforcer.js';
 import { AgentStore } from '../storage/agent-store.js';
 import { UsageStore, createUsageRecord } from '../storage/usage-store.js';
+import { NotificationStore } from '../storage/notification-store.js';
 import { createAgentConfig } from '../models/agent.js';
 
 interface TestAgentConfig {
@@ -473,6 +474,199 @@ describe('budget-enforcer', () => {
       const results = await enforcer.enforceAll('2026-04-13');
       assert.equal(results.length, 2);
       assert.ok(results.every((r) => r.exceeded === false));
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // AC 4 — budget-exhausted system notification emission
+  //
+  // When an optional NotificationStore is passed via BudgetEnforcerDeps,
+  // enforcement that pauses an agent must auto-emit a system notification
+  // attributed to the paused agent. The notification carries:
+  //   - source: 'system'
+  //   - systemEvent: 'budget-exhausted'
+  //   - sender slug = the paused agent (system event subject)
+  //   - dedupKey = `budget-exhausted:<agent>:<weekMonday>` (no re-emit
+  //     while the prior is still unread)
+  //
+  // Re-emission is gated on a fresh alert flag write, mirroring the
+  // existing alertWritten idempotency. The notification store's own
+  // dedupKey path is a belt-and-suspenders second line of defense.
+  // -----------------------------------------------------------------------
+  describe('budget-exhausted notification emission (AC 4)', () => {
+    it('does not require a notificationStore — legacy callers stay working', async () => {
+      const agent = await createTestAgent('legacy', 100);
+      await addUsage(agent.id, 80, 80, '2026-04-13'); // 160 > 100
+
+      const result = await enforceBudget(agent.id, deps, '2026-04-13');
+
+      assert.equal(result.exceeded, true);
+      assert.equal(result.paused, true);
+      assert.equal(result.alertWritten, true);
+      assert.equal(result.notificationEmitted, false);
+      assert.equal(result.notificationId, null);
+    });
+
+    it('emits a system notification when pause-on-exhaust fires', async () => {
+      const notificationStore = new NotificationStore(tmpDir);
+      const agent = await createTestAgent('notified', 200);
+      await addUsage(agent.id, 150, 100, '2026-04-13'); // 250 > 200
+
+      const result = await enforceBudget(
+        agent.id,
+        { agentStore, usageStore, baseDir: tmpDir, notificationStore },
+        '2026-04-13',
+        '2026-04-15T10:00:00.000Z',
+      );
+
+      assert.equal(result.exceeded, true);
+      assert.equal(result.paused, true);
+      assert.equal(result.alertWritten, true);
+      assert.equal(result.notificationEmitted, true);
+      assert.ok(result.notificationId);
+      assert.match(result.notificationId, /^notif-[a-f0-9]+$/);
+
+      // Verify the notification persisted under the paused agent's slug
+      const feed = await notificationStore.load(agent.id);
+      assert.equal(feed.length, 1);
+      const n = feed[0]!;
+      assert.equal(n.id, result.notificationId);
+      assert.equal(n.agentId, agent.id, 'sender slug = paused agent');
+      assert.equal(n.source, 'system');
+      assert.equal(n.systemEvent, 'budget-exhausted');
+      assert.equal(n.read, false);
+      assert.equal(n.createdAt, '2026-04-15T10:00:00.000Z');
+      assert.equal(n.dedupKey, `budget-exhausted:${agent.id}:2026-04-13`);
+      assert.ok(n.title.length > 0);
+      assert.ok(n.body.includes(agent.id));
+      assert.ok(n.body.includes('200')); // budget
+      assert.ok(n.body.includes('250')); // used
+      assert.ok(n.body.includes('2026-04-13')); // week
+      assert.ok(n.metadata);
+      assert.equal(n.metadata.weekMonday, '2026-04-13');
+      assert.equal(n.metadata.used, 250);
+      assert.equal(n.metadata.budget, 200);
+      assert.equal(n.metadata.exceededBy, 50);
+      assert.ok(typeof n.metadata.alertPath === 'string');
+    });
+
+    it('does not emit a duplicate notification on a re-enforce while still paused', async () => {
+      const notificationStore = new NotificationStore(tmpDir);
+      const agent = await createTestAgent('idem-notif', 100);
+      await addUsage(agent.id, 80, 80, '2026-04-13'); // 160 > 100
+      const localDeps: BudgetEnforcerDeps = {
+        agentStore,
+        usageStore,
+        baseDir: tmpDir,
+        notificationStore,
+      };
+
+      const first = await enforceBudget(agent.id, localDeps, '2026-04-13', '2026-04-15T10:00:00Z');
+      assert.equal(first.notificationEmitted, true);
+      assert.equal((await notificationStore.load(agent.id)).length, 1);
+
+      const second = await enforceBudget(agent.id, localDeps, '2026-04-13', '2026-04-15T11:00:00Z');
+      assert.equal(second.exceeded, true);
+      assert.equal(second.alertWritten, false, 'second call must be alert-idempotent');
+      assert.equal(second.notificationEmitted, false, 'second call must not re-emit');
+      assert.equal(second.notificationId, null);
+
+      // Feed unchanged — same single entry as after the first emission.
+      const feed = await notificationStore.load(agent.id);
+      assert.equal(feed.length, 1);
+      assert.equal(feed[0]!.id, first.notificationId);
+    });
+
+    it('does not emit when enforcement reports not-exceeded', async () => {
+      const notificationStore = new NotificationStore(tmpDir);
+      const agent = await createTestAgent('under', 10000);
+      await addUsage(agent.id, 100, 50, '2026-04-13');
+
+      const result = await enforceBudget(
+        agent.id,
+        { agentStore, usageStore, baseDir: tmpDir, notificationStore },
+        '2026-04-13',
+      );
+
+      assert.equal(result.exceeded, false);
+      assert.equal(result.notificationEmitted, false);
+      assert.equal(result.notificationId, null);
+      const feed = await notificationStore.load(agent.id);
+      assert.equal(feed.length, 0);
+    });
+
+    it('attributes one notification per paused agent in enforceAllBudgets', async () => {
+      const notificationStore = new NotificationStore(tmpDir);
+      const a1 = await createTestAgent('still-ok', 10000);
+      const a2 = await createTestAgent('over-quota', 100);
+      await addUsage(a1.id, 50, 50, '2026-04-13');
+      await addUsage(a2.id, 80, 80, '2026-04-13'); // exceeds
+
+      const results = await enforceAllBudgets(
+        { agentStore, usageStore, baseDir: tmpDir, notificationStore },
+        '2026-04-13',
+      );
+
+      const ok = results.find((r) => r.agentId === a1.id);
+      const over = results.find((r) => r.agentId === a2.id);
+      assert.ok(ok && over);
+      assert.equal(ok.notificationEmitted, false);
+      assert.equal(over.notificationEmitted, true);
+
+      const okFeed = await notificationStore.load(a1.id);
+      const overFeed = await notificationStore.load(a2.id);
+      assert.equal(okFeed.length, 0);
+      assert.equal(overFeed.length, 1);
+      assert.equal(overFeed[0]!.agentId, a2.id, 'sender = the paused agent only');
+      assert.equal(overFeed[0]!.systemEvent, 'budget-exhausted');
+    });
+
+    it('flows through the createBudgetEnforcer bound instance', async () => {
+      const notificationStore = new NotificationStore(tmpDir);
+      const agent = await createTestAgent('bound-notif', 200);
+      await addUsage(agent.id, 150, 100, '2026-04-13'); // 250 > 200
+
+      const enforcer = createBudgetEnforcer({
+        agentStore,
+        usageStore,
+        baseDir: tmpDir,
+        notificationStore,
+      });
+
+      const result = await enforcer.enforce(agent.id, '2026-04-13');
+      assert.equal(result.notificationEmitted, true);
+      assert.ok(result.notificationId);
+      const feed = await notificationStore.load(agent.id);
+      assert.equal(feed.length, 1);
+      assert.equal(feed[0]!.systemEvent, 'budget-exhausted');
+    });
+
+    it('survives notification-store failures without breaking enforcement', async () => {
+      // Replace the store's append with a throwing impl to simulate a
+      // disk write failure. enforcement must still pause the agent and
+      // write the alert flag; only `notificationEmitted` should be false.
+      const notificationStore = new NotificationStore(tmpDir);
+      (notificationStore as unknown as {
+        append: (...args: unknown[]) => Promise<unknown>;
+      }).append = async () => {
+        throw new Error('simulated disk failure');
+      };
+
+      const agent = await createTestAgent('flaky-notif', 100);
+      await addUsage(agent.id, 80, 80, '2026-04-13');
+
+      const result = await enforceBudget(
+        agent.id,
+        { agentStore, usageStore, baseDir: tmpDir, notificationStore },
+        '2026-04-13',
+      );
+
+      assert.equal(result.exceeded, true);
+      assert.equal(result.paused, true);
+      assert.equal(result.alertWritten, true);
+      assert.equal(result.notificationEmitted, false);
+      assert.equal(result.notificationId, null);
+      assert.equal(await isAgentPaused(agent.id, deps), true);
     });
   });
 });

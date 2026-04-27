@@ -765,6 +765,234 @@ export async function fetchAgentReviews(
   return body.reviews;
 }
 
+// ── Notification mutation wrappers ───────────────────────────────────
+//
+// The notification subsystem is the one place the dashboard intentionally
+// relaxes the SPA's read-only HTTP contract. Two POST endpoints exist:
+//
+//   POST /api/notifications/:slug/:id/read  → markNotificationRead
+//   POST /api/notifications/read-all        → (sibling AC)
+//
+// Both flow through `NotificationStore.markRead` / `markAllRead` on the
+// server, which performs an atomic write-then-rename so concurrent reads
+// never see a partial file.
+
+/**
+ * Single notification row mirrored from `src/storage/notification-store.ts`.
+ *
+ * Kept loosely typed (string `source` / `systemEvent` rather than narrow
+ * unions) so the SPA-facing wire shape can absorb future schema additions
+ * without requiring a lockstep update at this typedef. The fields the SPA
+ * cares about today are still pinned by name + primitive type.
+ */
+export interface NotificationRow {
+  id: string;
+  agentId: string;
+  source: string;
+  systemEvent?: string;
+  title: string;
+  body: string;
+  link?: unknown;
+  createdAt: string;
+  read: boolean;
+  readAt?: string;
+  sourceTaskId?: string;
+  dedupKey?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Internal helper: execute an HTTP POST with a JSON body (or empty body)
+ * and parse the JSON response. Mirrors `getJson`'s error semantics so the
+ * SPA's mutation paths behave identically to the read paths under
+ * non-2xx and abort flows.
+ */
+async function postJson<T>(
+  endpoint: string,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const { baseUrl = '', signal, fetch: fetchImpl } = opts;
+  const doFetch = fetchImpl ?? getDefaultFetch();
+  const url = joinUrl(baseUrl, endpoint);
+
+  let response: Response;
+  try {
+    response = await doFetch(url, {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+      signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new ApiError(`Network error posting ${endpoint}: ${msg}`, {
+      status: 0,
+      endpoint,
+    });
+  }
+
+  const text = await response.text();
+  let parsed: unknown;
+  let parseError = false;
+  try {
+    parsed = text.length > 0 ? JSON.parse(text) : undefined;
+  } catch {
+    parseError = true;
+  }
+
+  if (!response.ok) {
+    const message = isErrorEnvelope(parsed)
+      ? parsed.error
+      : `HTTP ${response.status} ${response.statusText || ''}`.trim();
+    throw new ApiError(message, {
+      status: response.status,
+      endpoint,
+      body: parseError ? text : parsed,
+    });
+  }
+
+  if (parseError) {
+    throw new ApiError(`Failed to parse JSON from ${endpoint}`, {
+      status: response.status,
+      endpoint,
+      body: text,
+    });
+  }
+
+  return parsed as T;
+}
+
+/**
+ * `POST /api/notifications/:slug/:id/read` — flip a single notification's
+ * `read` flag to `true` and stamp `readAt`.
+ *
+ * Idempotent: returns the unchanged row when the notification is already
+ * read, so the SPA can blindly POST on every click without first checking
+ * the current state. Throws `ApiError` with `status: 404` when the slug
+ * has no notification with that id (allowing consumers to gracefully
+ * handle a stale list view), and `status: 400` when the slug or id fails
+ * the server-side path-segment guard.
+ */
+export async function markNotificationRead(
+  slug: string,
+  notificationId: string,
+  opts: RequestOptions = {},
+): Promise<NotificationRow> {
+  const safeSlug = assertValidSlug(slug);
+  if (typeof notificationId !== 'string' || notificationId.length === 0) {
+    throw new TypeError(
+      'api-client: notificationId must be a non-empty string',
+    );
+  }
+  if (
+    notificationId.includes('/') ||
+    notificationId.includes('\\') ||
+    notificationId.includes('\0') ||
+    notificationId === '.' ||
+    notificationId === '..'
+  ) {
+    throw new TypeError(
+      `api-client: invalid notificationId: ${JSON.stringify(notificationId)}`,
+    );
+  }
+  const endpoint = `/api/notifications/${encodeURIComponent(safeSlug)}/${encodeURIComponent(notificationId)}/read`;
+  const body = await postJson<{ notification?: NotificationRow }>(endpoint, opts);
+  if (!body || typeof body !== 'object' || !body.notification) {
+    throw new ApiError(
+      'Malformed mark-read payload (missing `notification` envelope)',
+      {
+        status: 200,
+        endpoint,
+        body,
+      },
+    );
+  }
+  return body.notification;
+}
+
+// ── Notifications (global feed) ──────────────────────────────────────
+
+/**
+ * Aggregated notification row returned by `GET /api/notifications`. Adds
+ * the per-agent slug under `agent` (alongside the inherited `agentId`)
+ * so the dashboard can preserve sender attribution when multiple agents'
+ * notifications interleave in a single newest-first feed.
+ */
+export interface NotificationWithAgentRow extends NotificationRow {
+  /** Agent slug whose feed the notification was loaded from. */
+  agent: string;
+}
+
+/**
+ * Wire-shape of the `GET /api/notifications` envelope. Exported so
+ * tests / fixtures can build a payload without re-deriving the shape.
+ *
+ * `unreadCount` is intentionally derived from the *unfiltered* feed on
+ * the server (see `gatherAllNotifications`), so it stays accurate when
+ * the SPA narrows the visible rows by `source` / `read` / `systemEvent`.
+ */
+export interface AllNotificationsResponse {
+  /** Reverse-chronological (newest-first) global feed across all agents. */
+  notifications: NotificationWithAgentRow[];
+  /** Total unread count across every agent's feed. */
+  unreadCount: number;
+}
+
+/**
+ * Options accepted by `fetchAllNotifications`.
+ *
+ * The filter set mirrors `GatherAllNotificationsOptions` on the server:
+ * `source`, `systemEvent`, `read`, `limit`. Each is forwarded as a
+ * `searchParams` entry; omitted values are dropped.
+ */
+export interface FetchAllNotificationsOptions extends RequestOptions {
+  /** Filter by source (`'agent' | 'system'`). */
+  source?: 'agent' | 'system';
+  /** Filter by system event id. */
+  systemEvent?: 'budget-exhausted' | 'repeated-task-failure' | 'plan-ready';
+  /** Filter by read flag. */
+  read?: boolean;
+  /** Cap the response (applied after the reverse-chronological sort). */
+  limit?: number;
+}
+
+/**
+ * `GET /api/notifications` — global notification feed across every
+ * agent. Backs the dashboard's global inbox view.
+ *
+ * The server-side `gatherAllNotifications` (in
+ * `src/serve/data/notifications.ts`) walks every per-agent
+ * `.aweek/agents/<slug>/notifications.json` file via
+ * `NotificationStore.loadAll`, merges the entries newest-first, and
+ * pairs them with a global `unreadCount` derived from the unfiltered
+ * feed.
+ */
+export async function fetchAllNotifications(
+  opts: FetchAllNotificationsOptions = {},
+): Promise<AllNotificationsResponse> {
+  const { source, systemEvent, read, limit, ...rest } = opts;
+  const body = await getJson<{
+    notifications?: NotificationWithAgentRow[];
+    unreadCount?: number;
+  }>('/api/notifications', {
+    ...rest,
+    searchParams: {
+      source,
+      systemEvent,
+      // Booleans don't survive `String(value)` cleanly through the
+      // `searchParams` projection (which only types string|number), so
+      // explicitly project a present `read` flag to its 'true' / 'false'
+      // wire form.
+      read: read === undefined ? undefined : read ? 'true' : 'false',
+      limit,
+    },
+  });
+  return {
+    notifications: Array.isArray(body?.notifications) ? body.notifications : [],
+    unreadCount: typeof body?.unreadCount === 'number' ? body.unreadCount : 0,
+  };
+}
+
 // ── Test-facing internals ────────────────────────────────────────────
 // Exported for unit tests only — not part of the SPA's public API.
 
@@ -772,4 +1000,5 @@ export const __test = {
   assertValidSlug,
   joinUrl,
   getJson,
+  postJson,
 } as const;

@@ -26,6 +26,7 @@ describe('dispatcher registry', () => {
       'init-hire-menu',
       'manage',
       'next-week-context',
+      'notify',
       'plan',
       'plan-ambiguity',
       'plan-interview-store',
@@ -161,5 +162,43 @@ describe('argument adapters', () => {
     })) as unknown[];
     assert.ok(Array.isArray(result));
     assert.equal(result.length, 0);
+  });
+
+  it('notify.validateSendParams is exposed and runs through the registry as a pure pre-flight', () => {
+    const validated = REGISTRY.notify!.validateSendParams!({
+      senderSlug: 'alice-12345678',
+      title: 'Hello',
+      body: 'World',
+    }) as { senderSlug: string; title: string; body: string; source: string };
+    assert.equal(validated.senderSlug, 'alice-12345678');
+    assert.equal(validated.title, 'Hello');
+    assert.equal(validated.body, 'World');
+    assert.equal(validated.source, 'agent');
+  });
+
+  it('notify.formatNotificationResult adapter unwraps {notification} or the raw notification', () => {
+    const notification = {
+      id: 'notif-abc12345',
+      agentId: 'alice-12345678',
+      source: 'agent',
+      title: 'Hello',
+      body: 'World',
+      createdAt: '2026-04-17T10:00:00.000Z',
+      read: false,
+    };
+    const viaWrapper = REGISTRY.notify!.formatNotificationResult!({ notification }) as string;
+    const viaRaw = REGISTRY.notify!.formatNotificationResult!(notification) as string;
+    assert.equal(typeof viaWrapper, 'string');
+    assert.equal(viaWrapper, viaRaw);
+    assert.match(viaWrapper, /Notification sent successfully/);
+    assert.match(viaWrapper, /notif-abc12345/);
+  });
+
+  it('notify.send is a function on the registry (wired to the skill\'s sendNotification)', () => {
+    // Don't actually invoke `send` here — it would need a populated AgentStore
+    // and tmp dir. The notify.test.ts suite already exercises the happy paths;
+    // this test only pins that the registry entry resolves to a callable so a
+    // future rename of the underlying export trips the dispatcher contract.
+    assert.equal(typeof REGISTRY.notify!.send, 'function');
   });
 });
