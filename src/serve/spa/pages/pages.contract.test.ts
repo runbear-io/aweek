@@ -117,8 +117,9 @@ const CASES = [
     hook: 'useAgentCalendar',
     // `week` narrows the API query; `selectedTaskId` / `onOpenTaskId` /
     // `onCloseTaskId` are URL-driven drawer orchestration props threaded
-    // through by the parent route. None of them encode server-rendered
-    // domain data — the hook still owns the fetch.
+    // through by the parent route. `onWeekChange` is the URL-update
+    // callback for the prev/current/next week buttons. None of them
+    // encode server-rendered domain data — the hook still owns the fetch.
     allowedProps: [
       'slug',
       'week',
@@ -127,6 +128,7 @@ const CASES = [
       'selectedTaskId',
       'onOpenTaskId',
       'onCloseTaskId',
+      'onWeekChange',
     ],
   },
   {

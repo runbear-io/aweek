@@ -192,23 +192,58 @@ function summariseStatuses(tasks: WeeklyTask[]): CalendarCounts {
   return counts;
 }
 
+/**
+ * Resolution outcome — either a usable plan, or a `loadError` capturing
+ * the on-disk failure (schema validation, parse error) so the dashboard
+ * can surface it instead of silently degrading to "no plan".
+ *
+ * Fallback-strategy errors (the `loadLatestApproved` / `loadAll` probes
+ * we run when no week was explicitly requested) stay swallowed — those
+ * are best-effort. We only surface the failure for the *targeted* load
+ * (the requested week, or the timezone-aware current week), because
+ * that's the one a user expects to see.
+ */
+interface PlanResolution {
+  plan: WeeklyPlan | null;
+  loadError: string | null;
+}
+
+function describeLoadError(err: unknown, week: string): string {
+  const base = err instanceof Error && err.message ? err.message : String(err);
+  return `Weekly plan for ${week} failed to load: ${base}`;
+}
+
 async function resolvePlan(
   store: WeeklyPlanStore,
   agentId: string,
   requested: string | undefined,
   timeZone: string | undefined,
   now: Date,
-): Promise<WeeklyPlan | null> {
+): Promise<PlanResolution> {
   if (requested) {
-    return store.load(agentId, requested).catch(() => null);
+    try {
+      const plan = await store.load(agentId, requested);
+      return { plan: plan ?? null, loadError: null };
+    } catch (err) {
+      return { plan: null, loadError: describeLoadError(err, requested) };
+    }
   }
   const week = currentWeekKey(timeZone || 'UTC', now);
-  const direct = await store.load(agentId, week).catch(() => null);
-  if (direct) return direct;
+  let directLoadError: string | null = null;
+  let direct: WeeklyPlan | null = null;
+  try {
+    direct = (await store.load(agentId, week)) ?? null;
+  } catch (err) {
+    directLoadError = describeLoadError(err, week);
+  }
+  if (direct) return { plan: direct, loadError: null };
   const approved = await store.loadLatestApproved(agentId).catch(() => null);
-  if (approved) return approved;
+  if (approved) return { plan: approved, loadError: directLoadError };
   const all = await store.loadAll(agentId).catch(() => [] as WeeklyPlan[]);
-  return all[all.length - 1] || null;
+  return {
+    plan: all[all.length - 1] || null,
+    loadError: directLoadError,
+  };
 }
 
 /**
@@ -367,6 +402,13 @@ export interface AgentCalendarPayload {
   timeZone: string;
   weekMonday: string | null;
   noPlan: boolean;
+  /**
+   * Set when the targeted weekly-plan file failed to load (schema
+   * validation, JSON parse, …). The dashboard surfaces this as a
+   * destructive banner so users can tell the difference between
+   * "no plan exists" and "plan exists but the validator rejected it".
+   */
+  loadError: string | null;
   tasks: ProjectedTask[];
   counts: CalendarCounts;
   activityByTask: Record<string, ProjectedActivityEntry[]>;
@@ -410,7 +452,13 @@ export async function gatherAgentCalendar(
 
   const planStore = new WeeklyPlanStore(dataDir);
   const clock = now instanceof Date ? now : new Date();
-  const plan = await resolvePlan(planStore, slug, week, timeZone, clock);
+  const { plan, loadError } = await resolvePlan(
+    planStore,
+    slug,
+    week,
+    timeZone,
+    clock,
+  );
 
   if (!plan) {
     return {
@@ -421,6 +469,7 @@ export async function gatherAgentCalendar(
       timeZone,
       weekMonday: null,
       noPlan: true,
+      loadError,
       tasks: [],
       counts: summariseStatuses([]),
       activityByTask: {},
@@ -456,6 +505,7 @@ export async function gatherAgentCalendar(
     timeZone,
     weekMonday: weekMonday ? weekMonday.toISOString() : null,
     noPlan: false,
+    loadError,
     tasks,
     counts: summariseStatuses(rawTasks),
     activityByTask,
