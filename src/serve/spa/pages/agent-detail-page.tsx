@@ -163,6 +163,7 @@ const AgentCalendarPage = AgentCalendarPageJs as React.ComponentType<{
   selectedTaskId?: string | undefined;
   onOpenTaskId?: (taskId: string) => void;
   onCloseTaskId?: () => void;
+  onWeekChange?: (week: string | null) => void;
 }>;
 const AgentPlanPage = AgentPlanPageJs as React.ComponentType<{
   slug: string;
@@ -264,6 +265,10 @@ export interface AgentDetailPageProps {
   calendarSelection?: string | undefined;
   onCalendarOpen?: (taskId: string) => void;
   onCalendarClose?: () => void;
+  /** ISO week key (`"YYYY-Www"`) the calendar tab should display. URL-driven. */
+  calendarWeek?: string;
+  /** Notify the parent that the user navigated to a different week. */
+  onCalendarWeekChange?: (week: string | null) => void;
 }
 
 /**
@@ -282,6 +287,8 @@ export function AgentDetailPage({
   calendarSelection,
   onCalendarOpen,
   onCalendarClose,
+  calendarWeek,
+  onCalendarWeekChange,
 }: AgentDetailPageProps): React.ReactElement {
   const [activeTab, setActiveTab] = React.useState<AgentTabValue>(() =>
     normaliseTab(initialTab),
@@ -378,11 +385,13 @@ export function AgentDetailPage({
         >
           <AgentCalendarPage
             slug={slug}
+            week={calendarWeek}
             baseUrl={baseUrl}
             fetch={fetchImpl}
             selectedTaskId={calendarSelection}
             onOpenTaskId={onCalendarOpen}
             onCloseTaskId={onCalendarClose}
+            onWeekChange={onCalendarWeekChange}
           />
         </TabsContent>
         <TabsContent value="activities">

@@ -7,6 +7,7 @@ import {
   Routes,
   useNavigate,
   useParams,
+  useSearchParams,
 } from 'react-router-dom';
 
 import {
@@ -73,6 +74,8 @@ const AgentDetailPage = AgentDetailPageJs as React.ComponentType<{
   onActivityClose?: () => void;
   onCalendarOpen?: (taskId: string) => void;
   onCalendarClose?: () => void;
+  calendarWeek?: string;
+  onCalendarWeekChange?: (week: string | null) => void;
 }>;
 
 const ThemeProvider = ThemeProviderJs as React.ComponentType<{
@@ -96,6 +99,7 @@ function AgentsRoute() {
 function AgentDetailRoute() {
   const { slug, tab, basename, taskId } = useParams<AgentDetailParams>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   // `useParams()` always widens segment values to `string | undefined`,
   // even when the route pattern requires the segment. Fall back to an
@@ -113,12 +117,21 @@ function AgentDetailRoute() {
       ? 'calendar'
       : (normalised ?? (DEFAULT_AGENT_DETAIL_TAB as AgentTabValue));
 
+  // Calendar week override: `?week=YYYY-Www` lets the user pin a specific
+  // ISO week. Absent → server picks the agent's timezone-aware current
+  // week. The shape `\d{4}-W\d{2}` is enforced loosely here so a junk URL
+  // collapses to the default rather than reaching the data layer.
+  const rawWeek = searchParams.get('week');
+  const calendarWeek =
+    rawWeek && /^\d{4}-W\d{2}$/.test(rawWeek) ? rawWeek : undefined;
+
   return (
     <AgentDetailPage
       slug={safeSlug}
       initialTab={effectiveTab}
       activitySelection={basename}
       calendarSelection={taskId}
+      calendarWeek={calendarWeek}
       onTabChange={(next) => navigate(`/agents/${safeSlug}/${next}`)}
       onActivityOpen={(b) =>
         navigate(`/agents/${slugSegment}/activities/${encodeURIComponent(b)}`)
@@ -128,6 +141,16 @@ function AgentDetailRoute() {
         navigate(`/agents/${slugSegment}/calendar/${encodeURIComponent(t)}`)
       }
       onCalendarClose={() => navigate(`/agents/${slugSegment}/calendar`)}
+      onCalendarWeekChange={(nextWeek) => {
+        // Preserve the calendar path (with optional taskId) and only flip
+        // the `?week=` query. Passing `null` clears the override and the
+        // server falls back to the agent's current week.
+        const path = taskId
+          ? `/agents/${slugSegment}/calendar/${encodeURIComponent(taskId)}`
+          : `/agents/${slugSegment}/calendar`;
+        const search = nextWeek ? `?week=${encodeURIComponent(nextWeek)}` : '';
+        navigate(`${path}${search}`);
+      }}
     />
   );
 }
