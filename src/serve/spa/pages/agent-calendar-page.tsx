@@ -729,47 +729,6 @@ function CalendarHeader({
       className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
       data-calendar-header="true"
     >
-      {onWeekChange ? (
-        <div
-          className="flex items-center gap-1"
-          data-calendar-week-nav="true"
-          aria-label="Week navigation"
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 px-2"
-            onClick={prevWeek ? () => onWeekChange(prevWeek) : undefined}
-            disabled={!prevWeek}
-            aria-label={prevWeek ? `Previous week (${prevWeek})` : 'Previous week'}
-            data-calendar-prev-week={prevWeek ?? undefined}
-          >
-            ←
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-[11px]"
-            onClick={onCurrent}
-            disabled={activeWeek === null}
-            aria-label="Current week"
-            data-calendar-current-week="true"
-          >
-            Current
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 px-2"
-            onClick={nextWeek ? () => onWeekChange(nextWeek) : undefined}
-            disabled={!nextWeek}
-            aria-label={nextWeek ? `Next week (${nextWeek})` : 'Next week'}
-            data-calendar-next-week={nextWeek ?? undefined}
-          >
-            →
-          </Button>
-        </div>
-      ) : null}
       {calendar.week ? (
         <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
           {calendar.week}
@@ -786,6 +745,52 @@ function CalendarHeader({
           {calendar.timeZone || 'UTC'}
         </code>
       </span>
+      {onWeekChange ? (
+        <div
+          className="ml-auto flex items-center gap-0.5"
+          data-calendar-week-nav="true"
+          aria-label="Week navigation"
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 px-0 font-mono text-sm"
+            onClick={prevWeek ? () => onWeekChange(prevWeek) : undefined}
+            disabled={!prevWeek}
+            aria-label={prevWeek ? `Previous week (${prevWeek})` : 'Previous week'}
+            data-calendar-prev-week={prevWeek ?? undefined}
+          >
+            ←
+          </Button>
+          {/* `⊙` (circled dot) is the universal "you are here" / "now"
+              glyph in cartography and HUD design — terser than "Current"
+              while still reading as a recognisable affordance, not just
+              an arbitrary symbol. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 px-0 font-mono text-sm"
+            onClick={onCurrent}
+            disabled={activeWeek === null}
+            aria-label="Current week"
+            data-calendar-current-week="true"
+            title="Current week"
+          >
+            ⊙
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 px-0 font-mono text-sm"
+            onClick={nextWeek ? () => onWeekChange(nextWeek) : undefined}
+            disabled={!nextWeek}
+            aria-label={nextWeek ? `Next week (${nextWeek})` : 'Next week'}
+            data-calendar-next-week={nextWeek ?? undefined}
+          >
+            →
+          </Button>
+        </div>
+      ) : null}
     </header>
   );
 }
