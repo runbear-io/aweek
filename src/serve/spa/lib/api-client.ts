@@ -260,6 +260,13 @@ export interface AgentCalendar {
   /** Monday 00:00 as ISO timestamp. */
   weekMonday: string | null;
   noPlan: boolean;
+  /**
+   * Set when the targeted weekly-plan file failed to load (schema
+   * validation, JSON parse, …). The dashboard renders this as a
+   * destructive banner so users can tell the difference between
+   * "no plan exists" and "plan exists but the validator rejected it".
+   */
+  loadError: string | null;
   tasks: CalendarTask[];
   counts: CalendarCounts;
   activityByTask: Record<string, ReadonlyArray<Record<string, unknown>>>;

@@ -334,25 +334,28 @@ export function AgentCalendarPage({
         data-page="agent-calendar"
         data-tab-body="calendar"
         data-agent-slug={data.agentId}
-        data-state="no-plan"
+        data-state={data.loadError ? 'load-error' : 'no-plan'}
       >
         <CalendarHeader
-        calendar={data}
-        activeWeek={week ?? null}
-        onWeekChange={onWeekChange}
-      />
+          calendar={data}
+          activeWeek={week ?? null}
+          onWeekChange={onWeekChange}
+        />
+        {data.loadError ? <PlanLoadErrorBanner message={data.loadError} /> : null}
         {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
-        <Card className="border-dashed" data-state="no-plan">
-          <CardContent className="p-6 text-sm italic text-muted-foreground">
-            No weekly plan yet for{' '}
-            <strong className="not-italic text-foreground">
-              {data.agentId}
-            </strong>
-            . Run{' '}
-            <code className="not-italic text-foreground">/aweek:plan</code> to
-            draft and approve a weekly plan.
-          </CardContent>
-        </Card>
+        {data.loadError ? null : (
+          <Card className="border-dashed" data-state="no-plan">
+            <CardContent className="p-6 text-sm italic text-muted-foreground">
+              No weekly plan yet for{' '}
+              <strong className="not-italic text-foreground">
+                {data.agentId}
+              </strong>
+              . Run{' '}
+              <code className="not-italic text-foreground">/aweek:plan</code> to
+              draft and approve a weekly plan.
+            </CardContent>
+          </Card>
+        )}
       </section>
     );
   }
@@ -376,6 +379,7 @@ export function AgentCalendarPage({
         activeWeek={week ?? null}
         onWeekChange={onWeekChange}
       />
+      {data.loadError ? <PlanLoadErrorBanner message={data.loadError} /> : null}
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
       <StatusLegend tasks={data.tasks} counts={data.counts} />
       <CalendarGrid
@@ -1051,6 +1055,48 @@ function CalendarError({
         <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Destructive-tone banner shown when the server reports `loadError` on
+ * the calendar payload. This means the weekly-plan file is on disk but
+ * the validator rejected it (schema drift, parse error, etc.) — distinct
+ * from "no plan exists yet". Surfacing this loudly stops users from
+ * assuming everything's fine while their plan is silently invisible.
+ */
+function PlanLoadErrorBanner({
+  message,
+}: {
+  message: string;
+}): React.ReactElement {
+  return (
+    <Card
+      role="alert"
+      className="border-destructive/40 bg-destructive/10 text-destructive"
+      data-calendar-load-error="true"
+    >
+      <CardHeader className="space-y-1">
+        <CardTitle as="h2" className="text-sm text-destructive">
+          Weekly plan rejected by validator.
+        </CardTitle>
+        <CardDescription className="break-words text-xs text-destructive/80">
+          {message}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-0 text-xs text-destructive/80">
+        The file exists on disk but its shape doesn't match the
+        weekly-plan schema. Edit{' '}
+        <code className="rounded bg-destructive/10 px-1 py-0.5 text-[11px] text-destructive">
+          .aweek/agents/&lt;slug&gt;/weekly-plans/&lt;week&gt;.json
+        </code>{' '}
+        to remove non-schema fields or run{' '}
+        <code className="rounded bg-destructive/10 px-1 py-0.5 text-[11px] text-destructive">
+          /aweek:plan
+        </code>{' '}
+        to regenerate.
       </CardContent>
     </Card>
   );
