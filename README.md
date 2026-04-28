@@ -36,12 +36,12 @@ A single agent on a calendar — sixteen scheduled tasks across five days, a dai
 | **3pm**  | —              | —          | —            | —         | Retro      |
 | **5pm**  | Daily          | Daily      | Daily        | Daily     | Weekly     |
 
-[**Full recipe → A weekly operator**](docs/recipes/weekly-ops.md)
+[**Full recipe → A weekly operator**](https://runbear-io.github.io/aweek/recipes/weekly-ops)
 
 ### Other agent templates
 
-- [**An engineer**](docs/recipes/engineer.md) — handles the engineering periphery: PR triage, dep drift, flaky tests, doc drift, retros. Never ships features.
-- [**A content marketer**](docs/recipes/content-marketer.md) — grooms the topic queue, drafts the post, atomizes it for social, writes the newsletter, reviews analytics.
+- [**An engineer**](https://runbear-io.github.io/aweek/recipes/engineer) — handles the engineering periphery: PR triage, dep drift, flaky tests, doc drift, retros. Never ships features.
+- [**A content marketer**](https://runbear-io.github.io/aweek/recipes/content-marketer) — grooms the topic queue, drafts the post, atomizes it for social, writes the newsletter, reviews analytics.
 
 ## What you get
 
