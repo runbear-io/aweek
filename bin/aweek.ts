@@ -24,6 +24,7 @@ import {
   listModules,
   listFunctions,
 } from '../src/cli/dispatcher.js';
+import { runJsonCli } from '../src/cli/json-helper.js';
 import {
   startServer,
   openBrowser,
@@ -55,6 +56,7 @@ Usage:
   aweek heartbeat <agentId>     Run heartbeat tick for a single agent
   aweek heartbeat --all         Run heartbeat tick for all agents
   aweek exec <module> <fn>      Invoke a skill export with JSON in/out
+  aweek json <op> ...           Tiny JSON helper for skill bash glue
   aweek serve                   Launch local read-only dashboard (HTTP)
   aweek --help                  Show this help
 
@@ -77,6 +79,18 @@ serve options:
 if (command === 'exec') {
   try {
     await runExec(args.slice(1));
+    process.exit(0);
+  } catch (err) {
+    const e = err as { code?: string; message?: string } | undefined;
+    const code = e && e.code ? ` [${e.code}]` : '';
+    console.error(`Error${code}: ${e && e.message ? e.message : err}`);
+    process.exit(1);
+  }
+}
+
+if (command === 'json') {
+  try {
+    await runJsonCli(args.slice(1));
     process.exit(0);
   } catch (err) {
     const e = err as { code?: string; message?: string } | undefined;
