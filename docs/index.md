@@ -11,10 +11,10 @@ hero:
   actions:
     - theme: brand
       text: Get started
-      link: /getting-started
+      link: /install
     - theme: alt
       text: Slash commands
-      link: /skills
+      link: /commands
     - theme: alt
       text: View on GitHub
       link: https://github.com/runbear-io/aweek
