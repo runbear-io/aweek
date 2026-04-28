@@ -51,7 +51,13 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # `enablement: true` makes the action enable GitHub Pages on the
+      # repo if it isn't already — protects against the first-deploy
+      # chicken-and-egg where Pages must exist before the workflow can
+      # configure it. Requires `pages: write` (granted above).
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
