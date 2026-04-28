@@ -55,7 +55,7 @@ Walk away. Come back Monday morning to a status report and next week's draft pla
 ## How it works (in 3 lines)
 
 1. **Slash commands** (`/aweek:*`) shell out to a tiny `aweek` CLI for every state change.
-2. **Heartbeat** is a 10-minute cron entry per project. It picks the next pending task per agent and runs it in a fresh Claude Code CLI session.
+2. **Heartbeat** is a 10-minute launchd user agent per project. It picks the next pending task per agent and runs it in a fresh Claude Code CLI session.
 3. **Storage** is plain files: `.aweek/agents/<slug>.json` for scheduling, `.claude/agents/<slug>.md` for identity. No DB.
 
 Every mutation is schema-validated and atomic. **2,000+ tests** guard the data layer.
@@ -77,7 +77,7 @@ claude --plugin-dir .
 ```
 `/reload-plugins` picks up edits without restarting.
 
-**Requirements:** macOS or Linux, Node.js 20+, `crontab`, `jq`.
+**Requirements:** macOS 10.15 (Catalina) or newer, Node.js 20+, `jq` (`brew install jq`). Linux and Windows aren't supported yet — the heartbeat installs as a launchd user agent.
 
 ## Per-agent secrets
 
@@ -95,7 +95,7 @@ Format is dotenv-style: `KEY=value`, `#` comments, single/double quotes (double-
 ## Troubleshooting
 
 - **Slash commands can't find `aweek`.** SessionStart's `npm install -g aweek` failed. Run it yourself.
-- **Heartbeat isn't running.** Check `crontab -l` for `# aweek:project-heartbeat:`. If missing, re-run `/aweek:init`.
+- **Heartbeat isn't running.** Check `launchctl list | grep io.aweek.heartbeat`. If nothing matches, re-run `/aweek:init`.
 - **Agent paused.** It hit its weekly budget. `/aweek:manage` → `resume` (resets next week) or `top-up` (resets now).
 
 ## Development

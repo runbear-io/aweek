@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# docs.yml — VitePress docs site build + GitHub Pages deploy
+#
+# Triggers on every push to `main` that touches `docs/`, the workflow
+# itself, or the lockfile. Builds the VitePress site under `docs/.vitepress/`
+# and deploys the static output to GitHub Pages. The deployed URL is
+# `https://runbear-io.github.io/aweek/` — see `base: '/aweek/'` in
+# `docs/.vitepress/config.ts`.
+#
+# Pages must be enabled once at Settings → Pages → Build and deployment
+# → Source: GitHub Actions. After that this workflow handles every
+# subsequent deploy.
+# ---------------------------------------------------------------------------
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/configure-pages@v5
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build VitePress site
+        run: pnpm docs:build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
