@@ -19,6 +19,8 @@
  * the Claude Code CLI at invocation time via `--agent <slug>`.
  */
 
+import { mkdir } from 'node:fs/promises';
+
 import { launchSession, parseTokenUsage } from './cli-session.js';
 import type {
   ExecutionLogWriter,
@@ -33,6 +35,12 @@ import {
   openExecutionLogWriter,
   executionLogPath,
 } from '../storage/execution-log-store.js';
+import {
+  ArtifactStore,
+  resolveArtifactDir,
+  type ArtifactRecord,
+} from '../storage/artifact-store.js';
+import { scanAndRegister } from '../skills/artifact-scanner.js';
 
 /**
  * Persistent usage record returned by `createUsageRecord` and written to
@@ -77,6 +85,23 @@ export interface ExecutionResult {
    * provided; otherwise `null`.
    */
   executionLogPath: string | null;
+  /**
+   * Absolute path of the per-execution artifact directory (
+   * `<agentsDir>/<agent>/artifacts/<taskId>_<executionId>/`) when
+   * `agentsDir` was provided AND the directory was successfully created
+   * before the session launched. `null` if the caller didn't pass
+   * `agentsDir`, the task lacked a `taskId`, or `mkdir` failed for any
+   * reason — artifact directory provisioning is best-effort and never
+   * blocks the session from running.
+   */
+  artifactDir: string | null;
+  /**
+   * Records actually written to the agent's artifact manifest by the
+   * post-session auto-scan. Empty when no artifact directory was
+   * provisioned, the directory was empty, or the scan/register step
+   * failed (failures are best-effort and never abort the tick).
+   */
+  artifactsRegistered: ArtifactRecord[];
 }
 
 /**
@@ -185,11 +210,59 @@ export async function executeSessionWithTracking(
     }
   }
 
+  // Pre-provision the per-execution artifact directory (`mkdir -p`) so the
+  // subagent can drop deliverables into a known, compound-keyed folder
+  // matching the JSONL execution-log layout (`<taskId>_<executionId>`).
+  // The path is resolved by `resolveArtifactDir` — the canonical helper
+  // exported alongside the ArtifactStore — so we never duplicate the
+  // directory-naming logic. Best-effort: a failed mkdir (read-only volume,
+  // permission error, etc.) must NOT abort the heartbeat tick. We log a
+  // warning and leave `artifactDir` as `null` so the session still runs;
+  // any artifacts the agent registers later that point inside this folder
+  // will simply fail the file-existence check at registration time.
+  let resolvedArtifactDir: string | null = null;
+  if (agentsDir && task.taskId) {
+    try {
+      const dir = resolveArtifactDir(
+        agentsDir,
+        agentId,
+        task.taskId,
+        effectiveSessionId,
+      );
+      await mkdir(dir, { recursive: true });
+      resolvedArtifactDir = dir;
+    } catch (err) {
+      console.warn(
+        `[session-executor] failed to create artifact directory for ${agentId}/${task.taskId} (execution ${effectiveSessionId}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      resolvedArtifactDir = null;
+    }
+  }
+
   // Step 1: Launch the CLI session (subagent-first)
+  //
+  // When the artifact directory was successfully provisioned, surface it
+  // to the subagent through TWO channels so the agent can pick whichever
+  // is more ergonomic in its workflow:
+  //   (a) The runtime-context block appended to the system prompt (so the
+  //       directive is visible inline in the model's instructions).
+  //   (b) The `AWEEK_ARTIFACT_DIR` environment variable on the spawned
+  //       CLI process (so shell commands and tool invocations can drop
+  //       files there without re-reading the prompt).
+  // We mutate a shallow copy of `task` rather than the caller's object to
+  // avoid surprising consumers of the original TaskContext.
+  const taskWithArtifactDir: TaskContext = resolvedArtifactDir
+    ? { ...task, artifactDir: resolvedArtifactDir }
+    : task;
+  const envWithArtifactDir = resolvedArtifactDir
+    ? { ...(launchOpts.env || {}), AWEEK_ARTIFACT_DIR: resolvedArtifactDir }
+    : launchOpts.env;
+
   let sessionResult: SessionResult;
   try {
-    sessionResult = await launchSession(agentId, subagentRef, task, {
+    sessionResult = await launchSession(agentId, subagentRef, taskWithArtifactDir, {
       ...launchOpts,
+      env: envWithArtifactDir,
       executionLogWriter,
     });
   } finally {
@@ -197,6 +270,47 @@ export async function executeSessionWithTracking(
       try {
         await executionLogWriter.close();
       } catch { /* best-effort */ }
+    }
+  }
+
+  // Step 1.5: Post-session artifact auto-scan.
+  //
+  // Walk the per-execution artifact directory and register every file the
+  // subagent dropped into it via `ArtifactStore.registerBatch` (called
+  // through the `scanAndRegister` convenience). The scan only runs when
+  // we successfully provisioned a directory above; otherwise there is
+  // nothing to scan and we keep `artifactsRegistered` empty.
+  //
+  // Best-effort by design: a missing directory, a permission error, or a
+  // schema-validation failure on a single record must NOT abort the tick
+  // or prevent usage tracking. We log a console warning and move on so
+  // the heartbeat continues to record token usage and update task status.
+  let artifactsRegistered: ArtifactRecord[] = [];
+  if (resolvedArtifactDir && agentsDir && task.taskId) {
+    try {
+      const projectRoot = opts.cwd || process.cwd();
+      const store = new ArtifactStore(agentsDir, projectRoot);
+      const taskDescriptor = {
+        ...(task.title !== undefined ? { title: task.title } : {}),
+        ...(task.prompt !== undefined ? { prompt: task.prompt } : {}),
+        ...(task.objectiveId !== undefined ? { objectiveId: task.objectiveId } : {}),
+      };
+      const scanResult = await scanAndRegister({
+        agentsDir,
+        agentId,
+        taskId: task.taskId,
+        executionId: effectiveSessionId,
+        projectRoot,
+        ...(task.week !== undefined ? { week: task.week } : {}),
+        task: taskDescriptor,
+        store,
+      });
+      artifactsRegistered = scanResult.registered;
+    } catch (err) {
+      console.warn(
+        `[session-executor] post-session artifact scan failed for ${agentId}/${task.taskId} (execution ${effectiveSessionId}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      artifactsRegistered = [];
     }
   }
 
@@ -235,6 +349,8 @@ export async function executeSessionWithTracking(
     usageRecord,
     usageTracked,
     executionLogPath: recordedExecutionLogPath,
+    artifactDir: resolvedArtifactDir,
+    artifactsRegistered,
   };
 }
 

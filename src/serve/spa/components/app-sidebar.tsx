@@ -37,6 +37,7 @@ import {
   Activity,
   BookOpen,
   Calendar,
+  FileBox,
   ListChecks,
   User,
   Users,
@@ -109,7 +110,13 @@ const ThemeToggle = ThemeToggleModule.ThemeToggle as React.ComponentType<{
 type AgentListRow = import('../lib/api-client.js').AgentListRow;
 
 interface AgentTab {
-  tab: 'calendar' | 'activities' | 'reviews' | 'strategy' | 'profile';
+  tab:
+    | 'calendar'
+    | 'activities'
+    | 'reviews'
+    | 'artifacts'
+    | 'strategy'
+    | 'profile';
   label: string;
   icon: LucideIcon;
 }
@@ -118,6 +125,7 @@ const AGENT_TABS: ReadonlyArray<AgentTab> = Object.freeze([
   { tab: 'calendar', label: 'Calendar', icon: Calendar },
   { tab: 'activities', label: 'Activity', icon: Activity },
   { tab: 'reviews', label: 'Reviews', icon: BookOpen },
+  { tab: 'artifacts', label: 'Artifacts', icon: FileBox },
   { tab: 'strategy', label: 'Strategy', icon: ListChecks },
   { tab: 'profile', label: 'Profile', icon: User },
 ]);

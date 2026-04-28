@@ -197,11 +197,25 @@ describe('buildRuntimeContext', () => {
     assert.ok(result.includes('Focus on Q1 2026 data only.'));
   });
 
+  it('includes the artifact directory path when provided', () => {
+    const dir = '/tmp/aweek/agents/research-bot/artifacts/task-abc12345_session-001';
+    const result = buildRuntimeContext(makeTask({ artifactDir: dir }));
+    assert.ok(result.includes('### Artifact Directory'));
+    assert.ok(
+      result.includes(`Artifact Directory: ${dir}`),
+      'runtime context should announce the absolute artifact directory path',
+    );
+    // Should also reference the env var name so the agent has both channels.
+    assert.ok(result.includes('AWEEK_ARTIFACT_DIR'));
+  });
+
   it('omits optional fields when not provided', () => {
     const result = buildRuntimeContext(makeTask());
     assert.ok(!result.includes('Objective ID:'));
     assert.ok(!result.includes('Week:'));
     assert.ok(!result.includes('### Additional Context'));
+    assert.ok(!result.includes('### Artifact Directory'));
+    assert.ok(!result.includes('AWEEK_ARTIFACT_DIR'));
   });
 
   it('does NOT embed identity fields (name, role, system prompt)', () => {

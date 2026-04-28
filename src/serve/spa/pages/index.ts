@@ -39,3 +39,4 @@ export { AgentCalendarPage } from './agent-calendar-page.tsx';
 export { AgentUsagePage } from './agent-usage-page.jsx';
 export { AgentActivityPage } from './agent-activity-page.tsx';
 export { AgentReviewsPage } from './agent-reviews-page.tsx';
+export { AgentArtifactsPage } from './agent-artifacts-page.tsx';

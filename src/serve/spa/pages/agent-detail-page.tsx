@@ -64,6 +64,7 @@ import { useAgentProfile } from '../hooks/use-agent-profile.js';
 // the same). Switching to `.tsx` here would require enabling
 // `allowImportingTsExtensions`, which the migration plan defers.
 import { AgentActivityPage as AgentActivityPageJs } from './agent-activity-page.jsx';
+import { AgentArtifactsPage as AgentArtifactsPageJs } from './agent-artifacts-page.jsx';
 import { AgentCalendarPage as AgentCalendarPageJs } from './agent-calendar-page.jsx';
 import { AgentPlanPage as AgentPlanPageJs } from './agent-plan-page.jsx';
 import { AgentProfilePage as AgentProfilePageJs } from './agent-profile-page.jsx';
@@ -180,6 +181,11 @@ const AgentReviewsPage = AgentReviewsPageJs as React.ComponentType<{
   baseUrl?: string;
   fetch?: typeof fetch;
 }>;
+const AgentArtifactsPage = AgentArtifactsPageJs as React.ComponentType<{
+  slug: string;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+}>;
 
 // ── Domain types ────────────────────────────────────────────────────
 //
@@ -195,7 +201,13 @@ type AgentProfile = import('../lib/api-client.js').AgentProfile;
  * The four tab values rendered inside `<AgentDetailPage>`. Mirrors the
  * `Calendar / Activity / Strategy / Profile` row defined by AC 2.
  */
-export type AgentTabValue = 'calendar' | 'activities' | 'reviews' | 'strategy' | 'profile';
+export type AgentTabValue =
+  | 'calendar'
+  | 'activities'
+  | 'reviews'
+  | 'artifacts'
+  | 'strategy'
+  | 'profile';
 
 /**
  * Fixed tab order — matches the Calendar/Activity/Strategy/Profile row
@@ -209,6 +221,7 @@ export const AGENT_DETAIL_TABS: ReadonlyArray<{
   { value: 'calendar', label: 'Calendar' },
   { value: 'activities', label: 'Activity' },
   { value: 'reviews', label: 'Reviews' },
+  { value: 'artifacts', label: 'Artifacts' },
   { value: 'strategy', label: 'Strategy' },
   { value: 'profile', label: 'Profile' },
 ] as const);
@@ -406,6 +419,9 @@ export function AgentDetailPage({
         </TabsContent>
         <TabsContent value="reviews">
           <AgentReviewsPage slug={slug} baseUrl={baseUrl} fetch={fetchImpl} />
+        </TabsContent>
+        <TabsContent value="artifacts">
+          <AgentArtifactsPage slug={slug} baseUrl={baseUrl} fetch={fetchImpl} />
         </TabsContent>
         <TabsContent value="strategy">
           <AgentPlanPage slug={slug} baseUrl={baseUrl} fetch={fetchImpl} />

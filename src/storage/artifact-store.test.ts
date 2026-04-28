@@ -33,6 +33,7 @@ import {
   createArtifactRecord,
   getFileSize,
   artifactFileExists,
+  resolveArtifactDir,
 } from './artifact-store.js';
 import { validateArtifactRecord, validateArtifactManifest } from '../schemas/validator.js';
 
@@ -41,6 +42,48 @@ import { validateArtifactRecord, validateArtifactManifest } from '../schemas/val
  * test stays in lockstep with the source's declared return shape.
  */
 type ArtifactRecord = ReturnType<typeof createArtifactRecord>;
+
+describe('resolveArtifactDir', () => {
+  it('joins dataDir/<slug>/artifacts/<taskId>_<executionId>', () => {
+    assert.equal(
+      resolveArtifactDir('/a/b/agents', 'writer', 'task-abc', 'session-1'),
+      join('/a/b/agents', 'writer', 'artifacts', 'task-abc_session-1'),
+    );
+  });
+
+  it('uses `_` as the separator between taskId and executionId', () => {
+    // Both IDs may legitimately contain `-` (task-<slug>, session-<ts>);
+    // `_` is the unambiguous split point that lets consumers recover the
+    // original pair from the basename.
+    const dir = resolveArtifactDir('/data', 'agent', 'task-foo-bar', 'session-2026-04-27');
+    const basename = dir.split('/').pop()!;
+    assert.equal(basename, 'task-foo-bar_session-2026-04-27');
+    const [taskId, executionId] = basename.split('_', 2);
+    assert.equal(taskId, 'task-foo-bar');
+    assert.equal(executionId, 'session-2026-04-27');
+  });
+
+  it('mirrors execution-log-store partitioning so log + artifacts are co-keyed', () => {
+    // Sibling layout under <agentsDir>/<slug>/:
+    //   executions/<taskId>_<executionId>.jsonl   (execution-log-store)
+    //   artifacts/<taskId>_<executionId>/         (this helper)
+    const dir = resolveArtifactDir('/agents', 'writer', 'task-1', 'exec-1');
+    assert.equal(dir, join('/agents', 'writer', 'artifacts', 'task-1_exec-1'));
+  });
+
+  it('rejects missing arguments', () => {
+    assert.throws(() => resolveArtifactDir('', 'a', 't', 'e'), /dataDir is required/);
+    assert.throws(() => resolveArtifactDir('/a', '', 't', 'e'), /slug is required/);
+    assert.throws(() => resolveArtifactDir('/a', 'b', '', 'e'), /taskId is required/);
+    assert.throws(() => resolveArtifactDir('/a', 'b', 't', ''), /executionId is required/);
+  });
+
+  it('returns a directory path (no trailing slash, no file extension)', () => {
+    const dir = resolveArtifactDir('/agents', 'writer', 'task-1', 'exec-1');
+    assert.ok(!dir.endsWith('/'), 'should not have a trailing slash');
+    assert.ok(!dir.endsWith('.jsonl'), 'should not be confused with the execution log file');
+  });
+});
 
 describe('createArtifactRecord', () => {
   it('creates a valid record with required fields', () => {
@@ -466,6 +509,247 @@ describe('ArtifactStore', () => {
       const emptyStore = new ArtifactStore(join(tmpDir, 'empty'), projectDir);
       const all = await emptyStore.listAll();
       assert.equal(all.length, 0);
+    });
+  });
+
+  describe('rich metadata fields', () => {
+    // The schema promotes executionId / relpath / mime / checksum /
+    // checksumAlgorithm to top-level optional fields so the dashboard can
+    // render them without unpacking the legacy `metadata` bag. These
+    // tests exercise the createArtifactRecord factory, schema validation,
+    // and ArtifactStore.register round-trip for each new field, plus the
+    // backward-compatibility path (records without the new fields still
+    // validate and load).
+
+    it('createArtifactRecord forwards executionId / relpath / mime / checksum / checksumAlgorithm', () => {
+      const record = createArtifactRecord({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        filePath: '.aweek/agents/agent-1/artifacts/task-1_session-42/nested/report.md',
+        fileName: 'nested/report.md',
+        type: 'report',
+        description: 'Weekly report',
+        executionId: 'session-42',
+        relpath: 'nested/report.md',
+        mime: 'text/markdown',
+        checksum: 'deadbeefcafefeed',
+        checksumAlgorithm: 'sha256',
+      });
+
+      assert.equal(record.executionId, 'session-42');
+      assert.equal(record.relpath, 'nested/report.md');
+      assert.equal(record.mime, 'text/markdown');
+      assert.equal(record.checksum, 'deadbeefcafefeed');
+      assert.equal(record.checksumAlgorithm, 'sha256');
+
+      const result = validateArtifactRecord(record);
+      assert.ok(result.valid, `Validation errors: ${JSON.stringify(result.errors)}`);
+    });
+
+    it('createArtifactRecord omits the new fields when not provided', () => {
+      const record = createArtifactRecord({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        filePath: 'output/data.json',
+        fileName: 'data.json',
+        type: 'data',
+        description: 'data',
+      });
+
+      assert.equal(record.executionId, undefined);
+      assert.equal(record.relpath, undefined);
+      assert.equal(record.mime, undefined);
+      assert.equal(record.checksum, undefined);
+      assert.equal(record.checksumAlgorithm, undefined);
+
+      const result = validateArtifactRecord(record);
+      assert.ok(result.valid);
+    });
+
+    it('schema rejects empty-string values for the rich-metadata fields', () => {
+      const baseFields = {
+        id: 'artifact-abcd1234',
+        agentId: 'a',
+        taskId: 't',
+        filePath: 'f',
+        fileName: 'f',
+        type: 'document' as const,
+        description: 'd',
+        createdAt: new Date().toISOString(),
+      };
+
+      assert.equal(validateArtifactRecord({ ...baseFields, executionId: '' }).valid, false);
+      assert.equal(validateArtifactRecord({ ...baseFields, relpath: '' }).valid, false);
+      assert.equal(validateArtifactRecord({ ...baseFields, mime: '' }).valid, false);
+      assert.equal(validateArtifactRecord({ ...baseFields, checksum: '' }).valid, false);
+    });
+
+    it('schema rejects a non-hex checksum and an unknown checksumAlgorithm', () => {
+      const baseFields = {
+        id: 'artifact-abcd1234',
+        agentId: 'a',
+        taskId: 't',
+        filePath: 'f',
+        fileName: 'f',
+        type: 'document' as const,
+        description: 'd',
+        createdAt: new Date().toISOString(),
+      };
+
+      // Non-hex chars in checksum
+      assert.equal(
+        validateArtifactRecord({ ...baseFields, checksum: 'not-hex!!' }).valid,
+        false,
+      );
+      // Algorithm outside the enum (e.g. blake3 isn't supported yet)
+      assert.equal(
+        validateArtifactRecord({ ...baseFields, checksumAlgorithm: 'blake3' }).valid,
+        false,
+      );
+    });
+
+    it('register persists the rich metadata round-trip via load()', async () => {
+      const record = createArtifactRecord({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        filePath: '.aweek/agents/agent-1/artifacts/task-1_session-7/notes.md',
+        fileName: 'notes.md',
+        type: 'document',
+        description: 'Notes',
+        executionId: 'session-7',
+        relpath: 'notes.md',
+        mime: 'text/markdown',
+        checksum: 'abcdef0123456789',
+        checksumAlgorithm: 'sha256',
+      });
+
+      await store.register('agent-1', record, { autoSize: false });
+
+      const loaded = await store.load('agent-1');
+      assert.equal(loaded.length, 1);
+      const stored = loaded[0];
+      assert.equal(stored.id, record.id);
+      assert.equal(stored.executionId, 'session-7');
+      assert.equal(stored.relpath, 'notes.md');
+      assert.equal(stored.mime, 'text/markdown');
+      assert.equal(stored.checksum, 'abcdef0123456789');
+      assert.equal(stored.checksumAlgorithm, 'sha256');
+    });
+
+    it('register survives across store instances (rich fields persist)', async () => {
+      const record = createArtifactRecord({
+        agentId: 'agent-1',
+        taskId: 'task-9',
+        filePath: '.aweek/agents/agent-1/artifacts/task-9_session-9/out.bin',
+        fileName: 'out.bin',
+        type: 'other',
+        description: 'binary blob',
+        executionId: 'session-9',
+        relpath: 'out.bin',
+        mime: 'application/octet-stream',
+        checksum: 'CAFEBABE',
+        checksumAlgorithm: 'sha256',
+      });
+
+      await store.register('agent-1', record, { autoSize: false });
+
+      // New store instance against the same on-disk manifest; rich
+      // metadata must round-trip identically (no fields dropped during
+      // load → save → load).
+      const store2 = new ArtifactStore(tmpDir, projectDir);
+      const loaded = await store2.load('agent-1');
+      assert.equal(loaded.length, 1);
+      assert.equal(loaded[0].executionId, 'session-9');
+      assert.equal(loaded[0].relpath, 'out.bin');
+      assert.equal(loaded[0].mime, 'application/octet-stream');
+      assert.equal(loaded[0].checksum, 'CAFEBABE');
+      assert.equal(loaded[0].checksumAlgorithm, 'sha256');
+    });
+
+    it('registerBatch persists the rich metadata for every record', async () => {
+      const records: ArtifactRecord[] = [
+        createArtifactRecord({
+          agentId: 'a',
+          taskId: 't',
+          filePath: 'a.md',
+          fileName: 'a.md',
+          type: 'document',
+          description: 'a',
+          executionId: 'session-1',
+          relpath: 'a.md',
+          mime: 'text/markdown',
+          checksum: 'aaaa',
+          checksumAlgorithm: 'sha256',
+        }),
+        createArtifactRecord({
+          agentId: 'a',
+          taskId: 't',
+          filePath: 'b.md',
+          fileName: 'b.md',
+          type: 'document',
+          description: 'b',
+          executionId: 'session-1',
+          relpath: 'b.md',
+          mime: 'text/markdown',
+          checksum: 'bbbb',
+          checksumAlgorithm: 'sha256',
+        }),
+      ];
+
+      const added = await store.registerBatch('a', records, { autoSize: false });
+      assert.equal(added.length, 2);
+
+      const loaded = await store.load('a');
+      assert.equal(loaded.length, 2);
+      const byChecksum = new Map(loaded.map((r) => [r.checksum, r]));
+      assert.equal(byChecksum.get('aaaa')?.executionId, 'session-1');
+      assert.equal(byChecksum.get('aaaa')?.relpath, 'a.md');
+      assert.equal(byChecksum.get('aaaa')?.mime, 'text/markdown');
+      assert.equal(byChecksum.get('aaaa')?.checksumAlgorithm, 'sha256');
+      assert.equal(byChecksum.get('bbbb')?.executionId, 'session-1');
+      assert.equal(byChecksum.get('bbbb')?.relpath, 'b.md');
+    });
+
+    it('legacy records without the rich-metadata fields still validate and load', async () => {
+      // Older records (pre-promotion) only carry the required fields plus
+      // optional week / sizeBytes / metadata. They must keep loading without
+      // forced migration so existing manifests aren't rejected.
+      const legacy = createArtifactRecord({
+        agentId: 'a',
+        taskId: 't',
+        filePath: 'legacy.md',
+        fileName: 'legacy.md',
+        type: 'document',
+        description: 'legacy record',
+      });
+      await store.register('a', legacy, { autoSize: false });
+
+      const loaded = await store.load('a');
+      assert.equal(loaded.length, 1);
+      assert.equal(loaded[0].executionId, undefined);
+      assert.equal(loaded[0].relpath, undefined);
+      assert.equal(loaded[0].mime, undefined);
+      assert.equal(loaded[0].checksum, undefined);
+      assert.equal(loaded[0].checksumAlgorithm, undefined);
+    });
+
+    it('schema rejects unknown top-level fields (additionalProperties: false guard)', () => {
+      // The promotion adds new top-level fields; the additionalProperties
+      // guard in the schema must still block typos / drift so a misspelled
+      // `mim` or `executionID` is caught at validation time instead of
+      // silently shadowing the canonical field.
+      const result = validateArtifactRecord({
+        id: 'artifact-deadbeef',
+        agentId: 'a',
+        taskId: 't',
+        filePath: 'f',
+        fileName: 'f',
+        type: 'document',
+        description: 'd',
+        createdAt: new Date().toISOString(),
+        executionID: 'session-1', // wrong case
+      });
+      assert.equal(result.valid, false);
     });
   });
 
