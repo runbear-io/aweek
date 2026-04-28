@@ -72,9 +72,20 @@ export {
   type UseAgentReviewsOptions,
   type AgentReviews,
 } from './use-agent-reviews.js';
-export {
   useGlobalNotifications,
   type UseGlobalNotificationsOptions,
   type GlobalNotificationsData,
   type GlobalNotificationRow,
 } from './use-global-notifications.js';
+export {
+  useAgentArtifacts,
+  groupArtifactsByWeek,
+  resolveArtifactWeekKey,
+  ARTIFACT_UNKNOWN_WEEK,
+  type UseAgentArtifactsOptions,
+  type UseAgentArtifactsResult,
+  type AgentArtifacts,
+  type ArtifactRecord,
+  type ArtifactSummary,
+  type ArtifactWeekGroup,
+} from './use-agent-artifacts.js';

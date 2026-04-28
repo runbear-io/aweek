@@ -67,3 +67,10 @@ export { gatherAgentReviews } from './reviews.js';
 export { gatherAllNotifications } from './notifications.js';
 
 export { gatherAgentNotifications } from './agent-notifications.js';
+
+export {
+  gatherAgentArtifacts,
+  isResolveArtifactFileError,
+  resolveArtifactContentType,
+  resolveArtifactFile,
+} from './artifacts.js';

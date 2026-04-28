@@ -13,6 +13,7 @@ describe('dispatcher registry', () => {
   it('exposes every skill module that the markdown calls', () => {
     const expected = [
       'agent-helpers',
+      'artifact',
       'calendar',
       'daily-review',
       'delegate-task',

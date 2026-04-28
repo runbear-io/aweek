@@ -993,6 +993,197 @@ export async function fetchAllNotifications(
   };
 }
 
+// ── Artifacts ────────────────────────────────────────────────────────
+
+/**
+ * Canonical artifact-record shape mirrored from
+ * `src/storage/artifact-store.ts`. Re-declared at the api-client layer so
+ * SPA consumers don't need to reach into the backend storage module to
+ * import the type — the storage source uses Node-only globals (`fs`,
+ * `path`) and would drag the wrong module graph into the bundler.
+ *
+ * Required vs. optional matches the schema's `required` array exactly.
+ * Extra/forward-compatible fields pass through via the index signature so
+ * server-side schema additions don't lockstep-break the SPA.
+ */
+export interface ArtifactRecord {
+  id: string;
+  agentId: string;
+  taskId: string;
+  filePath: string;
+  fileName: string;
+  type: 'document' | 'code' | 'data' | 'config' | 'report' | 'other';
+  description: string;
+  /** ISO-8601 datetime when the artifact was registered. */
+  createdAt: string;
+  /** Plan week (`YYYY-Www`) for traceability. May be absent on legacy records. */
+  week?: string;
+  sizeBytes?: number;
+  /**
+   * IANA MIME type promoted from the manifest's first-class field (see
+   * `src/storage/artifact-store.ts`). Optional because legacy records
+   * pre-date the `mime` schema field. SPA renderers should treat the
+   * filename extension as the authoritative fallback.
+   */
+  mime?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Aggregate artifact counts by type, returned alongside the full list by
+ * `GET /api/agents/:slug/artifacts`. Mirrors `ArtifactSummaryPayload` in
+ * `src/serve/data/artifacts.ts`.
+ */
+export interface ArtifactSummary {
+  totalArtifacts: number;
+  byType: Record<string, number>;
+  totalSizeBytes: number;
+}
+
+/**
+ * Artifacts payload returned by `GET /api/agents/:slug/artifacts`.
+ * Mirrors `AgentArtifactsPayload` in `src/serve/data/artifacts.ts`.
+ *
+ * `artifacts` is sorted newest-first server-side.
+ */
+export interface AgentArtifacts {
+  slug: string;
+  artifacts: ArtifactRecord[];
+  summary: ArtifactSummary;
+}
+
+/**
+ * `GET /api/agents/:slug/artifacts` — merged artifact list for the
+ * Artifacts tab on the per-agent detail page.
+ *
+ * Throws `ApiError` with `status: 404` when the slug does not exist; an
+ * existing agent with no artifacts yet produces a 200 with an empty
+ * `artifacts` list and a zero-summary so the SPA can render its empty
+ * state without parsing the message.
+ */
+export async function fetchAgentArtifacts(
+  slug: string,
+  opts: RequestOptions = {},
+): Promise<AgentArtifacts> {
+  const safeSlug = assertValidSlug(slug);
+  const body = await getJson<{ artifacts?: AgentArtifacts }>(
+    `/api/agents/${encodeURIComponent(safeSlug)}/artifacts`,
+    opts,
+  );
+  if (!body || typeof body !== 'object' || !body.artifacts) {
+    throw new ApiError(
+      'Malformed artifacts payload (missing `artifacts` envelope)',
+      {
+        status: 200,
+        endpoint: `/api/agents/${safeSlug}/artifacts`,
+        body,
+      },
+    );
+  }
+  return body.artifacts;
+}
+
+/**
+ * Build the URL the browser hits to stream the raw bytes of a single
+ * artifact: `GET /api/agents/:slug/artifacts/:id/file`.
+ *
+ * Used by the inline-renderers on the SPA Artifacts tab (`<img>` for
+ * images, `<iframe>` for PDFs, `<a download>` for unknown types) so URL
+ * construction stays centralised — slug encoding, base-URL prefixing,
+ * and the `/file` path suffix all live in one place.
+ *
+ * The slug is validated against the same character set the JSON
+ * endpoints enforce so a malformed slug fails synchronously instead of
+ * round-tripping through a 400. The artifact id is URI-encoded for the
+ * same defence-in-depth reason — registered ids are UUID-shaped today,
+ * but the public type permits arbitrary strings.
+ *
+ * @example
+ *   buildArtifactFileUrl('alice', 'artifact-aaa')
+ *   // → '/api/agents/alice/artifacts/artifact-aaa/file'
+ */
+export function buildArtifactFileUrl(
+  slug: string,
+  artifactId: string,
+  baseUrl: string = '',
+): string {
+  const safeSlug = assertValidSlug(slug);
+  if (typeof artifactId !== 'string' || artifactId.length === 0) {
+    throw new TypeError('api-client: artifactId must be a non-empty string');
+  }
+  return joinUrl(
+    baseUrl,
+    `/api/agents/${encodeURIComponent(safeSlug)}/artifacts/${encodeURIComponent(artifactId)}/file`,
+  );
+}
+
+/**
+ * `GET /api/agents/:slug/artifacts/:id/file` (text body) — fetch the raw
+ * UTF-8 text content of an artifact file for inline rendering.
+ *
+ * Backs the markdown preview path on the Artifacts tab: the SPA decodes
+ * the body as UTF-8 text and feeds it into the shared `<Markdown>`
+ * component (`src/serve/spa/lib/markdown.tsx`). Throws `ApiError` (status
+ * carried) on non-2xx so the caller can branch on `err.status === 404`
+ * for "artifact gone" UX.
+ *
+ * Binary types (images, PDFs, archives) should reference
+ * `buildArtifactFileUrl` directly — those are loaded by the browser via
+ * `<img>` / `<iframe>` / `<a download>` and don't pass through this
+ * helper.
+ */
+export async function fetchArtifactFileText(
+  slug: string,
+  artifactId: string,
+  opts: RequestOptions = {},
+): Promise<string> {
+  const { baseUrl = '', signal, fetch: fetchImpl } = opts;
+  const url = buildArtifactFileUrl(slug, artifactId);
+  const fullUrl = joinUrl(baseUrl, url);
+  const doFetch = fetchImpl ?? getDefaultFetch();
+
+  let response: Response;
+  try {
+    response = await doFetch(fullUrl, {
+      method: 'GET',
+      // Text-ish Accept header keeps proxies from negotiating an
+      // unexpected representation. The server picks Content-Type by
+      // extension regardless.
+      headers: { Accept: 'text/markdown, text/plain, text/*;q=0.9, */*;q=0.5' },
+      signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new ApiError(`Network error fetching ${url}: ${msg}`, {
+      status: 0,
+      endpoint: url,
+    });
+  }
+
+  const text = await response.text();
+  if (!response.ok) {
+    // Server error responses ship a JSON `{ error }` envelope; try to
+    // surface that for a useful message, falling back to the raw body.
+    let parsed: unknown;
+    try {
+      parsed = text.length > 0 ? JSON.parse(text) : undefined;
+    } catch {
+      parsed = text;
+    }
+    const message = isErrorEnvelope(parsed)
+      ? parsed.error
+      : `HTTP ${response.status} ${response.statusText || ''}`.trim();
+    throw new ApiError(message, {
+      status: response.status,
+      endpoint: url,
+      body: parsed,
+    });
+  }
+  return text;
+}
+
 // ── Test-facing internals ────────────────────────────────────────────
 // Exported for unit tests only — not part of the SPA's public API.
 

@@ -84,6 +84,7 @@ const ALLOWED_IMPORT_PREFIXES = [
   './logs.js',
   './reviews.js',
   './notifications.js',
+  './artifacts.js',
   './index.js',
   '../../storage/review-file-reader.js',
 ];

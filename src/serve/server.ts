@@ -50,9 +50,17 @@ import {
   gatherAgentReviews,
   gatherAllNotifications,
   gatherAgentNotifications,
+  gatherAgentArtifacts,
+  isResolveArtifactFileError,
+  resolveArtifactFile,
 } from './data/index.js';
 import type { NotificationSource, NotificationSystemEvent } from '../storage/notification-store.js';
 import { NotificationStore } from '../storage/notification-store.js';
+// Mutation surface for the SPA's Artifacts tab. The data layer is
+// contractually read-only (see `src/serve/data/data.test.ts`), so artifact
+// deletes — which need to unlink the file *and* drop the manifest entry —
+// live in this sibling module instead of under `data/`.
+import { removeAgentArtifact } from './artifact-mutations.js';
 // The /api/summary endpoint intentionally reuses the terminal
 // `/aweek:summary` composer so the SPA Overview tab shows byte-identical
 // cells (Agent / Goals / Tasks / Budget / Status) to the CLI baseline.
@@ -349,12 +357,32 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
   const rawUrl = req.url || '/';
   const pathname = rawUrl.split('?')[0];
 
-  // Notification mutation endpoints (AC 12 / 13). The dashboard's
-  // read-only-server invariant for src/serve/data/ is intentionally
-  // relaxed here so clicking a notification can flip its `read` flag and
-  // a "mark all read" action can clear an agent's unread badge. Writes
-  // flow through `NotificationStore.markRead` / `markAllRead`, which
-  // perform the same atomic write-then-rename used by every other store.
+  // Manual artifact deletion is the only mutation the SPA performs against
+  // the artifact surface (see the Artifacts tab in `src/serve/spa/pages/`).
+  // Match the route up front so DELETE bypasses the GET/HEAD gate below —
+  // but only for this one pathname, so other DELETEs still 405 cleanly.
+  // The match is also referenced by the 405 handler below to advertise
+  // `Allow: DELETE` on a non-DELETE request to this route.
+  const artifactDeleteMatch = pathname.match(
+    /^\/api\/agents\/([^/]+)\/artifacts\/([^/]+)\/?$/,
+  );
+  if (artifactDeleteMatch && method === 'DELETE') {
+    const slug = decodeSlug(artifactDeleteMatch[1]);
+    const artifactId = decodeSlug(artifactDeleteMatch[2]);
+    if (slug === null || artifactId === null) {
+      sendJson(res, 400, { error: 'Invalid slug or artifact id' });
+      return;
+    }
+    await handleAgentArtifactDelete(res, ctx, slug, artifactId);
+    return;
+  }
+
+  // Notification mutation endpoints. The dashboard's read-only-server
+  // invariant for src/serve/data/ is intentionally relaxed here so clicking
+  // a notification can flip its `read` flag and a "mark all read" action
+  // can clear an agent's unread badge. Writes flow through
+  // `NotificationStore.markRead` / `markAllRead`, which perform the same
+  // atomic write-then-rename used by every other store.
   if (method === 'POST') {
     const markReadMatch = pathname.match(
       /^\/api\/notifications\/([^/]+)\/([^/]+)\/read\/?$/,
@@ -381,7 +409,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
 
   if (method !== 'GET' && method !== 'HEAD') {
     res.statusCode = 405;
-    res.setHeader('Allow', 'GET, HEAD');
+    // Advertise DELETE on the artifact-delete route so a curl probe sees the
+    // full method set; everywhere else the dashboard is read-only.
+    if (artifactDeleteMatch) {
+      res.setHeader('Allow', 'DELETE');
+    } else {
+      res.setHeader('Allow', 'GET, HEAD');
+    }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.end('Method Not Allowed');
     return;
@@ -494,6 +528,43 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
       return;
     }
     await handleAgentReviews(res, ctx, slug);
+    return;
+  }
+
+  // Anchored to exactly `/artifacts` (with optional trailing slash) so it
+  // doesn't shadow sibling routes that target `/artifacts/:id` or
+  // `/artifacts/:id/file`. Method-check happens later inside the handler
+  // chain so DELETE / GET on the same prefix can both be added by sibling
+  // route blocks without re-routing here.
+  const agentArtifactsMatch = pathname.match(
+    /^\/api\/agents\/([^/]+)\/artifacts\/?$/,
+  );
+  if (agentArtifactsMatch && method === 'GET') {
+    const slug = decodeSlug(agentArtifactsMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    await handleAgentArtifacts(res, ctx, slug);
+    return;
+  }
+
+  // Per-artifact file streamer. The pattern segments use `[^/]+` so the
+  // `/file` suffix is unambiguous against the bare `/artifacts/:id`
+  // delete route — there's no overlap and either ordering would be
+  // safe, but keeping this near the artifact list route makes the
+  // grouping easy to read.
+  const agentArtifactFileMatch = pathname.match(
+    /^\/api\/agents\/([^/]+)\/artifacts\/([^/]+)\/file\/?$/,
+  );
+  if (agentArtifactFileMatch) {
+    const slug = decodeSlug(agentArtifactFileMatch[1]);
+    const artifactId = decodeSlug(agentArtifactFileMatch[2]);
+    if (slug === null || artifactId === null) {
+      sendJson(res, 400, { error: 'Invalid slug or artifact id' });
+      return;
+    }
+    await handleAgentArtifactFile(req, res, ctx, slug, artifactId);
     return;
   }
 
@@ -904,6 +975,50 @@ async function handleAgentNotifications(
 }
 
 /**
+ * GET /api/agents/:slug/artifacts — return the merged artifact list for an
+ * agent across all task executions.
+ *
+ * Delegates to `gatherAgentArtifacts`, which sources from the
+ * `ArtifactStore` manifest (`.aweek/agents/<slug>/artifacts/manifest.json`)
+ * — the same store the heartbeat / CLI artifact registration paths write
+ * to. Returns `null` (→ 404) when the slug is unknown on disk; an agent
+ * that exists with no artifacts yet produces a 200 with an empty list and
+ * a zero-summary so the SPA Artifacts tab can render its empty state.
+ *
+ * Response shape:
+ *   200 { artifacts: { slug,
+ *                      artifacts: [...records, newest first],
+ *                      summary: { totalArtifacts, byType, totalSizeBytes } } }
+ *   400 { error: 'Invalid agent slug' }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ */
+async function handleAgentArtifacts(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+): Promise<void> {
+  try {
+    const artifacts = await gatherAgentArtifacts({
+      projectDir: ctx.projectDir,
+      slug,
+    });
+    if (!artifacts) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, { artifacts });
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to load artifacts',
+    });
+  }
+}
+
+/**
  * POST /api/notifications/:slug/:id/read — mark a single notification as read.
  *
  * Flips `read: true` and stamps `readAt` via `NotificationStore.markRead`,
@@ -912,10 +1027,11 @@ async function handleAgentNotifications(
  * already read (the store returns the unchanged record).
  *
  * Per the v1 contract this is one of the two server-side mutation endpoints
- * the dashboard exposes (the other is `POST /api/notifications/read-all`).
- * The mutation is intentionally not surfaced through the read-only
- * `src/serve/data/` layer — writes go straight through the storage class
- * so the data layer's import-allowlist test stays green.
+ * the dashboard exposes for notifications (the other is
+ * `POST /api/notifications/read-all`). The mutation is intentionally not
+ * surfaced through the read-only `src/serve/data/` layer — writes go
+ * straight through the storage class so the data layer's import-allowlist
+ * test stays green.
  *
  * Response shape:
  *   200 { notification: { id, agentId, source, ..., read: true, readAt } }
@@ -951,6 +1067,69 @@ async function handleNotificationMarkRead(
 }
 
 /**
+ * DELETE /api/agents/:slug/artifacts/:id — remove an artifact entirely.
+ *
+ * Removes both the `ArtifactStore` manifest entry AND unlinks the file
+ * from disk in a single atomic operation. The mutation lives in
+ * `./artifact-mutations.js` (sibling to this server, NOT under `data/`)
+ * because the read-only data layer is contractually forbidden from any
+ * filesystem write API. Path-traversal is guarded inside the mutation
+ * helper: the artifact's recorded `filePath` must resolve to an absolute
+ * path strictly inside the project root or the request is rejected with
+ * 400.
+ *
+ * Response shape:
+ *   200 { ok: true,
+ *         artifactId,
+ *         filePath,
+ *         fileUnlinked }   # false when the file was already gone
+ *   400 { error: 'Invalid slug or artifact id' }
+ *   400 { error: 'Artifact filePath escapes project root' }
+ *   404 { error: 'Artifact not found: <id>' }
+ *   500 { error: string }
+ */
+async function handleAgentArtifactDelete(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+  artifactId: string,
+): Promise<void> {
+  try {
+    const result = await removeAgentArtifact({
+      projectDir: ctx.projectDir,
+      slug,
+      artifactId,
+    });
+    if (!result.ok) {
+      if (result.reason === 'not-found') {
+        sendJson(res, 404, { error: `Artifact not found: ${artifactId}` });
+        return;
+      }
+      // 'invalid-path' — the manifest entry pointed outside the project
+      // root, so we refused to act. Surface a clear 400 so the operator
+      // knows to clean the manifest manually.
+      sendJson(res, 400, {
+        error: 'Artifact filePath escapes project root',
+      });
+      return;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      artifactId: result.artifact.id,
+      filePath: result.artifact.filePath,
+      fileUnlinked: result.fileUnlinked,
+    });
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to delete artifact',
+    });
+  }
+}
+
+/**
  * POST /api/notifications/read-all — mark every unread notification across
  * every agent as read in a single call.
  *
@@ -961,7 +1140,7 @@ async function handleNotificationMarkRead(
  * already fully read (the store returns a flipped count of 0).
  *
  * Per the v1 contract this is the second of the two server-side mutation
- * endpoints the dashboard exposes (the other is
+ * endpoints the dashboard exposes for notifications (the other is
  * `POST /api/notifications/:slug/:id/read`). The mutation is intentionally
  * not surfaced through the read-only `src/serve/data/` layer — writes go
  * straight through the storage class so the data layer's import-allowlist
@@ -1000,6 +1179,107 @@ async function handleNotificationMarkAllRead(
           ? (err as Error).message
           : 'Failed to mark all notifications read',
     });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/artifacts/:id/file — stream the raw bytes of a
+ * single artifact deliverable.
+ *
+ * Looks the artifact up via `resolveArtifactFile` (which sources from
+ * `ArtifactStore` and validates that the recorded `filePath` resolves to
+ * an absolute path strictly inside the project root). The response body
+ * is the file's raw bytes — `Content-Type` is derived from the
+ * artifact's `fileName` extension via `resolveArtifactContentType` so
+ * the browser can either render inline (markdown via the SPA's Markdown
+ * component, images, PDFs) or trigger a download for unknown types
+ * (`application/octet-stream`).
+ *
+ * Caching: artifacts can change in place when an agent re-runs a task
+ * that overwrites a file, so we send `Cache-Control: no-store` to
+ * guarantee the dashboard reflects the on-disk truth on every refresh.
+ *
+ * Response shape:
+ *   200 <raw file bytes>     (Content-Type per extension)
+ *   400 { error: 'Invalid slug or artifact id' }
+ *   400 { error: 'Artifact filePath escapes project root' }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   404 { error: 'Artifact not found: <id>' }
+ *   404 { error: 'Artifact file missing on disk' }
+ *   500 { error: string }
+ */
+async function handleAgentArtifactFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+  artifactId: string,
+): Promise<void> {
+  try {
+    const result = await resolveArtifactFile({
+      projectDir: ctx.projectDir,
+      slug,
+      artifactId,
+    });
+    if (isResolveArtifactFileError(result)) {
+      switch (result.reason) {
+        case 'agent-not-found':
+          sendJson(res, 404, { error: `Agent not found: ${slug}` });
+          return;
+        case 'artifact-not-found':
+          sendJson(res, 404, { error: `Artifact not found: ${artifactId}` });
+          return;
+        case 'path-traversal':
+          // Mirror the wording used by the DELETE handler so operators
+          // see consistent failures across both routes.
+          sendJson(res, 400, {
+            error: 'Artifact filePath escapes project root',
+          });
+          return;
+        case 'file-missing':
+          sendJson(res, 404, { error: 'Artifact file missing on disk' });
+          return;
+      }
+    }
+
+    res.statusCode = 200;
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Length', String(result.sizeBytes));
+    // Artifacts can be overwritten in place by re-running the producing
+    // task; the dashboard must always reflect the current disk truth.
+    res.setHeader('Cache-Control', 'no-store');
+    // Disposition policy (AC 9): for known/renderable Content-Types
+    // (markdown, images, PDFs, text/*) we send `inline` so the browser
+    // keeps the render-in-place path working for the SPA's inline
+    // previews. For unknown types — anything that resolved to the
+    // `application/octet-stream` fallback in `resolveArtifactContentType`
+    // — we send `attachment` so the browser unconditionally triggers a
+    // download dialog instead of trying to render an opaque body. The
+    // `filename=` hint surfaces the original on-disk filename in the
+    // browser's "Save As…" dialog regardless of disposition.
+    const safeName = result.record.fileName.replace(/[\r\n"]/g, '_');
+    const isUnknownType = result.contentType === 'application/octet-stream';
+    const disposition = isUnknownType ? 'attachment' : 'inline';
+    res.setHeader(
+      'Content-Disposition',
+      `${disposition}; filename="${safeName}"`,
+    );
+
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+
+    await pipeline(createReadStream(result.absolutePath), res);
+  } catch (err) {
+    if (!res.headersSent) {
+      sendJson(res, 500, {
+        error:
+          err && (err as Error).message
+            ? (err as Error).message
+            : 'Failed to read artifact file',
+      });
+    }
   }
 }
 

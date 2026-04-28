@@ -34,6 +34,7 @@ import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
 import * as notify from '../skills/notify.js';
 import * as execution from '../skills/execution.js';
+import * as artifact from '../skills/artifact.js';
 import * as planAmbiguity from '../skills/plan-ambiguity.js';
 import * as planInterviewStore from '../storage/plan-interview-store.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
@@ -301,6 +302,41 @@ const REGISTRY_LITERAL = Object.freeze({
         projectDir: input?.projectDir,
         olderThanWeeks: input?.olderThanWeeks,
       }),
+  },
+  // Explicit artifact registration entry point. Wraps
+  // `ArtifactStore.register` (via `src/skills/artifact.ts`) so subagents and
+  // skill markdown can drop a single deliverable file into the manifest
+  // bound to the current `(taskId, executionId)` execution. Validates
+  // `filePath` stays inside the project root before persistence.
+  //
+  // Accepts both the canonical long field names (`taskId`, `executionId`,
+  // `filePath`) and the short CLI-flag aliases (`task`, `execution`, `file`)
+  // so skill markdown can stay terse: `aweek exec artifact register
+  // --input-json -` with a body of `{ "task": "...", "execution": "...",
+  // "file": "...", "type": "...", "description": "..." }` matches the
+  // Sub-AC 1 contract verbatim, while existing call sites that pass the
+  // long names continue to work unchanged.
+  artifact: {
+    register: (input: any) =>
+      artifact.register({
+        projectRoot: input?.projectRoot,
+        agentsDir: input?.agentsDir,
+        agentId: input?.agentId,
+        taskId: input?.taskId ?? input?.task,
+        executionId: input?.executionId ?? input?.execution,
+        filePath: input?.filePath ?? input?.file,
+        fileName: input?.fileName,
+        type: input?.type,
+        description: input?.description,
+        week: input?.week,
+        sizeBytes: input?.sizeBytes,
+        metadata: input?.metadata,
+      }),
+    normalizeFilePath: (input: any) =>
+      artifact.normalizeArtifactFilePath(
+        input?.projectRoot,
+        input?.filePath ?? input?.file,
+      ),
   },
   // Ouroboros-style adaptive-interview helpers for `/aweek:plan`. The
   // SKILL.md orchestrates the LLM calls; this registry exposes the pure

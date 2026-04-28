@@ -2014,7 +2014,7 @@ describe('GET /api/agents/:slug/logs', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// POST /api/notifications/:slug/:id/read — AC 12.
+// POST /api/notifications/:slug/:id/read
 //
 // Clicking a notification in the dashboard inbox flips its `read` flag to
 // true via this endpoint. The mutation flows through
@@ -2207,5 +2207,202 @@ describe('POST /api/notifications/:slug/:id/read', () => {
 
     const agents = await httpGet(`${handle.url}api/agents`, { method: 'POST' });
     assert.equal(agents.statusCode, 405);
+  });
+});
+
+// ── DELETE /api/agents/:slug/artifacts/:id ─────────────────────────────────
+
+describe('DELETE /api/agents/:slug/artifacts/:id', () => {
+  /** @type {string|null} */
+  let projectDir = null;
+  /** @type {string|null} */
+  let buildDir = null;
+  /** @type {Awaited<ReturnType<typeof startServer>>|null} */
+  let handle = null;
+
+  beforeEach(() => {
+    projectDir = null;
+    buildDir = null;
+    handle = null;
+  });
+
+  afterEach(async () => {
+    if (handle) await handle.close();
+    if (projectDir) await rm(projectDir, { recursive: true, force: true });
+    if (buildDir) await rm(buildDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Seed a single artifact's file + manifest entry inside the fixture
+   * project. Returns the manifest record (so the test knows the id) and
+   * the absolute on-disk path so the test can verify unlink.
+   */
+  async function seedArtifact(root, slug, { fileName = 'note.md', body = '# hi\n' } = {}) {
+    const { ArtifactStore, createArtifactRecord } = await import(
+      '../storage/artifact-store.js'
+    );
+    const agentsDir = join(root, '.aweek', 'agents');
+    const taskId = 'task-1';
+    const executionId = 'session-001';
+    const artifactDir = join(agentsDir, slug, 'artifacts', `${taskId}_${executionId}`);
+    await mkdir(artifactDir, { recursive: true });
+    const absolutePath = join(artifactDir, fileName);
+    await writeFile(absolutePath, body, 'utf-8');
+    const filePath = absolutePath.slice(root.length + 1);
+    const record = createArtifactRecord({
+      agentId: slug,
+      taskId,
+      filePath,
+      fileName,
+      type: 'document',
+      description: 'Test artifact',
+    });
+    const store = new ArtifactStore(agentsDir, root);
+    await store.register(slug, record);
+    return { record, absolutePath, store };
+  }
+
+  /**
+   * Tiny helper for non-GET HTTP — `httpGet` ignores the method beyond
+   * letting it through, but it never sends a body. DELETE has no body
+   * either, so we reuse it via the explicit `method` option.
+   */
+  async function httpDelete(url) {
+    return httpGet(url, { method: 'DELETE' });
+  }
+
+  it('removes the manifest entry AND unlinks the file from disk', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer', name: 'Writer' });
+    projectDir = fx.root;
+    const { record, absolutePath, store } = await seedArtifact(projectDir, 'writer');
+
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const res = await httpDelete(
+      `${handle.url}api/agents/writer/artifacts/${encodeURIComponent(record.id)}`,
+    );
+    assert.equal(res.statusCode, 200, `body=${res.body}`);
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.artifactId, record.id);
+    assert.equal(body.fileUnlinked, true);
+
+    // File on disk: gone.
+    const { stat } = await import('node:fs/promises');
+    await assert.rejects(
+      () => stat(absolutePath),
+      (err) => err.code === 'ENOENT',
+    );
+
+    // Manifest: empty.
+    const remaining = await store.load('writer');
+    assert.equal(remaining.length, 0);
+  });
+
+  it('returns 404 when the artifact id is unknown', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer', name: 'Writer' });
+    projectDir = fx.root;
+    // Seed a real artifact so the manifest exists, then ask for a
+    // different id.
+    await seedArtifact(projectDir, 'writer');
+
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const res = await httpDelete(
+      `${handle.url}api/agents/writer/artifacts/artifact-deadbeef`,
+    );
+    assert.equal(res.statusCode, 404);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /Artifact not found/);
+  });
+
+  it('returns 200 + fileUnlinked:false when only the manifest entry exists', async () => {
+    // Idempotency: a stale manifest entry pointing at a missing file
+    // should still get cleaned up so retries don't get stuck.
+    const fx = await makeProjectWithAgent({ slug: 'writer', name: 'Writer' });
+    projectDir = fx.root;
+    const { record, absolutePath } = await seedArtifact(projectDir, 'writer');
+
+    // Manually pre-delete the file.
+    await rm(absolutePath, { force: true });
+
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const res = await httpDelete(
+      `${handle.url}api/agents/writer/artifacts/${encodeURIComponent(record.id)}`,
+    );
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.fileUnlinked, false);
+  });
+
+  it('rejects manifest entries that escape the project root with 400', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer', name: 'Writer' });
+    projectDir = fx.root;
+    const { ArtifactStore, createArtifactRecord } = await import(
+      '../storage/artifact-store.js'
+    );
+    const agentsDir = join(projectDir, '.aweek', 'agents');
+    // Drift: a manifest entry pointing outside the project tree.
+    const evil = createArtifactRecord({
+      agentId: 'writer',
+      taskId: 'task-evil',
+      filePath: '../../etc/passwd',
+      fileName: 'passwd',
+      type: 'other',
+      description: 'evil',
+    });
+    const store = new ArtifactStore(agentsDir, projectDir);
+    await store.register('writer', evil, { autoSize: false });
+
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const res = await httpDelete(
+      `${handle.url}api/agents/writer/artifacts/${encodeURIComponent(evil.id)}`,
+    );
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /escapes project root/);
+
+    // Manifest is still intact — the operator gets a chance to clean
+    // the bad entry manually rather than having the server delete the
+    // record silently.
+    const remaining = await store.load('writer');
+    assert.equal(remaining.length, 1);
+  });
+
+  it('rejects traversal-shaped slugs with 400', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer', name: 'Writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    const res = await httpDelete(
+      `${handle.url}api/agents/${encodeURIComponent('../escape')}/artifacts/${encodeURIComponent('artifact-x')}`,
+    );
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /Invalid slug or artifact id/);
+  });
+
+  it('returns 405 with Allow: DELETE for non-DELETE methods on this path', async () => {
+    const fx = await makeProjectWithAgent({ slug: 'writer', name: 'Writer' });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir();
+    handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
+
+    // PUT is neither GET/HEAD nor DELETE → 405. The Allow header
+    // should advertise DELETE since this path is dedicated to deletes.
+    const res = await httpGet(
+      `${handle.url}api/agents/writer/artifacts/artifact-x`,
+      { method: 'PUT' },
+    );
+    assert.equal(res.statusCode, 405);
+    assert.match(res.headers.allow || '', /DELETE/);
   });
 });

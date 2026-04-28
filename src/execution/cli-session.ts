@@ -49,6 +49,17 @@ export interface TaskContext {
   week?: string;
   /** Extra context to append to the prompt */
   additionalContext?: string;
+  /**
+   * Absolute path of the per-execution artifact directory created by the
+   * session executor (`<agentsDir>/<agent>/artifacts/<taskId>_<executionId>/`).
+   *
+   * When set, the path is announced to the subagent via the runtime-context
+   * block AND exported as the `AWEEK_ARTIFACT_DIR` environment variable on
+   * the spawned CLI process. The subagent can drop deliverables into this
+   * folder; downstream auto-scan will pick them up after the session
+   * finishes.
+   */
+  artifactDir?: string;
 }
 
 export interface SessionResult {
@@ -209,6 +220,21 @@ export function buildRuntimeContext(task: TaskContext | null | undefined): strin
 
   if (task.objectiveId) lines.push(`Objective ID: ${task.objectiveId}`);
   if (task.week) lines.push(`Week: ${task.week}`);
+
+  if (task.artifactDir) {
+    lines.push(
+      '',
+      '### Artifact Directory',
+      '',
+      'Save deliverable files (documents, code, data, reports) you produce',
+      'during this task into the absolute path below. Files dropped here are',
+      'auto-scanned and registered as persistent artifacts tied to this',
+      'task execution. The same path is also exported as the',
+      '`AWEEK_ARTIFACT_DIR` environment variable for tools that prefer env.',
+      '',
+      `Artifact Directory: ${task.artifactDir}`,
+    );
+  }
 
   if (task.additionalContext) {
     lines.push('', '### Additional Context', '', task.additionalContext);

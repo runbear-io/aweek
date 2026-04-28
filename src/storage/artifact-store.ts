@@ -27,9 +27,23 @@ const MANIFEST_SCHEMA_ID = 'aweek://schemas/artifact-manifest';
 export type ArtifactType = 'document' | 'code' | 'data' | 'config' | 'report' | 'other';
 
 /**
+ * Supported checksum algorithms. Mirrors `CHECKSUM_ALGORITHMS` in
+ * `src/schemas/artifact.schema.js` and the schema's `enum` for the
+ * `checksumAlgorithm` field.
+ */
+export type ChecksumAlgorithm = 'sha256';
+
+/**
  * Canonical shape of a single artifact record — mirrors `artifactRecordSchema`
  * in `src/schemas/artifact.schema.js`. Required vs. optional matches the
  * schema's `required` array exactly.
+ *
+ * The rich-metadata fields (`executionId`, `relpath`, `mime`, `checksum`,
+ * `checksumAlgorithm`) are top-level optionals — historically these lived
+ * inside the `metadata` bag, but the dashboard / data layer needs them
+ * without unpacking metadata, so the schema promotes them to first-class
+ * properties. Records written before the promotion still validate (the
+ * fields are optional) and can be migrated lazily on the next register.
  */
 export interface ArtifactRecord {
   /** Unique artifact identifier (`artifact-<hex>`). */
@@ -52,7 +66,35 @@ export interface ArtifactRecord {
   week?: string;
   /** File size in bytes. */
   sizeBytes?: number;
-  /** Optional extra key-value data. */
+  /**
+   * Compound execution id from `cli-session.ts`. Pairs with `taskId` to
+   * locate the per-execution artifact directory under
+   * `<agentsDir>/<slug>/artifacts/<taskId>_<executionId>/`.
+   */
+  executionId?: string;
+  /**
+   * Path relative to the per-execution artifact directory. Distinct from
+   * `filePath`, which is relative to the project root. Used by the
+   * dashboard to surface the in-execution layout (subfolders, ordering)
+   * without re-deriving it from `filePath`.
+   */
+  relpath?: string;
+  /** IANA MIME type inferred from the filename extension. */
+  mime?: string;
+  /**
+   * Hex-encoded content digest captured at registration time. Algorithm
+   * is recorded separately in `checksumAlgorithm` so future migrations
+   * can swap implementations.
+   */
+  checksum?: string;
+  /** Algorithm used to produce `checksum` (e.g. `sha256`). */
+  checksumAlgorithm?: ChecksumAlgorithm;
+  /**
+   * Free-form extra key-value bag for caller-supplied attributes that
+   * don't deserve top-level promotion. Note: the rich-metadata fields
+   * above are no longer expected to live inside this bag — new code
+   * should set the top-level fields directly.
+   */
   metadata?: Record<string, unknown>;
 }
 
@@ -74,6 +116,16 @@ export interface CreateArtifactRecordOptions {
   week?: string;
   /** File size in bytes. */
   sizeBytes?: number;
+  /** Compound execution id from `cli-session.ts`. */
+  executionId?: string;
+  /** Path relative to the per-execution artifact directory. */
+  relpath?: string;
+  /** IANA MIME type inferred from the filename extension. */
+  mime?: string;
+  /** Hex-encoded content digest captured at registration time. */
+  checksum?: string;
+  /** Algorithm used to produce `checksum` (e.g. `sha256`). */
+  checksumAlgorithm?: ChecksumAlgorithm;
   /** Optional extra data. */
   metadata?: Record<string, unknown>;
 }
@@ -112,7 +164,46 @@ export interface ArtifactSummary {
 const shortId = (): string => randomBytes(4).toString('hex');
 
 /**
+ * Resolve the canonical per-execution artifact directory for an agent task.
+ *
+ * Returns `<dataDir>/<slug>/artifacts/<taskId>_<executionId>/` — the
+ * dedicated folder where deliverables produced during a single Claude Code
+ * CLI execution live on disk. The naming mirrors the execution-log layout
+ * (`<dataDir>/<slug>/executions/<taskId>_<executionId>.jsonl`) so a
+ * single `(taskId, executionId)` pair fans out to two co-located,
+ * compound-keyed artifacts on disk: the JSONL execution log and this
+ * artifact directory.
+ *
+ * `_` is used as the separator between `taskId` and `executionId` because
+ * both IDs may contain `-` (taskId pattern `task-<slug>`, executionId
+ * shape `session-<timestamp>`); `_` is reserved as the unambiguous split
+ * point so consumers can recover the original pair from the basename.
+ *
+ * @param dataDir       `.aweek/agents` root (a.k.a. `agentsDir` in this codebase)
+ * @param slug          Agent slug — same as the `.claude/agents/<slug>.md` file
+ * @param taskId        Weekly-plan task ID that produced the artifacts
+ * @param executionId   CLI execution ID from `cli-session.ts`
+ */
+export function resolveArtifactDir(
+  dataDir: string,
+  slug: string,
+  taskId: string,
+  executionId: string,
+): string {
+  if (!dataDir) throw new TypeError('dataDir is required');
+  if (!slug) throw new TypeError('slug is required');
+  if (!taskId) throw new TypeError('taskId is required');
+  if (!executionId) throw new TypeError('executionId is required');
+  return join(dataDir, slug, 'artifacts', `${taskId}_${executionId}`);
+}
+
+/**
  * Create a new artifact record.
+ *
+ * Optional rich-metadata fields (`executionId`, `relpath`, `mime`,
+ * `checksum`, `checksumAlgorithm`) are copied through unchanged when
+ * supplied. They're left undefined otherwise so the resulting JSON
+ * stays compact for callers that only care about the required fields.
  */
 export function createArtifactRecord({
   agentId,
@@ -123,6 +214,11 @@ export function createArtifactRecord({
   description,
   week,
   sizeBytes,
+  executionId,
+  relpath,
+  mime,
+  checksum,
+  checksumAlgorithm,
   metadata,
 }: CreateArtifactRecordOptions): ArtifactRecord {
   const record: ArtifactRecord = {
@@ -137,6 +233,11 @@ export function createArtifactRecord({
   };
   if (week !== undefined) record.week = week;
   if (sizeBytes !== undefined) record.sizeBytes = sizeBytes;
+  if (executionId !== undefined) record.executionId = executionId;
+  if (relpath !== undefined) record.relpath = relpath;
+  if (mime !== undefined) record.mime = mime;
+  if (checksum !== undefined) record.checksum = checksum;
+  if (checksumAlgorithm !== undefined) record.checksumAlgorithm = checksumAlgorithm;
   if (metadata !== undefined) record.metadata = metadata;
   return record;
 }
@@ -171,6 +272,42 @@ export async function artifactFileExists(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Result of {@link statArtifactFile}. */
+export interface ArtifactFileStat {
+  /** Absolute path on disk (joined under `projectRoot`). */
+  absolutePath: string;
+  /** File size in bytes. */
+  size: number;
+  /** True only when the path resolves to a regular file (not a directory or symlink target dir). */
+  isFile: boolean;
+}
+
+/**
+ * Stat an artifact file relative to `projectRoot`. Returns `null` when
+ * the file does not exist (ENOENT) so callers don't have to wrap each
+ * call in their own `try/catch`.
+ *
+ * Used by the dashboard's file-serving endpoint to check existence,
+ * confirm the path is a regular file (not a directory), and read the
+ * size for the `Content-Length` header — all in a single `stat()` call.
+ * This stays in `src/storage/` so the read-only data layer can call it
+ * without importing `node:fs/promises` directly (the data-layer test
+ * forbids that import to keep all fs access funneled through the store
+ * layer).
+ */
+export async function statArtifactFile(
+  projectRoot: string,
+  filePath: string,
+): Promise<ArtifactFileStat | null> {
+  const absolutePath = join(projectRoot, filePath);
+  try {
+    const stats = await stat(absolutePath);
+    return { absolutePath, size: stats.size, isFile: stats.isFile() };
+  } catch {
+    return null;
   }
 }
 
