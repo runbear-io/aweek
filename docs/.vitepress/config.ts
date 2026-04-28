@@ -10,16 +10,21 @@ export default defineConfig({
   ignoreDeadLinks: true,
 
   head: [
-    ['link', { rel: 'icon', href: '/aweek.png' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
     ['meta', { name: 'theme-color', content: '#5f5cf0' }],
   ],
 
   themeConfig: {
-    logo: '/aweek.png',
+    logo: {
+      light: '/logo-dark.svg',
+      dark: '/logo-light.svg',
+      alt: 'aweek',
+    },
 
     nav: [
-      { text: 'Guide', link: '/getting-started' },
-      { text: 'Skills', link: '/skills' },
+      { text: 'Get started', link: '/install' },
+      { text: 'Recipes', link: '/recipes/social-marketer' },
+      { text: 'Commands', link: '/commands' },
       {
         text: 'v0.1.1',
         items: [
@@ -34,14 +39,27 @@ export default defineConfig({
     sidebar: [
       {
         text: 'Introduction',
+        items: [{ text: 'What is aweek?', link: '/' }],
+      },
+      {
+        text: 'Get started',
         items: [
-          { text: 'What is aweek?', link: '/' },
-          { text: 'Getting started', link: '/getting-started' },
+          { text: 'Install', link: '/install' },
+          { text: 'Quickstart', link: '/quickstart' },
+        ],
+      },
+      {
+        text: 'Recipes',
+        items: [
+          { text: 'Social marketer', link: '/recipes/social-marketer' },
         ],
       },
       {
         text: 'Reference',
-        items: [{ text: 'Slash commands', link: '/skills' }],
+        items: [
+          { text: 'Slash commands', link: '/commands' },
+          { text: 'Troubleshooting', link: '/troubleshooting' },
+        ],
       },
     ],
 

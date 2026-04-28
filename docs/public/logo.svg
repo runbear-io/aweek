@@ -1,0 +1,14 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 32 16"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.5"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  role="img"
+  aria-label="aweek"
+>
+  <title>aweek</title>
+  <path d="M2 4h4v8h4V4h4v8h4V4h4v8h4V4h4" />
+</svg>
