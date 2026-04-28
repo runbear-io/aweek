@@ -23,7 +23,7 @@ export default defineConfig({
 
     nav: [
       { text: 'Get started', link: '/install' },
-      { text: 'Recipes', link: '/recipes/social-marketer' },
+      { text: 'Recipes', link: '/recipes/weekly-ops' },
       { text: 'Commands', link: '/commands' },
       {
         text: 'v0.1.1',
@@ -51,7 +51,9 @@ export default defineConfig({
       {
         text: 'Recipes',
         items: [
-          { text: 'Social marketer', link: '/recipes/social-marketer' },
+          { text: 'A weekly operator', link: '/recipes/weekly-ops' },
+          { text: 'An engineer', link: '/recipes/engineer' },
+          { text: 'A content marketer', link: '/recipes/content-marketer' },
         ],
       },
       {
