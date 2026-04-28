@@ -1,4 +1,4 @@
-# aweek
+# <picture> <source media="(prefers-color-scheme: dark)" srcset="docs/public/logo-light.svg"> <img src="docs/public/logo-dark.svg" alt="aweek" width="36"> </picture> aweek
 
 **If Claude Code is the doer, aweek is the planner.**
 
@@ -66,7 +66,7 @@ Walk away. Come back Monday morning to a status report and next week's draft pla
 
 ## How it works (in 3 lines)
 
-1. **Slash commands** (`/aweek:*`) shell out to a tiny `aweek` CLI for every state change.
+1. **Skills** (invoked via `/aweek:[name]`) shell out to a tiny `aweek` CLI for every state change.
 2. **Heartbeat** is a 10-minute launchd user agent per project. It picks the next pending task per agent and runs it in a fresh Claude Code CLI session.
 3. **Storage** is plain files: `.aweek/agents/<slug>.json` for scheduling, `.claude/agents/<slug>.md` for identity. No DB.
 
@@ -106,7 +106,7 @@ Format is dotenv-style: `KEY=value`, `#` comments, single/double quotes (double-
 
 ## Troubleshooting
 
-- **Slash commands can't find `aweek`.** SessionStart's `npm install -g aweek` failed. Run it yourself.
+- **Skills don't show up in Claude Code.** SessionStart's `npm install -g aweek` failed. Run it yourself.
 - **Heartbeat isn't running.** Check `launchctl list | grep io.aweek.heartbeat`. If nothing matches, re-run `/aweek:init`.
 - **Agent paused.** It hit its weekly budget. `/aweek:manage` → `resume` (resets next week) or `top-up` (resets now).
 
@@ -117,7 +117,7 @@ pnpm test          # 2,000+ tests
 pnpm lint          # syntax-check src
 ```
 
-Slash commands call into `src/skills/*.js` via `aweek exec <module> <fn>`. Don't duplicate logic in ad-hoc `node -e` snippets — extend the module and register it in `src/cli/dispatcher.js`.
+Skills call into `src/skills/*.ts` via `aweek exec <module> <fn>`. Don't duplicate logic in ad-hoc `node -e` snippets — extend the module and register it in `src/cli/dispatcher.ts`.
 
 ## License
 

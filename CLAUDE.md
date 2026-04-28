@@ -204,7 +204,7 @@ dist/                           # `pnpm build` output (gitignored; published in 
   .locks/                       # Heartbeat + per-agent lock files
 ```
 
-`src/skills/status.ts` has no dedicated slash command — it backs the per-agent drill-down inside `/aweek:summary`.
+`src/skills/status.ts` has no dedicated skill — it backs the per-agent drill-down inside `/aweek:summary`.
 
 ## Conventions
 

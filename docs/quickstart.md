@@ -79,7 +79,7 @@ plan.
 /aweek:delegate-task  # Drop work into another agent's inbox
 ```
 
-The full reference lives in [Slash commands](/commands).
+The full reference lives in [Skills](/skills).
 
 ## Per-agent secrets
 
@@ -113,6 +113,6 @@ with read-only JSON endpoints under `/api/*`. Use `--project-dir
 - [Build a weekly operator](/recipes/weekly-ops) — the marquee
   recipe. One agent, seven routine tasks across Mon–Fri, one
   cumulative `plan.md`.
-- [Slash commands reference](/commands) — every `/aweek:*` command
+- [Skills reference](/skills) — every `/aweek:[name]` skill
   documented.
 - Hit a snag? See [Troubleshooting](/troubleshooting).

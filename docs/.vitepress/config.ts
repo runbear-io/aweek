@@ -24,7 +24,7 @@ export default defineConfig({
     nav: [
       { text: 'Get started', link: '/install' },
       { text: 'Recipes', link: '/recipes/weekly-ops' },
-      { text: 'Commands', link: '/commands' },
+      { text: 'Skills', link: '/skills' },
       {
         text: 'v0.1.1',
         items: [
@@ -59,7 +59,7 @@ export default defineConfig({
       {
         text: 'Reference',
         items: [
-          { text: 'Slash commands', link: '/commands' },
+          { text: 'Skills', link: '/skills' },
           { text: 'Troubleshooting', link: '/troubleshooting' },
         ],
       },

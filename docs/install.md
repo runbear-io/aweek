@@ -41,11 +41,12 @@ claude --plugin-dir .
 
 ## Verify
 
-In your Claude Code session, type `/` — the `aweek:` slash commands
-(`/aweek:init`, `/aweek:hire`, …) should appear in the command list.
+In your Claude Code session, type `/` — the `aweek:` skills
+(`/aweek:init`, `/aweek:hire`, …) should appear in the suggestion
+list.
 
 If they don't, see
-[Slash commands can't find `aweek`](/troubleshooting#slash-commands-can-t-find-aweek).
+[Skills don't show up in Claude Code](/troubleshooting#skills-don-t-show-up-in-claude-code).
 
 ## Next: [Quickstart](/quickstart)
 
