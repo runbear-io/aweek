@@ -1,15 +1,16 @@
-# Slash commands
+# Skills
 
-Every aweek skill is a slash command available inside Claude Code once
-the plugin is installed. The skill markdown lives in `skills/[name]/SKILL.md`
-and shells out to `aweek exec [module] [fn]` — no skill writes
-`.aweek/` JSON or `.claude/agents/[slug].md` directly. All persistence
-and validation lives in `src/skills/*.ts`.
+aweek ships eight Claude Code skills — capabilities the plugin
+runtime exposes via `/aweek:[name]` invocation. Each skill's
+markdown lives in `skills/[name]/SKILL.md` and shells out to
+`aweek exec [module] [fn]`. No skill writes `.aweek/` JSON or
+`.claude/agents/[slug].md` directly; all persistence and
+validation lives in `src/skills/*.ts`.
 
 ## Reference table
 
-| Command | Purpose |
-|---------|---------|
+| Skill | Purpose |
+|-------|---------|
 | [`/aweek:init`](#aweek-init) | Bootstrap a project: create `.aweek/`, optionally install the heartbeat, route into `/aweek:hire`. |
 | [`/aweek:hire`](#aweek-hire) | Identity-only agent creation. Adopts an unhired `.claude/agents/[slug].md` or writes a new one. |
 | [`/aweek:plan`](#aweek-plan) | Single entry point for goal / monthly / weekly adjustments **and** pending weekly plan approval. |

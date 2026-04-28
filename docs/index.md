@@ -13,8 +13,8 @@ hero:
       text: Get started
       link: /install
     - theme: alt
-      text: Slash commands
-      link: /commands
+      text: Skills
+      link: /skills
     - theme: alt
       text: View on GitHub
       link: https://github.com/runbear-io/aweek
@@ -31,7 +31,7 @@ features:
   - title: Agents hand off to each other
     details: /aweek:delegate-task drops work into another agent's inbox. Build research → draft → editor → distributor pipelines.
   - title: Lives inside Claude Code
-    details: Slash commands for hire, plan, calendar, summary, manage. No new UI — your terminal is the dashboard.
+    details: Skills for hire, plan, calendar, summary, manage — invoked via /aweek:[name]. No new UI; your terminal is the dashboard.
 ---
 
 ## Who it's for

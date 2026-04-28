@@ -1,10 +1,10 @@
 # Troubleshooting
 
-## Slash commands can't find `aweek`
+## Skills don't show up in Claude Code
 
 aweek's `SessionStart` hook runs `npm install -g aweek` on first
-launch. If that step failed, the slash commands won't be able to find
-the CLI.
+launch. If that step failed, the skills won't be able to invoke the
+`aweek` CLI and `/aweek:[name]` will silently no-op.
 
 ```bash
 npm install -g aweek
