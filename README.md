@@ -2,6 +2,8 @@
 
 **If Claude Code is the doer, aweek is the planner.**
 
+**[Read the docs →](https://runbear-io.github.io/aweek/)** &nbsp;·&nbsp; [Quickstart](https://runbear-io.github.io/aweek/quickstart) &nbsp;·&nbsp; [Recipes](https://runbear-io.github.io/aweek/recipes/weekly-ops) &nbsp;·&nbsp; [Skills reference](https://runbear-io.github.io/aweek/skills)
+
 aweek is a Claude Code plugin for building a team of AI agents that handle the work that repeats. Each agent has a role, a weekly plan, and a token budget. The plan evolves every Monday based on what worked last week. You set direction. Claude Code does the work. aweek runs the week.
 
 <p align="center">
