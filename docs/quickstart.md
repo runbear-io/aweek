@@ -110,8 +110,9 @@ with read-only JSON endpoints under `/api/*`. Use `--project-dir
 
 ## Next steps
 
-- [Build a social marketer](/recipes/social-marketer) — a worked
-  example with a real agent, real goals, and a real weekly plan.
+- [Build a weekly operator](/recipes/weekly-ops) — the marquee
+  recipe. One agent, seven routine tasks across Mon–Fri, one
+  cumulative `plan.md`.
 - [Slash commands reference](/commands) — every `/aweek:*` command
   documented.
 - Hit a snag? See [Troubleshooting](/troubleshooting).

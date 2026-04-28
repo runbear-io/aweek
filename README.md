@@ -23,11 +23,23 @@ aweek is that team.
 
 ## What you can build
 
-| Team | Cadence | What it does |
-|---|---|---|
-| **Content team** | Publish weekly, distribute daily | 2 blog posts a week, atomized into ~10 social posts, a thread, and a newsletter. Multi-agent handoff: research → draft → editor → distributor. Each week's plan starts from what worked last week. |
-| **Competitive intel team** | Brief every Monday | Agents scan ~10 competitors' releases, blogs, pricing, changelogs. Hand back a Monday brief — diffs vs. last week visible at a glance. |
-| **Customer feedback team** | Synthesis weekly | Agents read the week's tickets, NPS comments, and call notes. Draft a Friday memo — themes, regressions, top requests, suggested experiments. |
+A single agent on a calendar — sixteen scheduled tasks across five days, a daily review that closes each day, and a weekly review that ties the week to the month's goals. One budget, one cumulative `plan.md`, fresh Markdown in your repo every week.
+
+|        | Mon            | Tue        | Wed          | Thu       | Fri        |
+|--------|----------------|------------|--------------|-----------|------------|
+| **7am**  | Brief          | Outreach   | Interviews   | Roadmap   | —          |
+| **9am**  | Inbox          | —          | —            | —         | Feedback   |
+| **10am** | —              | Metrics    | —            | —         | —          |
+| **11am** | —              | —          | Content      | Issues    | Numbers    |
+| **3pm**  | —              | —          | —            | —         | Retro      |
+| **5pm**  | Daily          | Daily      | Daily        | Daily     | Weekly     |
+
+[**Full recipe → A weekly operator**](docs/recipes/weekly-ops.md)
+
+### Other agent templates
+
+- [**An engineer**](docs/recipes/engineer.md) — handles the engineering periphery: PR triage, dep drift, flaky tests, doc drift, retros. Never ships features.
+- [**A content marketer**](docs/recipes/content-marketer.md) — grooms the topic queue, drafts the post, atomizes it for social, writes the newsletter, reviews analytics.
 
 ## What you get
 
