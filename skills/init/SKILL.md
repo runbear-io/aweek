@@ -192,10 +192,10 @@ DECISION=$(aweek exec init-hire-menu resolveInitHireMenu)
 echo "$DECISION"
 
 # When not falling through, render the human-readable prompt too.
-FALL_THROUGH=$(jq -r '.fallThrough' <<<"$DECISION")
+FALL_THROUGH=$(aweek json get fallThrough <<<"$DECISION")
 if [ "$FALL_THROUGH" != "true" ]; then
   echo '---'
-  jq '.menu' <<<"$DECISION" \
+  aweek json get menu <<<"$DECISION" \
     | aweek exec init-hire-menu formatInitHireMenuPrompt \
         --input-json - --format text
 fi
@@ -282,11 +282,7 @@ handler descriptor:
 ```bash
 MENU=$(aweek exec init-hire-menu buildInitHireMenu)
 
-jq -n \
-  --argjson menu "$MENU" \
-  --arg choice '<USER_CHOICE>' \
-  --argjson selected '[<SELECTED_SLUGS>]' \
-  '{choice: $choice, menu: $menu, selected: $selected}' \
+aweek json compose menu="$MENU" choice='<USER_CHOICE>' selected='[<SELECTED_SLUGS>]' \
   | aweek exec init-hire-menu routeInitHireMenuChoice --input-json -
 ```
 
@@ -319,7 +315,7 @@ Dispatch based on the descriptor:
   echo "$RESULT" | aweek exec hire-all formatHireAllSummary \
     --input-json - --format text
 
-  if [ "$(jq -r '.success' <<<"$RESULT")" != "true" ]; then
+  if [ "$(aweek json get success <<<"$RESULT")" != "true" ]; then
     exit 1
   fi
   ```
@@ -372,7 +368,7 @@ Dispatch based on the descriptor:
   echo "$RESULT" | aweek exec hire-create-new-menu formatCreateNewResult \
     --input-json - --format text
 
-  if [ "$(jq -r '.success' <<<"$RESULT")" != "true" ]; then
+  if [ "$(aweek json get success <<<"$RESULT")" != "true" ]; then
     exit 1
   fi
   ```
@@ -431,7 +427,7 @@ choice is enriched with the live `name` + `description` from
 ```bash
 MENU=$(aweek exec init-hire-menu buildInitHireMenu)
 
-jq -n --argjson menu "$MENU" '{menu: $menu}' \
+echo "$MENU" | aweek json wrap menu \
   | aweek exec hire-select-some buildSelectSomeChoices --input-json -
 ```
 
@@ -463,16 +459,13 @@ depth against stale menus or slugs hired concurrently) and then delegates to
 ```bash
 MENU=$(aweek exec init-hire-menu buildInitHireMenu)
 
-RESULT=$(jq -n \
-  --argjson menu "$MENU" \
-  --argjson selected '[<SELECTED_SLUGS>]' \
-  '{menu: $menu, selected: $selected}' \
+RESULT=$(aweek json compose menu="$MENU" selected='[<SELECTED_SLUGS>]' \
   | aweek exec hire-select-some runSelectSomeHire --input-json -)
 
 echo "$RESULT" | aweek exec hire-select-some formatSelectSomeResult \
   --input-json - --format text
 
-if [ "$(jq -r '.success' <<<"$RESULT")" != "true" ]; then
+if [ "$(aweek json get success <<<"$RESULT")" != "true" ]; then
   exit 1
 fi
 ```

@@ -10,7 +10,6 @@ aweek ships as a Claude Code plugin. Install the plugin, then run
   Claude Code's OAuth tokens stay reachable through the user's
   Keychain.
 - Node.js 20 or 22
-- `jq` (`brew install jq`)
 - An active Claude Code session
 
 ## From a Claude Code marketplace

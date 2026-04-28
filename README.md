@@ -89,7 +89,7 @@ claude --plugin-dir .
 ```
 `/reload-plugins` picks up edits without restarting.
 
-**Requirements:** macOS 10.15 (Catalina) or newer, Node.js 20+, `jq` (`brew install jq`). Linux and Windows aren't supported yet — the heartbeat installs as a launchd user agent.
+**Requirements:** macOS 10.15 (Catalina) or newer, Node.js 20+. Linux and Windows aren't supported yet — the heartbeat installs as a launchd user agent.
 
 ## Per-agent secrets
 
