@@ -556,3 +556,130 @@ describe('generateDailyReview — appliedAdjustments integration', () => {
     assert.ok(result.paths.markdownPath.endsWith(`daily-${DATE}.md`));
   });
 });
+
+// ----------------------------------------------------------------------------
+// Time-zone-aware carry-over (preserves the original local time-of-day)
+//
+// Regression coverage for the bug where every carry-over / retry / reschedule
+// op stamped the same `09:00 UTC` runAt onto each adjusted task, bunching
+// dozens of tasks at one calendar cell. The fix preserves the original
+// task's local time-of-day in the agent's configured zone, falling back to
+// `09:00 local` for follow-ups (which have no original runAt) and to UTC
+// when the zone is missing or invalid.
+// ----------------------------------------------------------------------------
+
+describe('runAtForDate (tz-aware)', () => {
+  it('produces a UTC instant matching the requested local hour:minute in tz', () => {
+    // 2026-04-29 in America/Los_Angeles is on PDT (UTC-7), so 09:00 local
+    // = 16:00 UTC.
+    assert.equal(
+      runAtForDate('2026-04-29', 9, 0, 'America/Los_Angeles'),
+      '2026-04-29T16:00:00.000Z',
+    );
+  });
+
+  it('respects minute granularity', () => {
+    assert.equal(
+      runAtForDate('2026-04-29', 11, 30, 'America/Los_Angeles'),
+      '2026-04-29T18:30:00.000Z',
+    );
+  });
+
+  it('falls back to UTC interpretation when tz is invalid', () => {
+    assert.equal(
+      runAtForDate('2026-04-29', 9, 0, 'Not/A/Zone'),
+      '2026-04-29T09:00:00.000Z',
+    );
+  });
+
+  it('falls back to UTC when tz is omitted', () => {
+    assert.equal(runAtForDate('2026-04-29', 9, 0), '2026-04-29T09:00:00.000Z');
+  });
+});
+
+describe('extractWeeklyAdjustmentOps — time-of-day preservation', () => {
+  const TZ_DATE = '2026-04-28'; // a Tuesday
+  const TOMORROW_PT_NOON_UTC = '2026-04-29T19:00:00.000Z'; // 12:00 PT, PDT
+  const TOMORROW_PT_3PM_UTC = '2026-04-29T22:00:00.000Z'; // 15:00 PT, PDT
+  const TOMORROW_PT_9AM_UTC = '2026-04-29T16:00:00.000Z'; // 09:00 PT, PDT
+  const TZ = 'America/Los_Angeles';
+
+  it('carry-over: rewrites runAt to tomorrow at the original local time-of-day', () => {
+    const plan = {
+      tasks: [
+        { id: 't1', objectiveId: 'o1', runAt: '2026-04-28T19:00:00.000Z' }, // 12:00 PT
+        { id: 't2', objectiveId: 'o1', runAt: '2026-04-28T22:00:00.000Z' }, // 15:00 PT
+      ],
+    };
+    const records = [
+      { type: 'carry-over', taskId: 't1', title: 'a', text: 't' },
+      { type: 'carry-over', taskId: 't2', title: 'b', text: 't' },
+    ];
+    const ops = extractWeeklyAdjustmentOps(records, plan, TZ_DATE, '2026-W18', TZ);
+    assert.equal(ops.length, 2);
+    assert.equal(ops[0].runAt, TOMORROW_PT_NOON_UTC);
+    assert.equal(ops[1].runAt, TOMORROW_PT_3PM_UTC);
+    assert.notStrictEqual(ops[0].runAt, ops[1].runAt);
+  });
+
+  it('retry: preserves the original local time-of-day too', () => {
+    const plan = {
+      tasks: [
+        { id: 't1', objectiveId: 'o1', runAt: '2026-04-28T22:00:00.000Z' }, // 15:00 PT
+      ],
+    };
+    const records = [{ type: 'retry', taskId: 't1', title: 'a', text: 't' }];
+    const ops = extractWeeklyAdjustmentOps(records, plan, TZ_DATE, '2026-W18', TZ);
+    assert.equal(ops.length, 1);
+    assert.equal(ops[0].runAt, TOMORROW_PT_3PM_UTC);
+    assert.equal(ops[0].status, 'pending');
+  });
+
+  it('reschedule: preserves the original local time-of-day too', () => {
+    const plan = {
+      tasks: [
+        { id: 't1', objectiveId: 'o1', runAt: '2026-04-28T22:00:00.000Z' },
+      ],
+    };
+    const records = [
+      { type: 'reschedule', taskId: 't1', title: 'a', text: 't' },
+    ];
+    const ops = extractWeeklyAdjustmentOps(records, plan, TZ_DATE, '2026-W18', TZ);
+    assert.equal(ops[0].runAt, TOMORROW_PT_3PM_UTC);
+  });
+
+  it('follow-up: uses 09:00 local (no original runAt)', () => {
+    const plan = {
+      tasks: [{ id: 't1', objectiveId: 'o1' }],
+    };
+    const records = [
+      { type: 'follow-up', taskId: 't1', title: 'thing', text: 't' },
+    ];
+    const ops = extractWeeklyAdjustmentOps(records, plan, TZ_DATE, '2026-W18', TZ);
+    assert.equal(ops.length, 1);
+    assert.equal(ops[0].action, 'add');
+    assert.equal(ops[0].runAt, TOMORROW_PT_9AM_UTC);
+  });
+
+  it('falls back to 09:00 local when the task has no runAt', () => {
+    const plan = {
+      tasks: [{ id: 't1', objectiveId: 'o1' }],
+    };
+    const records = [
+      { type: 'carry-over', taskId: 't1', title: 'a', text: 't' },
+    ];
+    const ops = extractWeeklyAdjustmentOps(records, plan, TZ_DATE, '2026-W18', TZ);
+    assert.equal(ops[0].runAt, TOMORROW_PT_9AM_UTC);
+  });
+
+  it('legacy callers without tz keep the pre-fix UTC behavior for tasks lacking runAt', () => {
+    const plan = {
+      tasks: [{ id: 't1', objectiveId: 'o1' }],
+    };
+    const records = [
+      { type: 'carry-over', taskId: 't1', title: 'a', text: 't' },
+    ];
+    const ops = extractWeeklyAdjustmentOps(records, plan, TZ_DATE, '2026-W18');
+    assert.equal(ops[0].runAt, '2026-04-29T09:00:00.000Z');
+  });
+});
