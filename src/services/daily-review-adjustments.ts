@@ -28,6 +28,11 @@
  *   plan mutation is needed or safe.
  */
 
+import {
+  isValidTimeZone,
+  localParts,
+  localWallClockToUtc,
+} from '../time/zone.js';
 import { adjustGoals } from './plan-adjustments.js';
 
 export interface AdjustmentRecord {
@@ -40,6 +45,13 @@ export interface AdjustmentRecord {
 export interface WeeklyTaskLite {
   id: string;
   objectiveId?: string | null;
+  /**
+   * Original `runAt` for the task. Used by the carry-over / retry / reschedule
+   * paths so the new `runAt` lands at the same local time-of-day as the
+   * original schedule, instead of bunching every adjusted task at a single
+   * hardcoded UTC hour.
+   */
+  runAt?: string;
 }
 
 export interface WeeklyPlanLite {
@@ -69,11 +81,12 @@ export interface ApplyDailyReviewResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Wall-clock hour (UTC) at which carry-over / retry / reschedule tasks are
- * placed on the next day. 09:00 UTC is early enough to be picked up on the
- * first heartbeat of a typical working day in most time zones.
+ * Default wall-clock hour for follow-up tasks (no original `runAt` to
+ * preserve). Interpreted in the agent's `tz` when one is supplied, or as
+ * UTC otherwise. 09:00 is early enough to be picked up on the first
+ * heartbeat of a typical working day.
  */
-const CARRY_OVER_HOUR_UTC = 9;
+const DEFAULT_CARRY_OVER_HOUR = 9;
 
 // ---------------------------------------------------------------------------
 // Date arithmetic helpers (internal)
@@ -82,8 +95,6 @@ const CARRY_OVER_HOUR_UTC = 9;
 /**
  * Return the ISO date string (YYYY-MM-DD) for the day after `dateStr`.
  * Arithmetic is done in UTC so the result is timezone-independent.
- * @param {string} dateStr - YYYY-MM-DD
- * @returns {string} YYYY-MM-DD
  */
 export function tomorrowDateStr(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -92,17 +103,64 @@ export function tomorrowDateStr(dateStr: string): string {
 }
 
 /**
- * Build a `runAt` ISO 8601 datetime string for a given date at a specific
- * UTC hour. Used to schedule carried-over tasks to tomorrow morning.
- *
- * @param {string} dateStr - YYYY-MM-DD
- * @param {number} [hourUtc=CARRY_OVER_HOUR_UTC] - 0–23
- * @returns {string} ISO 8601 datetime (UTC)
+ * Build a `runAt` ISO 8601 datetime string for a given local date at a
+ * specific local hour:minute, projected into UTC via `tz`. Falls back to
+ * UTC when `tz` is missing / invalid, which keeps legacy callers (no `tz`
+ * supplied) on their pre-tz hardcoded behaviour.
  */
-export function runAtForDate(dateStr: string, hourUtc: number = CARRY_OVER_HOUR_UTC): string {
+export function runAtForDate(
+  dateStr: string,
+  hour: number = DEFAULT_CARRY_OVER_HOUR,
+  minute: number = 0,
+  tz?: string,
+): string {
+  const [yearStr, monthStr, dayStr] = dateStr.split('-');
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  if (tz && isValidTimeZone(tz)) {
+    const inst = localWallClockToUtc(
+      { year, month, day, hour, minute, second: 0 },
+      tz,
+    );
+    return inst.toISOString();
+  }
   const d = new Date(dateStr + 'T00:00:00Z');
-  d.setUTCHours(hourUtc, 0, 0, 0);
+  d.setUTCHours(hour, minute, 0, 0);
   return d.toISOString();
+}
+
+/**
+ * Compute a new `runAt` for `tomorrow` that preserves the local time-of-day
+ * of the task's existing `runAt`, in the agent's configured zone. When the
+ * task has no original `runAt` (e.g. brand-new follow-ups) or the zone is
+ * missing / invalid, falls back to {@link DEFAULT_CARRY_OVER_HOUR}:00 in
+ * whatever zone is available.
+ */
+function preserveTimeOfDay(
+  originalRunAt: string | undefined,
+  tomorrowDate: string,
+  tz?: string,
+): string {
+  if (!originalRunAt) {
+    return runAtForDate(tomorrowDate, DEFAULT_CARRY_OVER_HOUR, 0, tz);
+  }
+  const ms = Date.parse(originalRunAt);
+  if (Number.isNaN(ms)) {
+    return runAtForDate(tomorrowDate, DEFAULT_CARRY_OVER_HOUR, 0, tz);
+  }
+  if (tz && isValidTimeZone(tz)) {
+    const parts = localParts(ms, tz);
+    return runAtForDate(tomorrowDate, parts.hour, parts.minute, tz);
+  }
+  // No tz: read time-of-day in UTC and project onto the target UTC date.
+  const d = new Date(ms);
+  return runAtForDate(
+    tomorrowDate,
+    d.getUTCHours(),
+    d.getUTCMinutes(),
+    undefined,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -132,12 +190,13 @@ export function extractWeeklyAdjustmentOps(
   weeklyPlan: WeeklyPlanLite | null | undefined,
   date: string,
   week: string,
+  tz?: string,
 ): WeeklyAdjustmentOp[] {
   if (!Array.isArray(adjustmentRecords) || adjustmentRecords.length === 0) return [];
   if (!weeklyPlan || !Array.isArray(weeklyPlan.tasks)) return [];
 
   const tomorrow = tomorrowDateStr(date);
-  const tomorrowRunAt = runAtForDate(tomorrow);
+  const followUpRunAt = runAtForDate(tomorrow, DEFAULT_CARRY_OVER_HOUR, 0, tz);
   const ops: WeeklyAdjustmentOp[] = [];
 
   for (const record of adjustmentRecords) {
@@ -147,20 +206,26 @@ export function extractWeeklyAdjustmentOps(
     if (!task) continue;
 
     switch (type) {
-      case 'carry-over':
-        ops.push({ action: 'update', week, taskId, runAt: tomorrowRunAt });
+      case 'carry-over': {
+        const newRunAt = preserveTimeOfDay(task.runAt, tomorrow, tz);
+        ops.push({ action: 'update', week, taskId, runAt: newRunAt });
         break;
+      }
 
       case 'continue':
         break;
 
-      case 'retry':
-        ops.push({ action: 'update', week, taskId, status: 'pending', runAt: tomorrowRunAt });
+      case 'retry': {
+        const newRunAt = preserveTimeOfDay(task.runAt, tomorrow, tz);
+        ops.push({ action: 'update', week, taskId, status: 'pending', runAt: newRunAt });
         break;
+      }
 
-      case 'reschedule':
-        ops.push({ action: 'update', week, taskId, runAt: tomorrowRunAt });
+      case 'reschedule': {
+        const newRunAt = preserveTimeOfDay(task.runAt, tomorrow, tz);
+        ops.push({ action: 'update', week, taskId, runAt: newRunAt });
         break;
+      }
 
       case 'follow-up': {
         const objectiveId = task.objectiveId || null;
@@ -174,7 +239,7 @@ export function extractWeeklyAdjustmentOps(
             title: trimmedTitle,
             prompt: `Follow up on delegated task: ${title}`,
             objectiveId,
-            runAt: tomorrowRunAt,
+            runAt: followUpRunAt,
           });
         }
         break;
@@ -234,6 +299,12 @@ export interface ApplyDailyReviewAdjustmentsOpts {
   adjustmentRecords: AdjustmentRecord[] | null | undefined;
   weeklyPlan: WeeklyPlanLite | null | undefined;
   date: string;
+  /**
+   * Agent's IANA time zone. Used so carry-over / retry / reschedule tasks
+   * preserve their original local time-of-day instead of bunching at a
+   * hardcoded 09:00 UTC slot (which renders as 02:00 PT, dead-of-night).
+   */
+  tz?: string;
 }
 
 export async function applyDailyReviewAdjustments({
@@ -242,9 +313,8 @@ export async function applyDailyReviewAdjustments({
   week,
   adjustmentRecords,
   weeklyPlan,
-  // `date` is accepted for signature parity with the previous enqueue call
-  // site but no longer needed — kept to avoid breaking existing callers.
   date: _date,
+  tz,
 }: ApplyDailyReviewAdjustmentsOpts): Promise<ApplyDailyReviewResult> {
   if (!Array.isArray(adjustmentRecords) || adjustmentRecords.length === 0) {
     return { applied: false, opsCount: 0, skippedCount: 0 };
@@ -254,7 +324,7 @@ export async function applyDailyReviewAdjustments({
     return { applied: false, opsCount: 0, skippedCount: adjustmentRecords.length };
   }
 
-  const ops = extractWeeklyAdjustmentOps(adjustmentRecords, weeklyPlan, _date, week);
+  const ops = extractWeeklyAdjustmentOps(adjustmentRecords, weeklyPlan, _date, week, tz);
 
   if (ops.length === 0) {
     return { applied: false, opsCount: 0, skippedCount: adjustmentRecords.length };

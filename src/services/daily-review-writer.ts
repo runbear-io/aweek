@@ -1002,6 +1002,7 @@ export async function generateDailyReview(
         week,
         adjustmentRecords: adjustments,
         weeklyPlan,
+        tz,
       });
     } catch (err) {
       appliedAdjustments = {
