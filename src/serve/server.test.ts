@@ -292,6 +292,9 @@ describe('isWhitelistedClientRoute()', () => {
     assert.equal(isWhitelistedClientRoute('/activity'), true);
     assert.equal(isWhitelistedClientRoute('/strategy'), true);
     assert.equal(isWhitelistedClientRoute('/profile'), true);
+    // /settings — read-only Settings page (AC 6).
+    assert.equal(isWhitelistedClientRoute('/settings'), true);
+    assert.equal(isWhitelistedClientRoute('/settings/'), true);
   });
 
   it('admits per-agent detail and tab routes', () => {

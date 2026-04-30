@@ -53,6 +53,7 @@ import {
   gatherAgentArtifacts,
   isResolveArtifactFileError,
   resolveArtifactFile,
+  gatherAppConfig,
 } from './data/index.js';
 import type { NotificationSource, NotificationSystemEvent } from '../storage/notification-store.js';
 import { NotificationStore } from '../storage/notification-store.js';
@@ -142,6 +143,9 @@ const CLIENT_ROUTE_PATTERNS = [
   /^\/agents\/[^/]+(?:\/.*)?$/,
   // /notifications and /notifications/<anything> (global inbox + deep link).
   /^\/notifications(?:\/.*)?$/,
+  // /settings — read-only Settings page showing config.json fields and
+  // curated hardcoded constants grouped by category.
+  /^\/settings\/?$/,
 ];
 
 /**
@@ -434,6 +438,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
     return;
   }
 
+  if (pathname === '/api/config' || pathname === '/api/config/') {
+    await handleAppConfig(res, ctx);
+    return;
+  }
+
   if (pathname === '/api/agents' || pathname === '/api/agents/') {
     await handleAgentsList(res, ctx);
     return;
@@ -660,6 +669,34 @@ async function handleSummary(res: ServerResponse, ctx: RequestContext): Promise<
   } catch (err) {
     sendJson(res, 500, {
       error: err && (err as Error).message ? (err as Error).message : 'Failed to load summary',
+    });
+  }
+}
+
+/**
+ * GET /api/config — return the full read-only settings payload for the SPA
+ * Settings page.
+ *
+ * Delegates to `gatherAppConfig`, which reads `.aweek/config.json` via
+ * `loadConfigWithStatus` and merges the live config values with a curated
+ * set of compiled-in constants (scheduler, lock parameters). The payload
+ * is always returned as 200 — the `status` field inside the body
+ * distinguishes "file absent or valid" (`'ok'`) from "file malformed"
+ * (`'missing'`) so the SPA can show an inline warning for the latter
+ * without treating a fresh project (no config.json yet) as an error.
+ *
+ * Response shape:
+ *   200 { status: 'ok'|'missing',
+ *          categories: [{ id, label, items: [{ key, label, value, description }] }] }
+ *   500 { error: string }
+ */
+async function handleAppConfig(res: ServerResponse, ctx: RequestContext): Promise<void> {
+  try {
+    const payload = await gatherAppConfig({ projectDir: ctx.projectDir });
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 500, {
+      error: err && (err as Error).message ? (err as Error).message : 'Failed to load config',
     });
   }
 }

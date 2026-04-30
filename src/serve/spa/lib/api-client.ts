@@ -1184,6 +1184,80 @@ export async function fetchArtifactFileText(
   return text;
 }
 
+// ── Settings / App config ────────────────────────────────────────────
+
+/**
+ * Status of the `.aweek/config.json` file as reported by the server.
+ *
+ *   'ok'      — file absent (ENOENT) or valid. Defaults render silently.
+ *   'missing' — file exists but is malformed JSON or has an invalid
+ *               timeZone. The Settings page surfaces an inline warning.
+ */
+export type ConfigFileStatus = 'ok' | 'missing';
+
+/**
+ * A single display row inside a settings category.
+ * Mirrors `ConfigItem` in `src/serve/data/config.ts`.
+ */
+export interface ConfigItem {
+  /** Machine-readable identifier for this setting. */
+  key: string;
+  /** Human-readable label displayed in the Settings page UI. */
+  label: string;
+  /** Current value (string, number, or boolean). */
+  value: string | number | boolean;
+  /** One-sentence explanation shown as secondary text. */
+  description: string;
+}
+
+/**
+ * A named group of related settings shown as a card on the Settings page.
+ * Mirrors `ConfigCategory` in `src/serve/data/config.ts`.
+ */
+export interface ConfigCategory {
+  /** Stable identifier for the category. */
+  id: string;
+  /** Human-readable heading for the settings card. */
+  label: string;
+  /** Ordered list of settings rows rendered inside the card. */
+  items: ConfigItem[];
+}
+
+/**
+ * Full payload returned by `GET /api/config`.
+ * Mirrors `AppConfigPayload` in `src/serve/data/config.ts`.
+ *
+ * The server sends this object directly (no outer envelope) — the
+ * `status` field inside the body distinguishes config-file states so
+ * the SPA can show an inline warning for `'missing'` while keeping
+ * `'ok'` (including ENOENT / file absent) silent.
+ */
+export interface AppConfigPayload {
+  status: ConfigFileStatus;
+  categories: ConfigCategory[];
+}
+
+/**
+ * `GET /api/config` — full read-only settings payload for the SPA
+ * Settings page.
+ *
+ * The server always returns 200; the `status` field inside the body
+ * distinguishes whether config.json is absent/valid (`'ok'`) or
+ * malformed (`'missing'`).
+ */
+export async function fetchAppConfig(
+  opts: RequestOptions = {},
+): Promise<AppConfigPayload> {
+  const body = await getJson<AppConfigPayload>('/api/config', opts);
+  if (!body || typeof body !== 'object' || !Array.isArray(body.categories)) {
+    throw new ApiError(
+      'Malformed config payload (missing `categories` field)',
+      { status: 200, endpoint: '/api/config', body },
+    );
+  }
+  return body;
+}
+
 // ── Test-facing internals ────────────────────────────────────────────
 // Exported for unit tests only — not part of the SPA's public API.
 
