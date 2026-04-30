@@ -72,17 +72,28 @@ describe('showConfig', () => {
     ]);
   });
 
-  it('marks only timeZone editable; everything else is hardcoded', async () => {
+  it('marks timeZone and staleTaskWindowMs editable; lock + heartbeat constants stay hardcoded', async () => {
     const result = await showConfig({ dataDir });
     const editable = result.knobs.filter((k) => k.editable);
     assert.deepEqual(
       editable.map((k) => k.key),
-      ['timeZone'],
+      ['timeZone', 'staleTaskWindowMs'],
     );
     for (const k of result.knobs) {
       if (k.editable) assert.equal(k.source, 'config');
       else assert.equal(k.source, 'hardcoded');
     }
+  });
+
+  it('reads the live staleTaskWindowMs from config.json when set', async () => {
+    await writeFile(
+      configFilePath,
+      JSON.stringify({ timeZone: 'UTC', staleTaskWindowMs: 1_200_000 }),
+    );
+    const result = await showConfig({ dataDir });
+    const stale = result.knobs.find((k) => k.key === 'staleTaskWindowMs')!;
+    assert.equal(stale.value, '1200000');
+    assert.equal(stale.defaultValue, '3600000');
   });
 
   it('reports status=ok when the config file is absent', async () => {
@@ -114,13 +125,12 @@ describe('showConfig', () => {
 });
 
 describe('listEditableFields', () => {
-  it('exposes timeZone as the only editable field today', () => {
-    const fields = listEditableFields();
-    assert.equal(fields.length, 1);
-    assert.equal(fields[0]!.key, 'timeZone');
+  it('exposes timeZone and staleTaskWindowMs as the editable fields today', () => {
+    const keys = listEditableFields().map((f) => f.key);
+    assert.deepEqual(keys, ['timeZone', 'staleTaskWindowMs']);
   });
 
-  it('rejects empty values and non-IANA strings, accepts canonical zones', () => {
+  it('timeZone validator rejects empty / non-IANA strings, accepts canonical zones', () => {
     const tz = listEditableFields().find((f) => f.key === 'timeZone')!;
     assert.equal(tz.validate('').ok, false);
     assert.equal(tz.validate('   ').ok, false);
@@ -132,6 +142,25 @@ describe('listEditableFields', () => {
     assert.equal(goodLA.ok, true);
     if (goodLA.ok) assert.equal(goodLA.normalized, 'America/Los_Angeles');
   });
+
+  it('staleTaskWindowMs validator parses, range-checks, and returns a number', () => {
+    const stale = listEditableFields().find((f) => f.key === 'staleTaskWindowMs')!;
+    assert.equal(stale.validate('').ok, false);
+    assert.equal(stale.validate('not a number').ok, false);
+    assert.equal(stale.validate('0').ok, false);
+    assert.equal(stale.validate('100').ok, false); // below 60_000 floor
+    assert.equal(stale.validate(String(25 * 60 * 60 * 1000)).ok, false); // above 24h ceiling
+    const ok = stale.validate('1200000'); // 20 minutes
+    assert.equal(ok.ok, true);
+    if (ok.ok) {
+      assert.equal(ok.normalized, 1_200_000);
+      assert.equal(typeof ok.normalized, 'number');
+    }
+    // Decimals are truncated then range-checked.
+    const truncated = stale.validate('1200000.7');
+    assert.equal(truncated.ok, true);
+    if (truncated.ok) assert.equal(truncated.normalized, 1_200_000);
+  });
 });
 
 describe('editConfig', () => {
@@ -141,11 +170,11 @@ describe('editConfig', () => {
     assert.equal((await editConfig({ dataDir, field: 'timeZone' })).ok, false);
   });
 
-  it('rejects unknown fields with an explanatory reason', async () => {
+  it('rejects unknown fields (e.g. lockDir) with an explanatory reason', async () => {
     const result = await editConfig({
       dataDir,
-      field: 'staleTaskWindowMs',
-      value: '1',
+      field: 'lockDir',
+      value: '.aweek/.locks',
       confirmed: true,
     });
     assert.equal(result.ok, false);
@@ -221,6 +250,61 @@ describe('editConfig', () => {
     const written = JSON.parse(await readFile(configFilePath, 'utf8'));
     assert.equal(written.timeZone, 'Asia/Seoul');
   });
+
+  it('rejects out-of-range staleTaskWindowMs without writing', async () => {
+    const result = await editConfig({
+      dataDir,
+      field: 'staleTaskWindowMs',
+      value: '500',
+      confirmed: true,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.reason, /out of range/);
+    await assert.rejects(() => readFile(configFilePath, 'utf8'), /ENOENT/);
+  });
+
+  it('refuses to write a real staleTaskWindowMs change without confirmed=true', async () => {
+    const result = await editConfig({
+      dataDir,
+      field: 'staleTaskWindowMs',
+      value: '1200000',
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.reason, /confirmed=true is required/);
+    await assert.rejects(() => readFile(configFilePath, 'utf8'), /ENOENT/);
+  });
+
+  it('persists staleTaskWindowMs as a number (not a string) when confirmed', async () => {
+    const result = await editConfig({
+      dataDir,
+      field: 'staleTaskWindowMs',
+      value: '1200000',
+      confirmed: true,
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.changed, true);
+      assert.equal(result.before, '3600000');
+      assert.equal(result.after, '1200000');
+    }
+    const written = JSON.parse(await readFile(configFilePath, 'utf8'));
+    assert.equal(written.staleTaskWindowMs, 1_200_000);
+    assert.equal(typeof written.staleTaskWindowMs, 'number');
+  });
+
+  it('returns changed:false when staleTaskWindowMs already matches', async () => {
+    await writeFile(
+      configFilePath,
+      JSON.stringify({ timeZone: 'UTC', staleTaskWindowMs: 1_200_000 }),
+    );
+    const result = await editConfig({
+      dataDir,
+      field: 'staleTaskWindowMs',
+      value: '1200000',
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.changed, false);
+  });
 });
 
 describe('formatShowConfigResult', () => {
@@ -232,7 +316,7 @@ describe('formatShowConfigResult', () => {
     assert.match(rendered, /-- Configuration --/);
     assert.match(rendered, /-- Scheduler --/);
     assert.match(rendered, /-- Locks --/);
-    assert.match(rendered, /Editable fields: timeZone/);
+    assert.match(rendered, /Editable fields: timeZone, staleTaskWindowMs/);
   });
 
   it('annotates malformed file status', async () => {

@@ -15,14 +15,29 @@ import { DEFAULT_TZ, isValidTimeZone } from '../time/zone.js';
 const CONFIG_FILENAME = 'config.json';
 
 /**
+ * Default for {@link AweekConfig.staleTaskWindowMs}. Mirrors the original
+ * hardcoded `STALE_TASK_WINDOW_MS` in `src/heartbeat/task-selector.ts`.
+ * Re-exported so the skill / data layer can fall back to this when
+ * `.aweek/config.json` is absent or omits the field.
+ */
+export const DEFAULT_STALE_TASK_WINDOW_MS = 60 * 60 * 1000;
+
+/**
  * Shape of the persisted aweek-wide config document.
  *
- * Currently a single field — the IANA time zone — but extra knobs can be
- * appended here without breaking older callers. New optional fields should
- * be folded into both `AweekConfig` and the defaults map in `loadConfig`.
+ * Extra knobs can be appended here without breaking older callers. New
+ * optional fields should be folded into both `AweekConfig` and the
+ * defaults map in `loadConfig`.
  */
 export interface AweekConfig {
+  /** IANA time zone used everywhere date fields are extracted. */
   timeZone: string;
+  /**
+   * How far in the past a task's `runAt` can be before the heartbeat
+   * marks it `skipped` rather than dispatching it late. Default 60 min
+   * (`DEFAULT_STALE_TASK_WINDOW_MS`).
+   */
+  staleTaskWindowMs: number;
 }
 
 /**
@@ -67,7 +82,10 @@ export interface LoadConfigResult {
  * "file malformed → using defaults but user should know" (status 'missing').
  */
 export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigResult> {
-  const defaults: AweekConfig = { timeZone: DEFAULT_TZ };
+  const defaults: AweekConfig = {
+    timeZone: DEFAULT_TZ,
+    staleTaskWindowMs: DEFAULT_STALE_TASK_WINDOW_MS,
+  };
   let raw: string;
   try {
     raw = await readFile(configPath(dataDir), 'utf8');
@@ -89,20 +107,32 @@ export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigR
     return { config: defaults, status: 'missing' };
   }
   const out: AweekConfig = { ...defaults };
+  let degraded = false;
   if (parsed && typeof parsed === 'object') {
-    const candidate = (parsed as { timeZone?: unknown }).timeZone;
-    if (typeof candidate === 'string') {
-      if (isValidTimeZone(candidate)) {
-        out.timeZone = candidate;
+    const tzCandidate = (parsed as { timeZone?: unknown }).timeZone;
+    if (typeof tzCandidate === 'string') {
+      if (isValidTimeZone(tzCandidate)) {
+        out.timeZone = tzCandidate;
       } else {
         process.stderr.write(
-          `aweek: ${CONFIG_FILENAME} has invalid timeZone ${JSON.stringify(candidate)}; falling back to ${DEFAULT_TZ}\n`,
+          `aweek: ${CONFIG_FILENAME} has invalid timeZone ${JSON.stringify(tzCandidate)}; falling back to ${DEFAULT_TZ}\n`,
         );
-        return { config: out, status: 'missing' };
+        degraded = true;
+      }
+    }
+    const staleCandidate = (parsed as { staleTaskWindowMs?: unknown }).staleTaskWindowMs;
+    if (staleCandidate !== undefined) {
+      if (isValidStaleTaskWindowMs(staleCandidate)) {
+        out.staleTaskWindowMs = staleCandidate;
+      } else {
+        process.stderr.write(
+          `aweek: ${CONFIG_FILENAME} has invalid staleTaskWindowMs ${JSON.stringify(staleCandidate)}; falling back to ${DEFAULT_STALE_TASK_WINDOW_MS}\n`,
+        );
+        degraded = true;
       }
     }
   }
-  return { config: out, status: 'ok' };
+  return { config: out, status: degraded ? 'missing' : 'ok' };
 }
 
 /**
@@ -111,37 +141,26 @@ export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigR
  * scheduling.
  */
 export async function loadConfig(dataDir: string): Promise<AweekConfig> {
-  const defaults: AweekConfig = { timeZone: DEFAULT_TZ };
-  let raw: string;
-  try {
-    raw = await readFile(configPath(dataDir), 'utf8');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return defaults;
-    throw err;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    process.stderr.write(
-      `aweek: ignoring malformed ${CONFIG_FILENAME} and using defaults\n`,
-    );
-    return defaults;
-  }
-  const out: AweekConfig = { ...defaults };
-  if (parsed && typeof parsed === 'object') {
-    const candidate = (parsed as { timeZone?: unknown }).timeZone;
-    if (typeof candidate === 'string') {
-      if (isValidTimeZone(candidate)) {
-        out.timeZone = candidate;
-      } else {
-        process.stderr.write(
-          `aweek: ${CONFIG_FILENAME} has invalid timeZone ${JSON.stringify(candidate)}; falling back to ${DEFAULT_TZ}\n`,
-        );
-      }
-    }
-  }
-  return out;
+  // Single-source the parsing in loadConfigWithStatus and drop the status tag.
+  const { config } = await loadConfigWithStatus(dataDir);
+  return config;
+}
+
+/**
+ * True when `value` is an integer milliseconds value safe to use as a
+ * stale-task window — finite, ≥ 60s (one minute), and ≤ 24h (one day).
+ * The lower bound rejects pathologically tiny values that would skip
+ * tasks before the next heartbeat could ever pick them up; the upper
+ * bound rejects values so large they defeat the staleness guard
+ * altogether (and likely indicate a unit mistake).
+ */
+export function isValidStaleTaskWindowMs(value: unknown): value is number {
+  if (typeof value !== 'number') return false;
+  if (!Number.isFinite(value)) return false;
+  if (!Number.isInteger(value)) return false;
+  if (value < 60_000) return false;
+  if (value > 24 * 60 * 60 * 1000) return false;
+  return true;
 }
 
 /**
@@ -158,6 +177,11 @@ export async function saveConfig(
   if (config.timeZone != null && !isValidTimeZone(config.timeZone)) {
     throw new TypeError(
       `Invalid timeZone in config: ${JSON.stringify(config.timeZone)}`,
+    );
+  }
+  if (config.staleTaskWindowMs != null && !isValidStaleTaskWindowMs(config.staleTaskWindowMs)) {
+    throw new TypeError(
+      `Invalid staleTaskWindowMs in config: ${JSON.stringify(config.staleTaskWindowMs)} (must be an integer between 60000 and 86400000 ms)`,
     );
   }
   const path = configPath(dataDir);

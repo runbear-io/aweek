@@ -204,13 +204,55 @@ export function trackKeyOf(task?: Pick<WeeklyTask, 'track' | 'objectiveId'> | nu
  * the tick (see `findStaleTasks` + `runHeartbeatForAgent`) rather than
  * letting them pile up in the FIFO queue and run hours late.
  *
- * The window is fixed at 60 minutes regardless of the user's cron
- * cadence: anything older than an hour is reliably "missed" (laptop was
- * closed, cron was disabled, cat on the keyboard) and the user doesn't
- * want a flurry of catch-up dispatches the next time the heartbeat
- * comes back online.
+ * The default is 60 minutes (anything older than an hour is reliably
+ * "missed" — laptop was closed, cron was disabled, cat on the keyboard
+ * — and the user doesn't want a flurry of catch-up dispatches the next
+ * time the heartbeat comes back online). Users can override this via
+ * `staleTaskWindowMs` in `.aweek/config.json`; the heartbeat runner
+ * calls {@link setStaleTaskWindowMsRuntime} once at startup to install
+ * the override, and every default-defaulted internal call to
+ * {@link isRunAtReady}, {@link findStaleTasks},
+ * {@link filterEligibleTasks}, and {@link selectTasksForTickFromPlan}
+ * picks it up via {@link getStaleTaskWindowMsRuntime}.
  */
 export const STALE_TASK_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Mutable runtime override used as the default `maxAgeMs` for every
+ * stale-aware selector function in this module. Initialized to
+ * {@link STALE_TASK_WINDOW_MS}; the heartbeat entry point in
+ * `src/heartbeat/run.ts` calls {@link setStaleTaskWindowMsRuntime} once
+ * at startup to apply `staleTaskWindowMs` from `.aweek/config.json`
+ * when present. Tests don't touch this — they pass `maxAgeMs` directly
+ * — so the variable stays at its initial 60-minute default in the
+ * test environment.
+ */
+let _staleTaskWindowMsRuntime: number = STALE_TASK_WINDOW_MS;
+
+/**
+ * Read the current runtime stale-task window. Used as the default
+ * `maxAgeMs` when callers don't pass one explicitly.
+ */
+export function getStaleTaskWindowMsRuntime(): number {
+  return _staleTaskWindowMsRuntime;
+}
+
+/**
+ * Install a runtime stale-task window override. Validation happens
+ * upstream in `src/storage/config-store.ts:isValidStaleTaskWindowMs`;
+ * this setter trusts callers to pass a sane value.
+ */
+export function setStaleTaskWindowMsRuntime(ms: number): void {
+  _staleTaskWindowMsRuntime = ms;
+}
+
+/**
+ * Reset the runtime stale-task window back to {@link STALE_TASK_WINDOW_MS}.
+ * Exposed for tests that want to undo a setter call between cases.
+ */
+export function resetStaleTaskWindowMsRuntime(): void {
+  _staleTaskWindowMsRuntime = STALE_TASK_WINDOW_MS;
+}
 
 /**
  * Check whether a task's `runAt` slot has arrived AND is still fresh.
@@ -234,7 +276,7 @@ export const STALE_TASK_WINDOW_MS = 60 * 60 * 1000;
 export function isRunAtReady(
   task: Pick<WeeklyTask, 'runAt'> | null | undefined,
   nowMs: number,
-  { maxAgeMs = STALE_TASK_WINDOW_MS }: { maxAgeMs?: number } = {},
+  { maxAgeMs = getStaleTaskWindowMsRuntime() }: { maxAgeMs?: number } = {},
 ): boolean {
   if (!task || task.runAt == null) return true;
   const scheduledMs = Date.parse(task.runAt);
@@ -257,7 +299,7 @@ export function isRunAtReady(
  */
 export function findStaleTasks(
   plan: WeeklyPlan | null | undefined,
-  { nowMs = Date.now(), maxAgeMs = STALE_TASK_WINDOW_MS }: SelectTickOptions = {},
+  { nowMs = Date.now(), maxAgeMs = getStaleTaskWindowMsRuntime() }: SelectTickOptions = {},
 ): StaleTaskRef[] {
   if (!plan || !Array.isArray(plan.tasks)) return [];
   const cutoffMs = nowMs - maxAgeMs;

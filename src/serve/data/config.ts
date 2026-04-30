@@ -9,10 +9,13 @@
  * Constants are hardcoded here (not imported from the source files) so
  * the data layer stays within its allowed import set (src/storage/* only).
  * The values are sourced from:
- *   - STALE_TASK_WINDOW_MS   → src/heartbeat/task-selector.ts
  *   - DEFAULT_LOCK_DIR       → src/lock/lock-manager.ts
  *   - DEFAULT_MAX_LOCK_AGE_MS → src/lock/lock-manager.ts
  *   - Heartbeat interval      → launchd StartInterval / cron schedule
+ *
+ * `staleTaskWindowMs` is config-backed (read live from .aweek/config.json
+ * via loadConfigWithStatus) so users can adjust it via /aweek:config
+ * without recompiling.
  *
  * Status semantics (per the Settings page spec):
  *   'ok'      — config.json absent (ENOENT) OR valid. Defaults render silently.
@@ -32,12 +35,10 @@ import { loadConfigWithStatus } from '../../storage/config-store.js';
 // Curated hardcoded constants
 // ---------------------------------------------------------------------------
 
-/**
- * How far in the past a task's runAt can be before the heartbeat marks it
- * skipped rather than dispatching it late.
- * Source: STALE_TASK_WINDOW_MS in src/heartbeat/task-selector.ts
- */
-const STALE_TASK_WINDOW_MS = 60 * 60 * 1000; // 60 minutes
+// staleTaskWindowMs is now config-backed (see config.staleTaskWindowMs in
+// loadConfigWithStatus). The Settings page reads it from config; the
+// fallback default is `DEFAULT_STALE_TASK_WINDOW_MS` exported from
+// src/storage/config-store.ts.
 
 /**
  * How often the launchd user agent (or cron fallback) fires the heartbeat.
@@ -162,9 +163,9 @@ export async function gatherAppConfig(
         {
           key: 'staleTaskWindowMs',
           label: 'Stale Task Window',
-          value: STALE_TASK_WINDOW_MS,
+          value: config.staleTaskWindowMs,
           description:
-            'Tasks whose runAt is older than this window (ms) are marked skipped on the next heartbeat tick instead of being dispatched late.',
+            'Tasks whose runAt is older than this window (ms) are marked skipped on the next heartbeat tick instead of being dispatched late. Set in .aweek/config.json.',
         },
       ],
     },
