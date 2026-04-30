@@ -52,7 +52,7 @@ Skill markdown lives in `skills/<name>/SKILL.md`. Each step shells out to `aweek
 | `/aweek:query` | `skills/query/SKILL.md` | Filter the roster by role / status / persona keyword / budget and return the matching slug list for downstream skills |
 | `/aweek:calendar` | `skills/calendar/SKILL.md` | Interactive weekly-plan calendar grid for one agent (numbered task selection, view options, inline status edits) |
 | `/aweek:delegate-task` | `skills/delegate-task/SKILL.md` | Async inter-agent task delegation through the recipient's inbox queue |
-| `/aweek:config` | `skills/config/SKILL.md` | CLI counterpart to the dashboard Settings page. Renders every knob the SPA surfaces (config.json fields + curated hardcoded constants) and edits the config-backed subset (today: just `timeZone`) behind an `AskUserQuestion` confirmation gate routed through `saveConfig` |
+| `/aweek:config` | `skills/config/SKILL.md` | CLI counterpart to the dashboard Settings page. Renders every knob `.aweek/config.json` exposes (`timeZone`, `staleTaskWindowMs`, `heartbeatIntervalSec`) and edits any of them via an interactive picker that doubles as the confirmation gate. Editing `heartbeatIntervalSec` additionally calls `installHeartbeat` to rotate the live launchd plist's `StartInterval` in the same flow |
 
 ### Subagent ↔ aweek contract
 
@@ -67,7 +67,7 @@ Per project policy, every destructive write must collect an explicit `AskUserQue
 
 | Operation | Skill |
 |-----------|-------|
-| Install heartbeat (launchd plist on macOS, crontab elsewhere) | `/aweek:init` |
+| Install / rotate heartbeat (launchd plist on macOS, crontab elsewhere) | `/aweek:init`, `/aweek:config` (auto-rotates when `heartbeatIntervalSec` changes) |
 | Overwrite an existing data dir | `/aweek:init` |
 | Goal `remove` | `/aweek:plan` |
 | Weekly plan `reject` | `/aweek:plan` |

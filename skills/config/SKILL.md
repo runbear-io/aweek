@@ -16,12 +16,13 @@ Today the editable fields are `timeZone`, `staleTaskWindowMs`, and
 `heartbeatIntervalSec`. Lock directory and max lock age are intentionally
 not surfaced — those are implementation details of `src/lock/lock-manager.ts`.
 
-`heartbeatIntervalSec` is config-backed but the live schedule lives in the
-launchd plist (or crontab line) written by `/aweek:init`. Editing this
-field writes `.aweek/config.json` immediately; the next `/aweek:init` run
-rotates the live launchd plist (or cron entry) to match. Until then the
-plist keeps firing at its previously-installed cadence — surface this in
-the post-write status message whenever a user changes the field.
+`heartbeatIntervalSec` is config-backed AND the skill auto-rotates the
+live launchd plist (or crontab line) in the same flow as the config
+write. The user-facing experience is: pick the new value, see both the
+config diff and the plist update reported back. See Step 3a for the
+auto-rotation contract — the skill calls `installHeartbeat` with
+`confirmed: true` without re-prompting because the value-picker in
+Step 3 is already the deliberate user input.
 
 Adding a new editable field means extending `AweekConfig` in
 `src/storage/config-store.ts`, its `saveConfig` validator, and the
@@ -153,10 +154,10 @@ for seconds):
 - `900` (15 min)
 - `1800` (30 min)
 
-Validation accepts integer seconds in `[60, 86400]`. After the write
-completes, **always** tell the user to re-run `/aweek:init` so the live
-launchd plist (or crontab line) rotates to the new value — until then
-the heartbeat keeps firing at its previously-installed cadence.
+Validation accepts integer seconds in `[60, 86400]`. After a successful
+write, the skill **automatically rotates the live launchd plist (or
+crontab line)** in the same flow — see Step 3a below. The user does not
+need to re-run `/aweek:init` manually.
 
 Once the user has picked, run a dry-run `editConfig` (no `confirmed`) to
 surface validation errors before writing:
@@ -206,6 +207,37 @@ Mention to the user that the change takes effect on the next heartbeat tick
 (no restart required) and that the dashboard's Settings page will reflect
 the new value the next time it's loaded.
 
+### Step 3a: Rotate the live heartbeat schedule (`heartbeatIntervalSec` only)
+
+When the field that just changed is **`heartbeatIntervalSec`** AND the
+write returned `changed: true`, the skill MUST also call
+`installHeartbeat` so the running launchd plist's `StartInterval` (or
+crontab line) is rewritten to match the new value. The value-picker
+in Step 3 already authorised the change — pass `confirmed: true`
+without any additional `AskUserQuestion`. Skip this step entirely for
+edits to other fields (`timeZone`, `staleTaskWindowMs`).
+
+```bash
+HB=$(echo '{"confirmed": true}' \
+  | aweek exec init installHeartbeat --input-json -)
+echo "$HB"
+```
+
+`installHeartbeat` resolves the new interval from `.aweek/config.json`
+automatically (the field you just wrote), so you do **not** need to
+pass `intervalSeconds` in the JSON above. The response includes a
+`backend` (`"launchd"` or `"cron"`) and an `outcome`
+(`"created"` / `"updated"` / `"skipped"`); echo a one-liner like:
+
+```
+Rotated heartbeat: launchd plist updated (StartInterval = 300 s).
+```
+
+If `installHeartbeat` fails (e.g. `launchctl` missing, plist write
+denied), surface the error verbatim and tell the user the config
+file was already written and they can re-run `/aweek:init`
+manually to retry the live-schedule rotation.
+
 ### Step 4: Don't bypass validation
 
 Never write `.aweek/config.json` directly from this skill (no `cat >`, no
@@ -242,6 +274,27 @@ Updated Time Zone (timeZone):
 Wrote /abs/path/to/.aweek/config.json.
 
 The change takes effect on the next heartbeat tick.
+```
+
+### Edit heartbeat interval (auto-rotates the live plist)
+
+```
+User: /aweek:config
+
+[renders Step 1 block — full configuration]
+[Step 2 picker → user picks "Heartbeat Interval (Currently 600 s = 10 min)"]
+[Step 3 picker → user picks 300 s (5 min)]
+
+Updating heartbeatIntervalSec: 600 → 300
+
+=== aweek Config Edit ===
+Updated Heartbeat Interval (sec) (heartbeatIntervalSec):
+  600  →  300
+Wrote /abs/path/to/.aweek/config.json.
+
+[Step 3a → installHeartbeat runs automatically with confirmed: true]
+
+Rotated heartbeat: launchd plist updated (StartInterval = 300 s).
 ```
 
 ### Pick "Done" to stop after viewing
