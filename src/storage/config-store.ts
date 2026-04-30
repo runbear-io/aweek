@@ -43,6 +43,69 @@ export function configPath(dataDir: string): string {
 }
 
 /**
+ * Status tag returned by {@link loadConfigWithStatus} to distinguish the
+ * two silent-fallback cases callers (like the Settings page) need to tell apart.
+ *
+ *   'ok'      — file absent (ENOENT) OR file is valid. Either way defaults
+ *               are in effect or the real values were loaded cleanly.
+ *   'missing' — file exists but is malformed JSON or contains an invalid
+ *               timeZone. The Settings page surfaces an inline warning for
+ *               this case only.
+ */
+export type ConfigFileStatus = 'ok' | 'missing';
+
+/** Result shape returned by {@link loadConfigWithStatus}. */
+export interface LoadConfigResult {
+  config: AweekConfig;
+  /** See {@link ConfigFileStatus}. */
+  status: ConfigFileStatus;
+}
+
+/**
+ * Like {@link loadConfig} but returns an explicit status tag so callers can
+ * tell apart "file absent → silently use defaults" (status 'ok') from
+ * "file malformed → using defaults but user should know" (status 'missing').
+ */
+export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigResult> {
+  const defaults: AweekConfig = { timeZone: DEFAULT_TZ };
+  let raw: string;
+  try {
+    raw = await readFile(configPath(dataDir), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      // File absent — silently fall back; this is the normal "fresh project"
+      // state. Do NOT treat ENOENT as a warning.
+      return { config: defaults, status: 'ok' };
+    }
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    process.stderr.write(
+      `aweek: ignoring malformed ${CONFIG_FILENAME} and using defaults\n`,
+    );
+    return { config: defaults, status: 'missing' };
+  }
+  const out: AweekConfig = { ...defaults };
+  if (parsed && typeof parsed === 'object') {
+    const candidate = (parsed as { timeZone?: unknown }).timeZone;
+    if (typeof candidate === 'string') {
+      if (isValidTimeZone(candidate)) {
+        out.timeZone = candidate;
+      } else {
+        process.stderr.write(
+          `aweek: ${CONFIG_FILENAME} has invalid timeZone ${JSON.stringify(candidate)}; falling back to ${DEFAULT_TZ}\n`,
+        );
+        return { config: out, status: 'missing' };
+      }
+    }
+  }
+  return { config: out, status: 'ok' };
+}
+
+/**
  * Load the config object. Missing file → defaults. Invalid `timeZone` in
  * the file → defaults (plus a warning on stderr) so a typo can't brick
  * scheduling.

@@ -15,6 +15,7 @@ import {
   AgentDetailPage as AgentDetailPageJs,
   DEFAULT_AGENT_DETAIL_TAB,
   normaliseTab,
+  SettingsPage,
 } from './pages/index.js';
 import { Layout } from './components/layout.jsx';
 import { ThemeProvider as ThemeProviderJs } from './components/theme-provider.jsx';
@@ -183,6 +184,7 @@ function AppShell() {
           element={<AgentDetailRoute />}
         />
         <Route path="/agents/:slug/:tab" element={<AgentDetailRoute />} />
+        <Route path="/settings" element={<SettingsPage />} />
         <Route path="/calendar" element={<Navigate to="/agents" replace />} />
         <Route path="/activities" element={<Navigate to="/agents" replace />} />
         <Route path="/strategy" element={<Navigate to="/agents" replace />} />

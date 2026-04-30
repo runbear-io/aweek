@@ -39,6 +39,7 @@ import {
   Calendar,
   FileBox,
   ListChecks,
+  Settings,
   User,
   Users,
   type LucideIcon,
@@ -218,6 +219,7 @@ export interface AppNavItem {
  */
 export const APP_NAV_ITEMS: ReadonlyArray<AppNavItem> = Object.freeze([
   { to: '/agents', label: 'Agents', icon: Users, match: '/agents' },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ]);
 
 /**
