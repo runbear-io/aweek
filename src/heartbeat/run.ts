@@ -31,6 +31,7 @@ import {
   selectTasksForTickFromPlan,
   trackKeyOf,
   findStaleTasks,
+  setStaleTaskWindowMsRuntime,
 } from './task-selector.js';
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
@@ -907,6 +908,12 @@ export async function runHeartbeatForAll(
   // intent lives in the zone they configured in .aweek/config.json.
   // When those differ, print a single one-line warning so the mismatch
   // is visible in the heartbeat log rather than silently drifting hours.
+  //
+  // We piggyback on the same config load to install the user's
+  // staleTaskWindowMs override (if any) into the task-selector module
+  // before any per-agent tick runs. The override is read once per
+  // process; updating it requires a heartbeat process restart, which
+  // happens automatically every 10 minutes when launchd / cron fires.
   try {
     const config = await loadConfig(agentsDir);
     const systemTz = detectSystemTimeZone();
@@ -921,6 +928,9 @@ export async function runHeartbeatForAll(
           `Cron fires on system time, so task selection may drift relative to your configured week. ` +
           `Run crontab in the configured zone or update .aweek/config.json to silence this warning.`,
       );
+    }
+    if (typeof config?.staleTaskWindowMs === 'number') {
+      setStaleTaskWindowMsRuntime(config.staleTaskWindowMs);
     }
   } catch {
     // Config read is best-effort; never block heartbeat on it.
