@@ -27,6 +27,7 @@
  *   /api/agents/:slug/tasks/activity → gatherTaskActivity (used internally)
  *   /api/agents/:slug/logs         → gatherAgentLogs
  *   /api/budget                    → gatherBudgetList
+ *   /api/config                    → gatherAppConfig
  *   /api/executions/:slug/:basename (NDJSON stream) → streamExecutionLogLines
  */
 
@@ -74,3 +75,6 @@ export {
   resolveArtifactContentType,
   resolveArtifactFile,
 } from './artifacts.js';
+
+export { gatherAppConfig } from './config.js';
+export type { AppConfigPayload, ConfigCategory, ConfigFileStatus, ConfigItem } from './config.js';

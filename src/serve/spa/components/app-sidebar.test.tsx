@@ -50,9 +50,10 @@ function renderAt(pathname: string) {
 }
 
 describe('APP_NAV_ITEMS', () => {
-  it('contains exactly one entry — /agents', () => {
-    expect(APP_NAV_ITEMS).toHaveLength(1);
+  it('contains exactly two entries — /agents and /settings', () => {
+    expect(APP_NAV_ITEMS).toHaveLength(2);
     expect(APP_NAV_ITEMS[0]).toMatchObject({ to: '/agents', label: 'Agents' });
+    expect(APP_NAV_ITEMS[1]).toMatchObject({ to: '/settings', label: 'Settings' });
   });
 });
 
@@ -79,20 +80,25 @@ describe('AppSidebar', () => {
     expect(container.querySelector('[data-component="sidebar-footer"]')).not.toBeNull();
   });
 
-  it('renders a single /agents menu entry as a real <a> link', () => {
+  it('renders /agents and /settings nav entries as real <a> links', () => {
     const { container } = renderAt('/agents');
     const items = container.querySelectorAll(
       '[data-component="sidebar-menu-item"]',
     );
-    expect(items).toHaveLength(1);
-    const link = container.querySelector(
+    expect(items).toHaveLength(2);
+    const links = container.querySelectorAll(
       '[data-component="sidebar-menu-button"]',
     );
-    expect(link).not.toBeNull();
-    expect(link!.tagName).toBe('A');
-    expect(link).toHaveAttribute('href', '/agents');
-    expect(link).toHaveAttribute('data-nav-item', '/agents');
-    expect(link).toHaveTextContent('Agents');
+    const agentsLink = links[0]!;
+    expect(agentsLink.tagName).toBe('A');
+    expect(agentsLink).toHaveAttribute('href', '/agents');
+    expect(agentsLink).toHaveAttribute('data-nav-item', '/agents');
+    expect(agentsLink).toHaveTextContent('Agents');
+    const settingsLink = links[1]!;
+    expect(settingsLink.tagName).toBe('A');
+    expect(settingsLink).toHaveAttribute('href', '/settings');
+    expect(settingsLink).toHaveAttribute('data-nav-item', '/settings');
+    expect(settingsLink).toHaveTextContent('Settings');
   });
 
   it('marks /agents as active on the Overview route', () => {
