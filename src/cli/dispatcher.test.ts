@@ -15,6 +15,7 @@ describe('dispatcher registry', () => {
       'agent-helpers',
       'artifact',
       'calendar',
+      'config',
       'daily-review',
       'delegate-task',
       'execution',

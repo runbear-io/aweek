@@ -52,6 +52,7 @@ Skill markdown lives in `skills/<name>/SKILL.md`. Each step shells out to `aweek
 | `/aweek:query` | `skills/query/SKILL.md` | Filter the roster by role / status / persona keyword / budget and return the matching slug list for downstream skills |
 | `/aweek:calendar` | `skills/calendar/SKILL.md` | Interactive weekly-plan calendar grid for one agent (numbered task selection, view options, inline status edits) |
 | `/aweek:delegate-task` | `skills/delegate-task/SKILL.md` | Async inter-agent task delegation through the recipient's inbox queue |
+| `/aweek:config` | `skills/config/SKILL.md` | CLI counterpart to the dashboard Settings page. Renders every knob the SPA surfaces (config.json fields + curated hardcoded constants) and edits the config-backed subset (today: just `timeZone`) behind an `AskUserQuestion` confirmation gate routed through `saveConfig` |
 
 ### Subagent ↔ aweek contract
 
@@ -72,6 +73,7 @@ Per project policy, every destructive write must collect an explicit `AskUserQue
 | Weekly plan `reject` | `/aweek:plan` |
 | `top-up` (resets weekly usage) | `/aweek:manage` |
 | `delete` (removes agent JSON, optionally `.md`) | `/aweek:manage` |
+| `editConfig` (writes `.aweek/config.json`) | `/aweek:config` |
 
 The underlying adapters refuse to run without `confirmed: true` — do not bypass the gate.
 
