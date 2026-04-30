@@ -85,6 +85,7 @@ const ALLOWED_IMPORT_PREFIXES = [
   './reviews.js',
   './notifications.js',
   './artifacts.js',
+  './config.js',
   './index.js',
   '../../storage/review-file-reader.js',
 ];
@@ -163,6 +164,7 @@ test('data layer: barrel re-exports every expected gatherer', () => {
     'streamExecutionLogLines',
     'gatherAgentReviews',
     'gatherAllNotifications',
+    'gatherAppConfig',
   ];
   for (const name of expected) {
     assert.equal(
