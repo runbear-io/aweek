@@ -19,6 +19,8 @@ import {
   configPath,
   loadConfigWithStatus,
   saveConfig,
+  isValidStaleTaskWindowMs,
+  DEFAULT_STALE_TASK_WINDOW_MS,
   type AweekConfig,
 } from '../storage/config-store.js';
 import { DEFAULT_TZ, isValidTimeZone } from '../time/zone.js';
@@ -26,9 +28,10 @@ import { DEFAULT_TZ, isValidTimeZone } from '../time/zone.js';
 // ---------------------------------------------------------------------------
 // Curated hardcoded constants (kept parallel to src/serve/data/config.ts so
 // the CLI and the Settings page surface identical labels and descriptions).
+// staleTaskWindowMs is config-backed; see DEFAULT_STALE_TASK_WINDOW_MS in
+// src/storage/config-store.ts.
 // ---------------------------------------------------------------------------
 
-const STALE_TASK_WINDOW_MS = 60 * 60 * 1000;
 const HEARTBEAT_INTERVAL_SEC = 600;
 const DEFAULT_LOCK_DIR = '.aweek/.locks';
 const DEFAULT_MAX_LOCK_AGE_MS = 2 * 60 * 60 * 1000;
@@ -110,10 +113,10 @@ export async function showConfig({ dataDir }: ShowConfigOpts = {}): Promise<Show
       key: 'staleTaskWindowMs',
       label: 'Stale Task Window (ms)',
       category: 'Scheduler',
-      source: 'hardcoded',
-      editable: false,
-      value: String(STALE_TASK_WINDOW_MS),
-      defaultValue: String(STALE_TASK_WINDOW_MS),
+      source: 'config',
+      editable: true,
+      value: String(config.staleTaskWindowMs),
+      defaultValue: String(DEFAULT_STALE_TASK_WINDOW_MS),
       description:
         'Tasks whose runAt is older than this window are skipped on the next heartbeat instead of dispatched late.',
     },
@@ -200,13 +203,27 @@ export function formatShowConfigResult(result: ShowConfigResult): string {
 // Editable-field registry
 // ---------------------------------------------------------------------------
 
+/**
+ * The runtime type a field's validator produces. Strings for IANA-zone /
+ * path-like fields; numbers for ms / seconds. Mirrors the field's
+ * declared type in `AweekConfig` so `editConfig` can pass `normalized`
+ * straight through to `saveConfig` without further conversion.
+ */
+export type EditableFieldValue = string | number;
+
 export interface EditableFieldSpec {
   key: string;
   label: string;
   description: string;
   defaultValue: string;
-  /** Returns the canonical (trimmed) value on success, or a reason on failure. */
-  validate(value: string): { ok: true; normalized: string } | { ok: false; reason: string };
+  /**
+   * Returns the canonical typed value on success (the value that gets
+   * written to .aweek/config.json) or a reason on failure. Display-side
+   * code stringifies `normalized` for the before → after preview.
+   */
+  validate(
+    value: string,
+  ): { ok: true; normalized: EditableFieldValue } | { ok: false; reason: string };
 }
 
 /**
@@ -233,6 +250,30 @@ export function listEditableFields(): EditableFieldSpec[] {
             reason: `"${v}" is not a recognised IANA time zone. Try names like America/Los_Angeles or Asia/Seoul.`,
           };
         return { ok: true, normalized: v };
+      },
+    },
+    {
+      key: 'staleTaskWindowMs',
+      label: 'Stale Task Window (ms)',
+      description:
+        'How far in the past a task\'s runAt can be before the heartbeat marks it skipped instead of dispatching it late. Integer milliseconds between 60_000 (1 min) and 86_400_000 (24 h). Common values: 1200000 (20 min), 1800000 (30 min), 3600000 (60 min, default).',
+      defaultValue: String(DEFAULT_STALE_TASK_WINDOW_MS),
+      validate(raw: string) {
+        const v = String(raw ?? '').trim();
+        if (!v) return { ok: false, reason: 'Stale task window cannot be empty.' };
+        const n = Number(v);
+        if (!Number.isFinite(n))
+          return {
+            ok: false,
+            reason: `"${v}" is not a number. Pass an integer milliseconds value (e.g. 1200000 for 20 min).`,
+          };
+        const intN = Math.trunc(n);
+        if (!isValidStaleTaskWindowMs(intN))
+          return {
+            ok: false,
+            reason: `${intN} ms is out of range. Stale window must be an integer between 60000 (1 min) and 86400000 (24 h).`,
+          };
+        return { ok: true, normalized: intN };
       },
     },
   ];
@@ -307,10 +348,15 @@ export async function editConfig({
 
   const path = configPath(dataDir);
   const { config: current } = await loadConfigWithStatus(dataDir);
-  const before = String((current as unknown as Record<string, unknown>)[field] ?? '');
-  const after = validation.normalized;
+  // Compare typed values so a numeric-field edit (e.g. staleTaskWindowMs)
+  // doesn't false-positive as a no-op when the on-disk value is also a
+  // number. Display continues to use the stringified form.
+  const beforeRaw = (current as unknown as Record<string, unknown>)[field];
+  const before = beforeRaw === undefined || beforeRaw === null ? '' : String(beforeRaw);
+  const after = String(validation.normalized);
+  const isNoop = beforeRaw === validation.normalized;
 
-  if (before === after) {
+  if (isNoop) {
     return {
       ok: true,
       field,
@@ -332,7 +378,7 @@ export async function editConfig({
     };
   }
 
-  const patch = { [field]: after } as Partial<AweekConfig>;
+  const patch = { [field]: validation.normalized } as Partial<AweekConfig>;
   await saveConfig(dataDir, patch);
 
   return {

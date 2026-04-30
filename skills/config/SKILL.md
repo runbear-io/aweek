@@ -6,15 +6,19 @@ trigger: aweek config, aweek configure, configure aweek, change time zone, set t
 
 # aweek:config
 
-CLI counterpart to the dashboard's read-only Settings page. Use this skill any
-time the user wants to **inspect** or **change** values in
-`.aweek/config.json`. The skill renders the same knobs the Settings page does
-(time zone + the curated set of hardcoded scheduler / lock constants) and
-provides a destructive-write gate around any field that's actually editable.
+CLI counterpart to the dashboard's Settings page. Use this skill any time the
+user wants to **inspect** or **change** values in `.aweek/config.json`. The
+skill renders the same knobs the Settings page does (time zone, stale task
+window, plus the hardcoded heartbeat / lock constants) and provides a
+destructive-write gate around any field that's actually editable.
 
-Today only `timeZone` is editable; everything else is hardcoded and shipped
-with the binary. Adding a new editable field means extending `AweekConfig`
-in `src/storage/config-store.ts`, its `saveConfig` validator, and the
+Today the editable fields are `timeZone` and `staleTaskWindowMs`. The lock
+directory, max lock age, and heartbeat interval remain hardcoded — those
+either ship with the binary (heartbeat interval is set by the launchd plist
+/ cron entry) or would orphan in-flight state if rewritten mid-run.
+
+Adding a new editable field means extending `AweekConfig` in
+`src/storage/config-store.ts`, its `saveConfig` validator, and the
 `listEditableFields` registry in `src/skills/config.ts` — the SKILL flow
 below picks up the new entry without further changes.
 
@@ -97,14 +101,25 @@ the `description` text as the option's help string in the picker.
 
 ### Step 4: Collect, validate, and confirm the new value (REQUIRED gate)
 
-Ask the user for the new value via `AskUserQuestion`. For `timeZone`, offer
-a short list of common zones plus an "Other" escape hatch — users can paste
-any IANA zone name. Suggested options:
+Ask the user for the new value via `AskUserQuestion`. The picker options
+depend on the field:
+
+**`timeZone`** — common IANA zones plus an "Other" escape hatch:
 
 - `America/Los_Angeles`
 - `America/New_York`
 - `Europe/Berlin`
 - `Asia/Seoul`
+
+**`staleTaskWindowMs`** — common windows (paste an integer for ms):
+
+- `1200000` (20 min)
+- `1800000` (30 min)
+- `3600000` (60 min, default)
+- `7200000` (2 h)
+
+Validation accepts integer milliseconds in `[60000, 86400000]`. Decimals
+are truncated; values below 1 minute or above 24 hours are rejected.
 
 After collecting `value`, **always** run a dry-run `editConfig` to surface
 validation errors and produce the before → after preview WITHOUT writing:
