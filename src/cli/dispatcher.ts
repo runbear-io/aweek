@@ -35,6 +35,7 @@ import * as delegateTask from '../skills/delegate-task.js';
 import * as notify from '../skills/notify.js';
 import * as execution from '../skills/execution.js';
 import * as artifact from '../skills/artifact.js';
+import * as config from '../skills/config.js';
 import * as planAmbiguity from '../skills/plan-ambiguity.js';
 import * as planInterviewStore from '../storage/plan-interview-store.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
@@ -337,6 +338,21 @@ const REGISTRY_LITERAL = Object.freeze({
         input?.projectRoot,
         input?.filePath ?? input?.file,
       ),
+  },
+  // /aweek:config — display every knob the Settings page surfaces (config.json
+  // fields plus curated hardcoded constants) and update the editable subset
+  // (today: just `timeZone`). Writes route through src/storage/config-store.ts;
+  // `editConfig` refuses to persist unless the caller passes `confirmed: true`,
+  // which the SKILL markdown collects via AskUserQuestion after showing a
+  // before → after preview.
+  config: {
+    showConfig: config.showConfig,
+    editConfig: config.editConfig,
+    listEditableFields: config.listEditableFields,
+    formatShowConfigResult: (input: any) =>
+      config.formatShowConfigResult(input?.result ?? input),
+    formatEditConfigResult: (input: any) =>
+      config.formatEditConfigResult(input?.result ?? input),
   },
   // Ouroboros-style adaptive-interview helpers for `/aweek:plan`. The
   // SKILL.md orchestrates the LLM calls; this registry exposes the pure

@@ -296,12 +296,13 @@ function projectActivityEntry(entry: ActivityLogEntry): ProjectedActivityEntry {
   const resources = (meta as { resources?: unknown }).resources as
     | { urls?: unknown; filePaths?: unknown }
     | undefined;
-  const urls = Array.isArray(resources?.urls)
-    ? (resources.urls as string[]).slice(0, 10)
-    : [];
-  const files = Array.isArray(resources?.filePaths)
-    ? (resources.filePaths as string[]).slice(0, 10)
-    : [];
+  // Bind the optional-chain results to locals so TS can narrow them inside
+  // the Array.isArray branches; otherwise it flags `resources.urls` as
+  // possibly-undefined access on every read.
+  const rawUrls = resources?.urls;
+  const urls = Array.isArray(rawUrls) ? (rawUrls as string[]).slice(0, 10) : [];
+  const rawFiles = resources?.filePaths;
+  const files = Array.isArray(rawFiles) ? (rawFiles as string[]).slice(0, 10) : [];
   if (urls.length > 0) projected.urls = urls;
   if (files.length > 0) projected.files = files;
   const tokens = pickTotalTokens((meta as { tokenUsage?: unknown }).tokenUsage);
