@@ -23,6 +23,17 @@ const CONFIG_FILENAME = 'config.json';
 export const DEFAULT_STALE_TASK_WINDOW_MS = 60 * 60 * 1000;
 
 /**
+ * Default for {@link AweekConfig.heartbeatIntervalSec}. Matches the
+ * launchd backend's `DEFAULT_LAUNCHD_INTERVAL_SECONDS` and the
+ * `*\/10 * * * *` cron entry historically written by `installHeartbeat`.
+ * `installHeartbeat` reads this value from config when the caller does
+ * not pass an explicit `intervalSeconds`, so editing the field via
+ * `/aweek:config` and re-running `/aweek:init` rotates the live
+ * launchd plist / crontab line.
+ */
+export const DEFAULT_HEARTBEAT_INTERVAL_SEC = 600;
+
+/**
  * Shape of the persisted aweek-wide config document.
  *
  * Extra knobs can be appended here without breaking older callers. New
@@ -38,6 +49,17 @@ export interface AweekConfig {
    * (`DEFAULT_STALE_TASK_WINDOW_MS`).
    */
   staleTaskWindowMs: number;
+  /**
+   * How often the heartbeat fires, in integer seconds. Used by
+   * `installHeartbeat` as the `StartInterval` for the launchd plist
+   * (or the cron `*\/N * * * *` entry off-macOS). Range: 60..86400
+   * (1 minute to 24 hours). Default 600 (10 minutes,
+   * `DEFAULT_HEARTBEAT_INTERVAL_SEC`).
+   *
+   * Editing this value alone does not rotate the live schedule —
+   * re-run `/aweek:init` to rewrite the launchd plist or crontab line.
+   */
+  heartbeatIntervalSec: number;
 }
 
 /**
@@ -85,6 +107,7 @@ export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigR
   const defaults: AweekConfig = {
     timeZone: DEFAULT_TZ,
     staleTaskWindowMs: DEFAULT_STALE_TASK_WINDOW_MS,
+    heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC,
   };
   let raw: string;
   try {
@@ -131,6 +154,17 @@ export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigR
         degraded = true;
       }
     }
+    const hbCandidate = (parsed as { heartbeatIntervalSec?: unknown }).heartbeatIntervalSec;
+    if (hbCandidate !== undefined) {
+      if (isValidHeartbeatIntervalSec(hbCandidate)) {
+        out.heartbeatIntervalSec = hbCandidate;
+      } else {
+        process.stderr.write(
+          `aweek: ${CONFIG_FILENAME} has invalid heartbeatIntervalSec ${JSON.stringify(hbCandidate)}; falling back to ${DEFAULT_HEARTBEAT_INTERVAL_SEC}\n`,
+        );
+        degraded = true;
+      }
+    }
   }
   return { config: out, status: degraded ? 'missing' : 'ok' };
 }
@@ -164,6 +198,23 @@ export function isValidStaleTaskWindowMs(value: unknown): value is number {
 }
 
 /**
+ * True when `value` is an integer seconds value safe to use as a
+ * heartbeat interval — finite, ≥ 60s (matches launchd's
+ * `MIN_LAUNCHD_INTERVAL_SECONDS` floor), and ≤ 24h. The lower bound
+ * keeps Apple's launchd from spawning processes faster than it can
+ * reap them; the upper bound rejects values so large the heartbeat
+ * effectively never runs.
+ */
+export function isValidHeartbeatIntervalSec(value: unknown): value is number {
+  if (typeof value !== 'number') return false;
+  if (!Number.isFinite(value)) return false;
+  if (!Number.isInteger(value)) return false;
+  if (value < 60) return false;
+  if (value > 24 * 60 * 60) return false;
+  return true;
+}
+
+/**
  * Write the config object. Creates parent dirs if needed, validates
  * `timeZone` before writing.
  */
@@ -182,6 +233,14 @@ export async function saveConfig(
   if (config.staleTaskWindowMs != null && !isValidStaleTaskWindowMs(config.staleTaskWindowMs)) {
     throw new TypeError(
       `Invalid staleTaskWindowMs in config: ${JSON.stringify(config.staleTaskWindowMs)} (must be an integer between 60000 and 86400000 ms)`,
+    );
+  }
+  if (
+    config.heartbeatIntervalSec != null &&
+    !isValidHeartbeatIntervalSec(config.heartbeatIntervalSec)
+  ) {
+    throw new TypeError(
+      `Invalid heartbeatIntervalSec in config: ${JSON.stringify(config.heartbeatIntervalSec)} (must be an integer between 60 and 86400 seconds)`,
     );
   }
   const path = configPath(dataDir);

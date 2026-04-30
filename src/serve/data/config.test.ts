@@ -102,13 +102,13 @@ test('gatherAppConfig: invalid timeZone → status missing', async () => {
 // Category structure
 // ---------------------------------------------------------------------------
 
-test('gatherAppConfig: always returns three categories with expected ids', async () => {
+test('gatherAppConfig: always returns the configured categories with expected ids', async () => {
   const root = await makeProject();
   try {
     const payload = await gatherAppConfig({ projectDir: root });
     assert.ok(Array.isArray(payload.categories));
     const ids = payload.categories.map((c) => c.id);
-    assert.deepEqual(ids, ['configuration', 'scheduler', 'locks']);
+    assert.deepEqual(ids, ['configuration', 'scheduler']);
     for (const cat of payload.categories) {
       assert.equal(typeof cat.id, 'string');
       assert.equal(typeof cat.label, 'string');
@@ -190,43 +190,26 @@ test('gatherAppConfig: scheduler category surfaces heartbeatIntervalSec and stal
   }
 });
 
-// ---------------------------------------------------------------------------
-// Locks category — compiled-in constants
-// ---------------------------------------------------------------------------
-
-test('gatherAppConfig: locks category surfaces lockDir and maxLockAgeMs', async () => {
-  const root = await makeProject();
-  try {
-    const payload = await gatherAppConfig({ projectDir: root });
-    const locks = payload.categories.find((c) => c.id === 'locks');
-    assert.ok(locks, 'locks category must be present');
-
-    const lockDir = locks.items.find((i) => i.key === 'lockDir');
-    assert.ok(lockDir, 'lockDir item must exist');
-    assert.equal(lockDir.value, '.aweek/.locks');
-
-    const maxAge = locks.items.find((i) => i.key === 'maxLockAgeMs');
-    assert.ok(maxAge, 'maxLockAgeMs item must exist');
-    assert.equal(maxAge.value, 7_200_000, 'max lock age must be 7 200 000 ms (2 hours)');
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+// Lock layout (lockDir / maxLockAgeMs) was intentionally dropped from the
+// Settings page surface — those remain hardcoded in src/lock/lock-manager.ts
+// but are no longer surfaced through /api/config or /aweek:config.
 
 // ---------------------------------------------------------------------------
-// Graceful degradation — malformed config still returns all constants
+// Graceful degradation — malformed config still returns the scheduler defaults
 // ---------------------------------------------------------------------------
 
-test('gatherAppConfig: malformed config still returns scheduler and locks constants', async () => {
+test('gatherAppConfig: malformed config still returns the scheduler defaults', async () => {
   const root = await makeProject('not valid json at all');
   try {
     const payload = await gatherAppConfig({ projectDir: root });
     assert.equal(payload.status, 'missing');
-    // Constants unaffected by config file state.
+    // Scheduler items still render with the loadConfig defaults — a malformed
+    // file falls back to defaults rather than dropping the category.
     const scheduler = payload.categories.find((c) => c.id === 'scheduler');
     assert.ok(scheduler && scheduler.items.length >= 2);
+    // No locks category is surfaced anymore.
     const locks = payload.categories.find((c) => c.id === 'locks');
-    assert.ok(locks && locks.items.length >= 2);
+    assert.equal(locks, undefined);
     // timeZone falls back to the system default (DEFAULT_TZ from zone.ts).
     const cfg = payload.categories.find((c) => c.id === 'configuration');
     const tz = cfg?.items.find((i) => i.key === 'timeZone');

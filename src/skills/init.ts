@@ -931,6 +931,22 @@ export async function installHeartbeat(
 
   if (backend === 'launchd') {
     const projectDir = resolveProjectDir(opts.projectDir);
+    // Resolve the interval from config when the caller did not pass one
+    // explicitly. This lets `/aweek:config` rotate `heartbeatIntervalSec`,
+    // re-run `/aweek:init`, and have the new value written into the
+    // launchd plist's StartInterval. Errors loading config (no .aweek/
+    // yet, malformed JSON) fall through to the launchd backend's
+    // hardcoded default.
+    let resolvedIntervalSeconds: number | undefined = opts.intervalSeconds;
+    if (resolvedIntervalSeconds === undefined && opts.schedule === undefined) {
+      try {
+        const dataDir = join(projectDir, '.aweek', 'agents');
+        const cfg = await loadConfig(dataDir);
+        resolvedIntervalSeconds = cfg.heartbeatIntervalSec;
+      } catch {
+        // intentional fall-through to backend default
+      }
+    }
     // Best-effort migration: if a legacy cron entry exists for this
     // project, drop it now. Failures are non-fatal — the launchd install
     // is the source of truth going forward.
@@ -963,7 +979,7 @@ export async function installHeartbeat(
 
     const res = (await installLaunchdHeartbeat({
       projectDir,
-      intervalSeconds: opts.intervalSeconds,
+      intervalSeconds: resolvedIntervalSeconds,
       schedule: opts.schedule,
       shell: opts.shell,
       loginFlag: opts.loginFlag,
