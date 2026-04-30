@@ -12,10 +12,16 @@ skill renders the same knobs the Settings page does (time zone, stale task
 window, plus the hardcoded heartbeat / lock constants) and provides a
 destructive-write gate around any field that's actually editable.
 
-Today the editable fields are `timeZone` and `staleTaskWindowMs`. The lock
-directory, max lock age, and heartbeat interval remain hardcoded — those
-either ship with the binary (heartbeat interval is set by the launchd plist
-/ cron entry) or would orphan in-flight state if rewritten mid-run.
+Today the editable fields are `timeZone`, `staleTaskWindowMs`, and
+`heartbeatIntervalSec`. Lock directory and max lock age are intentionally
+not surfaced — those are implementation details of `src/lock/lock-manager.ts`.
+
+`heartbeatIntervalSec` is config-backed but the live schedule lives in the
+launchd plist (or crontab line) written by `/aweek:init`. Editing this
+field writes `.aweek/config.json` immediately; the next `/aweek:init` run
+rotates the live launchd plist (or cron entry) to match. Until then the
+plist keeps firing at its previously-installed cadence — surface this in
+the post-write status message whenever a user changes the field.
 
 Adding a new editable field means extending `AweekConfig` in
 `src/storage/config-store.ts`, its `saveConfig` validator, and the
@@ -24,9 +30,11 @@ below picks up the new entry without further changes.
 
 ## Instructions
 
-Follow these steps in order. **Do not skip Step 4** — every config change
-must surface a before → after preview and an explicit `AskUserQuestion`
-confirmation before the write happens, per project policy.
+Follow these steps in order. The user's value-picker selection in Step 3 is
+the deliberate user input that satisfies project policy for destructive
+writes — there is intentionally **no second "are you sure?" prompt** after
+it. Always run the dry-run validation though; bad values must never reach
+the write call.
 
 ### Step 1: Render the current configuration
 
@@ -49,6 +57,9 @@ File status: ok
   Time Zone: America/Los_Angeles
     key: timeZone · source: config
     IANA time zone used for scheduling, week-key derivation, and calendar display.
+  Stale Task Window (ms): 3600000
+    key: staleTaskWindowMs · source: config
+    How far in the past a task's runAt can be before the heartbeat skips it.
 
 -- Scheduler --
   Heartbeat Interval (sec): 600 (read-only)
@@ -56,55 +67,68 @@ File status: ok
     How often the launchd user agent (or cron fallback) fires the heartbeat.
   …
 
-Editable fields: timeZone
+Editable fields: timeZone, staleTaskWindowMs
 ```
 
 If `File status: missing`, tell the user the config file is malformed (or has
 an invalid `timeZone`) and is currently being ignored — the skill is
 nonetheless safe to run because `editConfig` writes a fresh, valid document.
 
-### Step 2: Decide whether to edit
+### Step 2: Pick a field to edit (or stop)
 
-If the user invoked `/aweek:config` with no arguments or with a "show me"
-intent, stop here. Otherwise, ask via `AskUserQuestion`:
+After Step 1's render, **always** present a single interactive picker that
+lists every editable field plus a "Done" escape — never ask a binary
+"do you want to edit?" first. Build the options dynamically from the
+`knobs` array in `$SHOW`: every entry where `editable === true` becomes one
+option. Quote each knob's current value in the option's description so the
+user has context while choosing.
+
+```bash
+# Inspect the editable subset programmatically (used to build the picker).
+EDITABLE_JSON=$(aweek json get knobs <<<"$SHOW")
+```
+
+Then call `AskUserQuestion` with one option per editable knob, plus a
+trailing `Done` option:
 
 ```json
 {
-  "question": "Edit a configuration value?",
-  "header": "Edit?",
+  "question": "Which configuration field would you like to edit?",
+  "header": "Edit",
   "options": [
-    {"label": "Yes, edit a field", "description": "Pick from the editable fields below"},
-    {"label": "No, just viewing", "description": "Stop after the table above"}
+    {"label": "Time Zone", "description": "Currently America/Los_Angeles. IANA name used for scheduling."},
+    {"label": "Stale Task Window (ms)", "description": "Currently 3600000. How far past runAt before a task is skipped."},
+    {"label": "Done — just viewing", "description": "Stop without changes"}
   ],
   "multiSelect": false
 }
 ```
 
-If the user named a specific field/value in their message (e.g. "set the time
-zone to Asia/Seoul"), skip the picker question and go straight to Step 4 with
-the parsed `field` + `value`.
+Substitute each option's "Currently …" text from the matching knob's
+`value`. Use the spec's `description` (truncated if too long) as the
+remainder so the picker explains what each field does.
 
-### Step 3: Pick a field
+If the user picks `Done`, stop and tell them no write was performed.
 
-When more than one editable field exists, present them via
-`AskUserQuestion`. Today there is only `timeZone`, so this step auto-resolves
-without a prompt.
+If the user named a specific field in their message (e.g. "set the time
+zone to Asia/Seoul"), skip this picker and go straight to Step 3 with the
+parsed `field` (and `value` if also present).
 
-To list editable fields programmatically:
+To list editable fields' validation specs programmatically — useful when
+you need the spec's `description` or `defaultValue`:
 
 ```bash
 echo '{}' | aweek exec config listEditableFields --input-json -
 ```
 
-Each entry includes `key`, `label`, `description`, and `defaultValue`. Use
-the `description` text as the option's help string in the picker.
+### Step 3: Pick the new value, validate, and write
 
-### Step 4: Collect, validate, and confirm the new value (REQUIRED gate)
+Ask the user for the new value via `AskUserQuestion`. **The picker IS the
+confirmation** — do not add a second "are you sure?" prompt afterwards.
+Picker options depend on the field:
 
-Ask the user for the new value via `AskUserQuestion`. The picker options
-depend on the field:
-
-**`timeZone`** — common IANA zones plus an "Other" escape hatch:
+**`timeZone`** — common IANA zones plus the harness's auto-provided "Other"
+escape hatch:
 
 - `America/Los_Angeles`
 - `America/New_York`
@@ -121,8 +145,21 @@ depend on the field:
 Validation accepts integer milliseconds in `[60000, 86400000]`. Decimals
 are truncated; values below 1 minute or above 24 hours are rejected.
 
-After collecting `value`, **always** run a dry-run `editConfig` to surface
-validation errors and produce the before → after preview WITHOUT writing:
+**`heartbeatIntervalSec`** — common heartbeat cadences (paste an integer
+for seconds):
+
+- `300` (5 min)
+- `600` (10 min, default)
+- `900` (15 min)
+- `1800` (30 min)
+
+Validation accepts integer seconds in `[60, 86400]`. After the write
+completes, **always** tell the user to re-run `/aweek:init` so the live
+launchd plist (or crontab line) rotates to the new value — until then
+the heartbeat keeps firing at its previously-installed cadence.
+
+Once the user has picked, run a dry-run `editConfig` (no `confirmed`) to
+surface validation errors before writing:
 
 ```bash
 DRY=$(echo '{
@@ -130,39 +167,20 @@ DRY=$(echo '{
   "field": "timeZone",
   "value": "Asia/Seoul"
 }' | aweek exec config editConfig --input-json -)
-echo "$DRY" | aweek exec config formatEditConfigResult --input-json -
+echo "$DRY" | aweek exec config formatEditConfigResult --input-json - --format text
 ```
 
 The dry-run result has three relevant shapes:
 
 | Shape | Meaning | Action |
 |-------|---------|--------|
-| `ok: false`, reason mentions "not editable" / "not a recognised IANA" / "cannot be empty" | Validation failed | Tell the user, return to Step 4 |
-| `ok: true`, `changed: false` | Value already matches what's on disk | Tell the user "already set"; stop without confirmation |
-| `ok: false`, reason mentions "confirmed=true is required" | Validation passed; awaiting confirmation | Show before → after, ask the user, then go to Step 5 |
+| `ok: false`, reason mentions "not editable" / "not a recognised IANA" / "cannot be empty" | Validation failed | Tell the user the reason, return to Step 3 (re-prompt) |
+| `ok: true`, `changed: false` | Value already matches what's on disk | Tell the user "already set"; stop |
+| `ok: false`, reason mentions "confirmed=true is required" | Validation passed; ready to write | Print a one-line `before → after` status and immediately write (below) |
 
-The "awaiting confirmation" reason is the **happy path** — `editConfig`
-deliberately refuses to write until the SKILL markdown has gathered an
-explicit `AskUserQuestion` confirmation. Quote the `before` and `after`
-fields back to the user so they see exactly what will land in the file:
-
-```json
-{
-  "question": "Update the project's time zone from <before> to <after>? This rewrites .aweek/config.json and immediately changes scheduling, week-key derivation, and the calendar grid for every agent.",
-  "header": "Confirm",
-  "options": [
-    {"label": "Yes, write the change", "description": "Persist <after> to .aweek/config.json"},
-    {"label": "Cancel", "description": "Leave the config untouched"}
-  ],
-  "multiSelect": false
-}
-```
-
-If the user picks Cancel, stop and tell them no write was performed.
-
-### Step 5: Write
-
-Once confirmed, re-run `editConfig` with `confirmed: true`:
+The "confirmed=true required" reason is the happy path — `editConfig`'s
+internal gate. The skill satisfies it by re-running with `confirmed: true`
+right after the dry-run validates, with **no extra `AskUserQuestion`**:
 
 ```bash
 RESULT=$(echo '{
@@ -171,7 +189,7 @@ RESULT=$(echo '{
   "value": "Asia/Seoul",
   "confirmed": true
 }' | aweek exec config editConfig --input-json -)
-echo "$RESULT" | aweek exec config formatEditConfigResult --input-json -
+echo "$RESULT" | aweek exec config formatEditConfigResult --input-json - --format text
 ```
 
 A successful write returns `ok: true` with `changed: true`. The formatter
@@ -188,7 +206,7 @@ Mention to the user that the change takes effect on the next heartbeat tick
 (no restart required) and that the dashboard's Settings page will reflect
 the new value the next time it's loaded.
 
-### Step 6: Don't bypass validation
+### Step 4: Don't bypass validation
 
 Never write `.aweek/config.json` directly from this skill (no `cat >`, no
 `echo`, no `aweek exec` against a different module). Every persistence path
@@ -210,17 +228,13 @@ The current configuration is shown above. No changes were made.
 ### Edit time zone interactively
 
 ```
-User: /aweek:config change my time zone
+User: /aweek:config
 
-[renders Step 1 block]
-[Step 2 → user picks "Yes, edit a field"]
-[Step 3 → auto-skipped, only timeZone editable]
-[Step 4 → user picks Asia/Seoul]
+[renders Step 1 block — full configuration]
+[Step 2 picker → user picks "Time Zone (Currently America/Los_Angeles…)"]
+[Step 3 picker → user picks Asia/Seoul]
 
-I'm about to update timeZone:
-  America/Los_Angeles  →  Asia/Seoul
-
-[Step 4 confirm → user picks "Yes, write the change"]
+Updating timeZone: America/Los_Angeles → Asia/Seoul
 
 === aweek Config Edit ===
 Updated Time Zone (timeZone):
@@ -230,15 +244,25 @@ Wrote /abs/path/to/.aweek/config.json.
 The change takes effect on the next heartbeat tick.
 ```
 
+### Pick "Done" to stop after viewing
+
+```
+User: /aweek:config
+
+[renders Step 1 block]
+[Step 2 picker → user picks "Done — just viewing"]
+
+The current configuration is shown above. No changes were made.
+```
+
 ### Edit with a specific value already in the prompt
 
 ```
 User: /aweek:config set timezone to Asia/Seoul
 
 [Step 1 block rendered]
-[Steps 2 + 3 skipped — field & value parsed from the prompt]
-[Step 4 confirmation prompted]
-[Step 5 write]
+[Step 2 picker skipped — field & value parsed from the prompt]
+[Step 3 dry-run validates, then writes immediately]
 ```
 
 ### Invalid value

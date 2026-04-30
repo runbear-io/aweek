@@ -20,21 +20,18 @@ import {
   loadConfigWithStatus,
   saveConfig,
   isValidStaleTaskWindowMs,
+  isValidHeartbeatIntervalSec,
   DEFAULT_STALE_TASK_WINDOW_MS,
+  DEFAULT_HEARTBEAT_INTERVAL_SEC,
   type AweekConfig,
 } from '../storage/config-store.js';
 import { DEFAULT_TZ, isValidTimeZone } from '../time/zone.js';
 
-// ---------------------------------------------------------------------------
-// Curated hardcoded constants (kept parallel to src/serve/data/config.ts so
-// the CLI and the Settings page surface identical labels and descriptions).
-// staleTaskWindowMs is config-backed; see DEFAULT_STALE_TASK_WINDOW_MS in
-// src/storage/config-store.ts.
-// ---------------------------------------------------------------------------
-
-const HEARTBEAT_INTERVAL_SEC = 600;
-const DEFAULT_LOCK_DIR = '.aweek/.locks';
-const DEFAULT_MAX_LOCK_AGE_MS = 2 * 60 * 60 * 1000;
+// All knobs surfaced by this module are config-backed today. The previous
+// `lockDir` / `maxLockAgeMs` read-only entries were dropped — those remain
+// hardcoded in `src/lock/lock-manager.ts` but are no longer surfaced through
+// the Settings page or `/aweek:config`. Lock layout is an implementation
+// detail, not a user knob.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,7 +44,7 @@ export interface ConfigKnob {
   key: string;
   /** Human-readable label shown in the rendered output. */
   label: string;
-  /** Display category (`Configuration` / `Scheduler` / `Locks`). */
+  /** Display category (`Configuration` / `Scheduler`). */
   category: string;
   /** Where the live value comes from. */
   source: ConfigSource;
@@ -102,12 +99,12 @@ export async function showConfig({ dataDir }: ShowConfigOpts = {}): Promise<Show
       key: 'heartbeatIntervalSec',
       label: 'Heartbeat Interval (sec)',
       category: 'Scheduler',
-      source: 'hardcoded',
-      editable: false,
-      value: String(HEARTBEAT_INTERVAL_SEC),
-      defaultValue: String(HEARTBEAT_INTERVAL_SEC),
+      source: 'config',
+      editable: true,
+      value: String(config.heartbeatIntervalSec),
+      defaultValue: String(DEFAULT_HEARTBEAT_INTERVAL_SEC),
       description:
-        'How often the launchd user agent (or cron fallback) fires the heartbeat.',
+        'How often the launchd user agent (or cron fallback) fires the heartbeat. Editing this value writes to .aweek/config.json — re-run /aweek:init to rotate the live launchd plist or crontab line.',
     },
     {
       key: 'staleTaskWindowMs',
@@ -119,28 +116,6 @@ export async function showConfig({ dataDir }: ShowConfigOpts = {}): Promise<Show
       defaultValue: String(DEFAULT_STALE_TASK_WINDOW_MS),
       description:
         'Tasks whose runAt is older than this window are skipped on the next heartbeat instead of dispatched late.',
-    },
-    {
-      key: 'lockDir',
-      label: 'Lock Directory',
-      category: 'Locks',
-      source: 'hardcoded',
-      editable: false,
-      value: DEFAULT_LOCK_DIR,
-      defaultValue: DEFAULT_LOCK_DIR,
-      description:
-        'Directory where per-agent and heartbeat-level PID lock files are written.',
-    },
-    {
-      key: 'maxLockAgeMs',
-      label: 'Max Lock Age (ms)',
-      category: 'Locks',
-      source: 'hardcoded',
-      editable: false,
-      value: String(DEFAULT_MAX_LOCK_AGE_MS),
-      defaultValue: String(DEFAULT_MAX_LOCK_AGE_MS),
-      description:
-        'Locks older than this value are considered stale and auto-replaced on the next acquire attempt.',
     },
   ];
   return {
@@ -272,6 +247,30 @@ export function listEditableFields(): EditableFieldSpec[] {
           return {
             ok: false,
             reason: `${intN} ms is out of range. Stale window must be an integer between 60000 (1 min) and 86400000 (24 h).`,
+          };
+        return { ok: true, normalized: intN };
+      },
+    },
+    {
+      key: 'heartbeatIntervalSec',
+      label: 'Heartbeat Interval (sec)',
+      description:
+        'How often the heartbeat fires, in integer seconds. Range: 60 (1 min) to 86400 (24 h). Common values: 300 (5 min), 600 (10 min, default), 900 (15 min), 1800 (30 min). Editing this value alone does not rotate the live schedule — re-run /aweek:init to rewrite the launchd plist or crontab line.',
+      defaultValue: String(DEFAULT_HEARTBEAT_INTERVAL_SEC),
+      validate(raw: string) {
+        const v = String(raw ?? '').trim();
+        if (!v) return { ok: false, reason: 'Heartbeat interval cannot be empty.' };
+        const n = Number(v);
+        if (!Number.isFinite(n))
+          return {
+            ok: false,
+            reason: `"${v}" is not a number. Pass an integer seconds value (e.g. 600 for 10 min).`,
+          };
+        const intN = Math.trunc(n);
+        if (!isValidHeartbeatIntervalSec(intN))
+          return {
+            ok: false,
+            reason: `${intN} s is out of range. Heartbeat interval must be an integer between 60 (1 min) and 86400 (24 h).`,
           };
         return { ok: true, normalized: intN };
       },

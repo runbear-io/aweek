@@ -1,21 +1,11 @@
 /**
  * App-config data source for the SPA Settings page.
  *
- * Read-only JSON gatherer that surfaces:
- *   1. All config.json fields (currently: timeZone) with live values.
- *   2. A curated set of hardcoded runtime constants from the scheduler,
- *      lock, and heartbeat subsystems — grouped by category.
- *
- * Constants are hardcoded here (not imported from the source files) so
- * the data layer stays within its allowed import set (src/storage/* only).
- * The values are sourced from:
- *   - DEFAULT_LOCK_DIR       → src/lock/lock-manager.ts
- *   - DEFAULT_MAX_LOCK_AGE_MS → src/lock/lock-manager.ts
- *   - Heartbeat interval      → launchd StartInterval / cron schedule
- *
- * `staleTaskWindowMs` is config-backed (read live from .aweek/config.json
- * via loadConfigWithStatus) so users can adjust it via /aweek:config
- * without recompiling.
+ * Read-only JSON gatherer that surfaces every config.json field with its
+ * live value. As of the heartbeat-interval promotion, all knobs the
+ * Settings page renders are config-backed (timeZone, staleTaskWindowMs,
+ * heartbeatIntervalSec). The previous read-only "Locks" card was dropped:
+ * lock layout is an implementation detail, not a user knob.
  *
  * Status semantics (per the Settings page spec):
  *   'ok'      — config.json absent (ENOENT) OR valid. Defaults render silently.
@@ -30,35 +20,6 @@
 
 import { join } from 'node:path';
 import { loadConfigWithStatus } from '../../storage/config-store.js';
-
-// ---------------------------------------------------------------------------
-// Curated hardcoded constants
-// ---------------------------------------------------------------------------
-
-// staleTaskWindowMs is now config-backed (see config.staleTaskWindowMs in
-// loadConfigWithStatus). The Settings page reads it from config; the
-// fallback default is `DEFAULT_STALE_TASK_WINDOW_MS` exported from
-// src/storage/config-store.ts.
-
-/**
- * How often the launchd user agent (or cron fallback) fires the heartbeat.
- * Source: StartInterval in the launchd plist written by src/skills/launchd.ts;
- * cron line `*\/10 * * * *` written by src/skills/init.ts.
- */
-const HEARTBEAT_INTERVAL_SEC = 600; // 10 minutes
-
-/**
- * Directory where per-agent and heartbeat-level PID lock files are written.
- * Source: DEFAULT_LOCK_DIR in src/lock/lock-manager.ts
- */
-const DEFAULT_LOCK_DIR = '.aweek/.locks';
-
-/**
- * Locks older than this value are considered stale and auto-replaced on
- * the next acquire attempt.
- * Source: DEFAULT_MAX_LOCK_AGE_MS in src/lock/lock-manager.ts
- */
-const DEFAULT_MAX_LOCK_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 // ---------------------------------------------------------------------------
 // Types
@@ -156,9 +117,9 @@ export async function gatherAppConfig(
         {
           key: 'heartbeatIntervalSec',
           label: 'Heartbeat Interval',
-          value: HEARTBEAT_INTERVAL_SEC,
+          value: config.heartbeatIntervalSec,
           description:
-            'How often the launchd user agent (or cron fallback) fires the heartbeat, in seconds.',
+            'How often the launchd user agent (or cron fallback) fires the heartbeat, in seconds. Set in .aweek/config.json. Re-run /aweek:init to rotate the live launchd plist / crontab line after editing.',
         },
         {
           key: 'staleTaskWindowMs',
@@ -166,26 +127,6 @@ export async function gatherAppConfig(
           value: config.staleTaskWindowMs,
           description:
             'Tasks whose runAt is older than this window (ms) are marked skipped on the next heartbeat tick instead of being dispatched late. Set in .aweek/config.json.',
-        },
-      ],
-    },
-    {
-      id: 'locks',
-      label: 'Locks',
-      items: [
-        {
-          key: 'lockDir',
-          label: 'Lock Directory',
-          value: DEFAULT_LOCK_DIR,
-          description:
-            'Directory where per-agent and heartbeat-level PID lock files are written, relative to the project root.',
-        },
-        {
-          key: 'maxLockAgeMs',
-          label: 'Max Lock Age',
-          value: DEFAULT_MAX_LOCK_AGE_MS,
-          description:
-            'Locks older than this value (ms) are considered stale and are automatically replaced on the next acquire attempt.',
         },
       ],
     },

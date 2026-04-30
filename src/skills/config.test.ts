@@ -51,37 +51,33 @@ beforeEach(async () => {
 });
 
 describe('showConfig', () => {
-  it('returns 5 knobs grouped across Configuration / Scheduler / Locks', async () => {
+  it('returns 3 knobs grouped across Configuration / Scheduler', async () => {
     const result = await showConfig({ dataDir });
-    assert.equal(result.knobs.length, 5);
+    assert.equal(result.knobs.length, 3);
     const categories = result.knobs.map((k) => k.category);
     assert.deepEqual(categories, [
       'Configuration',
       'Scheduler',
       'Scheduler',
-      'Locks',
-      'Locks',
     ]);
     const keys = result.knobs.map((k) => k.key);
     assert.deepEqual(keys, [
       'timeZone',
       'heartbeatIntervalSec',
       'staleTaskWindowMs',
-      'lockDir',
-      'maxLockAgeMs',
     ]);
   });
 
-  it('marks timeZone and staleTaskWindowMs editable; lock + heartbeat constants stay hardcoded', async () => {
+  it('marks every surfaced knob editable and config-backed', async () => {
     const result = await showConfig({ dataDir });
     const editable = result.knobs.filter((k) => k.editable);
     assert.deepEqual(
       editable.map((k) => k.key),
-      ['timeZone', 'staleTaskWindowMs'],
+      ['timeZone', 'heartbeatIntervalSec', 'staleTaskWindowMs'],
     );
     for (const k of result.knobs) {
-      if (k.editable) assert.equal(k.source, 'config');
-      else assert.equal(k.source, 'hardcoded');
+      assert.equal(k.editable, true);
+      assert.equal(k.source, 'config');
     }
   });
 
@@ -125,9 +121,13 @@ describe('showConfig', () => {
 });
 
 describe('listEditableFields', () => {
-  it('exposes timeZone and staleTaskWindowMs as the editable fields today', () => {
+  it('exposes timeZone, staleTaskWindowMs, and heartbeatIntervalSec', () => {
     const keys = listEditableFields().map((f) => f.key);
-    assert.deepEqual(keys, ['timeZone', 'staleTaskWindowMs']);
+    assert.deepEqual(keys, [
+      'timeZone',
+      'staleTaskWindowMs',
+      'heartbeatIntervalSec',
+    ]);
   });
 
   it('timeZone validator rejects empty / non-IANA strings, accepts canonical zones', () => {
@@ -170,7 +170,7 @@ describe('editConfig', () => {
     assert.equal((await editConfig({ dataDir, field: 'timeZone' })).ok, false);
   });
 
-  it('rejects unknown fields (e.g. lockDir) with an explanatory reason', async () => {
+  it('rejects unknown fields with an explanatory reason', async () => {
     const result = await editConfig({
       dataDir,
       field: 'lockDir',
@@ -315,8 +315,11 @@ describe('formatShowConfigResult', () => {
     assert.match(rendered, /File status: ok/);
     assert.match(rendered, /-- Configuration --/);
     assert.match(rendered, /-- Scheduler --/);
-    assert.match(rendered, /-- Locks --/);
-    assert.match(rendered, /Editable fields: timeZone, staleTaskWindowMs/);
+    assert.doesNotMatch(rendered, /-- Locks --/);
+    assert.match(
+      rendered,
+      /Editable fields: timeZone, heartbeatIntervalSec, staleTaskWindowMs/,
+    );
   });
 
   it('annotates malformed file status', async () => {
