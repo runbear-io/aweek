@@ -132,6 +132,18 @@ export interface AgentReviewsPageProps {
   baseUrl?: string;
   /** Inject a custom fetch impl (Storybook, tests, MSW). */
   fetch?: typeof fetch;
+  /**
+   * URL-driven review week (`"2026-W17"` or `"daily-2026-04-23"`). When
+   * provided, the URL is the source of truth: clicking a different review
+   * pushes a new URL through `onSelectWeek`. When omitted, the component
+   * tracks selection in local state and auto-selects the newest review.
+   */
+  selectedWeek?: string | undefined;
+  /**
+   * Notify the parent router that the user picked a different review.
+   * Pass `null` to clear the selection and fall back to the newest review.
+   */
+  onSelectWeek?: (week: string | null) => void;
 }
 
 // ── Component ────────────────────────────────────────────────────────
@@ -140,23 +152,32 @@ export function AgentReviewsPage({
   slug,
   baseUrl,
   fetch: fetchImpl,
+  selectedWeek: urlSelectedWeek,
+  onSelectWeek,
 }: AgentReviewsPageProps): React.ReactElement {
   const { data, error, loading, refresh } = useAgentReviews(slug, {
     baseUrl,
     fetch: fetchImpl,
   });
 
-  // Local state: which review week is currently selected.
-  const [selectedWeek, setSelectedWeek] = React.useState<string | null>(null);
+  // Local state is used only when the parent doesn't push a URL-driven
+  // selection. When `urlSelectedWeek` is provided the URL is the single
+  // source of truth — clicking a different review pushes a new URL
+  // through `onSelectWeek` instead of mutating local state.
+  const urlDriven = urlSelectedWeek !== undefined;
+  const [internalWeek, setInternalWeek] = React.useState<string | null>(null);
 
-  // Auto-select the first (newest) review when data arrives.
+  // Auto-select the first (newest) review when data arrives, but only in
+  // the local-state mode. URL-driven mode lets the URL stand alone — an
+  // empty `:week` segment never reaches this component (the parent route
+  // doesn't match an empty segment).
   React.useEffect(() => {
-    if (data && data.reviews.length > 0 && selectedWeek === null) {
-      setSelectedWeek(data.reviews[0].week);
+    if (urlDriven) return;
+    if (data && data.reviews.length > 0 && internalWeek === null) {
+      setInternalWeek(data.reviews[0].week);
     }
-    // When slug changes reset selection.
-    if (!data) setSelectedWeek(null);
-  }, [data, slug]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!data) setInternalWeek(null);
+  }, [data, slug, urlDriven]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!slug) return <ReviewsEmpty message="Select an agent to view reviews." />;
   if (loading && !data) return <ReviewsSkeleton />;
@@ -172,7 +193,26 @@ export function AgentReviewsPage({
   if (!data || data.reviews.length === 0)
     return <ReviewsEmpty message="No reviews yet for this agent." />;
 
-  const selectedEntry = data.reviews.find((r) => r.week === selectedWeek) ?? data.reviews[0];
+  const requestedWeek = urlDriven ? (urlSelectedWeek ?? null) : internalWeek;
+  const matchedEntry =
+    requestedWeek != null
+      ? data.reviews.find((r) => r.week === requestedWeek)
+      : null;
+
+  // URL-driven mode + unknown week → "review not found" empty state.
+  // The agent and the reviews tab still load; only the right pane shows
+  // the not-found card so the user can click another week to recover.
+  const notFound = urlDriven && requestedWeek != null && !matchedEntry;
+  const selectedEntry = matchedEntry ?? data.reviews[0];
+
+  const handleSelect = (next: string): void => {
+    if (urlDriven) {
+      if (typeof onSelectWeek === 'function') onSelectWeek(next);
+    } else {
+      setInternalWeek(next);
+      if (typeof onSelectWeek === 'function') onSelectWeek(next);
+    }
+  };
 
   return (
     <section
@@ -188,15 +228,16 @@ export function AgentReviewsPage({
           <nav aria-label="Review weeks">
             <ul role="list" className="flex flex-col gap-1">
               {data.reviews.map((entry) => {
-                const active = entry.week === selectedEntry.week;
+                const active = !notFound && entry.week === selectedEntry.week;
                 return (
                   <li key={entry.week}>
                     <Button
                       variant={active ? 'default' : 'ghost'}
                       size="sm"
                       className="w-full justify-start truncate font-mono text-xs"
-                      onClick={() => setSelectedWeek(entry.week)}
+                      onClick={() => handleSelect(entry.week)}
                       aria-current={active ? 'true' : undefined}
+                      data-review-week={entry.week}
                     >
                       {entry.week}
                     </Button>
@@ -207,9 +248,17 @@ export function AgentReviewsPage({
           </nav>
         </aside>
 
-        {/* Right pane — markdown body */}
+        {/* Right pane — markdown body or not-found state */}
         <div className="min-w-0 flex-1">
-          <ReviewBody entry={selectedEntry} />
+          {notFound && requestedWeek ? (
+            <ReviewNotFound
+              week={requestedWeek}
+              slug={data.slug}
+              onClear={onSelectWeek}
+            />
+          ) : (
+            <ReviewBody entry={selectedEntry} agentSlug={data.slug} />
+          )}
         </div>
       </div>
     </section>
@@ -247,9 +296,11 @@ function ReviewsHeader({ data, loading, onRefresh }: ReviewsHeaderProps): React.
 
 interface ReviewBodyProps {
   entry: AgentReviewEntry;
+  /** Agent slug — used to build the permalink for the Copy link button. */
+  agentSlug: string;
 }
 
-function ReviewBody({ entry }: ReviewBodyProps): React.ReactElement {
+function ReviewBody({ entry, agentSlug }: ReviewBodyProps): React.ReactElement {
   if (!entry.markdown) {
     return (
       <Card className="border-dashed" data-review-empty="true">
@@ -263,17 +314,22 @@ function ReviewBody({ entry }: ReviewBodyProps): React.ReactElement {
   return (
     <Card data-review-body={entry.week}>
       <CardHeader className="space-y-1 border-b bg-muted/50 px-4 py-3">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-          {entry.week}
-          {entry.generatedAt
-            ? ` · ${new Date(entry.generatedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}`
-            : ''}
-        </p>
-        {title ? (
-          <h1 className="text-base font-semibold leading-tight text-foreground">
-            {title}
-          </h1>
-        ) : null}
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              {entry.week}
+              {entry.generatedAt
+                ? ` · ${new Date(entry.generatedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}`
+                : ''}
+            </p>
+            {title ? (
+              <h1 className="text-base font-semibold leading-tight text-foreground">
+                {title}
+              </h1>
+            ) : null}
+          </div>
+          <CopyPermalinkButton agentSlug={agentSlug} week={entry.week} />
+        </div>
       </CardHeader>
       <CardContent className="p-4 pt-4 sm:p-6 sm:pt-6">
         {entries.length > 0 ? (
@@ -285,6 +341,119 @@ function ReviewBody({ entry }: ReviewBodyProps): React.ReactElement {
         >
           <Markdown source={rest} />
         </article>
+      </CardContent>
+    </Card>
+  );
+}
+
+interface CopyPermalinkButtonProps {
+  agentSlug: string;
+  week: string;
+}
+
+/**
+ * Shareable-URL action for the active review.
+ *
+ * Builds the permalink from `window.location.origin` + the canonical
+ * route shape (`/agents/<slug>/reviews/<week>`) so the copied link works
+ * even when the user reached this view via the un-permalinked URL
+ * (`/agents/:slug/reviews`). Falls back to the path-only string when
+ * `window` is unavailable (SSR, tests without jsdom).
+ */
+function CopyPermalinkButton({
+  agentSlug,
+  week,
+}: CopyPermalinkButtonProps): React.ReactElement {
+  const [copied, setCopied] = React.useState(false);
+  const buildHref = (): string => {
+    const path = `/agents/${encodeURIComponent(agentSlug)}/reviews/${encodeURIComponent(week)}`;
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      return `${window.location.origin}${path}`;
+    }
+    return path;
+  };
+  const handleCopy = async (): Promise<void> => {
+    const href = buildHref();
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(href);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      }
+    } catch {
+      // Clipboard write can reject (insecure context, denied permission).
+      // Swallow and let the user copy from the address bar.
+    }
+  };
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={handleCopy}
+      data-review-copy-link="true"
+      data-review-week={week}
+      aria-label={`Copy permalink to review ${week}`}
+    >
+      {copied ? 'Copied' : 'Copy link'}
+    </Button>
+  );
+}
+
+interface ReviewNotFoundProps {
+  week: string;
+  slug: string;
+  onClear?: (week: string | null) => void;
+}
+
+/**
+ * Right-pane state when the URL points at a review that the loaded list
+ * doesn't contain (e.g. stale link, deleted file, typo). The left rail
+ * stays interactive so the user can pick a different week without going
+ * back; this card just calls out the miss and offers a one-click reset.
+ */
+function ReviewNotFound({
+  week,
+  slug,
+  onClear,
+}: ReviewNotFoundProps): React.ReactElement {
+  return (
+    <Card
+      className="border-dashed"
+      data-page="agent-reviews"
+      data-state="not-found"
+      data-review-week={week}
+    >
+      <CardHeader className="space-y-1 p-6 text-center">
+        <CardTitle as="h2" className="text-sm font-semibold text-foreground">
+          Review not found.
+        </CardTitle>
+        <CardDescription className="text-xs text-muted-foreground">
+          No review exists at{' '}
+          <code className="rounded bg-muted px-1 py-0.5 text-[11px] text-foreground">
+            {week}
+          </code>{' '}
+          for{' '}
+          <code className="rounded bg-muted px-1 py-0.5 text-[11px] text-foreground">
+            {slug}
+          </code>
+          .
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex justify-center pt-0">
+        {onClear ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onClear(null)}
+            data-review-back="true"
+          >
+            Back to latest review
+          </Button>
+        ) : null}
       </CardContent>
     </Card>
   );

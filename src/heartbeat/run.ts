@@ -448,6 +448,7 @@ async function executeDailyReviewTask(
 
   console.log(`[${agentId}] generating daily review for ${reviewDate}`);
 
+  const startedAt = new Date();
   let error: Error | null = null;
   let finalStatus: 'completed' | 'failed' = 'completed';
 
@@ -476,6 +477,28 @@ async function executeDailyReviewTask(
     .catch((e: unknown) =>
       console.warn(`[${agentId}] daily review status update warning: ${errMsg(e)}`),
     );
+
+  // Append an activity-log entry so review-task runs are debuggable from
+  // the dashboard's activity tab — same surface as regular CLI tasks.
+  // Best-effort: a logging failure must not flip the task back to failed.
+  await appendReviewActivityLog({
+    activityLogStore,
+    agentId,
+    task,
+    week,
+    finalStatus,
+    error,
+    startedAt,
+    completedAt: new Date(),
+    review: {
+      kind: 'daily',
+      stem: `daily-${reviewDate}`,
+      path: join(agentsDir, agentId, 'reviews', `daily-${reviewDate}.md`),
+      date: reviewDate,
+      week,
+      tz,
+    },
+  });
 
   return { execResult: null, error, finalStatus };
 }
@@ -515,10 +538,12 @@ async function executeWeeklyReviewTask(
   const { task, week } = selection;
 
   const reviewDir = join(agentsDir, agentId, 'reviews');
-  const reviewPath = join(reviewDir, `weekly-${week}.md`);
+  const reviewStem = `weekly-${week}`;
+  const reviewPath = join(reviewDir, `${reviewStem}.md`);
 
   console.log(`[${agentId}] generating weekly review for ${week}`);
 
+  const startedAt = new Date();
   let error: Error | null = null;
   let finalStatus: 'completed' | 'failed' = 'completed';
   let chainResult: ChainNextWeekResult | null = null;
@@ -568,7 +593,105 @@ async function executeWeeklyReviewTask(
       console.warn(`[${agentId}] weekly review status update warning: ${errMsg(e)}`),
     );
 
+  // Append an activity-log entry so review-task runs are debuggable from
+  // the dashboard's activity tab — same surface as regular CLI tasks.
+  // Best-effort: a logging failure must not flip the task back to failed.
+  await appendReviewActivityLog({
+    activityLogStore,
+    agentId,
+    task,
+    week,
+    finalStatus,
+    error,
+    startedAt,
+    completedAt: new Date(),
+    review: {
+      kind: 'weekly',
+      stem: reviewStem,
+      path: reviewPath,
+      week,
+      chained: chainResult?.chained ?? false,
+      nextWeek: chainResult?.nextWeek ?? null,
+      chainReason: chainResult?.reason ?? null,
+    },
+  });
+
   return { execResult: null, error, finalStatus, chainResult };
+}
+
+/**
+ * Build + append an activity-log entry for a review-task run (daily or
+ * weekly). Mirrors the rich entry shape `runOneTaskPipeline` writes for
+ * regular CLI tasks so the dashboard's activity tab can render review
+ * runs alongside ordinary executions.
+ *
+ * Logging is best-effort — a failure to write the entry only emits a
+ * warning. The review document itself is the durable record; the
+ * activity entry is the debugging surface on top.
+ */
+async function appendReviewActivityLog({
+  activityLogStore,
+  agentId,
+  task,
+  week,
+  finalStatus,
+  error,
+  startedAt,
+  completedAt,
+  review,
+}: {
+  activityLogStore: ActivityLogStore;
+  agentId: string;
+  task: WeeklyTask;
+  week: string;
+  finalStatus: 'completed' | 'failed';
+  error: Error | null;
+  startedAt: Date;
+  completedAt: Date;
+  review: Record<string, unknown> & { kind: 'daily' | 'weekly'; stem: string };
+}): Promise<void> {
+  const durationMs = completedAt.getTime() - startedAt.getTime();
+  const metadata: Record<string, unknown> = {
+    task: {
+      id: task.id,
+      title: task.title,
+      objectiveId: task.objectiveId,
+      priority: task.priority,
+      estimatedMinutes: task.estimatedMinutes,
+      track: task.track,
+      week,
+    },
+    execution: {
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs,
+    },
+    result: {
+      success: finalStatus === 'completed',
+    },
+    review,
+  };
+  if (error) {
+    metadata.error = {
+      message: error.message,
+      stack: error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : undefined,
+    };
+  }
+  try {
+    await activityLogStore.append(
+      agentId,
+      createLogEntry({
+        agentId,
+        taskId: task.id,
+        status: finalStatus as ActivityLogStatus,
+        title: task.title,
+        duration: durationMs,
+        metadata,
+      }),
+    );
+  } catch (logErr) {
+    console.warn(`[${agentId}] review activity log warning: ${errMsg(logErr)}`);
+  }
 }
 
 /**

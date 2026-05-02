@@ -12,7 +12,7 @@
 
 import React from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 import { SidebarProvider as SidebarProviderImpl } from './ui/sidebar.jsx';
@@ -139,5 +139,60 @@ describe('AppSidebar', () => {
     // Canonical shadcn Mode Toggle recipe: icon-sized ghost button.
     expect(toggle).toHaveAttribute('data-size', 'icon');
     expect(toggle).toHaveAttribute('data-variant', 'ghost');
+  });
+
+  it('renders the inline aweek logo in the SidebarHeader', () => {
+    const { container } = renderAt('/agents');
+    const header = container.querySelector(
+      '[data-component="sidebar-header"]',
+    );
+    expect(header).not.toBeNull();
+    const logo = header!.querySelector('[data-component="aweek-logo"]');
+    expect(logo).not.toBeNull();
+    // SVG element is what mounts in the DOM (case-sensitive nodeName).
+    expect(logo!.tagName.toLowerCase()).toBe('svg');
+    expect(logo).toHaveAttribute('aria-label', 'aweek');
+    // `currentColor` stroke is what lets the logo theme with text-foreground
+    // — guard against accidental hardcoded colour swaps in future edits.
+    expect(logo!.getAttribute('stroke')).toBe('currentColor');
+  });
+});
+
+describe('AppSidebar — collapsed-mode tooltips', () => {
+  // When the sidebar is icon-collapsed, every nav item must surface its
+  // label through a Radix Tooltip so the user can recognise the icon.
+  // `NavTooltip` only wraps the child when `useSidebar().state` reports
+  // 'collapsed', and `AppSidebar` flips the state via a `useEffect` that
+  // fires after the agent-detail route mounts.
+
+  it('wraps nav items with Radix Tooltip primitives when collapsed', async () => {
+    const { container } = renderAt('/agents/example-slug/profile');
+
+    // Wait for the collapse effect to land — the sidebar root flips
+    // its data-collapsible attribute to "icon" once collapsed.
+    await waitFor(() => {
+      const sidebar = container.querySelector('[data-component="sidebar"]');
+      expect(sidebar?.getAttribute('data-collapsible')).toBe('icon');
+    });
+
+    // Radix's `TooltipTrigger asChild` merges its props onto the child
+    // (the SidebarMenuButton link). One of those props is
+    // `data-state="closed"` — the tell that the trigger is mounted.
+    const trigger = container.querySelector(
+      '[data-component="sidebar-menu-button"][data-nav-item="/agents"]',
+    );
+    expect(trigger).not.toBeNull();
+    expect(trigger!.getAttribute('data-state')).toBe('closed');
+  });
+
+  it('does NOT wrap nav items with Radix Tooltip when expanded', () => {
+    const { container } = renderAt('/agents');
+    // Expanded sidebar: NavTooltip returns children unchanged. The
+    // SidebarMenuButton therefore has no Radix-set `data-state` attr.
+    const link = container.querySelector(
+      '[data-component="sidebar-menu-button"][data-nav-item="/agents"]',
+    );
+    expect(link).not.toBeNull();
+    expect(link!.hasAttribute('data-state')).toBe(false);
   });
 });

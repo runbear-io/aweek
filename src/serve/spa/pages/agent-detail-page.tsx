@@ -180,6 +180,8 @@ const AgentReviewsPage = AgentReviewsPageJs as React.ComponentType<{
   slug: string;
   baseUrl?: string;
   fetch?: typeof fetch;
+  selectedWeek?: string | undefined;
+  onSelectWeek?: (week: string | null) => void;
 }>;
 const AgentArtifactsPage = AgentArtifactsPageJs as React.ComponentType<{
   slug: string;
@@ -282,6 +284,10 @@ export interface AgentDetailPageProps {
   calendarWeek?: string;
   /** Notify the parent that the user navigated to a different week. */
   onCalendarWeekChange?: (week: string | null) => void;
+  /** Currently-selected review week (URL-driven, e.g. `"2026-W17"` or `"daily-2026-04-23"`). */
+  reviewSelection?: string | undefined;
+  onReviewOpen?: (week: string) => void;
+  onReviewClose?: () => void;
 }
 
 /**
@@ -302,6 +308,9 @@ export function AgentDetailPage({
   onCalendarClose,
   calendarWeek,
   onCalendarWeekChange,
+  reviewSelection,
+  onReviewOpen,
+  onReviewClose,
 }: AgentDetailPageProps): React.ReactElement {
   const [activeTab, setActiveTab] = React.useState<AgentTabValue>(() =>
     normaliseTab(initialTab),
@@ -418,7 +427,19 @@ export function AgentDetailPage({
           />
         </TabsContent>
         <TabsContent value="reviews">
-          <AgentReviewsPage slug={slug} baseUrl={baseUrl} fetch={fetchImpl} />
+          <AgentReviewsPage
+            slug={slug}
+            baseUrl={baseUrl}
+            fetch={fetchImpl}
+            selectedWeek={reviewSelection}
+            onSelectWeek={(next) => {
+              if (next == null) {
+                if (typeof onReviewClose === 'function') onReviewClose();
+              } else if (typeof onReviewOpen === 'function') {
+                onReviewOpen(next);
+              }
+            }}
+          />
         </TabsContent>
         <TabsContent value="artifacts">
           <AgentArtifactsPage slug={slug} baseUrl={baseUrl} fetch={fetchImpl} />

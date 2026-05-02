@@ -19,6 +19,7 @@ import {
 } from './pages/index.js';
 import { Layout } from './components/layout.jsx';
 import { ThemeProvider as ThemeProviderJs } from './components/theme-provider.jsx';
+import { TooltipProvider as TooltipProviderJs } from './components/ui/tooltip.jsx';
 import './styles/globals.css';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ type AgentDetailParams = {
   tab?: string;
   basename?: string;
   taskId?: string;
+  reviewWeek?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -83,10 +85,22 @@ const AgentDetailPage = AgentDetailPageJs as React.ComponentType<{
   onCalendarClose?: () => void;
   calendarWeek?: string;
   onCalendarWeekChange?: (week: string | null) => void;
+  reviewSelection?: string | undefined;
+  onReviewOpen?: (week: string) => void;
+  onReviewClose?: () => void;
 }>;
 
 const ThemeProvider = ThemeProviderJs as React.ComponentType<{
   children?: React.ReactNode;
+}>;
+
+// `TooltipProvider` configures Radix's hover-tooltip delay behavior. The
+// SPA wants tooltips on collapsed-sidebar nav items to fire instantly,
+// so we wrap the entire route tree at delayDuration=0 / skipDelayDuration=0.
+const TooltipProvider = TooltipProviderJs as React.ComponentType<{
+  children?: React.ReactNode;
+  delayDuration?: number;
+  skipDelayDuration?: number;
 }>;
 
 // ---------------------------------------------------------------------------
@@ -104,7 +118,7 @@ function AgentsRoute() {
 }
 
 function AgentDetailRoute() {
-  const { slug, tab, basename, taskId } = useParams<AgentDetailParams>();
+  const { slug, tab, basename, taskId, reviewWeek } = useParams<AgentDetailParams>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -122,7 +136,9 @@ function AgentDetailRoute() {
     ? 'activities'
     : taskId
       ? 'calendar'
-      : (normalised ?? (DEFAULT_AGENT_DETAIL_TAB as AgentTabValue));
+      : reviewWeek
+        ? 'reviews'
+        : (normalised ?? (DEFAULT_AGENT_DETAIL_TAB as AgentTabValue));
 
   // Calendar week override: `?week=YYYY-Www` lets the user pin a specific
   // ISO week. Absent → server picks the agent's timezone-aware current
@@ -138,6 +154,7 @@ function AgentDetailRoute() {
       initialTab={effectiveTab}
       activitySelection={basename}
       calendarSelection={taskId}
+      reviewSelection={reviewWeek}
       calendarWeek={calendarWeek}
       onTabChange={(next) => navigate(`/agents/${safeSlug}/${next}`)}
       onActivityOpen={(b) =>
@@ -148,6 +165,10 @@ function AgentDetailRoute() {
         navigate(`/agents/${slugSegment}/calendar/${encodeURIComponent(t)}`)
       }
       onCalendarClose={() => navigate(`/agents/${slugSegment}/calendar`)}
+      onReviewOpen={(w) =>
+        navigate(`/agents/${slugSegment}/reviews/${encodeURIComponent(w)}`)
+      }
+      onReviewClose={() => navigate(`/agents/${slugSegment}/reviews`)}
       onCalendarWeekChange={(nextWeek) => {
         // Preserve the calendar path (with optional taskId) and only flip
         // the `?week=` query. Passing `null` clears the override and the
@@ -183,6 +204,10 @@ function AppShell() {
           path="/agents/:slug/calendar/:taskId"
           element={<AgentDetailRoute />}
         />
+        <Route
+          path="/agents/:slug/reviews/:reviewWeek"
+          element={<AgentDetailRoute />}
+        />
         <Route path="/agents/:slug/:tab" element={<AgentDetailRoute />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/calendar" element={<Navigate to="/agents" replace />} />
@@ -209,9 +234,11 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <React.StrictMode>
     <ThemeProvider>
-      <BrowserRouter>
-        <AppShell />
-      </BrowserRouter>
+      <TooltipProvider delayDuration={0} skipDelayDuration={0}>
+        <BrowserRouter>
+          <AppShell />
+        </BrowserRouter>
+      </TooltipProvider>
     </ThemeProvider>
   </React.StrictMode>,
 );
