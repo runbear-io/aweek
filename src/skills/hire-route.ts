@@ -37,7 +37,6 @@ import { readdir } from 'node:fs/promises';
 import { resolveSubagentsDir, validateSubagentSlug } from '../subagents/subagent-file.js';
 import { listAllAgents } from '../storage/agent-helpers.js';
 import type { AgentStore } from '../storage/agent-store.js';
-
 /**
  * Slug prefixes that belong to plugin-supplied subagents.
  *

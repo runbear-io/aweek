@@ -24,8 +24,6 @@ describe('dispatcher registry', () => {
       'hire-create-new-menu',
       'hire-route',
       'hire-select-some',
-      'init',
-      'init-hire-menu',
       'manage',
       'next-week-context',
       'notify',
@@ -35,7 +33,10 @@ describe('dispatcher registry', () => {
       'plan-markdown',
       'query',
       'run-once',
+      'setup',
+      'setup-hire-menu',
       'summary',
+      'teardown',
     ];
     assert.deepEqual(listModules(), expected);
   });
@@ -67,7 +68,7 @@ describe('dispatchExec usage errors', () => {
 
   it('rejects when fnName is missing', async () => {
     await assert.rejects(
-      () => dispatchExec({ moduleKey: 'init' }),
+      () => dispatchExec({ moduleKey: 'setup' }),
       (err) => err instanceof DispatchError && err.code === 'EUSAGE',
     );
   });
@@ -81,7 +82,7 @@ describe('dispatchExec usage errors', () => {
 
   it('rejects functions not on the whitelist with EUNKNOWN_FN', async () => {
     await assert.rejects(
-      () => dispatchExec({ moduleKey: 'init', fnName: 'internalHelperNotExposed' }),
+      () => dispatchExec({ moduleKey: 'setup', fnName: 'internalHelperNotExposed' }),
       (err) => err instanceof DispatchError && err.code === 'EUNKNOWN_FN',
     );
   });
@@ -91,7 +92,7 @@ describe('dispatchExec routing', () => {
   it('invokes a whitelisted function with the input object as the single arg', async () => {
     // detectInitState is pure-read; safe to exercise on the live FS.
     const result = (await dispatchExec({
-      moduleKey: 'init',
+      moduleKey: 'setup',
       fnName: 'detectInitState',
       input: { projectDir: process.cwd() },
     })) as { fullyInitialized: boolean; dataDir: { exists: boolean } };
@@ -102,7 +103,7 @@ describe('dispatchExec routing', () => {
 
   it('defaults input to an empty object when omitted', async () => {
     const result = (await dispatchExec({
-      moduleKey: 'init',
+      moduleKey: 'setup',
       fnName: 'detectInitState',
     })) as { projectDir: string };
     // Should not throw and should default projectDir to cwd.
@@ -150,8 +151,8 @@ describe('argument adapters', () => {
       ],
       promptText: 'How do you want to proceed?',
     };
-    const viaWrapper = REGISTRY['init-hire-menu']!.formatInitHireMenuPrompt!({ menu }) as string;
-    const viaRaw = REGISTRY['init-hire-menu']!.formatInitHireMenuPrompt!(menu) as string;
+    const viaWrapper = REGISTRY['setup-hire-menu']!.formatInitHireMenuPrompt!({ menu }) as string;
+    const viaRaw = REGISTRY['setup-hire-menu']!.formatInitHireMenuPrompt!(menu) as string;
     assert.equal(typeof viaWrapper, 'string');
     assert.equal(viaWrapper, viaRaw);
   });
@@ -202,5 +203,132 @@ describe('argument adapters', () => {
     // this test only pins that the registry entry resolves to a callable so a
     // future rename of the underlying export trips the dispatcher contract.
     assert.equal(typeof REGISTRY.notify!.send, 'function');
+  });
+});
+
+describe('dispatchExec ensureProjectReady prelude', () => {
+  // Stub that returns awaiting-confirm (no sticky decision, no heartbeat installed).
+  function makePendingFn() {
+    return async (_opts: any) => ({
+      dataDir: '/tmp/aweek-test/agents',
+      aweekRoot: '/tmp/aweek-test',
+      steps: { dataDir: 'existed' as const, config: 'existed' as const, heartbeat: 'awaiting-confirm' as const },
+      config: {},
+      heartbeatPrompt: { title: 'Install?', description: 'desc', options: ['install', 'skip', 'skip-remember'] as const },
+    });
+  }
+
+  // Stub that simulates an already-installed heartbeat (no prompt needed).
+  function makeInstalledFn() {
+    return async (_opts: any) => ({
+      dataDir: '/tmp/aweek-test/agents',
+      aweekRoot: '/tmp/aweek-test',
+      steps: { dataDir: 'existed' as const, config: 'existed' as const, heartbeat: 'existed' as const },
+      config: {},
+    });
+  }
+
+  // Stub that simulates skipHeartbeat=true path (readonly skills).
+  function makeSkippedFn() {
+    return async (_opts: any) => ({
+      dataDir: '/tmp/aweek-test/agents',
+      aweekRoot: '/tmp/aweek-test',
+      steps: { dataDir: 'existed' as const, config: 'existed' as const, heartbeat: 'skipped' as const },
+      config: {},
+    });
+  }
+
+  it('(a) wrapped entry returns awaiting-confirm when heartbeat not installed', async () => {
+    const result = (await dispatchExec({
+      moduleKey: 'plan',
+      fnName: 'adjustPlan',
+      input: { dataDir: '/tmp/aweek-test/agents', weeklyAdjustments: [] },
+      ensureProjectReadyFn: makePendingFn() as any,
+    })) as any;
+    assert.equal(result.needsConfirmation, 'heartbeat');
+    assert.ok(result.prompt);
+    assert.equal(result.prompt.title, 'Install?');
+  });
+
+  it('(b) re-invoking with heartbeatAnswer:install proceeds past the prelude', async () => {
+    // When ensureProjectReady is stubbed to return 'existed' (simulating install
+    // completing), dispatchExec should forward to the underlying fn. adjustPlan
+    // with no weeklyAdjustments returns a success result.
+    const result = (await dispatchExec({
+      moduleKey: 'plan',
+      fnName: 'adjustPlan',
+      input: { dataDir: '/tmp/aweek-test/agents', heartbeatAnswer: 'install', weeklyAdjustments: [] },
+      ensureProjectReadyFn: makeInstalledFn() as any,
+    })) as any;
+    // adjustPlan propagates to adjustGoals which returns { success, errors }
+    assert.equal(typeof result, 'object');
+    assert.ok('success' in result || 'errors' in result);
+    // heartbeatAnswer must NOT appear on the forwarded input
+    assert.ok(!('heartbeatAnswer' in result));
+  });
+
+  it('(c) heartbeatAnswer:skip-remember proceeds without installing (declined path)', async () => {
+    // Stub returns 'declined' (skip-remember was persisted).
+    const declinedFn = async (_opts: any) => ({
+      dataDir: '/tmp/aweek-test/agents',
+      aweekRoot: '/tmp/aweek-test',
+      steps: { dataDir: 'existed' as const, config: 'existed' as const, heartbeat: 'declined' as const },
+      config: {},
+    });
+    const result = (await dispatchExec({
+      moduleKey: 'plan',
+      fnName: 'adjustPlan',
+      input: { dataDir: '/tmp/aweek-test/agents', heartbeatAnswer: 'skip-remember', weeklyAdjustments: [] },
+      ensureProjectReadyFn: declinedFn as any,
+    })) as any;
+    // Should NOT return awaiting-confirm — heartbeat is declined, proceed
+    assert.ok(!result.needsConfirmation);
+    assert.equal(typeof result, 'object');
+  });
+
+  it('(d) summary and query never prompt — skipHeartbeat:true path', async () => {
+    let capturedOpts: any;
+    const captureFn = async (opts: any) => {
+      capturedOpts = opts;
+      return {
+        dataDir: '/tmp/aweek-test/agents',
+        aweekRoot: '/tmp/aweek-test',
+        steps: { dataDir: 'existed' as const, config: 'existed' as const, heartbeat: 'skipped' as const },
+        config: {},
+      };
+    };
+    // buildSummary requires dataDir; pass a dummy value so it doesn't throw before prelude
+    await dispatchExec({
+      moduleKey: 'summary',
+      fnName: 'buildSummary',
+      input: { dataDir: '/tmp/aweek-nonexistent-xyz' },
+      ensureProjectReadyFn: captureFn as any,
+    }).catch(() => { /* ignore downstream errors from missing agents dir */ });
+    assert.equal(capturedOpts.skipHeartbeat, true);
+  });
+
+  it('(e) setup and teardown are NOT wrapped — no prelude called', async () => {
+    let called = false;
+    const trackFn = async (_opts: any) => {
+      called = true;
+      return {} as any;
+    };
+    // setup:detectInitState — should not call ensureProjectReadyFn
+    await dispatchExec({
+      moduleKey: 'setup',
+      fnName: 'detectInitState',
+      input: { projectDir: process.cwd() },
+      ensureProjectReadyFn: trackFn as any,
+    });
+    assert.equal(called, false, 'setup module must not trigger the prelude');
+
+    // teardown:removeHeartbeat — confirmed:false should throw ETEARDOWN, not prelude
+    await dispatchExec({
+      moduleKey: 'teardown',
+      fnName: 'removeHeartbeat',
+      input: { confirmed: false },
+      ensureProjectReadyFn: trackFn as any,
+    }).catch(() => { /* ETEARDOWN_NOT_CONFIRMED is expected */ });
+    assert.equal(called, false, 'teardown module must not trigger the prelude');
   });
 });

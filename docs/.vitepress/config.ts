@@ -63,6 +63,10 @@ export default defineConfig({
           { text: 'Troubleshooting', link: '/troubleshooting' },
         ],
       },
+      {
+        text: 'Contributing',
+        items: [{ text: 'Develop aweek', link: '/development' }],
+      },
     ],
 
     socialLinks: [

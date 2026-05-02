@@ -46,7 +46,7 @@ All sixteen runs share one weekly budget (~700k tokens).
 ## Step 1. Hire the agent
 
 ```text
-/aweek:hire
+aweek hire
 ```
 
 - **Slug:** `engineer`
@@ -65,7 +65,7 @@ All sixteen runs share one weekly budget (~700k tokens).
 
 ## Step 2. Set goals and strategies
 
-`/aweek:plan` → **Edit plan.md**:
+`aweek plan` → **Edit plan.md**:
 
 ```md
 # engineer
@@ -111,7 +111,7 @@ All sixteen runs share one weekly budget (~700k tokens).
 
 ## Step 3. Approve the weekly plan
 
-`/aweek:plan` drafts all sixteen tasks at the times above. Review
+`aweek plan` drafts all sixteen tasks at the times above. Review
 and approve.
 
 ## Step 4. Read on Monday
@@ -134,6 +134,6 @@ or when two repos have separate budgets that shouldn't cross.
 ## Multi-agent handoff
 
 For organizations with multiple repos, hire one `engineer-[repo]`
-per repo and use `/aweek:delegate-task` to roll their outputs up to
+per repo and use `aweek delegate-task` to roll their outputs up to
 a single `engineer-rollup` agent that drafts a fleet-wide retro
 every Friday.

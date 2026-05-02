@@ -1,34 +1,38 @@
 ---
-name: init
-description: Initialize an aweek project — create the data directory and optionally install the scheduled heartbeat (launchd on macOS, crontab elsewhere)
-trigger: aweek init, init aweek, initialize aweek, setup aweek, bootstrap aweek, aweek setup, aweek bootstrap
+name: setup
+description: Set up an aweek project — create the data directory and optionally install the scheduled heartbeat (launchd on macOS, crontab elsewhere)
+trigger: aweek setup, setup aweek, initialize aweek, bootstrap aweek, aweek bootstrap, aweek init, init aweek
 ---
 
-# aweek:init
+# aweek:setup
 
-Bootstrap a project for the aweek agent scheduler. This is the first skill a
-user should run in a fresh repository — it prepares the filesystem layout
-and (optionally) installs the 10-minute heartbeat that drives agent
-execution.
+Bootstrap a project for the aweek agent scheduler. Most users never need to
+run this manually — every other skill auto-bootstraps the project when it
+first runs. Use `/aweek:setup` when you want to explicitly control the
+heartbeat installation, or to reset a sticky heartbeat decision so other
+skills re-prompt.
+
+It prepares the filesystem layout and (optionally) installs the 10-minute
+heartbeat that drives agent execution.
 
 The heartbeat is installed via the platform's native scheduler:
 
 - **macOS** → a launchd user agent at `~/Library/LaunchAgents/io.aweek.heartbeat.<hash>.plist`. This is the default on darwin because cron jobs can't access the macOS Keychain, and Claude Code's subscription OAuth tokens live there — the launchd user agent runs inside your aqua session, so Keychain access works exactly like from Terminal.
-- **Linux / other POSIX** → a crontab entry (`*/10 * * * *`). If a legacy crontab entry exists on a macOS machine from an earlier aweek version, it is migrated automatically the next time `/aweek:init` installs the launchd agent.
+- **Linux / other POSIX** → a crontab entry (`*/10 * * * *`). If a legacy crontab entry exists on a macOS machine from an earlier aweek version, it is migrated automatically the next time `/aweek:setup` installs the launchd agent.
 
 Slash-command discovery is handled by the Claude Code plugin system — this
 skill does not copy markdown into `.claude/commands/`. Users who installed
 aweek via `/plugin install aweek@…` already have every `/aweek:*` command
 available.
 
-This skill is a thin UX wrapper on top of `src/skills/init.js`. All filesystem
+This skill is a thin UX wrapper on top of `src/skills/setup.ts`. All filesystem
 mutations, crontab writes, and idempotency checks live in that module — do
 **not** edit `.aweek/` or the user's crontab directly.
 
 ## Arguments
 
-`/aweek:init` is interactive and takes no positional arguments. The underlying
-`runInit()` function in `src/skills/init.js` accepts the following optional
+`/aweek:setup` is interactive and takes no positional arguments. The underlying
+`runInit()` function in `src/skills/setup.ts` accepts the following optional
 options for advanced / non-interactive invocation:
 
 | Option            | Type     | Default           | Description |
@@ -44,7 +48,7 @@ Never pass `confirmed: true` without collecting explicit confirmation via
 
 ## Idempotency contract
 
-`/aweek:init` is safe to run repeatedly on an already-initialized project.
+`/aweek:setup` is safe to run repeatedly on an already-initialized project.
 Each step reports one of three outcomes:
 
 | Outcome      | Meaning |
@@ -84,7 +88,7 @@ confirmation** *before* the change is applied.
 ## Instructions
 
 You MUST follow this exact workflow when this skill is invoked. Use the
-Node.js modules in `src/skills/init.js` for every filesystem or crontab
+Node.js modules in `src/skills/setup.ts` for every filesystem or crontab
 mutation.
 
 ### Step 1: Detect current project state
@@ -92,7 +96,7 @@ mutation.
 Run the detection helper to figure out which steps are already complete:
 
 ```bash
-aweek exec init detectInitState
+aweek exec setup detectInitState
 ```
 
 The returned object has this shape:
@@ -113,7 +117,7 @@ If `state.dataDir.exists === false`, create it:
 
 ```bash
 echo '{"dataDir":".aweek/agents"}' \
-  | aweek exec init ensureDataDir --input-json -
+  | aweek exec setup ensureDataDir --input-json -
 ```
 
 If the directory already exists, report `skipped` and move on — do NOT
@@ -130,13 +134,13 @@ Ask the user via `AskUserQuestion`:
 > - On Linux it writes an entry to your user crontab. You can remove it later with `crontab -e`.
 >
 > - `yes` — install now
-> - `no` — skip (you can install it later by re-running `/aweek:init`)
+> - `no` — skip (you can install it later by re-running `/aweek:setup`)
 
 Only if they answer `yes`, run:
 
 ```bash
 echo '{"schedule":"*/10 * * * *","confirmed":true}' \
-  | aweek exec init installHeartbeat --input-json -
+  | aweek exec setup installHeartbeat --input-json -
 ```
 
 The response includes a `backend` field (`"launchd"` or `"cron"`) plus an
@@ -182,13 +186,13 @@ hire decision. The flow adapts to the project's current state:
   there is nothing to adopt and the only useful next action is to launch the
   create-new wizard. (Sub-AC 3 of AC 6.)
 
-Resolve the decision via `resolveInitHireMenu` from `src/skills/init-hire-menu.js`.
+Resolve the decision via `resolveInitHireMenu` from `src/skills/setup-hire-menu.ts`.
 This helper composes `buildInitHireMenu` (which calls `listUnhiredSubagents`
 under the hood and filters plugin-namespaced slugs) with the fall-through rule
 so the markdown gets one of two stable shapes back.
 
 ```bash
-DECISION=$(aweek exec init-hire-menu resolveInitHireMenu)
+DECISION=$(aweek exec setup-hire-menu resolveInitHireMenu)
 echo "$DECISION"
 
 # When not falling through, render the human-readable prompt too.
@@ -196,7 +200,7 @@ FALL_THROUGH=$(aweek json get fallThrough <<<"$DECISION")
 if [ "$FALL_THROUGH" != "true" ]; then
   echo '---'
   aweek json get menu <<<"$DECISION" \
-    | aweek exec init-hire-menu formatInitHireMenuPrompt \
+    | aweek exec setup-hire-menu formatInitHireMenuPrompt \
         --input-json - --format text
 fi
 ```
@@ -280,10 +284,10 @@ Call `routeInitHireMenuChoice` to convert the user's selection into a stable
 handler descriptor:
 
 ```bash
-MENU=$(aweek exec init-hire-menu buildInitHireMenu)
+MENU=$(aweek exec setup-hire-menu buildInitHireMenu)
 
 aweek json compose menu="$MENU" choice='<USER_CHOICE>' selected='[<SELECTED_SLUGS>]' \
-  | aweek exec init-hire-menu routeInitHireMenuChoice --input-json -
+  | aweek exec setup-hire-menu routeInitHireMenuChoice --input-json -
 ```
 
 `<USER_CHOICE>` is one of `hire-all`, `select-some`, `create-new`, `skip`.
@@ -425,7 +429,7 @@ choice is enriched with the live `name` + `description` from
 `.claude/agents/<slug>.md` so users see what they are picking:
 
 ```bash
-MENU=$(aweek exec init-hire-menu buildInitHireMenu)
+MENU=$(aweek exec setup-hire-menu buildInitHireMenu)
 
 echo "$MENU" | aweek json wrap menu \
   | aweek exec hire-select-some buildSelectSomeChoices --input-json -
@@ -457,7 +461,7 @@ depth against stale menus or slugs hired concurrently) and then delegates to
 `hireAllSubagents` to wrap every picked slug:
 
 ```bash
-MENU=$(aweek exec init-hire-menu buildInitHireMenu)
+MENU=$(aweek exec setup-hire-menu buildInitHireMenu)
 
 RESULT=$(aweek json compose menu="$MENU" selected='[<SELECTED_SLUGS>]' \
   | aweek exec hire-select-some runSelectSomeHire --input-json -)
@@ -545,6 +549,21 @@ After a successful init, tell the user:
 - Approve its initial weekly plan with `/aweek:plan`
 - Inspect the dashboard with `/aweek:summary`
 - Manage lifecycle (pause / resume / delete) with `/aweek:manage`
+
+### Step 6: Clear the sticky heartbeat decision
+
+After the hire menu closes (whether the user hired an agent, skipped, or was
+auto-delegated), clear any sticky heartbeat decision from `.aweek/config.json`
+so the next skill invocation (e.g. `/aweek:hire`) re-prompts about the
+heartbeat rather than silently re-using the old answer:
+
+```bash
+aweek exec setup clearHeartbeatDecision
+```
+
+This is a best-effort step — if it fails (e.g. no config file yet), log a
+warning and continue. The heartbeat decision is advisory cache; losing it is
+not an error.
 
 ## Data directory
 

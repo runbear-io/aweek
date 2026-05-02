@@ -18,8 +18,14 @@
  * underlying skill modules accept disparate JSON-object shapes — tightening
  * each one belongs to a follow-up typing pass.
  */
-import * as init from '../skills/init.js';
-import * as initHireMenu from '../skills/init-hire-menu.js';
+import * as init from '../skills/setup.js';
+import * as initHireMenu from '../skills/setup-hire-menu.js';
+import * as teardown from '../skills/teardown.js';
+import {
+  ensureProjectReady,
+  type HeartbeatAnswer,
+  type EnsureProjectReadyOptions,
+} from '../skills/ensure-project-ready.js';
 import * as hire from '../skills/hire.js';
 import * as hireAll from '../skills/hire-all.js';
 import * as hireRoute from '../skills/hire-route.js';
@@ -77,7 +83,7 @@ export type DispatchRegistry = Readonly<Record<string, Readonly<Record<string, D
 // `(input?: any) => any` even though the runtime call site always passes
 // a JSON object.
 const REGISTRY_LITERAL = Object.freeze({
-  init: {
+  setup: {
     detectInitState: init.detectInitState,
     ensureDataDir: init.ensureDataDir,
     installHeartbeat: init.installHeartbeat,
@@ -86,8 +92,9 @@ const REGISTRY_LITERAL = Object.freeze({
     finalizeInit: init.finalizeInit,
     hasExistingAgents: init.hasExistingAgents,
     shouldLaunchHire: init.shouldLaunchHire,
+    clearHeartbeatDecision: init.clearHeartbeatDecision,
   },
-  'init-hire-menu': {
+  'setup-hire-menu': {
     buildInitHireMenu: initHireMenu.buildInitHireMenu,
     resolveInitHireMenu: initHireMenu.resolveInitHireMenu,
     routeInitHireMenuChoice: (input: any) =>
@@ -98,6 +105,11 @@ const REGISTRY_LITERAL = Object.freeze({
       initHireMenu.validateInitHireMenuChoice(input?.choice, input?.menu),
     validateSelectedSlugs: (input: any) =>
       initHireMenu.validateSelectedSlugs(input?.selected, input?.menu),
+  },
+  teardown: {
+    removeHeartbeat: teardown.removeHeartbeat,
+    removeProject: teardown.removeProject,
+    teardown: teardown.teardown,
   },
   'hire-route': {
     determineHireRoute: hireRoute.determineHireRoute,
@@ -430,11 +442,47 @@ export function listFunctions(moduleKey: string): string[] | null {
   return Object.keys(entry).sort();
 }
 
+/**
+ * (module, fn) pairs that require a full ensureProjectReady prelude
+ * (data-dir bootstrap + heartbeat prompt). These are user-driven write
+ * actions — the user must confirm (or have already answered) the
+ * heartbeat question before the skill proceeds.
+ */
+const REQUIRES_HEARTBEAT = new Set<string>([
+  'hire-route:determineHireRoute',
+  'hire-route:listUnhiredSubagents',
+  'hire-create-new-menu:runCreateNewHire',
+  'hire-select-some:runSelectSomeHire',
+  'hire-all:hireAllSubagents',
+  'hire:createNewSubagent',
+  'plan:adjustPlan',
+  'manage:resume',
+  'manage:topUp',
+  'manage:pause',
+  'manage:deleteAgent',
+  'calendar:loadAndRenderGrid',
+  'delegate-task:delegateTask',
+  'setup-hire-menu:routeInitHireMenuChoice',
+]);
+
+/**
+ * (module, fn) pairs that need the data-dir bootstrap but NOT the heartbeat
+ * prompt. Read-only skills that shouldn't block on a missing heartbeat.
+ */
+const REQUIRES_READONLY = new Set<string>([
+  'summary:buildSummary',
+  'summary:buildAgentDrillDown',
+  'summary:getAgentDrillDownChoices',
+  'query:queryAgents',
+]);
+
 /** Parameter shape for `dispatchExec`. */
 export interface DispatchExecParams {
   moduleKey?: string;
   fnName?: string;
   input?: unknown;
+  /** Injectable replacement for ensureProjectReady (test seam). */
+  ensureProjectReadyFn?: typeof ensureProjectReady;
 }
 
 /**
@@ -446,7 +494,7 @@ export interface DispatchExecParams {
  *   - `EUNKNOWN_FN`      — fnName not exposed for that module
  */
 export async function dispatchExec(
-  { moduleKey, fnName, input }: DispatchExecParams = {},
+  { moduleKey, fnName, input, ensureProjectReadyFn }: DispatchExecParams = {},
 ): Promise<unknown> {
   if (!moduleKey) {
     throw new DispatchError('EUSAGE', 'module name is required');
@@ -468,5 +516,35 @@ export async function dispatchExec(
       `Module "${moduleKey}" does not expose "${fnName}". Available: ${listFunctions(moduleKey)!.join(', ')}`,
     );
   }
+
+  const key = `${moduleKey}:${fnName}`;
+  const needsHeartbeat = REQUIRES_HEARTBEAT.has(key);
+  const needsReadonly = REQUIRES_READONLY.has(key);
+
+  if (needsHeartbeat || needsReadonly) {
+    const inp = (input ?? {}) as Record<string, unknown>;
+    const heartbeatAnswer = inp['heartbeatAnswer'] as HeartbeatAnswer | undefined;
+    const projectDir = inp['projectDir'] as string | undefined;
+    const dataDir = inp['dataDir'] as string | undefined;
+
+    const readyFn = ensureProjectReadyFn ?? ensureProjectReady;
+    const readyOpts: EnsureProjectReadyOptions = {
+      projectDir,
+      dataDir,
+      skipHeartbeat: needsReadonly ? true : undefined,
+      heartbeatAnswer: needsHeartbeat ? heartbeatAnswer : undefined,
+    };
+    const ready = await readyFn(readyOpts);
+
+    if (needsHeartbeat && ready.steps.heartbeat === 'awaiting-confirm') {
+      return { needsConfirmation: 'heartbeat', prompt: ready.heartbeatPrompt };
+    }
+
+    // Strip heartbeatAnswer from the input before forwarding — skill
+    // modules don't accept this field in their reverted signatures.
+    const { heartbeatAnswer: _ha, ...rest } = inp;
+    return await fn(rest);
+  }
+
   return await fn(input ?? {});
 }

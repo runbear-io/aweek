@@ -11,7 +11,8 @@ validation lives in `src/skills/*.ts`.
 
 | Skill | Purpose |
 |-------|---------|
-| [`/aweek:init`](#aweek-init) | Bootstrap a project: create `.aweek/`, optionally install the heartbeat, route into `/aweek:hire`. |
+| [`/aweek:setup`](#aweek-setup) | Explicitly bootstrap a project: create `.aweek/`, optionally install the heartbeat, route into `/aweek:hire`. Usually auto-called by the first skill you run. |
+| [`/aweek:teardown`](#aweek-teardown) | Remove the heartbeat and/or `.aweek/` data from a project. |
 | [`/aweek:hire`](#aweek-hire) | Identity-only agent creation. Adopts an unhired `.claude/agents/[slug].md` or writes a new one. |
 | [`/aweek:plan`](#aweek-plan) | Single entry point for goal / monthly / weekly adjustments **and** pending weekly plan approval. |
 | [`/aweek:manage`](#aweek-manage) | Lifecycle ops: resume, top up, pause, delete. |
@@ -20,10 +21,15 @@ validation lives in `src/skills/*.ts`.
 | [`/aweek:calendar`](#aweek-calendar) | Interactive weekly-plan calendar grid for one agent. |
 | [`/aweek:delegate-task`](#aweek-delegate-task) | Async inter-agent task delegation through the recipient's inbox queue. |
 
-## /aweek:init
+## /aweek:setup
 
-One-time per-project setup. Idempotent — re-runs report
+Per-project setup. Idempotent — re-runs report
 `created` / `skipped` / `updated` per step.
+
+Most users never invoke this directly — every other skill auto-bootstraps
+the project on first run. Use `/aweek:setup` when you want explicit control
+over the heartbeat installation, or to reset a sticky heartbeat decision so
+the next skill call re-prompts.
 
 Steps, in order:
 
@@ -39,6 +45,18 @@ Steps, in order:
    - `select-some` — multi-select adoption.
    - `create-new` — go straight to `/aweek:hire`.
    - `skip` — exit without hiring.
+4. Clear the sticky heartbeat decision so the next skill call re-prompts.
+
+## /aweek:teardown
+
+Remove aweek from a project. Two operations available:
+
+- **Remove heartbeat only** — uninstalls the launchd user agent (macOS)
+  or crontab line (Linux) without touching agent data.
+- **Full uninstall** — removes the heartbeat AND deletes `.aweek/`
+  permanently.
+
+Both require explicit `AskUserQuestion` confirmation.
 
 ## /aweek:hire
 

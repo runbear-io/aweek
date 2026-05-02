@@ -85,11 +85,18 @@ export function getPausedAgentDetails(
 // Action entry points
 // ---------------------------------------------------------------------------
 
+/** Options for {@link resume}. */
+export interface ResumeParams {
+  agentId?: string;
+  dataDir?: string;
+  timestamp?: string;
+}
+
 /**
  * Resume a paused agent by clearing the `budget.paused` flag.
  */
-export function resume(
-  { agentId, dataDir, timestamp }: { agentId?: string; dataDir?: string; timestamp?: string } = {},
+export async function resume(
+  { agentId, dataDir, timestamp }: ResumeParams = {},
 ): Promise<ExecuteResumeResult> {
   return executeResumeImpl(agentId, 'resume', { dataDir, timestamp });
 }

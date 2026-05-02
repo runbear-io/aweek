@@ -44,7 +44,7 @@ import {
   runSelectSomeHire,
   formatSelectSomeResult,
 } from './hire-select-some.js';
-import { buildInitHireMenu } from './init-hire-menu.js';
+import { buildInitHireMenu } from './setup-hire-menu.js';
 import { writeSubagentFile } from '../subagents/subagent-file.js';
 import { AgentStore } from '../storage/agent-store.js';
 import { createAgentConfig } from '../models/agent.js';

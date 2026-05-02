@@ -5,30 +5,24 @@ plan, and lets the heartbeat take over. Should take about 10 minutes.
 
 Not installed yet? Start with [Install](/install).
 
-## 1. Bootstrap a project
+## 1. Hire your first agent
 
 Open Claude Code in any project directory and run:
 
 ```text
-/aweek:init
+aweek hire
 ```
 
-`init` is idempotent — it reports `created` / `skipped` / `updated`
-per step and never re-prompts for completed work:
+On first run, `aweek hire` auto-bootstraps the project:
 
 1. Creates `.aweek/` (agents, locks, config).
 2. Detects your IANA time zone and writes it to `.aweek/config.json`.
-3. Optionally installs a 10-minute heartbeat as a launchd user agent
+3. Asks whether to install a 10-minute heartbeat as a launchd user agent
    under `~/Library/LaunchAgents/`. The plist is per-project, so
-   multiple aweek installs coexist. Heartbeat install requires
-   explicit confirmation.
-4. Routes you into `/aweek:hire` to add your first agent.
+   multiple aweek installs coexist.
 
-## 2. Hire your first agent
-
-```text
-/aweek:hire
-```
+You can also run `/aweek:setup` explicitly if you want fine-grained control
+over these steps (e.g. to reset a previous "skip heartbeat" decision).
 
 Identity-only — pick a slug, name, and write the system prompt that
 defines what this agent does. aweek writes two files:
@@ -40,10 +34,10 @@ defines what this agent does. aweek writes two files:
 
 Goals and plans are added in the next step.
 
-## 3. Plan the week
+## 2. Plan the week
 
 ```text
-/aweek:plan
+aweek plan
 ```
 
 The single entry point for goals, monthly plans, weekly tasks, and
@@ -55,7 +49,7 @@ approval. The flow is roughly:
 3. Review and approve. Until approval, the heartbeat is a no-op for
    that agent.
 
-## 4. Walk away
+## 3. Walk away
 
 The heartbeat (default: every 10 minutes) wakes every agent on the
 tick:
@@ -73,10 +67,10 @@ plan.
 ## Useful commands once the agent is running
 
 ```text
-/aweek:summary        # Compact dashboard across all agents
-/aweek:calendar       # Weekly grid for one agent (with task drill-down)
-/aweek:manage         # Pause, resume, top up budget, fire
-/aweek:delegate-task  # Drop work into another agent's inbox
+aweek summary        # Compact dashboard across all agents
+aweek calendar       # Weekly grid for one agent (with task drill-down)
+aweek manage         # Pause, resume, top up budget, fire
+aweek delegate-task  # Drop work into another agent's inbox
 ```
 
 The full reference lives in [Skills](/skills).
@@ -113,6 +107,6 @@ with read-only JSON endpoints under `/api/*`. Use `--project-dir
 - [Build a weekly operator](/recipes/weekly-ops) — the marquee
   recipe. One agent, seven routine tasks across Mon–Fri, one
   cumulative `plan.md`.
-- [Skills reference](/skills) — every `/aweek:[name]` skill
+- [Skills reference](/skills) — every `aweek [name]` skill
   documented.
 - Hit a snag? See [Troubleshooting](/troubleshooting).

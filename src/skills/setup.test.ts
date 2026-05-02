@@ -45,7 +45,7 @@ import {
   resolveProjectDir,
   shouldLaunchHire,
   __internals,
-} from './init.js';
+} from './setup.js';
 
 /**
  * Make a fresh tmp project dir for a test. Always call `cleanup` in the

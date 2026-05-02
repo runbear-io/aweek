@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**aweek** — a Claude Code plugin for managing multiple AI agents with scheduled routines. Each aweek agent is a 1-to-1 wrapper around a Claude Code **subagent** defined in `.claude/agents/<slug>.md`. The `.md` file owns identity (name, description, system prompt); the aweek JSON at `.aweek/agents/<slug>.json` owns scheduling state (long-term goals, monthly/weekly plans, budget). A 10-minute heartbeat installed as a per-project **launchd user agent** (cron fallback on non-macOS — see the `installHeartbeat` dispatcher at `src/skills/init.ts:899-901`) triggers Claude Code CLI sessions that execute the next pending task per agent, tracks token usage against a weekly budget, and pauses agents that exhaust their budget. The supported user-facing platform is **macOS only for now**; the cron backend exists in code but is not promoted in README.md or the docs site.
+**aweek** — a Claude Code plugin for managing multiple AI agents with scheduled routines. Each aweek agent is a 1-to-1 wrapper around a Claude Code **subagent** defined in `.claude/agents/<slug>.md`. The `.md` file owns identity (name, description, system prompt); the aweek JSON at `.aweek/agents/<slug>.json` owns scheduling state (long-term goals, monthly/weekly plans, budget). A 10-minute heartbeat installed as a per-project **launchd user agent** (cron fallback on non-macOS — see the `installHeartbeat` dispatcher at `src/skills/setup.ts`) triggers Claude Code CLI sessions that execute the next pending task per agent, tracks token usage against a weekly budget, and pauses agents that exhaust their budget. The supported user-facing platform is **macOS only for now**; the cron backend exists in code but is not promoted in README.md or the docs site.
 
 Slash-command distribution is handled by the Claude Code plugin system (manifest at `.claude-plugin/plugin.json`, hooks at `.claude-plugin/hooks.json`). Users install via `/plugin install aweek@<marketplace>`; the `SessionStart` hook auto-installs the `aweek` CLI via `npm i -g aweek` if it isn't already on PATH.
 
@@ -44,22 +44,23 @@ Skill markdown lives in `skills/<name>/SKILL.md`. Each step shells out to `aweek
 
 | Skill | File | Purpose |
 |-------|------|---------|
-| `/aweek:init` | `skills/init/SKILL.md` | Bootstrap a project: create `.aweek/`, optionally install the launchd heartbeat (cron fallback off-macOS), then route into `/aweek:hire` |
-| `/aweek:hire` | `skills/hire/SKILL.md` | Identity-only agent creation. Adopts an unhired `.claude/agents/<slug>.md` or writes a new one with three fields (name, description, system prompt). Goals/plans are added later via `/aweek:plan` |
-| `/aweek:plan` | `skills/plan/SKILL.md` | Single entry point for goal/monthly/weekly adjustments **and** pending weekly plan approval (replaces the old `/aweek:adjust-goal` and `/aweek:approve-plan`) |
-| `/aweek:manage` | `skills/manage/SKILL.md` | Lifecycle ops: resume, top-up, pause, delete (replaces `/aweek:resume-agent`). Identity edits go through the `.claude/agents/<slug>.md` file directly |
-| `/aweek:summary` | `skills/summary/SKILL.md` | Compact dashboard table across all agents with optional drill-down |
-| `/aweek:query` | `skills/query/SKILL.md` | Filter the roster by role / status / persona keyword / budget and return the matching slug list for downstream skills |
-| `/aweek:calendar` | `skills/calendar/SKILL.md` | Interactive weekly-plan calendar grid for one agent (numbered task selection, view options, inline status edits) |
-| `/aweek:delegate-task` | `skills/delegate-task/SKILL.md` | Async inter-agent task delegation through the recipient's inbox queue |
-| `/aweek:config` | `skills/config/SKILL.md` | CLI counterpart to the dashboard Settings page. Renders every knob `.aweek/config.json` exposes (`timeZone`, `staleTaskWindowMs`, `heartbeatIntervalSec`) and edits any of them via an interactive picker that doubles as the confirmation gate. Editing `heartbeatIntervalSec` additionally calls `installHeartbeat` to rotate the live launchd plist's `StartInterval` in the same flow |
+| `aweek setup` | `skills/setup/SKILL.md` | Explicitly bootstrap a project: create `.aweek/`, optionally install the launchd heartbeat (cron fallback off-macOS), then route into `aweek hire`. Auto-called by every other skill on first run — users rarely need this directly |
+| `aweek teardown` | `skills/teardown/SKILL.md` | Remove the heartbeat and/or `.aweek/` data from a project. Both operations are destructive and confirmation-gated |
+| `aweek hire` | `skills/hire/SKILL.md` | Identity-only agent creation. Adopts an unhired `.claude/agents/<slug>.md` or writes a new one with three fields (name, description, system prompt). Goals/plans are added later via `aweek plan`. Auto-bootstraps on first run |
+| `aweek plan` | `skills/plan/SKILL.md` | Single entry point for goal/monthly/weekly adjustments **and** pending weekly plan approval. Auto-bootstraps on first run |
+| `aweek manage` | `skills/manage/SKILL.md` | Lifecycle ops: resume, top-up, pause, delete. Identity edits go through the `.claude/agents/<slug>.md` file directly. Auto-bootstraps on first run |
+| `aweek summary` | `skills/summary/SKILL.md` | Compact dashboard table across all agents with optional drill-down |
+| `aweek query` | `skills/query/SKILL.md` | Filter the roster by role / status / persona keyword / budget and return the matching slug list for downstream skills |
+| `aweek calendar` | `skills/calendar/SKILL.md` | Interactive weekly-plan calendar grid for one agent (numbered task selection, view options, inline status edits). Auto-bootstraps on first run |
+| `aweek delegate-task` | `skills/delegate-task/SKILL.md` | Async inter-agent task delegation through the recipient's inbox queue. Auto-bootstraps on first run |
+| `aweek config` | `skills/config/SKILL.md` | CLI counterpart to the dashboard Settings page. Renders every knob `.aweek/config.json` exposes (`timeZone`, `staleTaskWindowMs`, `heartbeatIntervalSec`) and edits any of them via an interactive picker that doubles as the confirmation gate. Editing `heartbeatIntervalSec` additionally calls `installHeartbeat` to rotate the live launchd plist's `StartInterval` in the same flow |
 
 ### Subagent ↔ aweek contract
 
 - Each aweek agent has the same slug as its subagent. The slug is the filename of both `.claude/agents/<slug>.md` and `.aweek/agents/<slug>.json`.
-- The `.md` is the **single source of truth** for identity. When `/aweek:hire` adopts an existing `.md`, the user's typed description and system prompt are discarded in favor of what is on disk.
+- The `.md` is the **single source of truth** for identity. When `aweek hire` adopts an existing `.md`, the user's typed description and system prompt are discarded in favor of what is on disk.
 - Plugin-namespaced subagents (slugs prefixed `oh-my-claudecode-`, `geo-`, etc.) are intentionally excluded from adoption.
-- `/aweek:hire` and the four-option init menu (`hire-all`, `select-some`, `create-new`, `skip`) are the only sanctioned ways to create the `.md`/`.json` pair.
+- `aweek hire` and the four-option init menu (`hire-all`, `select-some`, `create-new`, `skip`) are the only sanctioned ways to create the `.md`/`.json` pair.
 
 ### Destructive operations require confirmation
 
@@ -67,13 +68,15 @@ Per project policy, every destructive write must collect an explicit `AskUserQue
 
 | Operation | Skill |
 |-----------|-------|
-| Install / rotate heartbeat (launchd plist on macOS, crontab elsewhere) | `/aweek:init`, `/aweek:config` (auto-rotates when `heartbeatIntervalSec` changes) |
-| Overwrite an existing data dir | `/aweek:init` |
-| Goal `remove` | `/aweek:plan` |
-| Weekly plan `reject` | `/aweek:plan` |
-| `top-up` (resets weekly usage) | `/aweek:manage` |
-| `delete` (removes agent JSON, optionally `.md`) | `/aweek:manage` |
-| `editConfig` (writes `.aweek/config.json`) | `/aweek:config` |
+| Install / rotate heartbeat (launchd plist on macOS, crontab elsewhere) | `aweek setup`, `aweek config` (auto-rotates when `heartbeatIntervalSec` changes). Every other skill auto-prompts on first run via `ensureProjectReady` |
+| Remove heartbeat | `aweek teardown` |
+| Delete `.aweek/` data dir | `aweek teardown` |
+| Overwrite an existing data dir | `aweek setup` |
+| Goal `remove` | `aweek plan` |
+| Weekly plan `reject` | `aweek plan` |
+| `top-up` (resets weekly usage) | `aweek manage` |
+| `delete` (removes agent JSON, optionally `.md`) | `aweek manage` |
+| `editConfig` (writes `.aweek/config.json`) | `aweek config` |
 
 The underlying adapters refuse to run without `confirmed: true` — do not bypass the gate.
 
@@ -81,10 +84,10 @@ The underlying adapters refuse to run without `confirmed: true` — do not bypas
 
 ### Heartbeat execution loop
 
-`/aweek:init` installs a 10-minute heartbeat that invokes `aweek heartbeat` (the published `dist/bin/aweek.js`). The install path is platform-routed (`installHeartbeat` in `src/skills/init.ts`):
+``aweek setup` installs (auto-called by every skill on first run) a 10-minute heartbeat that invokes `aweek heartbeat` (the published `dist/bin/aweek.js`). The install path is platform-routed (`installHeartbeat` in `src/skills/setup.ts`):
 
 - **macOS (`process.platform === 'darwin'`)** — writes a launchd user agent plist at `~/Library/LaunchAgents/io.aweek.heartbeat.<hash>.plist` (label prefix `LAUNCHD_LABEL_PREFIX`, hash derived from the absolute project dir so multiple aweek installs coexist) and bootstraps it with `launchctl bootstrap gui/<uid> <plist>`. Tick rate is `StartInterval = 600` seconds. Implementation: `src/skills/launchd.ts`. **Why launchd over cron on macOS:** cron-invoked processes run outside the aqua session and can't reach the user's Keychain, so Claude Code's OAuth subscription tokens are invisible to a cron-launched `claude`. launchd user agents inherit Keychain access exactly like Terminal.
-- **Other platforms** — appends a `*/10 * * * *` line to the user crontab, fenced by a `# aweek:project-heartbeat:<projectDir>` marker. Implementation: `defaultReadCrontab` / `defaultWriteCrontab` inside `src/skills/init.ts`. The legacy `src/heartbeat/crontab-manager.ts` per-agent path was removed; the project-level entry is now the only automated crontab interaction in aweek.
+- **Other platforms** — appends a `*/10 * * * *` line to the user crontab, fenced by a `# aweek:project-heartbeat:<projectDir>` marker. Implementation: `defaultReadCrontab` / `defaultWriteCrontab` inside `src/skills/setup.ts`. The legacy `src/heartbeat/crontab-manager.ts` per-agent path was removed; the project-level entry is now the only automated crontab interaction in aweek.
 
 Both paths converge on the same heartbeat tick:
 
@@ -92,7 +95,7 @@ Both paths converge on the same heartbeat tick:
 2. For each agent, acquires a per-agent lock (`src/lock/lock-manager.ts`), then drains delegated inbox tasks and the per-agent FIFO queue (`src/heartbeat/locked-session-runner.ts`, `src/queue/task-queue.ts`, `src/heartbeat/inbox-processor.ts`).
 3. Selects the next pending task from the active weekly plan (`src/heartbeat/task-selector.ts`).
 4. Launches a Claude Code CLI session (`src/execution/cli-session.ts`) with the task prompt + the subagent identity loaded via `--agents`. The session executor (`src/execution/session-executor.ts`) records token usage automatically.
-5. Enforces the weekly budget (`src/services/budget-enforcer.ts`) and pauses the agent on exhaustion. `/aweek:manage` resume / top-up clears the pause.
+5. Enforces the weekly budget (`src/services/budget-enforcer.ts`) and pauses the agent on exhaustion. `aweek manage` resume / top-up clears the pause.
 
 ### Plan model
 
@@ -100,13 +103,13 @@ Long-term goals, monthly plans, and strategies live in a per-agent free-form mar
 
 Only weekly tasks remain structured:
 
-- `weekly-plan.schema.js` — weekly tasks keyed by `YYYY-Www`. `objectiveId` is a free-form string (typically the H3 heading a task traces to in `plan.md`, e.g. `"2026-04"`). Plans start `approved: false` and only activate the heartbeat after the first `/aweek:plan` approval. (The AJV schema definitions in `src/schemas/*.js` stay raw `.js`; their typed wrappers re-export `JSONSchemaType<T>` bindings to TS consumers.)
+- `weekly-plan.schema.js` — weekly tasks keyed by `YYYY-Www`. `objectiveId` is a free-form string (typically the H3 heading a task traces to in `plan.md`, e.g. `"2026-04"`). Plans start `approved: false` and only activate the heartbeat after the first `aweek plan` approval. (The AJV schema definitions in `src/schemas/*.js` stay raw `.js`; their typed wrappers re-export `JSONSchemaType<T>` bindings to TS consumers.)
 
 Persistence is split across stores in `src/storage/` (agent, weekly-plan, monthly-plan, goal, inbox, usage, activity-log, artifact, execution).
 
 ### Time zone
 
-`.aweek/config.json` carries a single `timeZone` field (IANA name, e.g. `"America/Los_Angeles"`). `/aweek:init` seeds it with the host's detected zone.
+`.aweek/config.json` carries a single `timeZone` field (IANA name, e.g. `"America/Los_Angeles"`). `aweek init` seeds it with the host's detected zone.
 
 Storage stays UTC — `runAt`, `createdAt`, week keys on disk, and all millisecond comparisons (`task-selector.isRunAtReady`, etc.) are absolute. The configured zone is applied at every *date-field extraction*: calendar day/hour placement, ISO-week key derivation, Monday boundary for budget/usage/activity stores. The primitives live in `src/time/zone.ts` (`currentWeekKey`, `mondayOfWeek`, `localParts`, `localDayOffset`, `localHour`, `localWallClockToUtc`, `parseLocalWallClock`) and are re-exported from `src/index.ts`.
 
@@ -160,7 +163,7 @@ src/
   storage/                      # File-based stores (agent, plan, inbox, usage, ...) — all .ts
   subagents/                    # .claude/agents/<slug>.md primitives + discovery — .ts
   skills/                       # Skill business logic — .ts
-    init.ts, init-hire-menu.ts
+    setup.ts, setup-hire-menu.ts
     hire.ts, hire-route.ts, hire-create-new.ts, hire-create-new-menu.ts,
     hire-all.ts, hire-select-some.ts
     plan.ts
@@ -170,7 +173,7 @@ src/
   services/                     # Cross-cutting services (planning, review, budget) — .ts
   heartbeat/                    # Scheduler + lock + per-agent tick runner — .ts.
                                 # The launchd-vs-cron install side lives in
-                                # src/skills/init.ts + src/skills/launchd.ts;
+                                # src/skills/setup.ts + src/skills/launchd.ts;
                                 # this directory has no scheduler-install code.
   execution/                    # Claude Code CLI session launcher + tracker — .ts
   lock/                         # PID-tracked file locks — .ts
@@ -200,19 +203,19 @@ dist/                           # `pnpm build` output (gitignored; published in 
   bin/aweek.js                  # Compiled CLI (chmod +x)
   src/...                       # Compiled backend
   src/serve/spa/dist/           # SPA bundle copied from src/serve/spa/dist/
-.aweek/                         # Runtime data (created by /aweek:init)
+.aweek/                         # Runtime data (created by aweek init)
   agents/<slug>.json            # Per-agent scheduling state
   agents/<slug>/                # Per-agent subdirs (plans, usage, logs, inbox)
   .locks/                       # Heartbeat + per-agent lock files
 ```
 
-`src/skills/status.ts` has no dedicated skill — it backs the per-agent drill-down inside `/aweek:summary`.
+`src/skills/status.ts` has no dedicated skill — it backs the per-agent drill-down inside `aweek summary`.
 
 ## Conventions
 
-- **Use the skill modules.** Every `/aweek:*` markdown calls into `src/skills/*.ts`. Do not duplicate their logic in ad-hoc node `-e` snippets — extend the module instead.
-- **Atomic batches.** `/aweek:plan` adjustments are validated up front; if any operation fails schema validation, none are written.
-- **Idempotent re-runs.** `/aweek:init` reports `created` / `skipped` / `updated` per step and never re-prompts for completed steps. `/aweek:hire` adopts on `.md` collision rather than overwriting. Bulk hires skip slugs that already have an aweek JSON.
+- **Use the skill modules.** Every `aweek *` markdown calls into `src/skills/*.ts`. Do not duplicate their logic in ad-hoc node `-e` snippets — extend the module instead.
+- **Atomic batches.** `aweek plan` adjustments are validated up front; if any operation fails schema validation, none are written.
+- **Idempotent re-runs.** `aweek init` reports `created` / `skipped` / `updated` per step and never re-prompts for completed steps. `aweek hire` adopts on `.md` collision rather than overwriting. Bulk hires skip slugs that already have an aweek JSON.
 - **Tests are colocated** as `<module>.test.ts` next to each source file (`.test.js` for the residual `src/schemas/*.js` files). Run `pnpm test` before committing.
 - **Run typecheck after touching TS/TSX.** `pnpm typecheck` (backend) and `pnpm typecheck:spa` (SPA) are the syntax/type gates and are mandatory after: editing any `.ts`/`.tsx` file, resolving merge or rebase conflicts in TS files, or refactoring across module boundaries. The test runner can pass with cached compilations even when a barrel re-export has been broken — the typecheck catches that, the tests do not.
 - **Don't widen TS strict flags** (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) without coordinating — they're intentionally off until the residual `.js` schemas are migrated.

@@ -14,6 +14,7 @@ import {
   loadConfig,
   saveConfig,
   isValidStaleTaskWindowMs,
+  isValidHeartbeatDecisionRecord,
   DEFAULT_STALE_TASK_WINDOW_MS,
 } from './config-store.js';
 
@@ -184,6 +185,90 @@ describe('config-store', () => {
       assert.equal(isValidStaleTaskWindowMs(undefined), false);
       assert.equal(isValidStaleTaskWindowMs(Number.NaN), false);
       assert.equal(isValidStaleTaskWindowMs(Number.POSITIVE_INFINITY), false);
+    });
+  });
+
+  describe('heartbeat decision', () => {
+    it('isValidHeartbeatDecisionRecord accepts the three decision values', () => {
+      const at = '2026-05-01T12:00:00.000Z';
+      assert.equal(isValidHeartbeatDecisionRecord({ promptedAt: at, decision: 'installed' }), true);
+      assert.equal(isValidHeartbeatDecisionRecord({ promptedAt: at, decision: 'declined' }), true);
+      assert.equal(isValidHeartbeatDecisionRecord({ promptedAt: at, decision: 'skipped' }), true);
+    });
+
+    it('isValidHeartbeatDecisionRecord rejects malformed records', () => {
+      assert.equal(isValidHeartbeatDecisionRecord(null), false);
+      assert.equal(isValidHeartbeatDecisionRecord(undefined), false);
+      assert.equal(isValidHeartbeatDecisionRecord('installed'), false);
+      assert.equal(isValidHeartbeatDecisionRecord({ decision: 'installed' }), false);
+      assert.equal(isValidHeartbeatDecisionRecord({ promptedAt: 'not-a-date', decision: 'installed' }), false);
+      assert.equal(
+        isValidHeartbeatDecisionRecord({ promptedAt: '2026-05-01T12:00:00.000Z', decision: 'maybe' }),
+        false,
+      );
+      assert.equal(isValidHeartbeatDecisionRecord({ promptedAt: 0, decision: 'installed' }), false);
+    });
+
+    it('saveConfig + loadConfig round-trip a valid heartbeat record', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        const record = { promptedAt: '2026-05-01T12:00:00.000Z', decision: 'installed' as const };
+        await saveConfig(dataDir, { heartbeat: record });
+        const cfg = await loadConfig(dataDir);
+        assert.deepEqual(cfg.heartbeat, record);
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    });
+
+    it('saveConfig clears the heartbeat record when passed undefined', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        await saveConfig(dataDir, {
+          heartbeat: { promptedAt: '2026-05-01T12:00:00.000Z', decision: 'declined' },
+        });
+        await saveConfig(dataDir, { heartbeat: undefined });
+        const raw = await readFile(configPath(dataDir), 'utf8');
+        assert.doesNotMatch(raw, /"heartbeat"/);
+        const cfg = await loadConfig(dataDir);
+        assert.equal(cfg.heartbeat, undefined);
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    });
+
+    it('saveConfig rejects an out-of-shape heartbeat record', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        await assert.rejects(
+          () =>
+            saveConfig(dataDir, {
+              heartbeat: { promptedAt: 'nope', decision: 'installed' as const },
+            }),
+          /Invalid heartbeat record/,
+        );
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    });
+
+    it('loadConfig silently drops a malformed heartbeat record on disk', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        await writeFile(
+          configPath(dataDir),
+          JSON.stringify({
+            timeZone: 'UTC',
+            heartbeat: { promptedAt: '???', decision: 'maybe' },
+          }),
+          'utf8',
+        );
+        const cfg = await loadConfig(dataDir);
+        assert.equal(cfg.heartbeat, undefined);
+        assert.equal(cfg.timeZone, 'UTC');
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
     });
   });
 });

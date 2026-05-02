@@ -41,12 +41,12 @@ the week's daily reviews and outputs against monthly goals).
 | Weekly       | `reviews/[week].md` |
 
 All sixteen runs share one weekly budget (~800k tokens). When
-exhausted the agent pauses — clear via `/aweek:manage top-up`.
+exhausted the agent pauses — clear via `aweek manage top-up`.
 
 ## Step 1. Hire the agent
 
 ```text
-/aweek:hire
+aweek hire
 ```
 
 - **Slug:** `weekly-ops`
@@ -64,7 +64,7 @@ exhausted the agent pauses — clear via `/aweek:manage top-up`.
 
 ## Step 2. Set goals and strategies
 
-`/aweek:plan` → **Edit plan.md**:
+`aweek plan` → **Edit plan.md**:
 
 ```md
 # weekly-ops
@@ -110,7 +110,7 @@ exhausted the agent pauses — clear via `/aweek:manage top-up`.
 
 ## Step 3. Approve the weekly plan
 
-`/aweek:plan` drafts all sixteen tasks at the times above. Review
+`aweek plan` drafts all sixteen tasks at the times above. Review
 and approve.
 
 ## Step 4. Watch the calendar
@@ -138,6 +138,6 @@ the rest run.
 
 For tasks where one agent's output is another's input — say, a
 researcher feeding a drafter who feeds an editor — use
-`/aweek:delegate-task`. The sender doesn't block; the recipient
+`aweek delegate-task`. The sender doesn't block; the recipient
 drains its inbox at the next heartbeat tick. Start with one
 `weekly-ops`. Split when you need to.
