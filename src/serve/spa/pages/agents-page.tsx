@@ -213,8 +213,36 @@ function AgentsPageHeader({
   return (
     <header>
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div className="flex flex-col gap-1">
+        {/*
+         * Mobile overflow guard (Sub-AC 8.1):
+         *
+         * The default shadcn `CardHeader` `p-6` (48 px combined inline
+         * padding) leaves only ~293 px of content width on a 375 px
+         * viewport (after the layout `p-4` and Card border). On a
+         * `flex-row` row that hosts a long description plus a Refresh
+         * button, the un-constrained inner `<div>` (no `min-w-0`,
+         * `flex-1` was implicit) could push past the available space and
+         * force horizontal scroll on `/agents`.
+         *
+         * Three defensive overrides land here:
+         *   1. `gap-3` — explicit horizontal gap so the description and
+         *      button never collide visually when one shrinks.
+         *   2. `p-4 md:p-6` on `CardHeader` — reclaim ~16 px on each
+         *      mobile edge while keeping the canonical desktop padding.
+         *   3. `min-w-0 flex-1` on the description column — opt the
+         *      flex item out of `min-content` width so the `<p>`
+         *      naturally wraps long Week / agent-count text instead of
+         *      forcing the row wider than its parent.
+         *   4. `shrink-0` on the Refresh button — pin it at its
+         *      content width so a wrapped description never crowds it
+         *      below 44 px.
+         *
+         * Desktop layout is preserved bit-for-bit: `md:p-6` restores the
+         * shadcn padding, `flex-1` is layout-transparent when the row has
+         * room, and `shrink-0` is a no-op when nothing pushes the button.
+         */}
+        <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 p-4 md:p-6">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <CardTitle as="h1" className="text-base">
               Agents
             </CardTitle>
@@ -229,6 +257,15 @@ function AgentsPageHeader({
             size="sm"
             onClick={onRefresh}
             disabled={loading}
+            // Touch-target override (Sub-AC 7.2): the shadcn `size="sm"`
+            // recipe is `h-9` (= 36 px) — below the 44 px mobile a11y
+            // minimum. Bump to `min-h-11` (= 44 px) below `md` and snap
+            // back to the canonical `min-h-9` at `md+` so the desktop
+            // header chrome stays visually identical to the baseline.
+            // `shrink-0` (Sub-AC 8.1) keeps the button at its content
+            // width so the row never compresses it past the touch-area
+            // floor when the sibling description wraps.
+            className="min-h-11 shrink-0 md:min-h-9"
           >
             {loading ? 'Refreshing…' : 'Refresh'}
           </Button>
@@ -242,6 +279,21 @@ function AgentsPageHeader({
  * The Overview table. Columns mirror the terminal `renderTable` in
  * `src/skills/summary.js` minus Goals (which no longer have a
  * programmatic count — see plan.md migration).
+ *
+ * Mobile reflow (Sub-AC 5.2): Below the Tailwind `md` breakpoint
+ * (< 768px) the same table markup is visually reflowed into a stacked
+ * card layout — the `<table>` becomes `display: block`, the `<thead>`
+ * is hidden (its column labels are surfaced inline as per-cell labels
+ * instead), and each `<tr>` becomes a vertically stacked card with
+ * `flex flex-col`. Individual `<td>` cells flip to a label/value
+ * `flex` row so users see "Status: ACTIVE", "Tasks: 2/5", etc. The
+ * entire card surface remains the click/keyboard target so the 44px
+ * touch-area requirement is satisfied by the card's natural padding.
+ *
+ * The DOM structure is identical between mobile and desktop — only the
+ * CSS layout switches. This preserves the test contract (rows still
+ * carry `data-agent-slug`, `<table>` / `<th>` / `<tr>` roles still
+ * exist) while delivering a usable mobile presentation.
  */
 function AgentsTable({ rows, onSelect }: AgentsTableProps): React.ReactElement {
   // The table is wrapped in a shadcn/ui Card so the Overview surface
@@ -252,8 +304,8 @@ function AgentsTable({ rows, onSelect }: AgentsTableProps): React.ReactElement {
   return (
     <Card>
       <CardContent className="p-0 sm:p-0">
-        <Table>
-          <TableHeader>
+        <Table className="block md:table">
+          <TableHeader className="hidden md:table-header-group">
             <TableRow>
               <TableHead>Agent</TableHead>
               <TableHead>Status</TableHead>
@@ -261,7 +313,7 @@ function AgentsTable({ rows, onSelect }: AgentsTableProps): React.ReactElement {
               <TableHead className="text-right">Budget</TableHead>
             </TableRow>
           </TableHeader>
-          <TableBody>
+          <TableBody className="block md:table-row-group">
             {rows.map((row) => (
               <TableRow
                 key={row.slug}
@@ -284,19 +336,44 @@ function AgentsTable({ rows, onSelect }: AgentsTableProps): React.ReactElement {
                 role={onSelect ? 'link' : undefined}
                 tabIndex={onSelect ? 0 : undefined}
                 className={cn(
+                  // Mobile (< md): each row is a vertically stacked card
+                  // with comfortable padding so the whole card meets the
+                  // 44×44px touch-target requirement and reads as a
+                  // distinct surface from its neighbours.
+                  // Desktop (md+): revert to native table-row layout so
+                  // the existing table view is byte-for-byte preserved.
+                  'flex flex-col gap-2 p-4 md:table-row md:gap-0 md:p-0',
                   onSelect && 'cursor-pointer focus-within:bg-muted/50',
                 )}
               >
-                <TableCell>
+                <TableCell className="block p-0 md:table-cell md:p-4">
                   <AgentCell row={row} onSelect={onSelect} />
                 </TableCell>
-                <TableCell>
+                <TableCell className="flex items-center justify-between gap-2 p-0 md:table-cell md:p-4">
+                  <span
+                    aria-hidden="true"
+                    className="text-xs font-medium uppercase tracking-wider text-muted-foreground md:hidden"
+                  >
+                    Status
+                  </span>
                   <StatusBadge status={row.status} />
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="flex items-center justify-between gap-2 p-0 tabular-nums md:table-cell md:p-4 md:text-right">
+                  <span
+                    aria-hidden="true"
+                    className="text-xs font-medium uppercase tracking-wider text-muted-foreground md:hidden"
+                  >
+                    Tasks
+                  </span>
                   <TasksCell row={row} />
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="flex items-center justify-between gap-2 p-0 tabular-nums md:table-cell md:p-4 md:text-right">
+                  <span
+                    aria-hidden="true"
+                    className="text-xs font-medium uppercase tracking-wider text-muted-foreground md:hidden"
+                  >
+                    Budget
+                  </span>
                   <BudgetCell row={row} />
                 </TableCell>
               </TableRow>
@@ -333,7 +410,15 @@ function AgentCell({ row, onSelect }: AgentRowProps): React.ReactElement {
             event.stopPropagation();
             onSelect(row.slug);
           }}
-          className="h-auto justify-start p-0 text-left text-foreground no-underline hover:underline focus:underline"
+          // Touch-target override (Sub-AC 7.2): the inline name button
+          // collapses to `h-auto p-0` so the row click target dominates.
+          // Below `md` the row reflows into a stacked card whose padding
+          // already meets 44 px, but bump the button itself to a
+          // `min-h-11` (= 44 px) floor so directly tapping the name on
+          // mobile (where focus-within is the keyboard fallback) still
+          // hits the a11y minimum. Reverts to `min-h-0` at `md+` so the
+          // desktop row stays byte-for-byte identical.
+          className="h-auto min-h-11 justify-start p-0 text-left text-foreground no-underline hover:underline focus:underline md:min-h-0"
         >
           {name}
         </Button>
@@ -468,7 +553,15 @@ function AgentsPageError({ error, onRetry }: ErrorBannerProps): React.ReactEleme
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-0">
-        <Button variant="outline" size="sm" onClick={onRetry}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onRetry}
+          // Touch-target override (Sub-AC 7.2): match the header
+          // Refresh button — bump `size="sm"` (h-9 = 36 px) to a
+          // `min-h-11` (= 44 px) floor below `md`, snap back at `md+`.
+          className="min-h-11 md:min-h-9"
+        >
           Retry
         </Button>
       </CardContent>
@@ -522,7 +615,13 @@ function StaleBanner({ error, onRetry }: ErrorBannerProps): React.ReactElement {
           variant="link"
           size="sm"
           onClick={onRetry}
-          className="h-auto p-0 text-xs"
+          // Touch-target override (Sub-AC 7.2): the stale-banner Retry
+          // is an inline link-style action that collapses to `h-auto p-0`
+          // so the banner copy can reclaim the horizontal rhythm. Below
+          // `md` lift it to a `min-h-11` (= 44 px) floor so the link
+          // still meets the mobile a11y minimum, then snap back to
+          // `min-h-0` at `md+` to keep the desktop banner unchanged.
+          className="h-auto min-h-11 p-0 text-xs md:min-h-0"
         >
           Retry
         </Button>

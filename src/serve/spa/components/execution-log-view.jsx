@@ -185,13 +185,20 @@ export function Markdown({ source }) {
               {children}
             </code>
           ),
+          // Fenced code blocks render inside an explicit `overflow-x-auto`
+          // wrapper so long lines (stack traces, JSON blobs) scroll
+          // horizontally inside the block instead of forcing the page to
+          // scroll at 375px. `max-w-full` keeps the wrapper from outgrowing
+          // its parent even when a flex/grid ancestor lacks `min-w-0`.
           pre: ({ children, ...props }) => (
-            <pre
-              className="overflow-auto rounded-md border bg-background p-3 font-mono text-[12px] leading-relaxed text-foreground"
-              {...props}
-            >
-              {children}
-            </pre>
+            <div className="max-w-full overflow-x-auto rounded-md border bg-background">
+              <pre
+                className="p-3 font-mono text-[12px] leading-relaxed text-foreground"
+                {...props}
+              >
+                {children}
+              </pre>
+            </div>
           ),
           a: (props) => (
             <a

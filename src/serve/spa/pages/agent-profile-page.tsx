@@ -243,13 +243,13 @@ function ProfileHeader({
   return (
     <header>
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div className="flex flex-col gap-1">
-            <CardTitle as="h1" className="text-base">
+        <CardHeader className="flex-row items-center justify-between gap-3 space-y-0">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <CardTitle as="h1" className="break-words text-base">
               {profile.name}
             </CardTitle>
             <CardDescription className="text-xs">
-              <code>{profile.slug}</code>
+              <code className="break-all">{profile.slug}</code>
             </CardDescription>
           </div>
           <Button
@@ -257,6 +257,7 @@ function ProfileHeader({
             size="sm"
             onClick={onRefresh}
             disabled={loading}
+            className="shrink-0"
           >
             {loading ? 'Refreshing…' : 'Refresh'}
           </Button>
@@ -360,7 +361,7 @@ function SystemPromptCard({
       ) : (
         <pre
           data-field="system-prompt"
-          className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md border bg-muted p-3 font-mono text-xs leading-5 text-foreground"
+          className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted p-3 font-mono text-xs leading-5 text-foreground"
         >
           {prompt}
         </pre>
@@ -514,8 +515,18 @@ function BudgetCard({
 // ── Shared ───────────────────────────────────────────────────────────
 
 function Field({ label, children }: FieldProps): React.ReactElement {
+  // Mobile (<768px): stack label above value as a definition list. The
+  // 110px label column on a 375px viewport (after card padding) leaves
+  // ~190px for the value, which truncates dates / paths / multi-token
+  // strings. Stacking restores full-width to the value and treats each
+  // Field as a vertical card row.
+  // Desktop (>=md): preserve the canonical 110px gutter + 1fr value
+  // grid so the existing layout baseline does not regress.
   return (
-    <div className="grid grid-cols-[110px_1fr] items-baseline gap-2 text-sm">
+    <div
+      data-component="profile-field"
+      className="grid grid-cols-1 gap-y-0.5 text-sm md:grid-cols-[110px_1fr] md:items-baseline md:gap-2"
+    >
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <span className="break-all text-foreground">{children}</span>
     </div>

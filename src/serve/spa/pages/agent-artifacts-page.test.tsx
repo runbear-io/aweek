@@ -449,3 +449,136 @@ describe('AgentArtifactsPage — markdown inline rendering', () => {
     expect(within(errorBanner as HTMLElement).getByRole('button', { name: /retry/i })).toBeInTheDocument();
   });
 });
+
+// ── Mobile overflow defense (Sub-AC 8.4) ─────────────────────────────
+
+/**
+ * Sub-AC 8.4 of the mobile polish goal: the Artifacts tab must render
+ * cleanly at 375px viewport width without a horizontal scrollbar even
+ * when artifact records carry pathological inputs (long opaque taskIds,
+ * filenames without break points, descriptions packed with URLs, or a
+ * long agent slug in the header line).
+ *
+ * jsdom has no actual viewport so we can't measure scrollWidth — but we
+ * can lock in the *Tailwind utility classes* that supply the wrapping
+ * behaviour. If a future refactor accidentally drops `break-all` /
+ * `min-w-0` / `truncate` / `shrink-0` from the relevant nodes the test
+ * fails before the SPA ships.
+ */
+describe('AgentArtifactsPage — mobile overflow defense (Sub-AC 8.4)', () => {
+  const PATHOLOGICAL_ARTIFACTS = {
+    slug: 'super-long-agent-slug-with-no-natural-break-points-abcdefghij',
+    artifacts: [
+      {
+        id: 'artifact-zzz',
+        agentId: 'super-long-agent-slug-with-no-natural-break-points-abcdefghij',
+        // taskId without spaces — uuid-style + suffix — would push past
+        // 375px without `break-all` on the surrounding `<code>`.
+        taskId: '01HXYZABCDEFGHJKMNPQRSTUVWXYZ-0123456789-deliverable-final',
+        filePath:
+          '.aweek/agents/super/long/path/with/no/break/points/Some_Extremely_Long_Filename_Without_Spaces_That_Would_Overflow_375px.md',
+        fileName:
+          'Some_Extremely_Long_Filename_Without_Spaces_That_Would_Overflow_375px.md',
+        type: 'report',
+        description:
+          'Description containing a very long URL https://example.com/very/long/path/with/no/spaces/that/can/overflow/the/viewport/at/375px/without/break-words',
+        createdAt: '2026-04-22T14:30:00.000Z',
+        week: '2026-W17',
+        sizeBytes: 4096,
+      },
+    ],
+    summary: {
+      totalArtifacts: 1,
+      byType: { report: 1 },
+      totalSizeBytes: 4096,
+    },
+  };
+
+  it('applies break-all to the slug code in the header so a long slug cannot overflow', async () => {
+    const { container } = renderArtifacts(PATHOLOGICAL_ARTIFACTS);
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-page="agent-artifacts"] header'),
+      ).not.toBeNull();
+    });
+    const header = container.querySelector(
+      '[data-page="agent-artifacts"] header',
+    );
+    const slugCode = header?.querySelector('code');
+    expect(slugCode).not.toBeNull();
+    expect(slugCode!.className).toMatch(/\bbreak-all\b/);
+  });
+
+  it('keeps the Refresh button shrink-0 so it stays visible alongside a long slug', async () => {
+    const { container } = renderArtifacts(PATHOLOGICAL_ARTIFACTS);
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-page="agent-artifacts"] header button'),
+      ).not.toBeNull();
+    });
+    const button = container.querySelector(
+      '[data-page="agent-artifacts"] header button',
+    );
+    expect(button).not.toBeNull();
+    expect(button!.className).toMatch(/\bshrink-0\b/);
+  });
+
+  it('truncates a long filename (min-w-0 + flex-1 + truncate) so it cannot overflow the row', async () => {
+    const { container } = renderArtifacts(PATHOLOGICAL_ARTIFACTS);
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-artifact-id][data-artifact-type]'),
+      ).not.toBeNull();
+    });
+    const row = container.querySelector(
+      '[data-artifact-id][data-artifact-type]',
+    );
+    // The first text node carrying the filename — locate it by its
+    // `truncate` class which the row applies to the filename span only.
+    const filenameSpan = row?.querySelector('span.truncate');
+    expect(filenameSpan).not.toBeNull();
+    expect(filenameSpan!.className).toMatch(/\bmin-w-0\b/);
+    expect(filenameSpan!.className).toMatch(/\bflex-1\b/);
+    expect(filenameSpan!.className).toMatch(/\btruncate\b/);
+  });
+
+  it('break-alls a long taskId code so the metadata line cannot overflow', async () => {
+    const { container } = renderArtifacts(PATHOLOGICAL_ARTIFACTS);
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-artifact-id][data-artifact-type]'),
+      ).not.toBeNull();
+    });
+    const row = container.querySelector(
+      '[data-artifact-id][data-artifact-type]',
+    );
+    // The metadata line surfaces "Task <code>taskId</code>" — find that
+    // code element specifically. There is exactly one `<code>` node per
+    // row in the current markup.
+    const taskCodes = row?.querySelectorAll('code') || [];
+    expect(taskCodes.length).toBeGreaterThan(0);
+    const taskCode = taskCodes[taskCodes.length - 1];
+    expect(taskCode.className).toMatch(/\bbreak-all\b/);
+  });
+
+  it('break-words a long description so URL-packed prose cannot overflow', async () => {
+    const { container } = renderArtifacts(PATHOLOGICAL_ARTIFACTS);
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-artifact-id][data-artifact-type]'),
+      ).not.toBeNull();
+    });
+    const row = container.querySelector(
+      '[data-artifact-id][data-artifact-type]',
+    );
+    // Description is the only `<div>` carrying the muted-foreground text
+    // class with break-words on it directly. Match by text content + the
+    // break-words guard.
+    const descCandidates = Array.from(row?.querySelectorAll('div') || []);
+    const desc = descCandidates.find((el) =>
+      el.textContent?.includes('very long URL'),
+    );
+    expect(desc).not.toBeUndefined();
+    expect(desc!.className).toMatch(/\bbreak-words\b/);
+  });
+});

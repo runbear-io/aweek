@@ -27,10 +27,16 @@ interface DevArgs {
   projectDir: string;
   apiPort: number;
   vitePort: number;
+  host: string;
 }
 
 function parseArgs(argv: string[]): DevArgs {
-  const out: DevArgs = { projectDir: process.cwd(), apiPort: 3000, vitePort: 5173 };
+  const out: DevArgs = {
+    projectDir: process.cwd(),
+    apiPort: 3000,
+    vitePort: 5173,
+    host: '127.0.0.1',
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if ((a === '--project-dir' || a === '--cwd') && argv[i + 1]) {
@@ -39,9 +45,11 @@ function parseArgs(argv: string[]): DevArgs {
       out.apiPort = Number(argv[++i]);
     } else if (a === '--vite-port' && argv[i + 1]) {
       out.vitePort = Number(argv[++i]);
+    } else if (a === '--host' && argv[i + 1]) {
+      out.host = argv[++i];
     } else if (a === '-h' || a === '--help') {
       console.log(
-        'Usage: pnpm dev [-- --project-dir <path>] [--api-port <n>] [--vite-port <n>]',
+        'Usage: pnpm dev [-- --project-dir <path>] [--api-port <n>] [--vite-port <n>] [--host <addr>]',
       );
       process.exit(0);
     }
@@ -69,7 +77,7 @@ function pipe(
   child.stderr.on('data', forward);
 }
 
-const { projectDir, apiPort, vitePort } = parseArgs(process.argv.slice(2));
+const { projectDir, apiPort, vitePort, host } = parseArgs(process.argv.slice(2));
 
 // `--import tsx` registers the tsx ESM loader for the child Node
 // process so `bin/aweek.js` can resolve `.js` import paths that
@@ -86,7 +94,7 @@ const backend = spawn(
     '--port',
     String(apiPort),
     '--host',
-    '127.0.0.1',
+    host,
     '--no-open',
     '--project-dir',
     projectDir,
@@ -101,11 +109,23 @@ pipe(backend, 'api', '\x1b[36m');
 
 const vite = spawn(
   'pnpm',
-  ['exec', 'vite', '--config', 'vite.config.js', '--port', String(vitePort)],
+  [
+    'exec',
+    'vite',
+    '--config',
+    'vite.config.js',
+    '--port',
+    String(vitePort),
+    '--host',
+    host,
+  ],
   {
     cwd: ROOT,
     env: {
       ...process.env,
+      // Vite's proxy is same-machine, so it always targets loopback even
+      // when the backend itself is bound to 0.0.0.0 — no benefit to going
+      // out over the LAN just to land back on this host.
       AWEEK_API_TARGET: `http://127.0.0.1:${apiPort}`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -114,7 +134,7 @@ const vite = spawn(
 pipe(vite, 'spa', '\x1b[35m');
 
 console.log(
-  `aweek dev · api=:${apiPort} · spa=:${vitePort} · project-dir=${projectDir}`,
+  `aweek dev · host=${host} · api=:${apiPort} · spa=:${vitePort} · project-dir=${projectDir}`,
 );
 
 let shuttingDown = false;

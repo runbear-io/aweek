@@ -248,7 +248,16 @@ function HistoryCard({ weeks, limit }) {
             return (
               <li
                 key={week.weekMonday}
-                className="grid grid-cols-[96px_1fr_auto] items-center gap-3 text-xs"
+                data-component="usage-week-row"
+                // Mobile (<768px): stack the date as a header row, then
+                // bar + total share a second row. Treats each weekly
+                // entry as a stacked card row instead of a tight 3-column
+                // table line that crops the bar on a 375px viewport.
+                // Desktop (>=md): re-collapses to the canonical
+                // [96px_1fr_auto] grid via `md:contents` on the inner
+                // wrapper so the bar and total become direct grid
+                // children of the <li> grid.
+                className="flex flex-col gap-1 text-xs md:grid md:grid-cols-[96px_1fr_auto] md:items-center md:gap-3"
               >
                 <time
                   className="tabular-nums text-muted-foreground"
@@ -256,25 +265,27 @@ function HistoryCard({ weeks, limit }) {
                 >
                   {week.weekMonday}
                 </time>
-                <div className="relative h-2 overflow-hidden rounded bg-muted">
+                <div className="flex items-center gap-3 md:contents">
+                  <div className="relative h-2 flex-1 overflow-hidden rounded bg-muted">
+                    <span
+                      className={cn(
+                        'absolute inset-y-0 left-0 rounded',
+                        over ? 'bg-destructive' : 'bg-primary',
+                      )}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
                   <span
                     className={cn(
-                      'absolute inset-y-0 left-0 rounded',
-                      over ? 'bg-destructive' : 'bg-primary',
+                      'shrink-0 tabular-nums',
+                      over
+                        ? 'font-semibold text-destructive'
+                        : 'text-foreground',
                     )}
-                    style={{ width: `${pct}%` }}
-                  />
+                  >
+                    {formatTokens(total)}
+                  </span>
                 </div>
-                <span
-                  className={cn(
-                    'tabular-nums',
-                    over
-                      ? 'font-semibold text-destructive'
-                      : 'text-foreground',
-                  )}
-                >
-                  {formatTokens(total)}
-                </span>
               </li>
             );
           })}
@@ -378,10 +389,16 @@ function StaleBanner({ error, onRetry }) {
   // Neutral muted chrome for the "stale" callout — the stock shadcn
   // palette does not expose a warning token, so we use the muted surface
   // to signal "advisory, not destructive" (parity with `agents-page.jsx`).
+  //
+  // Sub-AC 8.4: `flex-wrap` lets the Retry button drop to a second line
+  // instead of forcing the message past the 375px viewport when the
+  // upstream error message is long. `break-words` on the message span
+  // additionally clips opaque tokens (e.g. URLs in error chains) at any
+  // glyph boundary so a single long word can't blow out the card width.
   return (
     <Card role="alert" className="bg-muted text-muted-foreground">
-      <CardContent className="flex items-center gap-2 p-2.5 text-xs">
-        <span>
+      <CardContent className="flex flex-wrap items-center gap-2 p-2.5 text-xs">
+        <span className="break-words">
           Refresh failed ({error?.message || 'unknown error'}) — showing last-known
           data.
         </span>

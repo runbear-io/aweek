@@ -90,3 +90,4 @@ export {
   type ArtifactSummary,
   type ArtifactWeekGroup,
 } from './use-agent-artifacts.js';
+export { useIsMobile, MOBILE_BREAKPOINT } from './use-is-mobile.js';
