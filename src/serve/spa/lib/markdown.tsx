@@ -112,13 +112,20 @@ const components: Components = {
       {children}
     </blockquote>
   ),
+  // Fenced code blocks: wrap the <pre> in an `overflow-x-auto` scroll
+  // container so long lines scroll horizontally inside the block instead
+  // of pushing the page wider than the viewport (critical at 375px).
+  // `max-w-full` plus the wrapper guarantees the code box never exceeds
+  // its parent's width even when a flex/grid ancestor lacks `min-w-0`.
   pre: ({ children, ...props }) => (
-    <pre
-      className="my-3 overflow-x-auto rounded-md border bg-muted/40 p-3 text-xs leading-5"
-      {...props}
-    >
-      {children}
-    </pre>
+    <div className="my-3 max-w-full overflow-x-auto rounded-md border bg-muted/40">
+      <pre
+        className="p-3 font-mono text-xs leading-5"
+        {...props}
+      >
+        {children}
+      </pre>
+    </div>
   ),
   code: ({ className, children, ...props }) => {
     // Fenced code blocks get a `language-*` class from remark; inline

@@ -39,11 +39,14 @@ import { Bell } from 'lucide-react';
 import * as ButtonModule from './ui/button.jsx';
 import * as SheetModule from './ui/sheet.jsx';
 import { cn } from '../lib/cn.js';
+import { markNotificationRead } from '../lib/api-client.js';
 import {
   useGlobalNotifications,
   type GlobalNotificationRow,
   type UseGlobalNotificationsOptions,
 } from '../hooks/use-global-notifications.js';
+import { NotificationList } from './notification-list.js';
+import { formatRelativeTime as formatRelativeTimeShared } from '../lib/notification-format.js';
 
 // ── Cross-boundary shims for still-`.jsx` shadcn/ui primitives ──────
 //
@@ -219,7 +222,25 @@ export function NotificationBell({
           ) : rows.length === 0 ? (
             <DrawerEmpty />
           ) : (
-            <DrawerList rows={visibleRows} />
+            <NotificationList
+              notifications={visibleRows}
+              onSelect={(row) => {
+                if (row.read === true) return;
+                const opts: Parameters<typeof markNotificationRead>[2] = {};
+                if (baseUrl !== undefined) opts.baseUrl = baseUrl;
+                if (fetchImpl !== undefined) opts.fetch = fetchImpl;
+                const agent = row.agent ?? row.agentId ?? '';
+                if (!agent) return;
+                markNotificationRead(agent, row.id, opts)
+                  .then(() => {
+                    void refresh();
+                  })
+                  .catch(() => {
+                    // Swallow — next refresh tick reconciles, the row stays
+                    // unread so the user can retry.
+                  });
+              }}
+            />
           )}
         </div>
         {error && rows.length > 0 ? (
@@ -233,73 +254,6 @@ export function NotificationBell({
 export default NotificationBell;
 
 // ── Drawer subcomponents ─────────────────────────────────────────────
-
-interface DrawerListProps {
-  rows: ReadonlyArray<GlobalNotificationRow>;
-}
-
-function DrawerList({ rows }: DrawerListProps): React.ReactElement {
-  return (
-    <ul
-      data-component="notification-bell-list"
-      className="flex flex-col divide-y divide-border"
-    >
-      {rows.map((row) => (
-        <DrawerRow key={`${row.agent}:${row.id}`} row={row} />
-      ))}
-    </ul>
-  );
-}
-
-interface DrawerRowProps {
-  row: GlobalNotificationRow;
-}
-
-function DrawerRow({ row }: DrawerRowProps): React.ReactElement {
-  return (
-    <li
-      data-component="notification-bell-row"
-      data-notification-id={row.id}
-      data-agent-slug={row.agent}
-      data-read={row.read ? 'true' : 'false'}
-      className={cn(
-        'flex flex-col gap-1 px-6 py-3 text-sm',
-        !row.read && 'bg-muted/40',
-      )}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span
-          className={cn(
-            'truncate text-sm',
-            row.read
-              ? 'font-medium text-foreground'
-              : 'font-semibold text-foreground',
-          )}
-        >
-          {row.title}
-        </span>
-        {!row.read ? (
-          <span
-            aria-hidden="true"
-            className="inline-block h-2 w-2 shrink-0 rounded-full bg-destructive"
-          />
-        ) : null}
-      </div>
-      <p className="line-clamp-2 text-xs text-muted-foreground">{row.body}</p>
-      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-        <span className="truncate">
-          <code className="rounded bg-muted px-1 py-0.5 text-[10px] text-foreground">
-            {row.agent}
-          </code>
-          {row.source === 'system' ? (
-            <span className="ml-1 uppercase tracking-wider">system</span>
-          ) : null}
-        </span>
-        <time dateTime={row.createdAt}>{formatRelativeTime(row.createdAt)}</time>
-      </div>
-    </li>
-  );
-}
 
 function DrawerEmpty(): React.ReactElement {
   return (
@@ -391,33 +345,10 @@ function DrawerStaleBanner({
 // ── Time helpers ─────────────────────────────────────────────────────
 
 /**
- * Format an ISO timestamp as a compact relative-time label
- * (e.g. `"3m"`, `"2h"`, `"5d"`). Falls back to the raw ISO string when
- * the input is unparseable so the row at least stays dateTime-aware.
- *
- * Exported for `notification-bell.test.tsx` to pin the rounding contract.
+ * Re-export of the canonical formatter in `lib/notification-format` so
+ * the bell's existing test suite (`notification-bell.test.tsx`) can keep
+ * pinning the rounding contract without reaching into `lib/`. There is
+ * exactly one implementation now — the shared one — and the inline
+ * duplicate that used to live here was deleted.
  */
-export function formatRelativeTime(
-  iso: string | null | undefined,
-  now: Date = new Date(),
-): string {
-  if (typeof iso !== 'string' || iso.length === 0) return '';
-  const ts = Date.parse(iso);
-  if (!Number.isFinite(ts)) return iso;
-  const diffMs = now.getTime() - ts;
-  if (diffMs < 0) return 'just now';
-  const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 45) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks}w`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo`;
-  const years = Math.floor(days / 365);
-  return `${years}y`;
-}
+export const formatRelativeTime = formatRelativeTimeShared;

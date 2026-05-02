@@ -190,13 +190,19 @@ function PlanHeader({
   return (
     <header data-plan-header="true">
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div className="flex flex-col gap-1">
-            <CardTitle as="h1" className="text-base">
+        <CardHeader className="flex-row items-center justify-between gap-3 space-y-0">
+          {/* Sub-AC 3.1: `min-w-0 flex-1` lets the title column shrink
+              below its intrinsic width so long agent names + slugs wrap
+              instead of pushing the Refresh button past the 375px
+              viewport edge. `break-words` on the inline slug code
+              prevents an unbroken slug token from overflowing the
+              CardDescription. */}
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <CardTitle as="h1" className="break-words text-base">
               {plan.name} — Plan
             </CardTitle>
-            <CardDescription className="text-xs">
-              <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+            <CardDescription className="break-words text-xs">
+              <code className="break-all rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
                 {plan.slug}
               </code>{' '}
               · {plan.weeklyPlans.length} weekly plan
@@ -208,6 +214,7 @@ function PlanHeader({
             size="sm"
             onClick={onRefresh}
             disabled={loading}
+            className="shrink-0"
           >
             {loading ? 'Refreshing…' : 'Refresh'}
           </Button>
@@ -233,8 +240,14 @@ function PlanMarkdown({ plan }: PlanSectionProps): React.ReactElement {
   return (
     <Card data-plan-card="markdown">
       <CardContent className="p-4 pt-4 sm:p-6 sm:pt-6">
+        {/* Sub-AC 3.1: `break-words` lets long URLs / unspaced
+            identifiers in plan.md wrap inside the article instead of
+            pushing the Card past the 375px viewport. The shared
+            `<Markdown>` wraps `<pre>` and `<table>` in their own
+            `overflow-x-auto` scrollers — this just guards inline
+            content (links, paragraphs, list items). */}
         <article
-          className="max-w-none text-sm leading-6 text-foreground"
+          className="max-w-none break-words text-sm leading-6 text-foreground"
           data-plan-body="true"
         >
           <Markdown source={plan.markdown} />
@@ -328,7 +341,9 @@ function WatchlistSection({ watchlist }: WatchlistSectionProps): React.ReactElem
         </CardTitle>
       </CardHeader>
       <CardContent className="p-4 pt-0 sm:p-6 sm:pt-0">
-        <article className="max-w-none text-sm leading-6 text-foreground" data-watchlist-body="true">
+        {/* Sub-AC 3.1: see PlanMarkdown — `break-words` keeps long
+            inline content from overflowing the Card at 375px. */}
+        <article className="max-w-none break-words text-sm leading-6 text-foreground" data-watchlist-body="true">
           <Markdown source={watchlist.markdown} />
         </article>
       </CardContent>
@@ -360,11 +375,14 @@ function StrategiesSection({ strategies }: StrategiesSectionProps): React.ReactE
               className="group rounded-md border bg-muted/40"
               data-strategy-name={strategy.name}
             >
-              <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold text-foreground">
+              {/* Sub-AC 3.1: `break-words` lets long strategy filenames
+                  (e.g., kebab-case slugs) wrap inside the summary at
+                  375px instead of overflowing the details container. */}
+              <summary className="cursor-pointer select-none break-words px-3 py-2 text-xs font-semibold text-foreground">
                 {strategy.name}
               </summary>
               <div className="border-t px-3 py-3">
-                <article className="max-w-none text-sm leading-6 text-foreground">
+                <article className="max-w-none break-words text-sm leading-6 text-foreground">
                   <Markdown source={strategy.markdown} />
                 </article>
               </div>

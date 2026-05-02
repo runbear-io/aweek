@@ -25,9 +25,12 @@
  * Visual + interaction goals:
  *   - Fully responsive: the grid is wrapped in an overflow-x-auto scroll
  *     container so narrow viewports keep the whole week accessible without
- *     collapsing columns. The `minmax(120px, 1fr)` column track already
- *     enforces a per-column floor, so day columns stay legible when scrolled
- *     without any additional arbitrary min-width on the grid itself.
+ *     collapsing columns. The column track widens at the Tailwind `md`
+ *     breakpoint — `52px + N × minmax(88px, 1fr)` below `md` so a 3-day
+ *     mobile strip totals ~316 px and fits a 375 px viewport without
+ *     forcing horizontal scroll on the grid wrapper, then expands to
+ *     `72px + N × minmax(120px, 1fr)` at `md+` so the desktop layout
+ *     stays visually identical to the historical baseline.
  *   - Sticky hour column + sticky header row so scrolling a long grid keeps
  *     the axes visible (shadcn table pattern, reused here for the grid).
  *   - Tailwind-tone-per-status chips with consistent border + background
@@ -64,6 +67,7 @@ import * as React from 'react';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 
 import { cn } from '../lib/cn.js';
+import { useIsMobile } from '../hooks/use-is-mobile.js';
 
 // ── Cross-boundary types ────────────────────────────────────────────
 
@@ -193,6 +197,19 @@ export const REVIEW_TONE = 'border-amber-400/50 bg-amber-500/10 text-amber-200';
 
 // ── Public component ────────────────────────────────────────────────
 
+/**
+ * Number of day columns the grid renders. Constrained to a fixed set so
+ * the grid never silently drops below 1 or past the calendar week (7).
+ *
+ * - `1` / `3` are the mobile layouts (AC 4 sub-AC 2): a single-day or
+ *   three-day strip that fits a 375px viewport without horizontal
+ *   scrolling.
+ * - `5` is the desktop weekday default (Mon–Fri).
+ * - `7` is the full week, used when tasks land on Sat/Sun or the caller
+ *   explicitly opts in via `showWeekend`.
+ */
+export type DaysToShow = 1 | 3 | 5 | 7;
+
 export interface CalendarGridProps {
   /** Tasks to render in the grid (see `lib/api-client.js#CalendarTask`). */
   tasks: ReadonlyArray<CalendarTask>;
@@ -208,6 +225,24 @@ export interface CalendarGridProps {
   endHour?: number;
   /** Force the 7-day mode even when no tasks land on the weekend. */
   showWeekend?: boolean;
+  /**
+   * Override the auto-computed column count. When provided, the grid
+   * renders exactly `daysToShow` consecutive day columns starting from
+   * `anchorDayKey` (or the closest valid offset that still fits a full
+   * `daysToShow` window inside Mon–Sun). Used by the mobile layout to
+   * collapse the 7-day grid into a 1- or 3-day strip below the Tailwind
+   * `md` breakpoint. When `undefined`, the grid falls back to the
+   * existing 5-day-default-with-auto-weekend-extension behaviour.
+   */
+  daysToShow?: DaysToShow;
+  /**
+   * The leftmost day column when `daysToShow` is set. Defaults to `'mon'`
+   * so the grid mirrors the desktop layout when no anchor is provided.
+   * The grid clamps the anchor backwards if it would push the visible
+   * window past Sunday — e.g. anchor `'sun'` with `daysToShow=3` slides
+   * back to start at Friday so three full columns still render.
+   */
+  anchorDayKey?: DayKey;
   /** Caller-supplied class names merged with the default Tailwind recipe. */
   className?: string;
   /**
@@ -228,6 +263,8 @@ export function CalendarGrid({
   startHour = DEFAULT_START_HOUR,
   endHour = DEFAULT_END_HOUR,
   showWeekend,
+  daysToShow,
+  anchorDayKey,
   className,
   onSelectTask,
 }: CalendarGridProps): React.ReactElement {
@@ -248,9 +285,37 @@ export function CalendarGrid({
     return false;
   }, [safeTasks]);
 
-  const dayCount = showWeekend || weekendHasTasks ? 7 : 5;
-  const dayKeys = DAY_KEYS.slice(0, dayCount);
-  const dayLabels = DAY_LABELS.slice(0, dayCount);
+  // When the caller explicitly sets `daysToShow`, that value wins outright
+  // — it's how the mobile layout collapses the 7-day grid into a 1- or
+  // 3-day strip. The anchor + clamp keep the visible window inside Mon–Sun
+  // even when the requested anchor sits late in the week (e.g. `'sun'`
+  // with three columns shifts back to start at Friday so three full
+  // columns still fit). When `daysToShow` is `undefined`, fall back to
+  // the historical 5-day default with the auto-weekend extension.
+  const { dayKeys, dayLabels, dayCount } = useMemo<{
+    dayKeys: ReadonlyArray<DayKey>;
+    dayLabels: ReadonlyArray<string>;
+    dayCount: number;
+  }>(() => {
+    if (typeof daysToShow === 'number') {
+      const requested = Math.max(1, Math.min(7, daysToShow));
+      const anchorIdx = anchorDayKey ? DAY_KEYS.indexOf(anchorDayKey) : 0;
+      const safeAnchorIdx = anchorIdx < 0 ? 0 : anchorIdx;
+      const startIdx = Math.min(safeAnchorIdx, 7 - requested);
+      const endIdx = startIdx + requested;
+      return {
+        dayKeys: DAY_KEYS.slice(startIdx, endIdx),
+        dayLabels: DAY_LABELS.slice(startIdx, endIdx),
+        dayCount: requested,
+      };
+    }
+    const fallbackCount = showWeekend || weekendHasTasks ? 7 : 5;
+    return {
+      dayKeys: DAY_KEYS.slice(0, fallbackCount),
+      dayLabels: DAY_LABELS.slice(0, fallbackCount),
+      dayCount: fallbackCount,
+    };
+  }, [daysToShow, anchorDayKey, showWeekend, weekendHasTasks]);
 
   const hours = useMemo<number[]>(() => {
     const out: number[] = [];
@@ -275,6 +340,20 @@ export function CalendarGrid({
   }, [safeTasks, startHour, endHour]);
 
   const sectionRef = useRef<HTMLElement | null>(null);
+
+  // Sub-AC 2.2 — fit the calendar grid inside a 375 px viewport without
+  // forcing horizontal scroll on the wrapper. The desktop track
+  // (`72px + 5 × minmax(120px, 1fr)` = 672 px) is wider than the mobile
+  // viewport's main column (≈ 343 px after the layout's `p-4` gutter), so
+  // even after AC 4 sub-AC 2 collapsed the grid to a 3-day strip the
+  // mobile total was still `72 + 3 × 120 = 432 px`. Below `md` we use a
+  // tighter set of tracks (`52px + N × minmax(88px, 1fr)`) so the 3-day
+  // strip totals ~316 px and the `1fr` flexes to fill the actual main
+  // column width without spilling. Desktop layouts (`md+`) keep the
+  // historical 72/120 tracks unchanged.
+  const isMobile = useIsMobile();
+  const hourColumnWidth = isMobile ? 52 : 72;
+  const dayColumnMinWidth = isMobile ? 88 : 120;
 
   // Position the scroll one hour above the earliest task on first render
   // (and whenever the earliest hour changes — e.g. switching weeks). Uses
@@ -305,7 +384,12 @@ export function CalendarGrid({
     <section
       ref={sectionRef}
       className={cn(
-        'overflow-x-auto rounded-md border border-border bg-muted/20',
+        // Sub-AC 2.2 — `max-w-full` keeps the wrapper bounded by its
+        // parent's width even when the inner grid would otherwise want
+        // to grow past it; combined with `overflow-x-auto` this
+        // contains horizontal scroll inside the wrapper rather than
+        // pushing the whole page sideways at 375 px.
+        'max-w-full overflow-x-auto rounded-md border border-border bg-muted/20',
         className,
       )}
       data-calendar-grid="true"
@@ -313,7 +397,7 @@ export function CalendarGrid({
       <div
         className="grid text-xs"
         style={{
-          gridTemplateColumns: `72px repeat(${dayCount}, minmax(120px, 1fr))`,
+          gridTemplateColumns: `${hourColumnWidth}px repeat(${dayCount}, minmax(${dayColumnMinWidth}px, 1fr))`,
         }}
         role="grid"
         aria-label={agentId ? `Weekly calendar for ${agentId}` : 'Weekly calendar'}
@@ -325,23 +409,31 @@ export function CalendarGrid({
             day-header cells (z-10) where they meet. */}
         <div
           role="columnheader"
-          className="sticky left-0 top-0 z-20 border-b border-r border-border bg-muted/60 px-2 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground"
+          className="sticky left-0 top-0 z-20 border-b border-r border-border bg-muted/60 px-1 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground md:px-2"
         >
           Hour
         </div>
-        {dayKeys.map((dayKey, idx) => (
-          <div
-            key={dayKey}
-            role="columnheader"
-            data-day={dayKey}
-            className="sticky top-0 z-10 border-b border-r border-border bg-muted/40 px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-foreground"
-          >
-            <div>{dayLabels[idx]}</div>
-            <div className="text-[10px] font-normal text-muted-foreground">
-              {formatDayDate(weekMondayMs, idx, timeZone)}
+        {dayKeys.map((dayKey, idx) => {
+          // The date label is offset from Monday, not from the start of
+          // the visible window — when the mobile layout slices a 1- or
+          // 3-day strip starting at, say, Wednesday, the absolute offset
+          // from Monday is what `formatDayDate` needs to render the right
+          // calendar date.
+          const absoluteOffset = DAY_KEYS.indexOf(dayKey);
+          return (
+            <div
+              key={dayKey}
+              role="columnheader"
+              data-day={dayKey}
+              className="sticky top-0 z-10 border-b border-r border-border bg-muted/40 px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-foreground"
+            >
+              <div>{dayLabels[idx]}</div>
+              <div className="text-[10px] font-normal text-muted-foreground">
+                {formatDayDate(weekMondayMs, absoluteOffset, timeZone)}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {/* Hour rows */}
         {hours.map((hour) => (
@@ -349,7 +441,7 @@ export function CalendarGrid({
             <div
               role="rowheader"
               data-hour={hour}
-              className="sticky left-0 z-10 border-b border-r border-border bg-muted/60 px-2 py-2 text-right text-[11px] tabular-nums text-muted-foreground"
+              className="sticky left-0 z-10 border-b border-r border-border bg-muted/60 px-1 py-2 text-right text-[10px] tabular-nums text-muted-foreground md:px-2 md:text-[11px]"
             >
               {String(hour).padStart(2, '0')}:00
             </div>
@@ -457,12 +549,18 @@ export function TaskChip({
   // layout helpers) but no longer rendered as visible chip prefix —
   // task chips read better at a glance with just the icon + label.
   void number;
+  // Sub-AC 2.2: `min-w-0 flex-1` lets the label shrink + grow inside the
+  // narrower mobile day-column tracks (88 px min) without pushing past
+  // the chip's own bounds. Without it, flex's default `min-width: auto`
+  // sizes the label to its content and would force the chip wider than
+  // the cell on long titles, manifesting as horizontal overflow inside
+  // the calendar grid wrapper at 375 px.
   const innerContent = (
-    <div className="flex items-start gap-1">
-      <span aria-hidden="true" className="font-mono">
+    <div className="flex w-full items-start gap-1.5 md:gap-1">
+      <span aria-hidden="true" className="shrink-0 font-mono">
         {icon}
       </span>
-      <span className="line-clamp-2 break-words">{label}</span>
+      <span className="min-w-0 flex-1 line-clamp-2 break-words">{label}</span>
       {minuteBadge ? (
         <span
           className="ml-auto shrink-0 font-mono tabular-nums text-[10px] opacity-70"
@@ -474,13 +572,22 @@ export function TaskChip({
     </div>
   );
 
+  // Mobile-first sizing: `min-h-[44px]` + larger padding/typography below
+  // `md` keeps task chips at the 44×44 px touch target the dashboard's
+  // mobile polish goal calls for, while the `md:` overrides revert to the
+  // compact desktop density (the original `px-1.5 py-1 text-[11px]` look)
+  // so the weekly grid still fits Mon–Fri on a laptop without churn.
+  const chipBaseClass =
+    'flex min-h-[44px] w-full items-stretch rounded border px-2 py-2 text-left text-xs leading-snug md:min-h-0 md:px-1.5 md:py-1 md:text-[11px]';
+
   if (onSelect) {
     return (
       <button
         type="button"
         onClick={() => onSelect(task)}
         className={cn(
-          'w-full rounded border px-1.5 py-1 text-left text-[11px] leading-snug transition-colors cursor-pointer hover:ring-1 hover:ring-ring focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+          chipBaseClass,
+          'transition-colors cursor-pointer hover:ring-1 hover:ring-ring focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
           tone,
         )}
         {...dataAttrs}
@@ -491,10 +598,7 @@ export function TaskChip({
   }
 
   return (
-    <div
-      className={cn('rounded border px-1.5 py-1 text-[11px] leading-snug', tone)}
-      {...dataAttrs}
-    >
+    <div className={cn(chipBaseClass, tone)} {...dataAttrs}>
       {innerContent}
     </div>
   );

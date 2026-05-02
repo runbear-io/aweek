@@ -130,11 +130,17 @@ function SettingsPageHeader({
   loading,
   onRefresh,
 }: SettingsPageHeaderProps): React.ReactElement {
+  // Sub-AC 5 (mobile horizontal-overflow): the inner column needs `min-w-0`
+  // so flex's default `min-width: auto` (= intrinsic content width) cannot
+  // push the Refresh button off the right edge at 375px. The inline
+  // `<code>.aweek/config.json</code>` chunk would otherwise contribute its
+  // ~119px intrinsic min-width and grow the row beyond the 295px header
+  // content slot once any sibling text were added.
   return (
     <header>
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div className="flex flex-col gap-1">
+        <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+          <div className="flex min-w-0 flex-col gap-1">
             <CardTitle as="h1" className="text-base">
               Settings
             </CardTitle>
@@ -151,6 +157,7 @@ function SettingsPageHeader({
             size="sm"
             onClick={onRefresh}
             disabled={loading}
+            className="shrink-0"
           >
             {loading ? 'Refreshing…' : 'Refresh'}
           </Button>
@@ -223,6 +230,14 @@ interface ConfigRowProps {
 
 function ConfigRow({ item }: ConfigRowProps): React.ReactElement {
   return (
+    // Sub-AC 5 (mobile horizontal-overflow): the `<code>` value is an inline
+    // monospace chunk whose content (timezones, config paths) is typically a
+    // single token with no whitespace break-points. Add `break-words` so any
+    // future value longer than the ~279px row content slot at 375px wraps
+    // gracefully instead of overflowing horizontally. `min-w-0` on the `<dd>`
+    // lets the code element constrain to the column width on mobile (where
+    // `<dd>` is full-width via cross-axis stretch); on `sm:` it keeps the
+    // existing right-aligned shrink-0 behaviour for the desktop baseline.
     <div
       className="flex flex-col gap-1 px-6 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4"
       data-setting-key={item.key}
@@ -235,8 +250,8 @@ function ConfigRow({ item }: ConfigRowProps): React.ReactElement {
           {item.description}
         </span>
       </dt>
-      <dd className="flex shrink-0 items-start sm:justify-end">
-        <code className="rounded bg-muted px-2 py-1 text-xs text-foreground tabular-nums">
+      <dd className="flex min-w-0 items-start sm:shrink-0 sm:justify-end">
+        <code className="rounded bg-muted px-2 py-1 text-xs text-foreground tabular-nums break-words">
           {formatConfigValue(item.value)}
         </code>
       </dd>
@@ -280,7 +295,14 @@ function SettingsPageError({
         <CardTitle as="h2" className="text-sm text-destructive">
           Failed to load settings.
         </CardTitle>
-        <CardDescription className="text-xs text-destructive/80">
+        {/*
+          Sub-AC 5 (mobile horizontal-overflow): fetch errors typically embed
+          unbreakable URL tokens (e.g. `http://localhost:3000/api/config`)
+          that exceed the 295px header content slot at 375px. `break-words`
+          enables overflow-wrap so long URLs break at the right edge instead
+          of pushing the card past the viewport.
+        */}
+        <CardDescription className="text-xs text-destructive/80 break-words">
           {(error as Error | null)?.message ?? String(error)}
         </CardDescription>
       </CardHeader>

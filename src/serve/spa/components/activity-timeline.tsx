@@ -259,7 +259,7 @@ export function ActivityTimeline({
         <ol
           role="list"
           aria-label="Chronological activity timeline"
-          className="relative divide-y divide-border"
+          className="relative flex flex-col gap-2 p-2 md:gap-0 md:p-0 md:divide-y md:divide-border"
         >
           {items.map((item) => (
             <TimelineRow
@@ -313,11 +313,18 @@ function TimelineRow({
           }
         }
       : undefined;
+  // Mobile (< 768px): the row wears its own card chrome (rounded border,
+  // bg-card surface, padded content) and — when clickable — promotes
+  // itself into a 44×44px keyboard-and-touch target with a visible
+  // focus-visible ring (AC 60202, Sub-AC 2). Desktop (≥ 768px): chrome,
+  // padding, and min-height collapse via `md:` overrides so the row
+  // settles back into the canonical `divide-y` strip layout — the
+  // existing UX baseline at and above the breakpoint is preserved.
   return (
     <li
-      className={`flex items-start gap-3 px-4 py-2.5 ${
+      className={`flex items-start gap-3 rounded-md border border-border bg-card p-3 min-h-[44px] md:min-h-0 md:rounded-none md:border-0 md:bg-transparent md:px-4 md:py-2.5 ${
         clickable
-          ? 'cursor-pointer transition-colors hover:bg-muted/50 focus-within:bg-muted/50'
+          ? 'min-w-[44px] cursor-pointer transition-colors hover:bg-muted/50 focus-within:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 md:min-w-0'
           : ''
       }`}
       data-timeline-source={item.source}
@@ -366,7 +373,7 @@ function SourceRail({ source }: SourceRailProps): React.ReactElement {
           className="mt-1.5 h-2.5 w-2.5 rounded-full border border-violet-300/70 bg-violet-500"
           data-rail-dot="execution"
         />
-        <span className="w-px flex-1 bg-border" />
+        <span className="hidden w-px flex-1 bg-border md:block" />
       </div>
     );
   }
@@ -376,7 +383,7 @@ function SourceRail({ source }: SourceRailProps): React.ReactElement {
         className="mt-1.5 h-2.5 w-2.5 rounded-full border border-sky-300/70 bg-sky-500"
         data-rail-dot="activity"
       />
-      <span className="w-px flex-1 bg-border" />
+      <span className="hidden w-px flex-1 bg-border md:block" />
     </div>
   );
 }
@@ -431,8 +438,8 @@ function ActivityRowBody({
           {String(status)}
         </span>
         {taskId ? (
-          <span className="text-[11px] text-muted-foreground">
-            Task <code>{taskId}</code>
+          <span className="min-w-0 break-all text-[11px] text-muted-foreground">
+            Task <code className="break-all">{taskId}</code>
           </span>
         ) : null}
         {durationMs != null ? (
@@ -442,7 +449,7 @@ function ActivityRowBody({
         ) : null}
       </div>
       {title ? (
-        <div className="text-sm text-foreground">{String(title)}</div>
+        <div className="break-words text-sm text-foreground">{String(title)}</div>
       ) : null}
     </>
   );
@@ -497,15 +504,15 @@ function ExecutionRowBody({
           {String(status)}
         </span>
         {windowStart && windowEnd && windowStart !== windowEnd ? (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="min-w-0 break-words text-[11px] text-muted-foreground">
             window {formatDate(windowStart)} → {formatDate(windowEnd)}
           </span>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground">
         {row?.taskId ? (
-          <span>
-            Task <code className="text-[11px]">{row.taskId}</code>
+          <span className="min-w-0 break-all">
+            Task <code className="break-all text-[11px]">{row.taskId}</code>
           </span>
         ) : null}
         {durationMs != null ? <span>{formatDuration(durationMs)}</span> : null}
@@ -515,7 +522,7 @@ function ExecutionRowBody({
         ) : null}
       </div>
       {error ? (
-        <div className="rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">
+        <div className="break-words rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">
           {String(error)}
         </div>
       ) : null}

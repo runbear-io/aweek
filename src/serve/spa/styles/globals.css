@@ -105,3 +105,51 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
+
+/*
+ * ── Mobile touch-target floor for shadcn/ui primitives (Sub-AC 7.4) ───
+ *
+ * Below the Tailwind `md` breakpoint (< 768 px) every interactive shadcn
+ * primitive used on mobile must hit a 44×44 px hit area to satisfy the
+ * mobile a11y minimum. Two primitives ship with sub-44 px defaults that
+ * cannot be hand-edited (project policy bans hand-edits to
+ * `components/ui/*.jsx`):
+ *
+ *   1. `<SheetContent>` bakes its close `<button>` directly into the
+ *      primitive (`absolute right-4 top-4` X-icon). No call site can
+ *      override its className. Below `md` we expand the hit area to
+ *      44×44 px — the visual X icon stays the same, only the padded
+ *      target around it grows. The selector targets the radix dialog
+ *      close affordance via the stable utility classes the primitive
+ *      itself emits, scoped to a `[role="dialog"]` ancestor so unrelated
+ *      `right-4 top-4` buttons are unaffected.
+ *
+ *   2. `<Input>` and `<Textarea>` default to `h-9` (= 36 px), and form
+ *      controls inside any future mobile sheet/drawer flow must reach
+ *      44 px. We bump the minimum block size on the canonical
+ *      `data-component` markers the primitives already emit (`input`,
+ *      `textarea`); the responsive utilities in shadcn primitives still
+ *      win at and above `md`, so desktop layout stays visually
+ *      identical to the current baseline.
+ *
+ * The override is intentionally a media-scoped @layer rule rather than
+ * a utility class so it applies uniformly to every Sheet/drawer/form
+ * mounted across the app — including drawers nested inside future
+ * pages — without each call site needing to re-thread responsive
+ * className overrides.
+ */
+@layer utilities {
+  @media (max-width: 767px) {
+    [role="dialog"] > button.absolute.right-4.top-4 {
+      @apply inline-flex h-11 w-11 items-center justify-center;
+    }
+
+    [data-component="input"] {
+      @apply min-h-11;
+    }
+
+    [data-component="textarea"] {
+      @apply min-h-11;
+    }
+  }
+}

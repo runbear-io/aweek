@@ -187,13 +187,25 @@ function ArtifactsHeader({
   const totalSize = data.summary?.totalSizeBytes ?? 0;
   return (
     <header className="flex flex-col gap-2 border-b pb-3">
-      <div className="flex items-center justify-between">
-        <div className="flex flex-col gap-1">
+      {/*
+        Sub-AC 8.4: At 375px viewport width a long agent slug in the
+        sub-line (e.g. a 30+ character slug or one with no break points)
+        could push the Refresh button past the viewport edge. Two defensive
+        guards work together:
+          - `min-w-0` + `flex-1` on the title column lets it shrink instead
+            of overflowing its flex parent.
+          - `break-all` on the slug `<code>` clips overlong slugs to the
+            available column width without producing a horizontal scrollbar.
+          - `shrink-0` on the Refresh button keeps it visible at the right
+            edge instead of being squeezed to zero width.
+      */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
             Artifacts
           </h1>
           <p className="text-xs text-muted-foreground">
-            <code>{data.slug}</code> · {total} artifact
+            <code className="break-all">{data.slug}</code> · {total} artifact
             {total === 1 ? '' : 's'}
             {totalSize > 0 ? ` · ${formatBytes(totalSize)} total` : ''}
           </p>
@@ -203,6 +215,7 @@ function ArtifactsHeader({
           size="sm"
           onClick={onRefresh}
           disabled={loading}
+          className="shrink-0"
         >
           {loading ? 'Refreshing…' : 'Refresh'}
         </Button>
@@ -312,13 +325,21 @@ function ArtifactRow({
       data-artifact-id={record.id}
       data-artifact-type={record.type}
     >
+      {/*
+        Sub-AC 8.4: At 375px viewport width a long fileName (or filePath
+        fallback) without natural break points must not push the row past
+        the viewport edge. `min-w-0 flex-1 truncate` on the filename span
+        and `shrink-0` on the type Badge ensure the filename receives all
+        available space and clips with an ellipsis, while the badge stays
+        at its intrinsic width on the right edge.
+      */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
           {record.fileName || record.filePath}
         </span>
         <Badge
           variant={artifactTypeBadgeVariant(record.type)}
-          className="text-[10px] uppercase tracking-wider"
+          className="shrink-0 text-[10px] uppercase tracking-wider"
         >
           {record.type}
         </Badge>
@@ -333,13 +354,23 @@ function ArtifactRow({
           </time>
         ) : null}
         {record.taskId ? (
-          <span className="text-[11px] text-muted-foreground">
-            Task <code>{record.taskId}</code>
+          // Sub-AC 8.4: Task IDs can be long opaque strings (UUIDs, slug-
+          // hash combos). At 375px viewport width an unbroken taskId would
+          // force the row past the viewport edge — `break-all` on the
+          // `<code>` and `min-w-0` on its parent let the value wrap onto
+          // the next line instead of producing a horizontal scrollbar.
+          <span className="min-w-0 text-[11px] text-muted-foreground">
+            Task <code className="break-all">{record.taskId}</code>
           </span>
         ) : null}
       </div>
       {record.description ? (
-        <div className="text-xs text-muted-foreground">
+        // Sub-AC 8.4: Descriptions are user-supplied free text; long URLs
+        // or single tokens without spaces would otherwise overflow the
+        // 375px row at mobile widths. `break-words` lets the browser break
+        // long tokens at any point as a last resort while keeping normal
+        // word-boundary breaking for typical prose.
+        <div className="break-words text-xs text-muted-foreground">
           {record.description}
         </div>
       ) : null}

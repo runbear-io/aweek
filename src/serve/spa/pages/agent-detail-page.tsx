@@ -50,6 +50,15 @@
 
 import * as React from 'react';
 import { Link } from 'react-router-dom';
+import {
+  Activity,
+  BookOpen,
+  Calendar,
+  FileBox,
+  ListChecks,
+  User,
+  type LucideIcon,
+} from 'lucide-react';
 
 import * as BreadcrumbModule from '../components/ui/breadcrumb.jsx';
 import * as ButtonModule from '../components/ui/button.jsx';
@@ -388,7 +397,16 @@ export function AgentDetailPage({
       // `flex-1 min-h-0` lets the calendar tab plumb a flex chain down to
       // its internal CalendarGrid. Non-calendar tabs are unaffected — their
       // children flow at content height inside this section.
-      className="flex min-h-0 flex-1 flex-col gap-3"
+      //
+      // Sub-AC 2.1: `min-w-0` is the flex-item escape hatch that prevents
+      // wide tab body content (e.g. a calendar grid, log line, or table)
+      // from pushing the entire section past the 375px viewport on mobile.
+      // Without it, a flex column's intrinsic width is the maximum of its
+      // children, which overrides the parent's `min-w-0` constraint and
+      // produces a horizontal scrollbar on the `<main>` container. The
+      // override is unconditional because it has no visual effect on
+      // desktop (the section still grows to its parent's full width).
+      className="flex min-h-0 min-w-0 flex-1 flex-col gap-3"
       data-page="agent-detail"
       data-agent-slug={slug}
       data-active-tab={activeTab}
@@ -399,7 +417,13 @@ export function AgentDetailPage({
       <Tabs
         value={activeTab}
         onValueChange={handleTabChange}
-        className={cn('flex flex-col gap-4', isCalendar && 'min-h-0 flex-1')}
+        // Sub-AC 2.1: `min-w-0` mirrors the section guard so the Radix
+        // Tabs root (a flex column itself) can't be widened by its
+        // TabsContent children past the parent section's width at 375px.
+        className={cn(
+          'flex min-w-0 flex-col gap-4',
+          isCalendar && 'min-h-0 flex-1',
+        )}
       >
         <TabsContent
           value="calendar"
@@ -471,29 +495,57 @@ interface DetailBreadcrumbProps {
  * slug segments are navigable via react-router `<Link>`; the active
  * tab is rendered as `BreadcrumbPage` so assistive tech announces it
  * as the user's current position.
+ *
+ * Mobile compaction (Sub-AC 2): below the `md` (768px) breakpoint the
+ * parent `Agents` and `:slug` crumbs (plus their separators) collapse
+ * to `display: none` so only the current tab label remains. Desktop
+ * (≥768px) keeps the canonical three-segment trail unchanged. The
+ * parent crumbs stay in the DOM (just visually hidden) so existing
+ * tests that assert on the trail's structure keep passing — back-nav
+ * on mobile is provided by the hamburger drawer + tab bar.
  */
 function DetailBreadcrumb({
   slug,
   tab,
   tabLabel,
 }: DetailBreadcrumbProps): React.ReactElement {
+  // Sub-AC 2.1: prevent the breadcrumb from forcing horizontal overflow at
+  // 375px. Two defensive guards work together:
+  //   - `min-w-0 max-w-full` on the outer `<nav>` constrains it to the
+  //     section's content box even if a descendant declares an intrinsic
+  //     width past the viewport.
+  //   - `truncate` on the BreadcrumbPage label clips overlong tab labels
+  //     (or future agent slug crumbs) with an ellipsis instead of forcing
+  //     the BreadcrumbList past its parent. The label set is short today
+  //     ("Calendar"/"Activity"/…) so the truncate is invisible at the
+  //     baseline; it engages only when callers introduce longer copy.
   return (
-    <Breadcrumb data-agent-detail-breadcrumb="true">
-      <BreadcrumbList>
-        <BreadcrumbItem>
+    <Breadcrumb
+      data-agent-detail-breadcrumb="true"
+      className="min-w-0 max-w-full"
+    >
+      <BreadcrumbList className="min-w-0">
+        <BreadcrumbItem className="hidden md:inline-flex">
           <BreadcrumbLink asChild>
             <Link to="/agents">Agents</Link>
           </BreadcrumbLink>
         </BreadcrumbItem>
-        <BreadcrumbSeparator />
-        <BreadcrumbItem>
+        <BreadcrumbSeparator className="hidden md:block" />
+        <BreadcrumbItem className="hidden md:inline-flex min-w-0">
           <BreadcrumbLink asChild>
-            <Link to={`/agents/${slug}`}>{slug}</Link>
+            <Link to={`/agents/${slug}`} className="truncate">
+              {slug}
+            </Link>
           </BreadcrumbLink>
         </BreadcrumbItem>
-        <BreadcrumbSeparator />
-        <BreadcrumbItem>
-          <BreadcrumbPage data-active-tab={tab}>{tabLabel}</BreadcrumbPage>
+        <BreadcrumbSeparator className="hidden md:block" />
+        <BreadcrumbItem className="min-w-0">
+          <BreadcrumbPage
+            data-active-tab={tab}
+            className="truncate"
+          >
+            {tabLabel}
+          </BreadcrumbPage>
         </BreadcrumbItem>
       </BreadcrumbList>
     </Breadcrumb>

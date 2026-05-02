@@ -65,6 +65,7 @@ import { cn } from '../lib/cn.js';
 import { addIsoWeeks } from '../lib/iso-week.js';
 import { useAgentCalendar } from '../hooks/use-agent-calendar.js';
 import { useExecutionLog } from '../hooks/use-execution-log.js';
+import { useIsMobile } from '../hooks/use-is-mobile.js';
 
 // ── Cross-boundary shims for still-`.jsx` shadcn/ui primitives ──────
 
@@ -129,12 +130,16 @@ type AgentCalendar = import('../lib/api-client.js').AgentCalendar;
 type CalendarTask = import('../lib/api-client.js').CalendarTask;
 type CalendarCounts = AgentCalendar['counts'];
 
+type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
 type CalendarGridProps = {
   tasks: ReadonlyArray<CalendarTask>;
   weekMonday: string | null;
   timeZone: string;
   agentId: string;
   className?: string;
+  daysToShow?: 1 | 3 | 5 | 7;
+  anchorDayKey?: DayKey;
   onSelectTask?: (task: CalendarTask) => void;
 };
 
@@ -154,6 +159,7 @@ const REVIEW_DISPLAY_NAMES =
   CalendarGridModule.REVIEW_DISPLAY_NAMES as ReviewDisplayNames;
 const REVIEW_ICON = CalendarGridModule.REVIEW_ICON as string;
 const STATUS_ICONS = CalendarGridModule.STATUS_ICONS as StatusIcons;
+const DAY_KEYS = CalendarGridModule.DAY_KEYS as ReadonlyArray<DayKey>;
 const isReviewTask = CalendarGridModule.isReviewTask as (
   task: CalendarTask | null | undefined,
 ) => boolean;
@@ -161,6 +167,13 @@ const layoutTasks = CalendarGridModule.layoutTasks as unknown as (
   tasks: ReadonlyArray<CalendarTask>,
   opts?: Record<string, unknown>,
 ) => LayoutResult;
+
+// Number of day columns the mobile calendar strip renders. Kept in sync
+// with the `daysToShow` value passed to `<CalendarGrid>` so the mobile
+// day-nav clamp (max anchor = `7 - MOBILE_DAYS_TO_SHOW` = `'fri'`) and
+// the day-range label both stay aligned with what the grid actually
+// shows. AC 4 sub-AC 2 + sub-AC 3.
+const MOBILE_DAYS_TO_SHOW = 3 as const;
 
 type MarkdownProps = { source: string };
 const Markdown =
@@ -312,6 +325,24 @@ export function AgentCalendarPage({
     baseUrl,
     fetch: fetchImpl,
   });
+  // Mobile-mode (`< md`, AC 4 sub-AC 2) collapses the 7-day grid into a
+  // 3-day strip anchored on today (in the calendar's IANA zone) when the
+  // user is browsing the current week, and on Monday otherwise. Desktop
+  // keeps the existing 5/7-day default.
+  const isMobile = useIsMobile();
+  // AC 4 sub-AC 3: user-driven anchor day for the mobile 3-day strip.
+  // `null` means "use the auto-derived default" (today on the current
+  // week, Monday otherwise). Once the user taps prev/next this stores the
+  // chosen anchor, so subsequent renders honor their navigation. Resets
+  // back to `null` whenever the visible week changes so each week opens
+  // with the auto-default again.
+  const [mobileAnchorDayKey, setMobileAnchorDayKey] = React.useState<DayKey | null>(
+    null,
+  );
+  const dataWeek = data?.week ?? null;
+  React.useEffect(() => {
+    setMobileAnchorDayKey(null);
+  }, [week, dataWeek]);
   // Drawer state defaults to local — tests and standalone use cases
   // never hand over URL-driven open/close. When the router-aware
   // parent threads `selectedTaskId` + `onOpenTaskId` / `onCloseTaskId`,
@@ -374,6 +405,41 @@ export function AgentCalendarPage({
   const activityByTask =
     (data.activityByTask as Record<string, ReadonlyArray<ActivityEntry>>) || {};
 
+  // Resolved anchor for the mobile 3-day strip. Falls back to
+  // `resolveMobileAnchorDayKey` (today / Monday) until the user taps a
+  // prev/next button, after which the user choice wins. The resolved
+  // value is clamped to the valid 3-day-window anchor range (Mon–Fri)
+  // so the day-nav controls and the grid agree on which day is leftmost
+  // — `resolveMobileAnchorDayKey` may return `'sat'` / `'sun'` when the
+  // user views the current week on Sat/Sun, but the grid would clamp
+  // that back to `'fri'` internally, making the visible leftmost day
+  // disagree with the data attribute on the day-nav row.
+  const mobileMaxAnchorIdx = 7 - MOBILE_DAYS_TO_SHOW;
+  const autoAnchor = isMobile
+    ? resolveMobileAnchorDayKey(data.week, week ?? null, data.timeZone)
+    : undefined;
+  const rawAnchor = isMobile ? mobileAnchorDayKey ?? autoAnchor : undefined;
+  const rawAnchorIdx = rawAnchor ? DAY_KEYS.indexOf(rawAnchor) : -1;
+  const resolvedMobileAnchorIdx =
+    rawAnchorIdx < 0
+      ? -1
+      : Math.max(0, Math.min(mobileMaxAnchorIdx, rawAnchorIdx));
+  const resolvedMobileAnchor: DayKey | undefined =
+    resolvedMobileAnchorIdx >= 0 ? DAY_KEYS[resolvedMobileAnchorIdx] : undefined;
+  const stepMobileDay = (delta: -1 | 1): void => {
+    setMobileAnchorDayKey((prev) => {
+      const current = prev ?? autoAnchor ?? 'mon';
+      const idx = DAY_KEYS.indexOf(current);
+      const safeIdx = idx < 0 ? 0 : Math.min(mobileMaxAnchorIdx, idx);
+      // Mirror the grid's `startIdx` clamp so the prev/next boundary
+      // matches what the grid actually accepts. Floor is 0 (Mon).
+      const nextIdx = Math.max(0, Math.min(mobileMaxAnchorIdx, safeIdx + delta));
+      return DAY_KEYS[nextIdx];
+    });
+  };
+  const anchorIdx = resolvedMobileAnchorIdx;
+  const showMobileDayNav = isMobile && anchorIdx >= 0;
+
   return (
     <section
       // `flex-1 min-h-0` plumbs the layout's flex chain into the calendar
@@ -390,6 +456,18 @@ export function AgentCalendarPage({
         activeWeek={week ?? null}
         onWeekChange={onWeekChange}
       />
+      {showMobileDayNav ? (
+        <MobileDayNav
+          anchorDayKey={resolvedMobileAnchor as DayKey}
+          weekMondayMs={data.weekMonday ? Date.parse(data.weekMonday) : NaN}
+          timeZone={data.timeZone}
+          daysToShow={MOBILE_DAYS_TO_SHOW}
+          onPrev={() => stepMobileDay(-1)}
+          onNext={() => stepMobileDay(1)}
+          canPrev={anchorIdx > 0}
+          canNext={anchorIdx < mobileMaxAnchorIdx}
+        />
+      ) : null}
       {data.loadError ? <PlanLoadErrorBanner message={data.loadError} /> : null}
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
       <StatusLegend tasks={data.tasks} counts={data.counts} />
@@ -398,6 +476,16 @@ export function AgentCalendarPage({
         weekMonday={data.weekMonday}
         timeZone={data.timeZone}
         agentId={data.agentId}
+        // AC 4 sub-AC 2: in mobile mode (< md), collapse the 7-day grid
+        // into a 3-day strip. We anchor on today (in the calendar's IANA
+        // zone) when the user is on the current week so the visible window
+        // tracks the date that matters most; viewing a non-current week
+        // falls back to a Monday-anchored strip. AC 4 sub-AC 3 lets the
+        // user override that anchor via the day-nav prev/next buttons.
+        // Desktop layouts (>= md) keep the existing 5/7-day auto-extension
+        // behaviour by leaving `daysToShow` undefined.
+        daysToShow={isMobile ? MOBILE_DAYS_TO_SHOW : undefined}
+        anchorDayKey={resolvedMobileAnchor}
         // Take the remaining vertical space inside the calendar tab and own
         // both-axis scrolling. The flex chain runs from `<Layout>` down
         // through the agent-detail section, the Tabs primitive, the active
@@ -780,6 +868,62 @@ export function deriveReviewStem(
   return null;
 }
 
+/**
+ * Pick the leftmost day column for the mobile 3-day strip.
+ *
+ * - When the user is browsing the *current* ISO week (the calendar's
+ *   `week` field matches the URL `?week=` or no `?week=` is set), anchor
+ *   on today's day in the calendar's display zone so the visible window
+ *   tracks the date that matters most.
+ * - When the user is browsing a non-current week, fall back to Monday so
+ *   the strip's left edge stays predictable. (Anchoring on "today" for a
+ *   future or past week would surface a date the user isn't actually
+ *   looking at.)
+ *
+ * Returns `'mon'` as a safe default when the time zone is missing or
+ * `Intl.DateTimeFormat` rejects it.
+ */
+function resolveMobileAnchorDayKey(
+  calendarWeek: string | null | undefined,
+  activeWeek: string | null | undefined,
+  timeZone: string | undefined,
+): DayKey {
+  // The hook's response week is the source of truth for "what week am I
+  // looking at". When activeWeek (URL `?week=`) is set and differs, the
+  // user is navigating away from the current week.
+  const onCurrentWeek = !activeWeek || activeWeek === calendarWeek;
+  if (!onCurrentWeek) return 'mon';
+  return getTodayDayKey(timeZone) || 'mon';
+}
+
+/**
+ * Resolve today's `DayKey` in the given IANA zone via `Intl.DateTimeFormat`.
+ * Returns `null` when `Intl` is unavailable or the zone is rejected.
+ */
+function getTodayDayKey(timeZone: string | undefined): DayKey | null {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || 'UTC',
+      weekday: 'short',
+    });
+    const part = fmt.format(new Date()).toLowerCase();
+    if (
+      part === 'mon' ||
+      part === 'tue' ||
+      part === 'wed' ||
+      part === 'thu' ||
+      part === 'fri' ||
+      part === 'sat' ||
+      part === 'sun'
+    ) {
+      return part as DayKey;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
 function formatActivityDate(iso: string | null | undefined): string {
   if (!iso) return '—';
   const ms = Date.parse(iso);
@@ -854,10 +998,18 @@ function CalendarHeader({
           data-calendar-week-nav="true"
           aria-label="Week navigation"
         >
+          {/* Touch-target override (Sub-AC 7.4): the desktop week-nav
+              buttons are dense (h-7 w-7 = 28 px) so the calendar header
+              meta-strip stays compact on wide viewports. Below `md` the
+              header reflows into the mobile flow and each button must
+              reach the 44×44 px a11y minimum — bump to `h-11 w-11`
+              (= 44 px) at < 768 px and snap back to the canonical
+              `h-7 w-7` at `md+` so the desktop header stays visually
+              identical to the current baseline. */}
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 px-0 font-mono text-sm"
+            className="h-11 w-11 px-0 font-mono text-base md:h-7 md:w-7 md:text-sm"
             onClick={prevWeek ? () => onWeekChange(prevWeek) : undefined}
             disabled={!prevWeek}
             aria-label={prevWeek ? `Previous week (${prevWeek})` : 'Previous week'}
@@ -872,7 +1024,7 @@ function CalendarHeader({
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 px-0 font-mono text-sm"
+            className="h-11 w-11 px-0 font-mono text-base md:h-7 md:w-7 md:text-sm"
             onClick={onCurrent}
             disabled={activeWeek === null}
             aria-label="Current week"
@@ -884,7 +1036,7 @@ function CalendarHeader({
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 px-0 font-mono text-sm"
+            className="h-11 w-11 px-0 font-mono text-base md:h-7 md:w-7 md:text-sm"
             onClick={nextWeek ? () => onWeekChange(nextWeek) : undefined}
             disabled={!nextWeek}
             aria-label={nextWeek ? `Next week (${nextWeek})` : 'Next week'}
@@ -896,6 +1048,143 @@ function CalendarHeader({
       ) : null}
     </header>
   );
+}
+
+interface MobileDayNavProps {
+  /** Leftmost day of the visible 3-day strip (`'mon'`–`'fri'`). */
+  anchorDayKey: DayKey;
+  /** Monday 00:00 of the rendered week as an ISO timestamp parsed to ms. */
+  weekMondayMs: number;
+  /** IANA time zone used to format the day-range label. */
+  timeZone?: string;
+  /** Width of the mobile strip in days; mirrors `<CalendarGrid daysToShow>`. */
+  daysToShow: number;
+  onPrev: () => void;
+  onNext: () => void;
+  canPrev: boolean;
+  canNext: boolean;
+}
+
+/**
+ * Mobile-only day-navigation row beneath the calendar header (AC 4 sub-AC 3).
+ *
+ * Renders a `← {date-range} →` row that lets users scroll the 3-day mobile
+ * strip across the current ISO week without resizing the viewport. Each
+ * tap moves the leftmost day by one and re-anchors the calendar grid via
+ * `<CalendarGrid anchorDayKey>`. Buttons measure 44×44 px to satisfy the
+ * WCAG-recommended touch-target floor used throughout the mobile polish
+ * (AC 4 sub-AC 1).
+ *
+ * The label collapses to a single date when `daysToShow === 1` and renders
+ * `{start} – {end}` for multi-day windows so users always see exactly
+ * which calendar dates are visible.
+ */
+function MobileDayNav({
+  anchorDayKey,
+  weekMondayMs,
+  timeZone,
+  daysToShow,
+  onPrev,
+  onNext,
+  canPrev,
+  canNext,
+}: MobileDayNavProps): React.ReactElement {
+  const anchorIdx = DAY_KEYS.indexOf(anchorDayKey);
+  const safeAnchorIdx = anchorIdx < 0 ? 0 : anchorIdx;
+  const endIdx = Math.min(6, safeAnchorIdx + daysToShow - 1);
+  const startLabel = formatMobileDayLabel(weekMondayMs, safeAnchorIdx, timeZone);
+  const endLabel = formatMobileDayLabel(weekMondayMs, endIdx, timeZone);
+  const rangeLabel =
+    !startLabel
+      ? ''
+      : !endLabel || startLabel === endLabel
+        ? startLabel
+        : `${startLabel} – ${endLabel}`;
+  return (
+    <div
+      className="flex items-center justify-between gap-2"
+      data-calendar-mobile-day-nav="true"
+      role="group"
+      aria-label="Day navigation"
+    >
+      <Button
+        variant="outline"
+        // 44×44 px touch target (Tailwind h-11/w-11) per AC 4 sub-AC 1.
+        className="h-11 w-11 min-h-11 min-w-11 shrink-0 p-0 font-mono text-base"
+        onClick={onPrev}
+        disabled={!canPrev}
+        aria-label="Previous day"
+        data-calendar-mobile-prev-day={anchorDayKey}
+      >
+        ←
+      </Button>
+      <div
+        className="flex min-h-11 flex-1 items-center justify-center text-xs font-medium tabular-nums text-foreground"
+        data-calendar-mobile-day-label="true"
+        data-anchor-day-key={anchorDayKey}
+        aria-live="polite"
+      >
+        {rangeLabel}
+      </div>
+      <Button
+        variant="outline"
+        className="h-11 w-11 min-h-11 min-w-11 shrink-0 p-0 font-mono text-base"
+        onClick={onNext}
+        disabled={!canNext}
+        aria-label="Next day"
+        data-calendar-mobile-next-day={anchorDayKey}
+      >
+        →
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Format `weekMondayMs + dayOffset` as a short localized day label
+ * (`"Mon, Apr 20"`) in the calendar's display zone, with a UTC fallback
+ * when the zone is missing or `Intl.DateTimeFormat` rejects it.
+ *
+ * Mirrors the formatting strategy used by `formatDayDate` in
+ * `components/calendar-grid.tsx` but keeps the weekday short-name in the
+ * label so the mobile day-nav row reads on its own without the user
+ * having to cross-reference the grid header.
+ */
+function formatMobileDayLabel(
+  weekMondayMs: number,
+  dayOffset: number,
+  timeZone: string | undefined,
+): string {
+  if (!Number.isFinite(weekMondayMs)) return '';
+  const ms = weekMondayMs + dayOffset * 86_400_000;
+  const date = new Date(ms);
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone && timeZone.length > 0 ? timeZone : 'UTC',
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    return fmt.format(date);
+  } catch {
+    /* fall through to a UTC-based fallback */
+  }
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return `${weekdays[date.getUTCDay()]}, ${months[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
 /**

@@ -312,7 +312,7 @@ describe('NotificationBell — drawer', () => {
     });
 
     const rows = document.querySelectorAll(
-      '[data-component="notification-bell-row"]',
+      '[data-component="notification-list-row"]',
     );
     expect(rows.length).toBe(2);
     expect(rows[0]).toHaveAttribute('data-notification-id', 'notif-aaaa1111');
@@ -365,7 +365,7 @@ describe('NotificationBell — drawer', () => {
     });
 
     const rows = document.querySelectorAll(
-      '[data-component="notification-bell-row"]',
+      '[data-component="notification-list-row"]',
     );
     expect(rows.length).toBe(10);
   });

@@ -47,6 +47,7 @@ import {
 
 import { useAgents } from '../hooks/use-agents.js';
 import * as ThemeToggleModule from './theme-toggle.jsx';
+import * as SheetModule from './ui/sheet.jsx';
 import * as SidebarModule from './ui/sidebar.jsx';
 import * as TooltipModule from './ui/tooltip.jsx';
 
@@ -101,6 +102,32 @@ const useSidebar = SidebarModule.useSidebar as () => {
 const ThemeToggle = ThemeToggleModule.ThemeToggle as React.ComponentType<{
   className?: string;
 }>;
+
+// ── Sheet primitive shims (mobile drawer wrapper) ───────────────────
+//
+// `components/ui/sheet.jsx` is a canonical shadcn primitive that re-exports
+// Radix Dialog parts via `React.forwardRef`. Mirror the same permissive
+// cast pattern used elsewhere in the layout shell so the mobile sidebar
+// drawer keeps strict-mode type safety without forcing a hand-edit of the
+// shadcn file.
+
+type SheetRootProps = {
+  open?: boolean;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  children?: React.ReactNode;
+};
+type SheetContentProps = React.HTMLAttributes<HTMLDivElement> & {
+  side?: 'top' | 'right' | 'bottom' | 'left';
+};
+type SheetTitleProps = React.HTMLAttributes<HTMLHeadingElement>;
+type SheetDescriptionProps = React.HTMLAttributes<HTMLParagraphElement>;
+
+const Sheet = SheetModule.Sheet as React.ComponentType<SheetRootProps>;
+const SheetContent = SheetModule.SheetContent as React.ComponentType<SheetContentProps>;
+const SheetTitle = SheetModule.SheetTitle as React.ComponentType<SheetTitleProps>;
+const SheetDescription =
+  SheetModule.SheetDescription as React.ComponentType<SheetDescriptionProps>;
 
 // ── Tooltip shim ────────────────────────────────────────────────────
 //
@@ -340,14 +367,21 @@ export interface AppSidebarProps extends Omit<SidebarRootProps, 'children'> {
 }
 
 /**
- * App shell sidebar. Must be rendered inside a `SidebarProvider` and a
- * react-router `<BrowserRouter>` / `<MemoryRouter>`.
+ * Inner body of the primary sidebar — the SidebarHeader / SidebarContent /
+ * SidebarFooter triplet that lives inside both the desktop `<Sidebar>`
+ * primitive (`AppSidebar`) and the mobile drawer (`MobileAppSidebar`).
+ *
+ * Extracted into its own component so the same nav markup is reused 1:1
+ * across the breakpoint toggle — only the outer container (a fixed-rail
+ * `<Sidebar>` above `md` vs. a slide-in `<Sheet>` below) changes.
+ *
+ * Internal to this module — exported only for tests that want to mount
+ * the body in isolation. Production code should keep using `<AppSidebar />`
+ * or `<MobileAppSidebar />`.
  */
-export function AppSidebar({
+export function AppSidebarBody({
   items = APP_NAV_ITEMS,
-  className,
-  ...props
-}: AppSidebarProps = {}): React.ReactElement {
+}: { items?: ReadonlyArray<AppNavItem> } = {}): React.ReactElement {
   const location = useLocation();
   const pathname = location?.pathname ?? '/';
   const detail = parseAgentDetailRoute(pathname);
@@ -368,12 +402,7 @@ export function AppSidebar({
   }, [detailNull, setOpen]);
 
   return (
-    <Sidebar
-      data-component="app-sidebar"
-      aria-label="Primary"
-      className={className}
-      {...props}
-    >
+    <>
       <SidebarHeader>
         <div className="flex items-center gap-2 px-2 py-1.5">
           {/* Brand lockup. The 14×7 logo fits inside an 8×8 chip when
@@ -411,6 +440,15 @@ export function AppSidebar({
                         asChild
                         isActive={active}
                         data-nav-item={item.to}
+                        // Touch-target override (Sub-AC 7): the shadcn
+                        // `SidebarMenuButton` default size is `h-8`
+                        // (= 32 px) which is below the 44 px mobile
+                        // a11y minimum when the body renders inside
+                        // the mobile Sheet drawer. Bump to `h-11`
+                        // (= 44 px) below `md`, then snap back to the
+                        // canonical `h-8` at `md+` so the desktop rail
+                        // stays visually identical to the current baseline.
+                        className="h-11 md:h-8"
                       >
                         <Link to={item.to}>
                           {Icon ? (
@@ -444,7 +482,17 @@ export function AppSidebar({
                           asChild
                           isActive={active}
                           data-nav-item={to}
-                          className="h-auto group-data-[collapsible=icon]/sidebar:!size-9 group-data-[collapsible=icon]/sidebar:!p-0"
+                          // Touch-target override (Sub-AC 7): on the
+                          // mobile Sheet drawer the row needs a 44 px
+                          // minimum hit area. The avatar chip is 28 px
+                          // and `h-auto` lets the row collapse around
+                          // it; pin a `min-h-11` (= 44 px) below `md`
+                          // and revert to the existing `min-h-0` floor
+                          // at `md+` so the desktop rail keeps the
+                          // canonical content-driven height. The
+                          // collapsible-icon overrides win at `md+`
+                          // when the desktop rail is icon-collapsed.
+                          className="h-auto min-h-11 md:min-h-0 group-data-[collapsible=icon]/sidebar:!size-9 group-data-[collapsible=icon]/sidebar:!p-0"
                         >
                           <Link to={to}>
                             <span
@@ -471,14 +519,151 @@ export function AppSidebar({
           <span className="text-xs font-medium text-muted-foreground group-data-[collapsible=icon]/sidebar:hidden">
             Theme
           </span>
-          <ThemeToggle />
+          {/*
+            Touch-target override (Sub-AC 7): inside the mobile Sheet
+            drawer the footer ThemeToggle is the sole light/dark switch
+            and must hit the 44×44 px a11y minimum. Above `md` the
+            desktop rail is the canonical surface — keep its 40×40 px
+            footprint so the rail's visual baseline is preserved.
+          */}
+          <ThemeToggle className="h-11 w-11 md:h-10 md:w-10" />
         </div>
       </SidebarFooter>
+    </>
+  );
+}
+
+/**
+ * App shell sidebar. Must be rendered inside a `SidebarProvider` and a
+ * react-router `<BrowserRouter>` / `<MemoryRouter>`.
+ *
+ * Renders only at the `md` breakpoint and above — the underlying
+ * `<Sidebar>` primitive uses `hidden md:block` for its rail. Below `md`
+ * the desktop rail is invisible and {@link MobileAppSidebar} (a
+ * Sheet-based drawer) takes over.
+ */
+export function AppSidebar({
+  items = APP_NAV_ITEMS,
+  className,
+  ...props
+}: AppSidebarProps = {}): React.ReactElement {
+  return (
+    <Sidebar
+      data-component="app-sidebar"
+      aria-label="Primary"
+      className={className}
+      {...props}
+    >
+      <AppSidebarBody items={items} />
     </Sidebar>
   );
 }
 
 export default AppSidebar;
+
+// ── Mobile drawer (Sheet) wrapper ───────────────────────────────────
+
+export interface MobileAppSidebarProps {
+  /** Drawer open state. Owned by the layout shell so the header
+   *  hamburger trigger and any other controls stay in sync. */
+  open: boolean;
+  /** Receive open-state changes — both the explicit close button inside
+   *  the drawer and Radix's overlay/escape dismissals route through
+   *  this. */
+  onOpenChange: (open: boolean) => void;
+  /** Optional override for the nav item list. */
+  items?: ReadonlyArray<AppNavItem>;
+}
+
+/**
+ * Mobile sidebar drawer.
+ *
+ * Wraps the same {@link AppSidebarBody} the desktop rail renders inside a
+ * left-anchored shadcn `<Sheet>`. The drawer is purely a viewport-bound
+ * affordance: the controlling hamburger trigger lives at `md:hidden`
+ * inside `<Header>`, and the Sheet's `<SheetContent>` carries `md:hidden`
+ * so that even if the open state is left dangling across a viewport
+ * resize the drawer disappears above the breakpoint.
+ *
+ * Auto-closes on route change. The drawer is dismissed when react-router's
+ * `useLocation().pathname` changes — mobile users tap an entry, the route
+ * navigates, the drawer slides shut, and the destination route's content
+ * is fully visible without an extra dismiss tap.
+ *
+ * Must be rendered inside a `SidebarProvider` (so {@link AppSidebarBody}'s
+ * `useSidebar()` consumers resolve) and a react-router router (for
+ * `useLocation`).
+ */
+export function MobileAppSidebar({
+  open,
+  onOpenChange,
+  items = APP_NAV_ITEMS,
+}: MobileAppSidebarProps): React.ReactElement {
+  const location = useLocation();
+  const pathname = location?.pathname ?? '/';
+
+  // Auto-close on route change. The first render writes the initial
+  // pathname into the ref; every subsequent change closes the drawer.
+  // Skipping the initial-mount close keeps the drawer's open prop
+  // authoritative when the layout reopens it after rerender.
+  const initialPathnameRef = React.useRef(pathname);
+  React.useEffect(() => {
+    if (initialPathnameRef.current === pathname) return;
+    initialPathnameRef.current = pathname;
+    onOpenChange(false);
+  }, [pathname, onOpenChange]);
+
+  // Defensive close on resize past the `md` breakpoint. The hamburger
+  // trigger is `md:hidden` so the drawer can't be opened above `md` in
+  // the first place — but if a user opens the drawer at < 768px and then
+  // resizes the window past the breakpoint, this listener trims the
+  // dangling open state so desktop chrome doesn't render with an orphan
+  // overlay.
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return;
+    }
+    const mq = window.matchMedia('(min-width: 768px)');
+    function handle(event: MediaQueryListEvent | MediaQueryList): void {
+      if (event.matches) onOpenChange(false);
+    }
+    if (mq.matches) onOpenChange(false);
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', handle);
+      return () => mq.removeEventListener('change', handle);
+    }
+    // Fallback for older Safari (< 14): addListener / removeListener.
+    const legacy = mq as MediaQueryList & {
+      addListener?: (l: (e: MediaQueryListEvent) => void) => void;
+      removeListener?: (l: (e: MediaQueryListEvent) => void) => void;
+    };
+    legacy.addListener?.(handle);
+    return () => legacy.removeListener?.(handle);
+  }, [onOpenChange]);
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="left"
+        data-component="mobile-app-sidebar"
+        aria-label="Primary navigation"
+        // `md:hidden` keeps the drawer chrome out of the desktop layout
+        // even if the open state is mistakenly true above the breakpoint
+        // (e.g. immediately after a resize). `flex flex-col p-0 gap-0`
+        // resets the default `<SheetContent>` padding so the inner
+        // SidebarHeader / SidebarContent / SidebarFooter triplet flows
+        // edge-to-edge like the desktop rail.
+        className="flex w-[18rem] max-w-[85vw] flex-col gap-0 bg-background p-0 md:hidden"
+      >
+        <SheetTitle className="sr-only">Navigation</SheetTitle>
+        <SheetDescription className="sr-only">
+          Primary application navigation.
+        </SheetDescription>
+        <AppSidebarBody items={items} />
+      </SheetContent>
+    </Sheet>
+  );
+}
 
 /**
  * `AgentDetailSidebar` — secondary sidebar that appears only when the
@@ -531,6 +716,15 @@ export function AgentDetailSidebar(): React.ReactElement | null {
                         asChild
                         isActive={active}
                         data-nav-item={to}
+                        // Touch-target override (Sub-AC 7.2): the
+                        // shadcn `SidebarMenuButton` default size is
+                        // `h-8` (= 32 px) — below the 44 px mobile a11y
+                        // minimum for tab-trigger surfaces. Bump to
+                        // `h-11` (= 44 px) below `md`, snap back to the
+                        // canonical `h-8` at `md+` so the desktop
+                        // secondary rail stays visually identical to
+                        // the current baseline.
+                        className="h-11 md:h-8"
                       >
                         <Link to={to}>
                           <Icon className="h-4 w-4" aria-hidden="true" />

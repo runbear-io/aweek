@@ -24,7 +24,7 @@
  */
 
 import React from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 
 import {
@@ -355,6 +355,186 @@ describe('CalendarGrid — weekend handling', () => {
   });
 });
 
+// ── Mobile (daysToShow / anchorDayKey) ───────────────────────────────
+
+describe('CalendarGrid — daysToShow + anchorDayKey (AC 4 sub-AC 2)', () => {
+  it('renders exactly 1 day column when daysToShow=1', () => {
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={1}
+      />,
+    );
+    const headers = container.querySelectorAll(
+      '[role="columnheader"][data-day]',
+    );
+    expect(headers.length).toBe(1);
+    expect(headers[0].getAttribute('data-day')).toBe('mon');
+  });
+
+  it('renders 3 day columns when daysToShow=3 starting from anchorDayKey', () => {
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+        anchorDayKey="wed"
+      />,
+    );
+    const headers = container.querySelectorAll(
+      '[role="columnheader"][data-day]',
+    );
+    expect(Array.from(headers).map((h) => h.getAttribute('data-day'))).toEqual([
+      'wed',
+      'thu',
+      'fri',
+    ]);
+  });
+
+  it('clamps the anchor backwards so the visible window stays inside Mon–Sun', () => {
+    // anchor=sun with daysToShow=3 would push past the week — clamp back
+    // so we still render three full columns ending on Sunday.
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+        anchorDayKey="sun"
+      />,
+    );
+    const headers = container.querySelectorAll(
+      '[role="columnheader"][data-day]',
+    );
+    expect(Array.from(headers).map((h) => h.getAttribute('data-day'))).toEqual([
+      'fri',
+      'sat',
+      'sun',
+    ]);
+  });
+
+  it('overrides the auto-weekend extension when daysToShow is explicit', () => {
+    // A Saturday task would normally extend the desktop grid to 7
+    // columns. Mobile mode keeps daysToShow honoured — Sat falls outside
+    // the visible window for daysToShow=3 + anchor=mon, but the chip is
+    // still in the DOM via the column-major layout (just not in any
+    // visible cell). The grid must NOT silently jump back to 7 columns.
+    const saturdayTask = makeScheduledTask({
+      id: 'task-sat-10',
+      title: 'Saturday study',
+      runAt: '2026-04-25T10:00:00.000Z',
+      slot: { dayKey: 'sat', dayOffset: 5, hour: 10, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid
+        tasks={[saturdayTask]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+        anchorDayKey="mon"
+      />,
+    );
+    const headers = container.querySelectorAll(
+      '[role="columnheader"][data-day]',
+    );
+    expect(headers.length).toBe(3);
+    expect(Array.from(headers).map((h) => h.getAttribute('data-day'))).toEqual([
+      'mon',
+      'tue',
+      'wed',
+    ]);
+  });
+
+  it('renders the absolute date for sliced day columns (not the local index)', () => {
+    // Anchor on Wed; the date label under "Wed" must be Monday + 2 days
+    // (4/22 for the WEEK_MONDAY fixture), not Monday + 0.
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+        anchorDayKey="wed"
+      />,
+    );
+    const wedHeader = container.querySelector(
+      '[role="columnheader"][data-day="wed"]',
+    );
+    // Mon=4/20, Tue=4/21, Wed=4/22 — assert the slice still labels the
+    // calendar date correctly even though Wed is now at slice index 0.
+    expect(wedHeader!.textContent).toMatch(/4\/22/);
+  });
+
+  it('numbering stays column-major across the full week even when sliced', () => {
+    // Two tasks: one on Mon (outside the visible 3-day strip starting
+    // Wed), one on Wed (inside). Numbering walks Mon–Sun, so the Mon
+    // task is #1 and the Wed task is #2 — even when only the Wed task
+    // is visible.
+    const tasks = [
+      makeScheduledTask({
+        id: 'task-mon',
+        runAt: '2026-04-20T09:00:00.000Z',
+        slot: { dayKey: 'mon', dayOffset: 0, hour: 9, minute: 0 },
+      }),
+      makeScheduledTask({
+        id: 'task-wed',
+        runAt: '2026-04-22T09:00:00.000Z',
+        slot: { dayKey: 'wed', dayOffset: 2, hour: 9, minute: 0 },
+      }),
+    ];
+    const { container } = render(
+      <CalendarGrid
+        tasks={tasks}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+        anchorDayKey="wed"
+      />,
+    );
+    const wed = container.querySelector('[data-task-id="task-wed"]');
+    expect(wed).not.toBeNull();
+    // Wed task gets #2 because Mon is column-major before it, even
+    // though Mon isn't in the visible window.
+    expect(wed).toHaveAttribute('data-task-number', '2');
+    // Mon task is laid out into a (mon, hour) cell, but that cell isn't
+    // rendered — so its chip should be absent from the DOM.
+    expect(container.querySelector('[data-task-id="task-mon"]')).toBeNull();
+  });
+
+  it('renders 5 columns when daysToShow=5 (mobile-friendly weekday strip)', () => {
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={5}
+      />,
+    );
+    const headers = container.querySelectorAll(
+      '[role="columnheader"][data-day]',
+    );
+    expect(headers.length).toBe(5);
+  });
+
+  it('renders 7 columns when daysToShow=7 (full week explicit)', () => {
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={7}
+      />,
+    );
+    const headers = container.querySelectorAll(
+      '[role="columnheader"][data-day]',
+    );
+    expect(headers.length).toBe(7);
+  });
+});
+
 // ── Pure helpers ─────────────────────────────────────────────────────
 
 describe('CalendarGrid — pure helpers', () => {
@@ -601,5 +781,168 @@ describe('CalendarGrid — task cell rendering parity (Sub-AC 3)', () => {
     expect(extractMinuteBadge(null)).toBeNull();
     expect(extractMinuteBadge({})).toBeNull();
     expect(extractMinuteBadge({ runAt: 'not-a-date' })).toBeNull();
+  });
+});
+
+// ── Sub-AC 2.2: mobile-fit grid track widths ─────────────────────────
+//
+// At 375 px the layout's `<main>` carries `p-4` (16 px each side), so the
+// calendar grid lives inside an ~343 px column. The historical
+// `72px + N × minmax(120px, 1fr)` track total was 432 px for the
+// 3-day mobile strip and forced horizontal scroll inside the grid
+// wrapper. Mobile mode now uses tighter tracks (`52px + N × minmax(88px, 1fr)`)
+// so the same 3-day strip totals ~316 px and fits without overflow,
+// while desktop (≥ md) keeps the historical 72/120 layout untouched.
+
+/**
+ * Install a `matchMedia` stub on `window` whose `matches` resolves true
+ * iff the queried media string contains a `(max-width: …)` clause that
+ * the supplied `viewportWidth` satisfies. Mirrors the helper used in
+ * `pages/agent-calendar-page.test.tsx`.
+ */
+function installMatchMediaStub(viewportWidth: number): () => void {
+  const original = window.matchMedia;
+  const stub = (query: string) => {
+    const maxMatch = /\(max-width:\s*(\d+)px\)/.exec(query);
+    const matches = maxMatch ? viewportWidth <= Number(maxMatch[1]) : false;
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    const mql = {
+      query,
+      matches,
+      media: query,
+      onchange: null,
+      addEventListener: (
+        _type: string,
+        cb: (e: { matches: boolean }) => void,
+      ) => listeners.add(cb),
+      removeEventListener: (
+        _type: string,
+        cb: (e: { matches: boolean }) => void,
+      ) => listeners.delete(cb),
+      addListener: (cb: (e: { matches: boolean }) => void) => listeners.add(cb),
+      removeListener: (cb: (e: { matches: boolean }) => void) =>
+        listeners.delete(cb),
+      dispatchEvent: () => false,
+    };
+    return mql as unknown as MediaQueryList;
+  };
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: stub,
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        writable: true,
+        value: original,
+      });
+    } else {
+      delete (window as unknown as { matchMedia?: unknown }).matchMedia;
+    }
+  };
+}
+
+describe('CalendarGrid — mobile-fit track widths (Sub-AC 2.2)', () => {
+  let restoreMatchMedia: (() => void) | null = null;
+  afterEach(() => {
+    restoreMatchMedia?.();
+    restoreMatchMedia = null;
+  });
+
+  it('uses 52px hour column + 88px day-min on mobile (375px viewport)', () => {
+    restoreMatchMedia = installMatchMediaStub(375);
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+      />,
+    );
+    const grid = container.querySelector('[role="grid"]') as HTMLElement;
+    expect(grid).not.toBeNull();
+    // The inline gridTemplateColumns is the source of truth for fit.
+    // 3-day strip mobile total: 52 + 3 × 88 = 316 px (fits in ~343 px).
+    const tracks = grid.style.gridTemplateColumns;
+    expect(tracks).toBe('52px repeat(3, minmax(88px, 1fr))');
+  });
+
+  it('keeps the historical 72px/120px tracks on desktop viewports', () => {
+    restoreMatchMedia = installMatchMediaStub(1280);
+    const { container } = render(
+      <CalendarGrid tasks={[]} weekMonday={WEEK_MONDAY} timeZone="UTC" />,
+    );
+    const grid = container.querySelector('[role="grid"]') as HTMLElement;
+    expect(grid).not.toBeNull();
+    // Default desktop layout: 5 weekday columns with the historical
+    // 72px hour column + 120px day-min that the desktop baseline relies
+    // on for legibility.
+    expect(grid.style.gridTemplateColumns).toBe(
+      '72px repeat(5, minmax(120px, 1fr))',
+    );
+  });
+
+  it('caps the wrapper width to its parent so horizontal scroll stays contained', () => {
+    restoreMatchMedia = installMatchMediaStub(375);
+    const { container } = render(
+      <CalendarGrid
+        tasks={[]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+      />,
+    );
+    const wrapper = container.querySelector(
+      '[data-calendar-grid="true"]',
+    ) as HTMLElement;
+    expect(wrapper).not.toBeNull();
+    // `max-w-full` + `overflow-x-auto` keep horizontal scroll inside the
+    // wrapper rather than letting the grid push the page sideways.
+    expect(wrapper.className).toMatch(/\bmax-w-full\b/);
+    expect(wrapper.className).toMatch(/\boverflow-x-auto\b/);
+  });
+});
+
+describe('CalendarGrid — task chip fits inside narrow cells (Sub-AC 2.2)', () => {
+  let restoreMatchMedia: (() => void) | null = null;
+  beforeEach(() => {
+    restoreMatchMedia = installMatchMediaStub(375);
+  });
+  afterEach(() => {
+    restoreMatchMedia?.();
+    restoreMatchMedia = null;
+  });
+
+  it('label flexes to fill remaining chip width and shrinks below content', () => {
+    const longTitle = makeScheduledTask({
+      id: 'task-long',
+      title: 'A really long task title that would otherwise blow out the chip',
+      runAt: '2026-04-20T09:30:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 9, minute: 30 },
+    });
+    const { container } = render(
+      <CalendarGrid
+        tasks={[longTitle]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+        daysToShow={3}
+      />,
+    );
+    const chip = container.querySelector('[data-task-id="task-long"]');
+    expect(chip).not.toBeNull();
+    // The label span carries `min-w-0 flex-1` so flex's default
+    // `min-width: auto` doesn't force the chip wider than the cell.
+    const labelSpan = chip!.querySelector('span.line-clamp-2');
+    expect(labelSpan).not.toBeNull();
+    expect(labelSpan!.className).toMatch(/\bmin-w-0\b/);
+    expect(labelSpan!.className).toMatch(/\bflex-1\b/);
+    // The icon span stays `shrink-0` so it never disappears, and the
+    // minute badge keeps its existing `shrink-0` recipe (asserted via
+    // the data-task-minute attribute below).
+    const iconSpan = chip!.querySelector('span.font-mono.shrink-0');
+    expect(iconSpan).not.toBeNull();
+    expect(chip).toHaveAttribute('data-task-minute', '30');
   });
 });

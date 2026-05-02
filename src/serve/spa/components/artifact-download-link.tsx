@@ -137,7 +137,12 @@ export function ArtifactDownloadLink({
         // server's `Content-Disposition: attachment` is what actually
         // forces the download. Belt + suspenders.
         download={fileName || ''}
-        className="font-medium text-foreground underline-offset-2 hover:underline"
+        // Sub-AC 8.4: `break-all` on the link label lets long opaque
+        // filenames (UUID-style names, URL-encoded paths) wrap at any
+        // glyph boundary instead of pushing the wrapper past the 375px
+        // viewport edge. The wrapper is already `flex-wrap`, so the
+        // anchor itself can occupy a full row when its content is long.
+        className="break-all font-medium text-foreground underline-offset-2 hover:underline"
         aria-label={linkLabel}
       >
         {linkLabel}

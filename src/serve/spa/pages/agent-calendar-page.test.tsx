@@ -16,10 +16,11 @@
  */
 
 import React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -577,5 +578,215 @@ describe('deriveReviewStem (calendar review-task → review file stem)', () => {
   it('returns null for null/undefined task input', () => {
     expect(deriveReviewStem(null, '2026-W17', 'UTC')).toBeNull();
     expect(deriveReviewStem(undefined, '2026-W17', 'UTC')).toBeNull();
+  });
+});
+
+// ── AC 4 sub-AC 3: mobile day-navigation controls ───────────────────
+
+/**
+ * Install a `matchMedia` stub on `window` whose `matches` resolves true
+ * iff the queried media string contains a `(max-width: …)` clause that
+ * the supplied `viewportWidth` satisfies. Only the subset of features
+ * `useIsMobile` exercises (`addEventListener('change', …)`,
+ * `removeEventListener('change', …)`, `.matches`) is faked.
+ */
+function installMatchMediaStub(viewportWidth: number): () => void {
+  const original = window.matchMedia;
+  const mqls: Array<{
+    query: string;
+    matches: boolean;
+    listeners: Set<(e: { matches: boolean }) => void>;
+  }> = [];
+  const stub = (query: string) => {
+    const maxMatch = /\(max-width:\s*(\d+)px\)/.exec(query);
+    const matches = maxMatch ? viewportWidth <= Number(maxMatch[1]) : false;
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    const mql = {
+      query,
+      matches,
+      listeners,
+      media: query,
+      onchange: null,
+      addEventListener: (
+        _type: string,
+        cb: (e: { matches: boolean }) => void,
+      ) => listeners.add(cb),
+      removeEventListener: (
+        _type: string,
+        cb: (e: { matches: boolean }) => void,
+      ) => listeners.delete(cb),
+      addListener: (cb: (e: { matches: boolean }) => void) => listeners.add(cb),
+      removeListener: (cb: (e: { matches: boolean }) => void) =>
+        listeners.delete(cb),
+      dispatchEvent: () => false,
+    };
+    mqls.push(mql);
+    return mql as unknown as MediaQueryList;
+  };
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: stub,
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        writable: true,
+        value: original,
+      });
+    } else {
+      // jsdom doesn't ship matchMedia by default; remove the stub so the
+      // SSR-safe branch in `useIsMobile` resumes its `false` default.
+      delete (window as unknown as { matchMedia?: unknown }).matchMedia;
+    }
+  };
+}
+
+describe('AgentCalendarPage — mobile day-navigation (AC 4 sub-AC 3)', () => {
+  let restoreMatchMedia: (() => void) | null = null;
+
+  beforeEach(() => {
+    restoreMatchMedia = installMatchMediaStub(375);
+  });
+
+  afterEach(() => {
+    restoreMatchMedia?.();
+    restoreMatchMedia = null;
+  });
+
+  /** Locate the mobile day-nav row, waiting until the calendar mounts. */
+  async function findDayNav(container: HTMLElement): Promise<HTMLElement> {
+    return await waitFor(() => {
+      const el = container.querySelector(
+        '[data-calendar-mobile-day-nav="true"]',
+      ) as HTMLElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+  }
+
+  it('renders the mobile day-nav row with prev/next buttons + a date label', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR, {}, { week: '2025-W01' });
+    const nav = await findDayNav(container);
+    const prev = nav.querySelector(
+      '[data-calendar-mobile-prev-day]',
+    ) as HTMLButtonElement | null;
+    const next = nav.querySelector(
+      '[data-calendar-mobile-next-day]',
+    ) as HTMLButtonElement | null;
+    const label = nav.querySelector(
+      '[data-calendar-mobile-day-label="true"]',
+    ) as HTMLElement | null;
+    expect(prev).not.toBeNull();
+    expect(next).not.toBeNull();
+    expect(label).not.toBeNull();
+    // Default mobile anchor on a non-current week is Monday, so the label
+    // covers Mon → Wed of the rendered week.
+    expect(label!.textContent).toMatch(/Apr 20/);
+    expect(label!.textContent).toMatch(/Apr 22/);
+  });
+
+  it('renders prev/next buttons with a 44×44 px touch-target floor', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR, {}, { week: '2025-W01' });
+    const nav = await findDayNav(container);
+    const buttons = nav.querySelectorAll('button');
+    expect(buttons.length).toBe(2);
+    for (const btn of Array.from(buttons)) {
+      // Tailwind h-11 / w-11 = 44px exactly. Asserting on the class list
+      // is the deterministic check; jsdom doesn't run the layout engine
+      // so measured `getBoundingClientRect()` would return zeros.
+      expect(btn.className).toMatch(/\bh-11\b/);
+      expect(btn.className).toMatch(/\bw-11\b/);
+      expect(btn.className).toMatch(/\bmin-h-11\b/);
+      expect(btn.className).toMatch(/\bmin-w-11\b/);
+    }
+  });
+
+  it('disables Previous when the strip is anchored at Monday', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR, {}, { week: '2025-W01' });
+    const nav = await findDayNav(container);
+    const [prev, next] = Array.from(nav.querySelectorAll('button')) as HTMLButtonElement[];
+    expect(prev).toBeDisabled();
+    expect(next).not.toBeDisabled();
+    // The anchor data-attribute mirrors the visible leftmost day so tests
+    // can assert position deterministically.
+    const label = nav.querySelector('[data-calendar-mobile-day-label="true"]');
+    expect(label).toHaveAttribute('data-anchor-day-key', 'mon');
+  });
+
+  it('advances the anchor day by one when Next is tapped and updates the label', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR, {}, { week: '2025-W01' });
+    const nav = await findDayNav(container);
+    const [, next] = Array.from(nav.querySelectorAll('button')) as HTMLButtonElement[];
+    fireEvent.click(next);
+    await waitFor(() => {
+      const label = container.querySelector(
+        '[data-calendar-mobile-day-label="true"]',
+      );
+      expect(label).toHaveAttribute('data-anchor-day-key', 'tue');
+      // Tue → Thu of the same week.
+      expect(label!.textContent).toMatch(/Apr 21/);
+      expect(label!.textContent).toMatch(/Apr 23/);
+    });
+  });
+
+  it('clamps the next-day step at Friday (last valid 3-day anchor)', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR, {}, { week: '2025-W01' });
+    const nav = await findDayNav(container);
+    const [, next] = Array.from(nav.querySelectorAll('button')) as HTMLButtonElement[];
+    // Step Mon → Tue → Wed → Thu → Fri. Five clicks; the fifth is a no-op
+    // because Fri is already the latest anchor that keeps a 3-day window
+    // inside Mon–Sun.
+    for (let i = 0; i < 5; i += 1) fireEvent.click(next);
+    await waitFor(() => {
+      const label = container.querySelector(
+        '[data-calendar-mobile-day-label="true"]',
+      );
+      expect(label).toHaveAttribute('data-anchor-day-key', 'fri');
+    });
+    expect(next).toBeDisabled();
+  });
+
+  it('flows the user-chosen anchor day through to <CalendarGrid>', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR, {}, { week: '2025-W01' });
+    const nav = await findDayNav(container);
+    const [, next] = Array.from(nav.querySelectorAll('button')) as HTMLButtonElement[];
+    fireEvent.click(next); // tue
+    fireEvent.click(next); // wed
+    await waitFor(() => {
+      const wedHeader = container.querySelector(
+        '[role="columnheader"][data-day="wed"]',
+      );
+      expect(wedHeader).not.toBeNull();
+      // Mon and Tue should NOT be in the visible 3-day strip anymore.
+      expect(
+        container.querySelector('[role="columnheader"][data-day="mon"]'),
+      ).toBeNull();
+      expect(
+        container.querySelector('[role="columnheader"][data-day="tue"]'),
+      ).toBeNull();
+    });
+  });
+
+  it('does not render the day-nav on desktop viewports', async () => {
+    // Replace the mobile stub with a desktop one for this test.
+    restoreMatchMedia?.();
+    restoreMatchMedia = installMatchMediaStub(1280);
+    const { container } = renderCalendar(FULL_CALENDAR, {}, { week: '2025-W01' });
+    await waitFor(() => {
+      expect(container.querySelector('[data-calendar-grid="true"]')).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-calendar-mobile-day-nav="true"]'),
+    ).toBeNull();
+  });
+
+  it('does not render the day-nav in the no-plan empty state', async () => {
+    const { container } = renderCalendar(NO_PLAN_CALENDAR);
+    await screen.findByText(/no weekly plan yet/i);
+    expect(
+      container.querySelector('[data-calendar-mobile-day-nav="true"]'),
+    ).toBeNull();
   });
 });

@@ -222,19 +222,30 @@ export function AgentReviewsPage({
     >
       <ReviewsHeader data={data} loading={loading} onRefresh={refresh} />
       {error ? <StaleBanner error={error} onRetry={refresh} /> : null}
-      <div className="flex gap-4">
+      {/*
+        Mobile-first layout (Sub-AC 3.3): below `md` the rail stacks above
+        the body as a horizontally-scrollable strip of week pills so the
+        right pane reclaims the full viewport width (a fixed `w-48` rail
+        in a 343 px usable area would leave only ~135 px for the body and
+        force horizontal overflow inside the FrontmatterTable). Above `md`
+        the canonical vertical sidebar is restored.
+      */}
+      <div className="flex flex-col gap-4 md:flex-row">
         {/* Left rail — week selector */}
-        <aside className="w-48 shrink-0">
+        <aside className="w-full shrink-0 md:w-48">
           <nav aria-label="Review weeks">
-            <ul role="list" className="flex flex-col gap-1">
+            <ul
+              role="list"
+              className="flex gap-1 overflow-x-auto pb-1 md:flex-col md:overflow-x-visible md:pb-0"
+            >
               {data.reviews.map((entry) => {
                 const active = !notFound && entry.week === selectedEntry.week;
                 return (
-                  <li key={entry.week}>
+                  <li key={entry.week} className="shrink-0 md:shrink">
                     <Button
                       variant={active ? 'default' : 'ghost'}
                       size="sm"
-                      className="w-full justify-start truncate font-mono text-xs"
+                      className="w-full shrink-0 justify-start whitespace-nowrap font-mono text-xs md:truncate md:whitespace-normal"
                       onClick={() => handleSelect(entry.week)}
                       aria-current={active ? 'true' : undefined}
                       data-review-week={entry.week}
@@ -277,17 +288,17 @@ interface ReviewsHeaderProps {
 
 function ReviewsHeader({ data, loading, onRefresh }: ReviewsHeaderProps): React.ReactElement {
   return (
-    <header className="flex items-center justify-between border-b pb-3">
-      <div className="flex flex-col gap-1">
+    <header className="flex items-center justify-between gap-3 border-b pb-3">
+      <div className="flex min-w-0 flex-col gap-1">
         <h1 className="text-base font-semibold leading-none tracking-tight text-foreground">
           Reviews
         </h1>
-        <p className="text-xs text-muted-foreground">
-          <code>{data.slug}</code> · {data.reviews.length} review
+        <p className="text-xs text-muted-foreground break-words">
+          <code className="break-all">{data.slug}</code> · {data.reviews.length} review
           {data.reviews.length === 1 ? '' : 's'}
         </p>
       </div>
-      <Button variant="outline" size="sm" onClick={onRefresh} disabled={loading}>
+      <Button variant="outline" size="sm" onClick={onRefresh} disabled={loading} className="shrink-0">
         {loading ? 'Refreshing…' : 'Refresh'}
       </Button>
     </header>
@@ -323,7 +334,7 @@ function ReviewBody({ entry, agentSlug }: ReviewBodyProps): React.ReactElement {
                 : ''}
             </p>
             {title ? (
-              <h1 className="text-base font-semibold leading-tight text-foreground">
+              <h1 className="text-base font-semibold leading-tight text-foreground break-words">
                 {title}
               </h1>
             ) : null}
@@ -485,11 +496,11 @@ function FrontmatterTable({
             >
               <th
                 scope="row"
-                className="w-32 px-3 py-1.5 text-left font-medium uppercase tracking-wider text-[10px] text-muted-foreground align-top"
+                className="w-24 px-2 py-1.5 text-left font-medium uppercase tracking-wider text-[10px] text-muted-foreground align-top break-words md:w-32 md:px-3"
               >
                 {entry.key}
               </th>
-              <td className="px-3 py-1.5 text-foreground tabular-nums">
+              <td className="px-2 py-1.5 text-foreground tabular-nums break-all md:px-3 md:break-words">
                 {entry.value}
               </td>
             </tr>

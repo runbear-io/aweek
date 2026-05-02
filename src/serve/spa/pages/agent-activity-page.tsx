@@ -403,7 +403,7 @@ function ActivityHeader({
             Activity
           </h1>
           <p className="text-xs text-muted-foreground">
-            <code>{logs.slug}</code> · {totalRows} row{totalRows === 1 ? '' : 's'}
+            <code className="break-all">{logs.slug}</code> · {totalRows} row{totalRows === 1 ? '' : 's'}
           </p>
         </div>
         <Button
@@ -455,16 +455,27 @@ function DateRangeFilter({
 // ── Entry lists ─────────────────────────────────────────────────────
 
 function ActivityEntries({ entries }: EntryListProps): React.ReactElement {
+  // Below 768px the parent Card chrome is dropped (transparent / no
+  // border) so each `<li>` can wear its own card chrome and read as a
+  // stacked card list. At ≥ 768px the desktop divided-list rendering is
+  // preserved verbatim — `md:` overrides reinstate the surface, header
+  // chrome, and `divide-y` row separation that is the desktop baseline.
   return (
-    <Card as="section">
-      <CardHeader className="space-y-0 border-b bg-muted/50 p-0">
-        <div className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+    <Card
+      as="section"
+      className="border-0 bg-transparent shadow-none md:rounded-lg md:border md:bg-card md:shadow-sm"
+    >
+      <CardHeader className="space-y-0 p-0 md:border-b md:bg-muted/50">
+        <div className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground md:px-4 md:py-2 md:pb-2">
           Activity log
         </div>
       </CardHeader>
       <CardContent className="p-0">
         {entries && entries.length > 0 ? (
-          <ul role="list" className="divide-y">
+          <ul
+            role="list"
+            className="flex flex-col gap-2.5 md:block md:gap-0 md:divide-y"
+          >
             {entries.map((entry, idx) => (
               <EntryRow
                 key={(entry.id as string) || (entry.timestamp as string) || idx}
@@ -473,7 +484,7 @@ function ActivityEntries({ entries }: EntryListProps): React.ReactElement {
             ))}
           </ul>
         ) : (
-          <div className="px-4 py-6 text-center text-xs italic text-muted-foreground">
+          <div className="rounded-md border border-dashed bg-card px-4 py-6 text-center text-xs italic text-muted-foreground md:rounded-none md:border-0 md:bg-transparent">
             No activity entries in this range.
           </div>
         )}
@@ -485,16 +496,26 @@ function ActivityEntries({ entries }: EntryListProps): React.ReactElement {
 function ExecutionEntries({
   executions,
 }: ExecutionListProps): React.ReactElement {
+  // Mirror the responsive treatment used by `ActivityEntries`: a
+  // chrome-less section on mobile that delegates the card surface to
+  // each row, and the canonical divided-list Card at ≥ 768px so the
+  // desktop UX baseline is preserved unchanged.
   return (
-    <Card as="section">
-      <CardHeader className="space-y-0 border-b bg-muted/50 p-0">
-        <div className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+    <Card
+      as="section"
+      className="border-0 bg-transparent shadow-none md:rounded-lg md:border md:bg-card md:shadow-sm"
+    >
+      <CardHeader className="space-y-0 p-0 md:border-b md:bg-muted/50">
+        <div className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground md:px-4 md:py-2 md:pb-2">
           Execution history
         </div>
       </CardHeader>
       <CardContent className="p-0">
         {executions && executions.length > 0 ? (
-          <ul role="list" className="divide-y">
+          <ul
+            role="list"
+            className="flex flex-col gap-2.5 md:block md:gap-0 md:divide-y"
+          >
             {executions.map((row, idx) => (
               <ExecutionRow
                 key={
@@ -507,7 +528,7 @@ function ExecutionEntries({
             ))}
           </ul>
         ) : (
-          <div className="px-4 py-6 text-center text-xs italic text-muted-foreground">
+          <div className="rounded-md border border-dashed bg-card px-4 py-6 text-center text-xs italic text-muted-foreground md:rounded-none md:border-0 md:bg-transparent">
             No executions in this range.
           </div>
         )}
@@ -540,16 +561,23 @@ function EntryRow({ entry }: EntryRowProps): React.ReactElement {
       ? durationRaw
       : null;
   const taskId = (entry.taskId as string | undefined) || null;
+  // Below 768px the row wears its own card chrome (rounded border,
+  // bg-card surface, padded content, 44 px minimum touch target) so the
+  // list reads as a stack of cards. At ≥ 768px the chrome is dropped via
+  // `md:` overrides and the row falls back to the canonical
+  // `divide-y` row strip the parent `<ul>` arranges on desktop.
   return (
-    <li className="flex flex-col gap-1 px-4 py-2.5">
+    <li
+      className="flex min-h-[44px] flex-col gap-1.5 rounded-md border border-border bg-card p-3 md:min-h-0 md:gap-1 md:rounded-none md:border-0 md:bg-transparent md:px-4 md:py-2.5"
+    >
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <time dateTime={at} className="tabular-nums">
           {formatDate(at)}
         </time>
         <Badge variant="secondary">{status}</Badge>
         {taskId ? (
-          <span className="text-[11px] text-muted-foreground">
-            Task <code>{taskId}</code>
+          <span className="min-w-0 break-all text-[11px] text-muted-foreground">
+            Task <code className="break-all">{taskId}</code>
           </span>
         ) : null}
         {durationMs != null ? (
@@ -559,7 +587,7 @@ function EntryRow({ entry }: EntryRowProps): React.ReactElement {
         ) : null}
       </div>
       {title ? (
-        <div className="text-sm text-foreground">{String(title)}</div>
+        <div className="break-words text-sm text-foreground">{String(title)}</div>
       ) : null}
     </li>
   );
@@ -589,8 +617,15 @@ function ExecutionRow({ row }: ExecutionRowProps): React.ReactElement {
   const errorMessage =
     row.error || (metadata['error'] as string | undefined);
   const variant = executionBadgeVariant(status);
+  // Mobile (< 768px): the heartbeat row promotes itself into a stacked
+  // card with its own border, padded surface, and 44 px touch target.
+  // Desktop (≥ 768px): chrome is suppressed via `md:` overrides so the
+  // row settles back into the parent `<ul>`'s `divide-y` strip layout
+  // — the existing UX baseline stays untouched at and above the breakpoint.
   return (
-    <li className="flex flex-col gap-1 px-4 py-2.5">
+    <li
+      className="flex min-h-[44px] flex-col gap-1.5 rounded-md border border-border bg-card p-3 md:min-h-0 md:gap-1 md:rounded-none md:border-0 md:bg-transparent md:px-4 md:py-2.5"
+    >
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <time dateTime={timestamp} className="tabular-nums">
           {formatDate(timestamp)}
@@ -599,15 +634,15 @@ function ExecutionRow({ row }: ExecutionRowProps): React.ReactElement {
           {String(status)}
         </Badge>
         {windowStart && windowEnd && windowStart !== windowEnd ? (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="min-w-0 break-words text-[11px] text-muted-foreground">
             window {formatDate(windowStart)} → {formatDate(windowEnd)}
           </span>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground">
         {row.taskId ? (
-          <span>
-            Task <code className="text-[11px]">{row.taskId}</code>
+          <span className="min-w-0 break-all">
+            Task <code className="break-all text-[11px]">{row.taskId}</code>
           </span>
         ) : null}
         {durationMs != null ? <span>{formatDuration(durationMs)}</span> : null}
@@ -615,7 +650,7 @@ function ExecutionRow({ row }: ExecutionRowProps): React.ReactElement {
         {cost != null ? <span>${(Number(cost) || 0).toFixed(4)}</span> : null}
       </div>
       {errorMessage ? (
-        <div className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">
+        <div className="break-words rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">
           {String(errorMessage)}
         </div>
       ) : null}
@@ -817,12 +852,12 @@ function TaskDetailSheet({
               </SheetTitle>
               <SheetDescription className="flex flex-wrap items-center gap-2">
                 {taskId ? (
-                  <Badge variant="outline">
-                    task <code className="ml-1 text-[11px]">{taskId}</code>
+                  <Badge variant="outline" className="max-w-full break-all">
+                    task <code className="ml-1 break-all text-[11px]">{taskId}</code>
                   </Badge>
                 ) : null}
                 {basename ? (
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
+                  <code className="max-w-full break-all rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
                     {basename}
                   </code>
                 ) : null}
