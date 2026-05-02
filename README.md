@@ -6,9 +6,7 @@
 
 aweek is a Claude Code plugin for building a team of AI agents that handle the work that repeats. Each agent has a role, a weekly plan, and a token budget. The plan evolves every Monday based on what worked last week. You set direction. Claude Code does the work. aweek runs the week.
 
-<p align="center">
-  <img src="docs/assets/aweek.png" alt="aweek weekly calendar rendered in Claude Code" width="720" />
-</p>
+https://github.com/user-attachments/assets/cf5772db-b0e0-46e8-ab97-7320dd2ebfef
 
 ## Why aweek exists
 
