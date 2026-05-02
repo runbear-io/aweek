@@ -246,6 +246,17 @@ interface TaskDetailSheetProps {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   onClose: () => void;
+  /**
+   * Calendar's active ISO week (`"YYYY-Www"`). Used to derive the review
+   * permalink for weekly-review tasks. Optional so test fixtures that
+   * don't synthesize a week still render.
+   */
+  calendarWeek?: string | null;
+  /**
+   * IANA time zone the calendar renders in. Used to format the date
+   * portion of a daily-review's permalink (`daily-YYYY-MM-DD`).
+   */
+  calendarTimeZone?: string;
 }
 
 interface TaskActivityListProps {
@@ -418,6 +429,8 @@ export function AgentCalendarPage({
         }
         baseUrl={baseUrl}
         fetchImpl={fetchImpl}
+        calendarWeek={data.week ?? null}
+        calendarTimeZone={data.timeZone}
         onClose={() => {
           if (typeof onCloseTaskId === 'function') onCloseTaskId();
           else setInternalTaskId(null);
@@ -443,6 +456,8 @@ function TaskDetailSheet({
   baseUrl,
   fetchImpl,
   onClose,
+  calendarWeek,
+  calendarTimeZone,
 }: TaskDetailSheetProps): React.ReactElement {
   const open = task != null;
   const review = task ? isReviewTask(task) : false;
@@ -456,6 +471,14 @@ function TaskDetailSheet({
       ? REVIEW_DISPLAY_NAMES[task.objectiveId ?? ''] || 'Review'
       : task.title
     : '';
+  const reviewStem =
+    review && task
+      ? deriveReviewStem(task, calendarWeek ?? null, calendarTimeZone)
+      : null;
+  const reviewLink =
+    reviewStem && agentSlug
+      ? `/agents/${encodeURIComponent(agentSlug)}/reviews/${encodeURIComponent(reviewStem)}`
+      : null;
   return (
     <Sheet open={open} onOpenChange={(next: boolean) => (next ? null : onClose())}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">
@@ -477,6 +500,23 @@ function TaskDetailSheet({
                 </SheetDescription>
               ) : null}
             </SheetHeader>
+            {reviewLink ? (
+              <div
+                className="mt-4 flex flex-col gap-1 rounded-md border border-amber-400/40 bg-amber-500/5 px-3 py-2 text-xs"
+                data-task-review-link="true"
+              >
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Review document
+                </span>
+                <Link
+                  to={reviewLink}
+                  className="font-mono text-foreground underline-offset-2 hover:underline"
+                  data-review-stem={reviewStem ?? undefined}
+                >
+                  Open review →
+                </Link>
+              </div>
+            ) : null}
             <div className="mt-6 grid gap-4 text-sm">
               <TaskField label="Status">
                 <Badge variant="outline" className="capitalize">
@@ -675,6 +715,69 @@ function FinalOutputPreview({
       <Markdown source={finalResult} />
     </div>
   );
+}
+
+/**
+ * Map a calendar review task to the on-disk review file stem produced
+ * by the review pipeline:
+ *
+ *   weekly-review → `weekly-<isoWeek>`     (e.g. `"weekly-2026-W17"`)
+ *   daily-review  → `daily-<YYYY-MM-DD>`   (e.g. `"daily-2026-04-23"`)
+ *
+ * Both stems mirror what the heartbeat actually writes to disk under
+ * `.aweek/agents/<slug>/reviews/`: `executeWeeklyReviewTask` writes to
+ * `weekly-${week}.md` and `executeDailyReviewTask` to `daily-${date}.md`.
+ * The reviews API surfaces those stems verbatim through `AgentReviewEntry.week`,
+ * so the same string is what the SPA's review-permalink route consumes.
+ *
+ * The daily date is rendered in the calendar's display time zone so it
+ * matches the file the daily-review writer persisted at run time. Returns
+ * `null` when the task isn't a review or when we lack the inputs needed
+ * to derive a stem (no `runAt` for daily; no calendar week for weekly).
+ */
+export function deriveReviewStem(
+  task: CalendarTask | null | undefined,
+  calendarWeek: string | null,
+  timeZone: string | undefined,
+): string | null {
+  if (!task) return null;
+  const objectiveId = task.objectiveId ?? '';
+  if (objectiveId === 'weekly-review') {
+    return calendarWeek && /^\d{4}-W\d{2}$/.test(calendarWeek)
+      ? `weekly-${calendarWeek}`
+      : null;
+  }
+  if (objectiveId === 'daily-review') {
+    if (typeof task.runAt !== 'string' || task.runAt.length === 0) return null;
+    const ms = Date.parse(task.runAt);
+    if (Number.isNaN(ms)) return null;
+    const date = new Date(ms);
+    const tz = timeZone && timeZone.length > 0 ? timeZone : 'UTC';
+    try {
+      // `en-CA` returns YYYY-MM-DD with numeric short form. Wrapping in
+      // formatToParts keeps us total even if a locale ever changes its
+      // default separator — we read the parts back individually.
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(date);
+      const get = (type: string): string =>
+        parts.find((p) => p.type === type)?.value ?? '';
+      const y = get('year');
+      const m = get('month');
+      const d = get('day');
+      if (y && m && d) return `daily-${y}-${m}-${d}`;
+    } catch {
+      // Fall through to UTC.
+    }
+    const y = String(date.getUTCFullYear());
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    return `daily-${y}-${m}-${d}`;
+  }
+  return null;
 }
 
 function formatActivityDate(iso: string | null | undefined): string {

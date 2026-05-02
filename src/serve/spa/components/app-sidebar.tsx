@@ -48,6 +48,7 @@ import {
 import { useAgents } from '../hooks/use-agents.js';
 import * as ThemeToggleModule from './theme-toggle.jsx';
 import * as SidebarModule from './ui/sidebar.jsx';
+import * as TooltipModule from './ui/tooltip.jsx';
 
 // ── Cross-boundary shims for still-`.jsx` shadcn/ui primitives ──────
 //
@@ -100,6 +101,103 @@ const useSidebar = SidebarModule.useSidebar as () => {
 const ThemeToggle = ThemeToggleModule.ThemeToggle as React.ComponentType<{
   className?: string;
 }>;
+
+// ── Tooltip shim ────────────────────────────────────────────────────
+//
+// `components/ui/tooltip.jsx` is a fresh shadcn-style primitive layered on
+// `@radix-ui/react-tooltip`. The TS migration plan lets us alias still-
+// `.jsx` shadcn primitives through permissive casts; mirror the pattern
+// the sibling sidebar shims already use.
+
+type TooltipProviderProps = {
+  children?: React.ReactNode;
+  delayDuration?: number;
+  skipDelayDuration?: number;
+};
+type TooltipRootProps = {
+  children?: React.ReactNode;
+  open?: boolean;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  delayDuration?: number;
+};
+type TooltipTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  asChild?: boolean;
+};
+type TooltipContentProps = React.HTMLAttributes<HTMLDivElement> & {
+  side?: 'top' | 'right' | 'bottom' | 'left';
+  sideOffset?: number;
+  align?: 'start' | 'center' | 'end';
+};
+
+const TooltipProvider = TooltipModule.TooltipProvider as React.ComponentType<TooltipProviderProps>;
+const Tooltip = TooltipModule.Tooltip as React.ComponentType<TooltipRootProps>;
+const TooltipTrigger = TooltipModule.TooltipTrigger as React.ComponentType<TooltipTriggerProps>;
+const TooltipContent = TooltipModule.TooltipContent as React.ComponentType<TooltipContentProps>;
+
+/**
+ * Wrap a sidebar menu item so a tooltip surfaces the item's label only
+ * when the sidebar is in icon-only collapsed mode. When the sidebar is
+ * expanded the label text is already visible inside the button, so the
+ * tooltip would be redundant — return the child untouched.
+ *
+ * Embeds its own {@link TooltipProvider} (with `delayDuration={0}`) so
+ * the wrapper works in tests and stand-alone mounts that don't set up
+ * the app-root provider in `main.tsx`. Nested providers are well-defined
+ * in Radix and the inner one wins, so the app-root provider stays
+ * authoritative everywhere it's present — this nesting is purely a
+ * "no-context-required" defence.
+ */
+function NavTooltip({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactElement;
+}): React.ReactElement {
+  const { state } = useSidebar();
+  if (state !== 'collapsed') return children;
+  return (
+    <TooltipProvider delayDuration={0} skipDelayDuration={0}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side="right" align="center" sideOffset={6}>
+          {label}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/**
+ * Inline aweek logo. Uses `currentColor` for stroke so the glyph picks
+ * up the surrounding `text-foreground` token and adapts to light/dark
+ * theme without two image variants. Path mirrors `docs/public/logo-light.svg`.
+ */
+function AweekLogo({
+  className,
+}: {
+  className?: string;
+}): React.ReactElement {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 32 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      role="img"
+      aria-label="aweek"
+      className={className}
+      data-component="aweek-logo"
+    >
+      <title>aweek</title>
+      <path d="M2 4h4v8h4V4h4v8h4V4h4v8h4V4h4" />
+    </svg>
+  );
+}
 
 // ── Domain types ────────────────────────────────────────────────────
 
@@ -278,11 +376,15 @@ export function AppSidebar({
     >
       <SidebarHeader>
         <div className="flex items-center gap-2 px-2 py-1.5">
+          {/* Brand lockup. The 14×7 logo fits inside an 8×8 chip when
+              collapsed; when expanded it sits to the left of the wordmark.
+              `currentColor` stroke means it inherits text-foreground for
+              both light and dark themes (no image swap needed). */}
           <span
             aria-hidden="true"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-accent text-sm font-bold text-accent-foreground"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-accent text-accent-foreground"
           >
-            a
+            <AweekLogo className="h-3.5 w-7" />
           </span>
           <div className="flex flex-col leading-tight group-data-[collapsible=icon]/sidebar:hidden">
             <span className="text-sm font-semibold text-foreground">
@@ -304,18 +406,20 @@ export function AppSidebar({
                 const Icon = item.icon;
                 return (
                   <SidebarMenuItem key={item.to}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={active}
-                      data-nav-item={item.to}
-                    >
-                      <Link to={item.to}>
-                        {Icon ? (
-                          <Icon className="h-4 w-4" aria-hidden="true" />
-                        ) : null}
-                        <span>{item.label}</span>
-                      </Link>
-                    </SidebarMenuButton>
+                    <NavTooltip label={item.label}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={active}
+                        data-nav-item={item.to}
+                      >
+                        <Link to={item.to}>
+                          {Icon ? (
+                            <Icon className="h-4 w-4" aria-hidden="true" />
+                          ) : null}
+                          <span>{item.label}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </NavTooltip>
                   </SidebarMenuItem>
                 );
               })}
@@ -332,26 +436,28 @@ export function AppSidebar({
                   const active = detail?.slug === row.slug;
                   const initials = agentInitials(row.name || row.slug);
                   const statusTone = agentAvatarTone(row.status);
+                  const label = row.name || row.slug;
                   return (
                     <SidebarMenuItem key={row.slug}>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={active}
-                        data-nav-item={to}
-                        tooltip={row.name || row.slug}
-                        className="h-auto group-data-[collapsible=icon]/sidebar:!size-9 group-data-[collapsible=icon]/sidebar:!p-0"
-                      >
-                        <Link to={to}>
-                          <span
-                            aria-hidden="true"
-                            data-agent-status={row.status}
-                            className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[9px] font-semibold tracking-wider tabular-nums ${statusTone}`}
-                          >
-                            {initials}
-                          </span>
-                          <span className="truncate">{row.name || row.slug}</span>
-                        </Link>
-                      </SidebarMenuButton>
+                      <NavTooltip label={label}>
+                        <SidebarMenuButton
+                          asChild
+                          isActive={active}
+                          data-nav-item={to}
+                          className="h-auto group-data-[collapsible=icon]/sidebar:!size-9 group-data-[collapsible=icon]/sidebar:!p-0"
+                        >
+                          <Link to={to}>
+                            <span
+                              aria-hidden="true"
+                              data-agent-status={row.status}
+                              className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[9px] font-semibold tracking-wider tabular-nums ${statusTone}`}
+                            >
+                              {initials}
+                            </span>
+                            <span className="truncate">{label}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </NavTooltip>
                     </SidebarMenuItem>
                   );
                 })}
@@ -420,16 +526,18 @@ export function AgentDetailSidebar(): React.ReactElement | null {
                 const active = detail.tab === tab;
                 return (
                   <SidebarMenuItem key={tab}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={active}
-                      data-nav-item={to}
-                    >
-                      <Link to={to}>
-                        <Icon className="h-4 w-4" aria-hidden="true" />
-                        <span>{label}</span>
-                      </Link>
-                    </SidebarMenuButton>
+                    <NavTooltip label={label}>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={active}
+                        data-nav-item={to}
+                      >
+                        <Link to={to}>
+                          <Icon className="h-4 w-4" aria-hidden="true" />
+                          <span>{label}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </NavTooltip>
                   </SidebarMenuItem>
                 );
               })}

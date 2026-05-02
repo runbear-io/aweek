@@ -26,7 +26,11 @@ import {
   within,
 } from '@testing-library/react';
 
-import { AgentCalendarPage, layoutTasks } from './agent-calendar-page.tsx';
+import {
+  AgentCalendarPage,
+  deriveReviewStem,
+  layoutTasks,
+} from './agent-calendar-page.tsx';
 import type { CalendarDayKey, CalendarTask } from '../lib/api-client.ts';
 
 // The LayoutResult index signature types placedByDayHour as unknown;
@@ -489,5 +493,89 @@ describe('layoutTasks (pure helper)', () => {
     const { placedByDayHour } = layoutTasks([t0930, t0900]) as unknown as { placedByDayHour: PlacedMap };
     const bucket = placedByDayHour.get('mon:9')!;
     expect(bucket.map((e) => e.task.id)).toEqual(['task-0900', 'task-0930']);
+  });
+});
+
+describe('deriveReviewStem (calendar review-task → review file stem)', () => {
+  function reviewTask(partial: Partial<CalendarTask>): CalendarTask {
+    return {
+      id: 'task-review',
+      title: '',
+      prompt: '',
+      status: 'pending',
+      priority: null,
+      estimatedMinutes: null,
+      objectiveId: 'daily-review',
+      track: null,
+      runAt: null,
+      completedAt: null,
+      delegatedTo: null,
+      slot: null,
+      ...partial,
+    } as CalendarTask;
+  }
+
+  it('returns `weekly-<isoWeek>` for a weekly-review task (matches heartbeat-written file)', () => {
+    const task = reviewTask({ objectiveId: 'weekly-review' });
+    // executeWeeklyReviewTask writes to `reviews/weekly-${week}.md`, so the
+    // SPA permalink stem must include the `weekly-` prefix to round-trip.
+    expect(deriveReviewStem(task, '2026-W17', 'UTC')).toBe('weekly-2026-W17');
+  });
+
+  it('returns null for a weekly-review task when calendarWeek is missing', () => {
+    const task = reviewTask({ objectiveId: 'weekly-review' });
+    expect(deriveReviewStem(task, null, 'UTC')).toBeNull();
+  });
+
+  it('returns null for a weekly-review task when calendarWeek is malformed', () => {
+    const task = reviewTask({ objectiveId: 'weekly-review' });
+    expect(deriveReviewStem(task, 'not-a-week', 'UTC')).toBeNull();
+  });
+
+  it('formats the daily-review stem from runAt in the configured time zone', () => {
+    // 04-22 17:00 UTC is still 2026-04-22 in America/Los_Angeles (UTC-7).
+    const task = reviewTask({
+      objectiveId: 'daily-review',
+      runAt: '2026-04-22T17:00:00.000Z',
+    });
+    expect(deriveReviewStem(task, '2026-W17', 'America/Los_Angeles')).toBe(
+      'daily-2026-04-22',
+    );
+  });
+
+  it('respects the time zone when the wall date crosses midnight UTC', () => {
+    // 04-22 02:30 UTC is still 2026-04-21 in America/Los_Angeles (UTC-7).
+    const task = reviewTask({
+      objectiveId: 'daily-review',
+      runAt: '2026-04-22T02:30:00.000Z',
+    });
+    expect(deriveReviewStem(task, '2026-W17', 'America/Los_Angeles')).toBe(
+      'daily-2026-04-21',
+    );
+  });
+
+  it('falls back to UTC when timeZone is missing', () => {
+    const task = reviewTask({
+      objectiveId: 'daily-review',
+      runAt: '2026-04-22T02:30:00.000Z',
+    });
+    expect(deriveReviewStem(task, '2026-W17', undefined)).toBe(
+      'daily-2026-04-22',
+    );
+  });
+
+  it('returns null for a daily-review task without runAt', () => {
+    const task = reviewTask({ objectiveId: 'daily-review', runAt: null });
+    expect(deriveReviewStem(task, '2026-W17', 'UTC')).toBeNull();
+  });
+
+  it('returns null for a non-review task', () => {
+    const task = reviewTask({ objectiveId: 'obj-1', runAt: '2026-04-22T17:00:00.000Z' });
+    expect(deriveReviewStem(task, '2026-W17', 'UTC')).toBeNull();
+  });
+
+  it('returns null for null/undefined task input', () => {
+    expect(deriveReviewStem(null, '2026-W17', 'UTC')).toBeNull();
+    expect(deriveReviewStem(undefined, '2026-W17', 'UTC')).toBeNull();
   });
 });

@@ -159,7 +159,10 @@ const CASES = [
     name: 'AgentReviewsPage',
     file: 'agent-reviews-page.tsx',
     hook: 'useAgentReviews',
-    allowedProps: ['slug', 'baseUrl', 'fetch'],
+    // `selectedWeek` / `onSelectWeek` are URL-driven orchestration props
+    // threaded through by the parent route — same exemption rationale as
+    // AgentCalendarPage's drawer + week props.
+    allowedProps: ['slug', 'baseUrl', 'fetch', 'selectedWeek', 'onSelectWeek'],
   },
 ];
 
