@@ -1,7 +1,7 @@
 # Skills
 
 aweek ships eight Claude Code skills — capabilities the plugin
-runtime exposes via `aweek [name]` invocation. Each skill's
+runtime exposes via `/aweek:[name]` invocation. Each skill's
 markdown lives in `skills/[name]/SKILL.md` and shells out to
 `aweek exec [module] [fn]`. No skill writes `.aweek/` JSON or
 `.claude/agents/[slug].md` directly; all persistence and
@@ -11,19 +11,25 @@ validation lives in `src/skills/*.ts`.
 
 | Skill | Purpose |
 |-------|---------|
-| [`aweek init`](#aweek-init) | Bootstrap a project: create `.aweek/`, optionally install the heartbeat, route into `aweek hire`. |
-| [`aweek hire`](#aweek-hire) | Identity-only agent creation. Adopts an unhired `.claude/agents/[slug].md` or writes a new one. |
-| [`aweek plan`](#aweek-plan) | Single entry point for goal / monthly / weekly adjustments **and** pending weekly plan approval. |
-| [`aweek manage`](#aweek-manage) | Lifecycle ops: resume, top up, pause, delete. |
-| [`aweek summary`](#aweek-summary) | Compact dashboard table across all agents with optional drill-down. |
-| [`aweek query`](#aweek-query) | Filter the roster by role / status / persona keyword / budget. |
-| [`aweek calendar`](#aweek-calendar) | Interactive weekly-plan calendar grid for one agent. |
-| [`aweek delegate-task`](#aweek-delegate-task) | Async inter-agent task delegation through the recipient's inbox queue. |
+| [`/aweek:setup`](#aweek-setup) | Explicitly bootstrap a project: create `.aweek/`, optionally install the heartbeat, route into `/aweek:hire`. Usually auto-called by the first skill you run. |
+| [`/aweek:teardown`](#aweek-teardown) | Remove the heartbeat and/or `.aweek/` data from a project. |
+| [`/aweek:hire`](#aweek-hire) | Identity-only agent creation. Adopts an unhired `.claude/agents/[slug].md` or writes a new one. |
+| [`/aweek:plan`](#aweek-plan) | Single entry point for goal / monthly / weekly adjustments **and** pending weekly plan approval. |
+| [`/aweek:manage`](#aweek-manage) | Lifecycle ops: resume, top up, pause, delete. |
+| [`/aweek:summary`](#aweek-summary) | Compact dashboard table across all agents with optional drill-down. |
+| [`/aweek:query`](#aweek-query) | Filter the roster by role / status / persona keyword / budget. |
+| [`/aweek:calendar`](#aweek-calendar) | Interactive weekly-plan calendar grid for one agent. |
+| [`/aweek:delegate-task`](#aweek-delegate-task) | Async inter-agent task delegation through the recipient's inbox queue. |
 
-## aweek init
+## /aweek:setup
 
-One-time per-project setup. Idempotent — re-runs report
+Per-project setup. Idempotent — re-runs report
 `created` / `skipped` / `updated` per step.
+
+Most users never invoke this directly — every other skill auto-bootstraps
+the project on first run. Use `/aweek:setup` when you want explicit control
+over the heartbeat installation, or to reset a sticky heartbeat decision so
+the next skill call re-prompts.
 
 Steps, in order:
 
@@ -37,10 +43,22 @@ Steps, in order:
 3. Route into a four-option hire menu:
    - `hire-all` — adopt every unhired subagent under `.claude/agents/`.
    - `select-some` — multi-select adoption.
-   - `create-new` — go straight to `aweek hire`.
+   - `create-new` — go straight to `/aweek:hire`.
    - `skip` — exit without hiring.
+4. Clear the sticky heartbeat decision so the next skill call re-prompts.
 
-## aweek hire
+## /aweek:teardown
+
+Remove aweek from a project. Two operations available:
+
+- **Remove heartbeat only** — uninstalls the launchd user agent (macOS)
+  or crontab line (Linux) without touching agent data.
+- **Full uninstall** — removes the heartbeat AND deletes `.aweek/`
+  permanently.
+
+Both require explicit `AskUserQuestion` confirmation.
+
+## /aweek:hire
 
 Identity-only agent creation. Two paths:
 
@@ -53,9 +71,9 @@ Identity-only agent creation. Two paths:
 Plugin-namespaced subagents (`oh-my-claudecode-*`, `geo-*`, etc.) are
 intentionally excluded from adoption.
 
-Goals and plans are not collected here — add them via `aweek plan`.
+Goals and plans are not collected here — add them via `/aweek:plan`.
 
-## aweek plan
+## /aweek:plan
 
 The only sanctioned way to mutate goals, monthly plans, weekly tasks,
 and approval state. Atomic batches: if any operation fails schema
@@ -73,7 +91,7 @@ Goal `remove` and weekly plan `reject` are destructive — both require
 explicit `AskUserQuestion` confirmation before the underlying adapter
 will run.
 
-## aweek manage
+## /aweek:manage
 
 Lifecycle ops on a single agent:
 
@@ -85,24 +103,24 @@ Lifecycle ops on a single agent:
 | `delete` | Remove `.aweek/agents/[slug].json`. Optionally delete the `.md` too (destructive — confirms first). |
 
 Identity edits go through `.claude/agents/[slug].md` directly — there
-is no `aweek edit-identity`.
+is no `/aweek:edit-identity`.
 
-## aweek summary
+## /aweek:summary
 
 Compact dashboard across all agents — one row per agent with goal,
 next task, weekly budget, status. Drill into any row for
 `src/skills/status.ts` detail (per-agent recent activity, paused
 reason, last execution log).
 
-## aweek query
+## /aweek:query
 
 Filter the roster and return a slug list other skills can consume.
 Filters: role, status, persona keyword, weekly budget range.
 
-Useful for chaining — `aweek query` → pipe slugs into
-`aweek delegate-task` or `aweek manage`.
+Useful for chaining — `/aweek:query` → pipe slugs into
+`/aweek:delegate-task` or `/aweek:manage`.
 
-## aweek calendar
+## /aweek:calendar
 
 Render one agent's active weekly plan as a calendar grid (day columns,
 hour rows). Numbered task selection, view options, inline status edits.
@@ -111,7 +129,7 @@ Click a task chip to open a Sheet with all task fields.
 The same grid backs the `/agents/[slug]/calendar` route in the
 `aweek serve` dashboard.
 
-## aweek delegate-task
+## /aweek:delegate-task
 
 Async inter-agent delegation. The sender drops a task into the
 recipient's inbox; the recipient picks it up at the next heartbeat tick
@@ -123,5 +141,5 @@ Useful for multi-agent pipelines:
 researcher → drafter → editor → distributor
 ```
 
-Each handoff is a `aweek delegate-task` call — the sender doesn't
+Each handoff is a `/aweek:delegate-task` call — the sender doesn't
 block, the recipient drains its inbox on its own schedule.

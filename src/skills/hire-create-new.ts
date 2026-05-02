@@ -41,7 +41,6 @@ import {
   writeSubagentFile,
   subagentFilePath,
 } from '../subagents/subagent-file.js';
-
 /** Inputs for {@link validateCreateNewInput} and {@link createNewSubagent}. */
 export interface CreateNewInput {
   /** Human-readable agent name (e.g. "Content Writer"). */

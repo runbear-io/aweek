@@ -1,7 +1,7 @@
 /**
- * Init skill — project bootstrap primitives for `/aweek:init`.
+ * Setup skill — project bootstrap primitives for `/aweek:setup`.
  *
- * This Sub-AC (2 of AC 1) owns the two lowest-level init primitives:
+ * This module owns the lowest-level setup primitives:
  *
  *   1. `installDependencies` — runs `pnpm install` in the project root so a
  *      fresh checkout has every aweek runtime dependency available before any
@@ -17,9 +17,9 @@
  *     so tests can exercise the full control flow without actually shelling
  *     out to pnpm.
  *   - **Framework-agnostic.** No AskUserQuestion / Claude Code harness coupling.
- *     The `skills/aweek-init.md` wrapper handles interactive confirmation.
+ *     The `skills/setup/SKILL.md` wrapper handles interactive confirmation.
  *
- * Higher-level init helpers compose on top of these primitives:
+ * Higher-level setup helpers compose on top of these primitives:
  * `detectInitState` reports idempotency state, and `installHeartbeat`
  * gates the destructive crontab write behind explicit user confirmation.
  * Slash-command discovery is handled by the Claude Code plugin system
@@ -1456,6 +1456,35 @@ export async function detectInitState({
     },
     fullyInitialized: !needsDataDir && !needsHeartbeat,
   };
+}
+
+export interface ClearHeartbeatDecisionOptions {
+  projectDir?: string;
+  dataDir?: string;
+}
+
+export interface ClearHeartbeatDecisionResult {
+  ok: boolean;
+  configPath: string;
+}
+
+/**
+ * Clear the sticky heartbeat decision from `.aweek/config.json`.
+ *
+ * Re-running `/aweek:setup` calls this so the next skill invocation
+ * re-prompts the user about installing the heartbeat — useful when the
+ * user previously picked "skip-remember" but now wants to install it.
+ */
+export async function clearHeartbeatDecision({
+  projectDir,
+  dataDir = DEFAULT_DATA_DIR,
+}: ClearHeartbeatDecisionOptions = {}): Promise<ClearHeartbeatDecisionResult> {
+  const resolvedProject = resolveProjectDir(projectDir);
+  const absoluteDataDir = resolve(resolvedProject, dataDir);
+  const aweekRoot = normalizeAweekRoot(absoluteDataDir);
+  const agentsPath = join(aweekRoot, 'agents');
+  await saveConfig(agentsPath, { heartbeat: undefined });
+  return { ok: true, configPath: configPath(agentsPath) };
 }
 
 /**

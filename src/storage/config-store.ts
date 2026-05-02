@@ -60,6 +60,35 @@ export interface AweekConfig {
    * re-run `/aweek:init` to rewrite the launchd plist or crontab line.
    */
   heartbeatIntervalSec: number;
+  /**
+   * Sticky record of the user's most recent heartbeat-install decision.
+   * Written by `ensureProjectReady` after the first prompt so subsequent
+   * skill calls don't re-prompt. Cleared by re-running `aweek init` or
+   * by editing `.aweek/config.json` directly. Absent = never prompted.
+   * See {@link HeartbeatDecisionRecord}.
+   */
+  heartbeat?: HeartbeatDecisionRecord;
+}
+
+/**
+ * The user's answer to "install the heartbeat for this project?".
+ *
+ *   'installed' — plist (macOS) or crontab line (other) was written.
+ *                 Treated as authoritative until `detectInitState` disagrees
+ *                 (e.g. user manually deleted the plist).
+ *   'declined'  — user picked "Skip & remember". Never re-prompt until they
+ *                 re-run `aweek init`.
+ *   'skipped'   — user picked "Skip" once. Re-prompt on the next skill call
+ *                 so they can change their mind.
+ */
+export type HeartbeatDecision = 'installed' | 'declined' | 'skipped';
+
+/** See {@link HeartbeatDecision}. */
+export interface HeartbeatDecisionRecord {
+  /** ISO-8601 timestamp of the prompt that produced `decision`. */
+  promptedAt: string;
+  /** What the user chose. */
+  decision: HeartbeatDecision;
 }
 
 /**
@@ -165,6 +194,17 @@ export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigR
         degraded = true;
       }
     }
+    const decisionCandidate = (parsed as { heartbeat?: unknown }).heartbeat;
+    if (decisionCandidate !== undefined) {
+      if (isValidHeartbeatDecisionRecord(decisionCandidate)) {
+        out.heartbeat = decisionCandidate;
+      } else {
+        process.stderr.write(
+          `aweek: ${CONFIG_FILENAME} has invalid heartbeat record ${JSON.stringify(decisionCandidate)}; ignoring\n`,
+        );
+        degraded = true;
+      }
+    }
   }
   return { config: out, status: degraded ? 'missing' : 'ok' };
 }
@@ -215,6 +255,27 @@ export function isValidHeartbeatIntervalSec(value: unknown): value is number {
 }
 
 /**
+ * True when `value` is a well-formed {@link HeartbeatDecisionRecord}: an
+ * object with a parseable ISO-8601 `promptedAt` and a `decision` of
+ * 'installed' | 'declined' | 'skipped'. Disk records that fail this check
+ * are dropped silently by `loadConfigWithStatus` so a corrupt entry can't
+ * suppress the prompt forever.
+ */
+export function isValidHeartbeatDecisionRecord(
+  value: unknown,
+): value is HeartbeatDecisionRecord {
+  if (!value || typeof value !== 'object') return false;
+  const r = value as Record<string, unknown>;
+  if (typeof r.promptedAt !== 'string') return false;
+  if (Number.isNaN(Date.parse(r.promptedAt))) return false;
+  return (
+    r.decision === 'installed' ||
+    r.decision === 'declined' ||
+    r.decision === 'skipped'
+  );
+}
+
+/**
  * Write the config object. Creates parent dirs if needed, validates
  * `timeZone` before writing.
  */
@@ -241,6 +302,15 @@ export async function saveConfig(
   ) {
     throw new TypeError(
       `Invalid heartbeatIntervalSec in config: ${JSON.stringify(config.heartbeatIntervalSec)} (must be an integer between 60 and 86400 seconds)`,
+    );
+  }
+  if (
+    config.heartbeat !== undefined &&
+    config.heartbeat !== null &&
+    !isValidHeartbeatDecisionRecord(config.heartbeat)
+  ) {
+    throw new TypeError(
+      `Invalid heartbeat record in config: ${JSON.stringify(config.heartbeat)}`,
     );
   }
   const path = configPath(dataDir);

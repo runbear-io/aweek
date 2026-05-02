@@ -703,6 +703,7 @@ export interface LoadAndRenderGridParams {
   week?: any;
   dataDir?: string;
   opts?: RenderGridOpts & { format?: 'box' | 'markdown' };
+  projectDir?: string;
 }
 
 /**

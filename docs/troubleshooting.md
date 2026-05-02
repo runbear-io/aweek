@@ -31,7 +31,8 @@ launchctl list | grep io.aweek.heartbeat
 ```
 
 If nothing matches, the plist was never installed (or was removed).
-Re-run `aweek init` and confirm the heartbeat install when prompted.
+Run `aweek setup` (or invoke any other skill — it will auto-prompt)
+and confirm the heartbeat install when asked.
 
 To inspect the plist on disk:
 
@@ -91,6 +92,21 @@ process.
 
 ```bash
 ls .aweek/.locks/
+```
+
+## Removing aweek from a project
+
+Use `/aweek:teardown` to cleanly uninstall. It offers two options:
+
+- **Remove heartbeat only** — unloads and deletes the launchd plist (macOS)
+  or removes the crontab entry. Agent data stays on disk.
+- **Full uninstall** — removes the heartbeat AND deletes `.aweek/`
+  permanently.
+
+Both require explicit confirmation before any change is made.
+
+```text
+aweek teardown
 ```
 
 ## Anything else

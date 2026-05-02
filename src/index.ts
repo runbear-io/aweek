@@ -690,7 +690,7 @@ export {
   resolveProjectDir as resolveInitProjectDir,
   shouldLaunchHire,
   uninstallHeartbeat,
-} from './skills/init.js';
+} from './skills/setup.js';
 export {
   LAUNCHD_LABEL_PREFIX,
   DEFAULT_LAUNCHD_INTERVAL_SECONDS,
@@ -703,13 +703,13 @@ export {
   queryLaunchdHeartbeat,
   uninstallLaunchdHeartbeat,
 } from './skills/launchd.js';
-// Init hire menu (Sub-AC 2 + 3 of AC 6) — four-option interactive menu
+// Setup hire menu — four-option interactive menu
 // (Hire all / Select some / Create new / Skip) that displays unhired
 // subagents and routes the user's choice to the appropriate /aweek:hire
-// branch, plus the Sub-AC 3 fall-through that auto-delegates to /aweek:hire
+// branch, plus the fall-through that auto-delegates to /aweek:hire
 // when no unhired subagents exist (so the user is never asked to choose
 // between create-new and skip on an empty roster). See
-// src/skills/init-hire-menu.js.
+// src/skills/setup-hire-menu.ts.
 export {
   DEFAULT_MENU_PROMPT_TEXT as INIT_HIRE_MENU_DEFAULT_PROMPT_TEXT,
   DEFAULT_MENU_PROMPT_TEXT_NO_UNHIRED as INIT_HIRE_MENU_DEFAULT_PROMPT_TEXT_NO_UNHIRED,
@@ -722,7 +722,7 @@ export {
   routeInitHireMenuChoice,
   validateInitHireMenuChoice,
   validateSelectedSlugs as validateInitHireMenuSelectedSlugs,
-} from './skills/init-hire-menu.js';
+} from './skills/setup-hire-menu.js';
 
 // Time-zone utilities and the tiny .aweek/config.json store. Skill modules
 // import from here rather than from the submodules directly so the public

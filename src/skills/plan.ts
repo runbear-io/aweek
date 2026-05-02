@@ -93,7 +93,7 @@ export interface AdjustPlanParams extends AdjustGoalsParams {
  * Goals and monthly plans live in `.aweek/agents/<slug>/plan.md` — they are
  * no longer edited through this surface.
  */
-export function adjustPlan(params: AdjustPlanParams = {} as AdjustPlanParams): Promise<AdjustGoalsResult> {
+export async function adjustPlan(params: AdjustPlanParams = {} as AdjustPlanParams): Promise<AdjustGoalsResult> {
   const legacyGoals = Array.isArray(params.goalAdjustments) && params.goalAdjustments.length > 0;
   const legacyMonthly = Array.isArray(params.monthlyAdjustments) && params.monthlyAdjustments.length > 0;
   if (legacyGoals || legacyMonthly) {

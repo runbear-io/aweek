@@ -45,9 +45,8 @@ import {
   readSubagentIdentity,
   type SubagentIdentity,
 } from '../subagents/subagent-file.js';
-import { validateSelectedSlugs, type InitHireMenu } from './init-hire-menu.js';
+import { validateSelectedSlugs, type InitHireMenu } from './setup-hire-menu.js';
 import type { AgentStore } from '../storage/agent-store.js';
-
 /**
  * Default prompt copy shown above the multi-select list. The skill markdown
  * can override via {@link buildSelectSomeChoices}' `promptText` option when
