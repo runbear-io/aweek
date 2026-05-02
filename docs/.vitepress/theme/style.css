@@ -1,0 +1,43 @@
+/* Hero video sizing + spacing overrides for the home page.
+ * VitePress's hero styles are scoped (`[data-v-…]`), so we need `!important`
+ * on the column-sizing rules to outweigh that specificity. */
+
+.VPHero.has-image .image-container {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  transform: none;
+  margin: 0 auto;
+  max-width: 720px;
+}
+
+.VPHero.has-image .image-bg {
+  display: none !important;
+}
+
+@media (min-width: 960px) {
+  .VPHero.has-image .container {
+    gap: 96px;
+  }
+  .VPHero.has-image .main {
+    flex-grow: 0 !important;
+    flex-shrink: 1 !important;
+    max-width: 480px !important;
+  }
+  .VPHero.has-image .image {
+    flex-grow: 1 !important;
+    flex-shrink: 0 !important;
+    max-width: none !important;
+    padding-left: 0 !important;
+  }
+  .VPHero.has-image .image-container {
+    margin-left: auto;
+    margin-right: 0;
+  }
+}
+
+@media (min-width: 1280px) {
+  .VPHero.has-image .image-container {
+    max-width: 800px;
+  }
+}

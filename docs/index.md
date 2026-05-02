@@ -5,9 +5,6 @@ hero:
   name: aweek
   text: A team that runs the week.
   tagline: Claude Code is the doer. aweek is the planner. Hire AI agents, give them weekly plans and a token budget, then walk away.
-  image:
-    src: /aweek.png
-    alt: aweek weekly calendar rendered in Claude Code
   actions:
     - theme: brand
       text: Get started
