@@ -4,7 +4,7 @@
 
 aweek's `SessionStart` hook runs `npm install -g aweek` on first
 launch. If that step failed, the skills won't be able to invoke the
-`aweek` CLI and `/aweek:[name]` will silently no-op.
+`aweek` CLI and `aweek [name]` will silently no-op.
 
 ```bash
 npm install -g aweek
@@ -31,7 +31,7 @@ launchctl list | grep io.aweek.heartbeat
 ```
 
 If nothing matches, the plist was never installed (or was removed).
-Re-run `/aweek:init` and confirm the heartbeat install when prompted.
+Re-run `aweek init` and confirm the heartbeat install when prompted.
 
 To inspect the plist on disk:
 
@@ -48,7 +48,7 @@ aweek pauses an agent when its weekly token budget is exhausted.
 Clear the pause via:
 
 ```text
-/aweek:manage
+aweek manage
 ```
 
 - `resume` — clears the pause. The agent picks up at the next Monday

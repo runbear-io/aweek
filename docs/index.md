@@ -26,9 +26,9 @@ features:
   - title: One heartbeat, many agents
     details: A 10-minute launchd tick wakes each agent in turn, drains their inbox, picks the next due task, and records token usage.
   - title: Agents hand off to each other
-    details: /aweek:delegate-task drops work into another agent's inbox. Build research → draft → editor → distributor pipelines.
+    details: aweek delegate-task drops work into another agent's inbox. Build research → draft → editor → distributor pipelines.
   - title: Lives inside Claude Code
-    details: Skills for hire, plan, calendar, summary, manage — invoked via /aweek:[name]. No new UI; your terminal is the dashboard.
+    details: Skills for hire, plan, calendar, summary, manage — invoked via aweek [name]. No new UI; your terminal is the dashboard.
 ---
 
 ## Who it's for

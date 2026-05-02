@@ -45,7 +45,7 @@ All sixteen runs share one weekly budget (~700k tokens).
 ## Step 1. Hire the agent
 
 ```text
-/aweek:hire
+aweek hire
 ```
 
 - **Slug:** `content-marketer`
@@ -64,7 +64,7 @@ All sixteen runs share one weekly budget (~700k tokens).
 
 ## Step 2. Set goals and strategies
 
-`/aweek:plan` → **Edit plan.md**:
+`aweek plan` → **Edit plan.md**:
 
 ```md
 # content-marketer
@@ -111,7 +111,7 @@ All sixteen runs share one weekly budget (~700k tokens).
 
 ## Step 3. Approve the weekly plan
 
-`/aweek:plan` drafts all sixteen tasks at the times above. Review
+`aweek plan` drafts all sixteen tasks at the times above. Review
 and approve.
 
 ## Step 4. Read and ship
@@ -136,7 +136,7 @@ channel grows large enough that its budget should be isolated.
 ## Multi-agent handoff
 
 For high-volume content teams, split the post task into a research
-→ draft → edit pipeline using `/aweek:delegate-task`. The
+→ draft → edit pipeline using `aweek delegate-task`. The
 `content-marketer` becomes the editor at the end of the chain,
 producing the social atomization and newsletter once the post is
 locked.

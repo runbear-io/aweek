@@ -45,28 +45,28 @@ A single agent on a calendar — sixteen scheduled tasks across five days, a dai
 
 | You run | Your team does |
 |---|---|
-| `/aweek:hire` | Adds an agent — name, role, system prompt |
-| `/aweek:plan` | Drafts long-term goals → monthly objectives → weekly tasks. You approve. |
-| `/aweek:summary` | Hands in a status report — done, pending, budget left |
-| `/aweek:calendar` | Shows the week as an editable calendar grid |
-| `/aweek:manage` | Lifecycle ops — pause, resume, top up budget, fire |
-| `/aweek:delegate-task` | Drops work into another agent's inbox. Agents hand off to each other. |
-| `/aweek:init` | One-time setup — installs the 10-minute heartbeat that wakes every agent |
+| `aweek hire` | Adds an agent — name, role, system prompt |
+| `aweek plan` | Drafts long-term goals → monthly objectives → weekly tasks. You approve. |
+| `aweek summary` | Hands in a status report — done, pending, budget left |
+| `aweek calendar` | Shows the week as an editable calendar grid |
+| `aweek manage` | Lifecycle ops — pause, resume, top up budget, fire |
+| `aweek delegate-task` | Drops work into another agent's inbox. Agents hand off to each other. |
+| `aweek init` | One-time setup — installs the 10-minute heartbeat that wakes every agent |
 
 ## Try it in 60 seconds
 
 ```bash
 /plugin install aweek@runbear-io   # once published
-/aweek:init                     # installs heartbeat
-/aweek:hire                     # add your first agent
-/aweek:plan                     # draft & approve the week
+aweek init                     # installs heartbeat
+aweek hire                     # add your first agent
+aweek plan                     # draft & approve the week
 ```
 
 Walk away. Come back Monday morning to a status report and next week's draft plan.
 
 ## How it works (in 3 lines)
 
-1. **Skills** (invoked via `/aweek:[name]`) shell out to a tiny `aweek` CLI for every state change.
+1. **Skills** (invoked via `aweek [name]`) shell out to a tiny `aweek` CLI for every state change.
 2. **Heartbeat** is a 10-minute launchd user agent per project. It picks the next pending task per agent and runs it in a fresh Claude Code CLI session.
 3. **Storage** is plain files: `.aweek/agents/<slug>.json` for scheduling, `.claude/agents/<slug>.md` for identity. No DB.
 
@@ -107,8 +107,8 @@ Format is dotenv-style: `KEY=value`, `#` comments, single/double quotes (double-
 ## Troubleshooting
 
 - **Skills don't show up in Claude Code.** SessionStart's `npm install -g aweek` failed. Run it yourself.
-- **Heartbeat isn't running.** Check `launchctl list | grep io.aweek.heartbeat`. If nothing matches, re-run `/aweek:init`.
-- **Agent paused.** It hit its weekly budget. `/aweek:manage` → `resume` (resets next week) or `top-up` (resets now).
+- **Heartbeat isn't running.** Check `launchctl list | grep io.aweek.heartbeat`. If nothing matches, re-run `aweek init`.
+- **Agent paused.** It hit its weekly budget. `aweek manage` → `resume` (resets next week) or `top-up` (resets now).
 
 ## Development
 

@@ -1,7 +1,7 @@
 # Install
 
 aweek ships as a Claude Code plugin. Install the plugin, then run
-`/aweek:init` in any project directory.
+`aweek init` in any project directory.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ claude --plugin-dir .
 ## Verify
 
 In your Claude Code session, type `/` — the `aweek:` skills
-(`/aweek:init`, `/aweek:hire`, …) should appear in the suggestion
+(`aweek init`, `aweek hire`, …) should appear in the suggestion
 list.
 
 If they don't, see
