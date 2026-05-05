@@ -28,6 +28,9 @@ import {
   AppSidebar,
   MobileAppSidebar,
 } from './app-sidebar.jsx';
+import { useChatPanelOptional } from './chat-panel-context.js';
+import { FloatingChatBubble } from './floating-chat-bubble.js';
+import { FloatingChatPanel } from './floating-chat-panel.tsx';
 import { Footer } from './footer.jsx';
 import { Header } from './header.jsx';
 import { NotificationBell } from './notification-bell.js';
@@ -231,8 +234,75 @@ export function Layout({
         </div>
         <Footer>{footer}</Footer>
       </SidebarInset>
+      {/*
+        ── Persistent floating chat affordance (AC 9) ────────────────
+        Mounted at the layout root so the bubble persists across every
+        route inside `<Routes>` (including `/agents`, `/agents/:slug`,
+        and the deep-linked drawer routes). The bubble itself uses
+        `position: fixed` with `z-40`, so its DOM ancestry doesn't
+        affect visual placement — but living here means it shares the
+        same `<SidebarProvider>` tree as the rest of the shell and
+        survives every route transition without remounting.
+
+        Sub-AC 4 lifts the open/close state into a shared
+        `<ChatPanelProvider>` mounted above the router (in `main.tsx`).
+        The slot below reads that provider when present and runs the
+        bubble in controlled mode against it, so any descendant /
+        ancestor component can observe + mutate the panel state. When
+        the provider is absent (component-level unit tests rendered
+        in isolation, e.g. existing Sub-AC 1–3 contracts) the slot
+        falls back to the bubble's internal `useState` so those tests
+        continue to pass without wrapping in another provider.
+
+        The thread list, conversation surface, composer, and SSE
+        wiring land inside the bubble's `children` slot in subsequent
+        sub-ACs; for now the empty-state placeholder shipped with
+        Sub-AC 1 makes the bubble independently verifiable.
+      */}
+      <FloatingChatBubbleSlot />
     </SidebarProvider>
   );
 }
 
 export default Layout;
+
+// ── FloatingChatBubbleSlot ──────────────────────────────────────────
+//
+// The slot bridges the FloatingChatBubble (which supports both
+// uncontrolled and controlled modes — see Sub-AC 1 contract) to the
+// shared `ChatPanelContext` introduced in Sub-AC 4.
+//
+// When a `<ChatPanelProvider>` is mounted above the router (the
+// production wiring in `main.tsx`) the slot reads `{ open, setOpen }`
+// from the context and runs the bubble in **controlled** mode. That
+// makes the open/closed state survive route transitions explicitly
+// (any other component can also open/close it) and persist across full
+// page reloads via the provider's localStorage backing.
+//
+// When no provider is present (component-level unit tests for the
+// layout shell that landed in Sub-ACs 1–3, which intentionally render
+// `<Layout>` without wrapping in `ChatPanelProvider`) the slot
+// degrades gracefully and uses the bubble in **uncontrolled** mode —
+// preserving the existing test contract that relies on the bubble
+// owning its own toggle state.
+function FloatingChatBubbleSlot(): React.ReactElement {
+  const ctx = useChatPanelOptional();
+  // The panel contents (agent picker + chat thread) are only mounted
+  // while the bubble is open. This keeps the agent-list fetch deferred
+  // to the first user-initiated open — when the bubble is collapsed
+  // there's no chat surface to populate, so there's nothing to load.
+  // Once the panel opens, `<FloatingChatPanel>` calls `useAgents()` and
+  // `useChatAgentSelection()` to resolve the effective slug and render
+  // the streaming surface.
+  if (ctx) {
+    return (
+      <FloatingChatBubble open={ctx.open} onOpenChange={ctx.setOpen}>
+        {ctx.open ? <FloatingChatPanel autoCreateOnEmpty /> : null}
+      </FloatingChatBubble>
+    );
+  }
+  // Uncontrolled fallback (component-level tests rendered without a
+  // <ChatPanelProvider>) — defer the panel contents to the bubble's
+  // own state via an internal toggle.
+  return <FloatingChatBubble />;
+}

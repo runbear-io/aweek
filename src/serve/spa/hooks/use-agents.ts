@@ -22,7 +22,7 @@
  * @module serve/spa/hooks/use-agents
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 
 import { fetchAgentsList, type AgentListRow } from '../lib/api-client.js';
 
@@ -55,10 +55,22 @@ export interface AgentsListData {
  * - `baseUrl` overrides the default same-origin base for tests or
  *   cross-origin dev setups.
  * - `fetch` injects a custom fetch implementation (Storybook / tests).
+ * - `pollIntervalMs` enables periodic background refresh of the roster
+ *   so consumers can detect server-side state changes (e.g. AC 13: an
+ *   external `aweek manage resume` / `top-up` flipping `budget.paused`
+ *   from `true` → `false`) without waiting for the user to manually
+ *   reload the page. When unset (`undefined` / `null` / `0`) polling is
+ *   off — the hook still issues an initial load + responds to
+ *   `refresh()` calls. When set to a positive integer the hook installs
+ *   a `setInterval` that calls `refresh()` every N milliseconds; the
+ *   interval is cleared on unmount and whenever the value changes back
+ *   to a non-positive number, so consumers can toggle polling on and
+ *   off purely by varying this option.
  */
 export interface UseAgentsOptions {
   baseUrl?: string;
   fetch?: typeof fetch;
+  pollIntervalMs?: number | null;
 }
 
 /**
@@ -71,7 +83,7 @@ export interface UseAgentsOptions {
 export function useAgents(
   options: UseAgentsOptions = {},
 ): UseApiResourceResult<AgentsListData> {
-  const { baseUrl, fetch: fetchImpl } = options;
+  const { baseUrl, fetch: fetchImpl, pollIntervalMs } = options;
 
   // Bind baseUrl/fetch once per dep change; the hook re-runs only when
   // these values actually differ between renders.
@@ -81,5 +93,32 @@ export function useAgents(
     [baseUrl, fetchImpl],
   );
 
-  return useApiResource<AgentsListData>(loader, [baseUrl, fetchImpl]);
+  const result = useApiResource<AgentsListData>(loader, [baseUrl, fetchImpl]);
+
+  // AC 13: optional background polling. The chat panel toggles this on
+  // when the selected agent is `paused` / `budget-exhausted` so a CLI
+  // `aweek manage resume` / `top-up` is detected within a few seconds
+  // and the chat composer re-enables automatically — no page reload
+  // required. We pull `refresh` out of the destructure so the effect's
+  // deps stay stable (`useApiResource` already returns a stable
+  // `refresh` callback).
+  const { refresh } = result;
+  useEffect(() => {
+    if (
+      pollIntervalMs === undefined ||
+      pollIntervalMs === null ||
+      !(pollIntervalMs > 0)
+    ) {
+      return undefined;
+    }
+    const id = setInterval(() => {
+      // Fire-and-forget — `refresh` swallows / surfaces its own errors
+      // through the regular `error` channel. Promise rejections here
+      // would have nowhere useful to go.
+      void refresh();
+    }, pollIntervalMs);
+    return () => clearInterval(id);
+  }, [pollIntervalMs, refresh]);
+
+  return result;
 }

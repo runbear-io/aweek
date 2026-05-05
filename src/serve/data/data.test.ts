@@ -87,8 +87,44 @@ const ALLOWED_IMPORT_PREFIXES = [
   './artifacts.js',
   './config.js',
   './index.js',
+  // Chat-related data-layer modules (AC 7) — chat-usage and chat-budget
+  // depend on chat.ts (token-usage shape, agent-config shape) and on
+  // each other, so the same-directory siblings are explicitly allowed.
+  './chat.js',
+  './chat-budget.js',
+  './chat-usage.js',
   '../../storage/review-file-reader.js',
 ];
+
+/**
+ * Per-file additions to the allowlist. Each entry carves out a narrowly-
+ * scoped exception for a single data-layer module that has a legitimate
+ * reason to reach beyond the default allowlist.
+ *
+ * `chat.ts` is the SSE bridge between the SPA's floating chat panel and
+ * the Anthropic Agent SDK (AC 1 sub-AC 2 of the chat-panel feature). It
+ * must import `@anthropic-ai/claude-agent-sdk` to drive the agent's
+ * brain — that import is by design, not a regression on AC 9. The chat
+ * module remains read-only with respect to the dashboard's data
+ * (no new persistence) and the broader allowlist stays tight for every
+ * other module under `src/serve/data/`.
+ */
+const PER_FILE_EXTRA_IMPORTS: Record<string, readonly string[]> = {
+  'chat.ts': ['@anthropic-ai/claude-agent-sdk'],
+  // `lock-status.ts` is the read-only SPA gatherer for the chat panel's
+  // heartbeat-activity banner (AC 11). It calls `queryLock` from the
+  // lock manager — a pure read of `.aweek/.locks/` state with no
+  // persistence side-effects — so the lock-manager import is by design.
+  'lock-status.ts': ['../../lock/lock-manager.js'],
+  // `threads.ts` is the read/mutate handler module backing the floating
+  // chat panel's thread-list / new / rename / delete REST endpoints
+  // (AC 40101 sub-AC 1). It imports the canonical `ChatConversation`
+  // shape from `src/schemas/chat-conversation.js` so its return-type
+  // stays bound to the schema-of-record (rather than re-declaring an
+  // ambient interface). The schema module is a pure type-only import —
+  // no fs side-effects — so the carve-out is safe.
+  'threads.ts': ['../../schemas/chat-conversation.js'],
+};
 
 async function listDataModules() {
   const entries = await readdir(DATA_DIR);
@@ -108,12 +144,13 @@ test('data layer: every production module has allowlisted imports only', async (
   for (const file of files) {
     const src = await readFile(join(DATA_DIR, file), 'utf-8');
     const importRe = /import\s+(?:[\s\S]*?)from\s+['"]([^'"]+)['"]/g;
+    const extra = PER_FILE_EXTRA_IMPORTS[file] || [];
     let m;
     while ((m = importRe.exec(src)) !== null) {
       const spec = m[1];
-      const allowed = ALLOWED_IMPORT_PREFIXES.some((prefix) =>
-        spec.startsWith(prefix),
-      );
+      const allowed =
+        ALLOWED_IMPORT_PREFIXES.some((prefix) => spec.startsWith(prefix)) ||
+        extra.some((prefix) => spec.startsWith(prefix));
       assert.ok(
         allowed,
         `${file}: disallowed import "${spec}" — data layer must import only from src/storage/, src/subagents/subagent-file.js, src/time/zone.js, or node:path`,
