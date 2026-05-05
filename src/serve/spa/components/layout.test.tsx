@@ -405,6 +405,116 @@ describe('Layout — mobile sidebar contract (Sub-AC 3)', () => {
   });
 });
 
+describe('Layout — persistent floating chat bubble (AC 9 Sub-AC 3)', () => {
+  // The FloatingChatBubble is the chat affordance shipped in AC 9. It
+  // must be mounted at the Layout shell so it persists across every
+  // route inside `<Routes>` — including `/agents`, `/agents/:slug`,
+  // and the deep-link drawer routes — without unmounting on
+  // navigation.
+
+  it('mounts the FloatingChatBubble inside every Layout shell', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubFetch(0);
+    try {
+      const { container } = render(
+        <MemoryRouter initialEntries={['/agents']}>
+          <ThemeProvider>
+            <Layout>
+              <div>page body</div>
+            </Layout>
+          </ThemeProvider>
+        </MemoryRouter>,
+      );
+
+      const bubble = container.querySelector(
+        '[data-component="floating-chat-bubble"]',
+      );
+      expect(bubble).not.toBeNull();
+      expect(bubble!.getAttribute('data-state')).toBe('closed');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('also renders the FloatingChatBubble on /agents/:slug routes', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubFetch(0);
+    try {
+      const { container } = render(
+        <MemoryRouter initialEntries={['/agents/example-slug/calendar']}>
+          <ThemeProvider>
+            <Layout>
+              <div>page body</div>
+            </Layout>
+          </ThemeProvider>
+        </MemoryRouter>,
+      );
+
+      const bubble = container.querySelector(
+        '[data-component="floating-chat-bubble"]',
+      );
+      expect(bubble).not.toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps the same FloatingChatBubble DOM node mounted across route transitions', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = stubFetch(0);
+
+    function NavigateButton(): React.ReactElement {
+      const navigate = useNavigate();
+      return (
+        <button
+          type="button"
+          data-testid="navigate"
+          onClick={() => navigate('/agents/example-slug/calendar')}
+        >
+          go
+        </button>
+      );
+    }
+
+    try {
+      const { container, getByTestId } = render(
+        <MemoryRouter initialEntries={['/agents']}>
+          <ThemeProvider>
+            <Layout>
+              <NavigateButton />
+            </Layout>
+          </ThemeProvider>
+        </MemoryRouter>,
+      );
+
+      const bubbleBefore = container.querySelector(
+        '[data-component="floating-chat-bubble"]',
+      );
+      expect(bubbleBefore).not.toBeNull();
+
+      act(() => {
+        fireEvent.click(getByTestId('navigate'));
+      });
+
+      await waitFor(() => {
+        const main = container.querySelector('[data-component="main"]');
+        expect(main!.getAttribute('data-pathname')).toBe(
+          '/agents/example-slug/calendar',
+        );
+      });
+
+      // Same DOM identity across routes — the bubble did not unmount
+      // and remount, which would otherwise destroy its open/closed
+      // state and any in-flight chat session.
+      expect(
+        container.querySelector('[data-component="floating-chat-bubble"]'),
+      ).toBe(bubbleBefore);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe('Layout — route-transition stability (AC 10)', () => {
   // The Layout shell mounts once at app startup and persists across every
   // route change inside `<Routes>`. The `<main>` container scrolls

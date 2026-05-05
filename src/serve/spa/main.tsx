@@ -17,6 +17,7 @@ import {
   normaliseTab,
   SettingsPage,
 } from './pages/index.js';
+import { ChatPanelProvider } from './components/chat-panel-context.js';
 import { Layout } from './components/layout.jsx';
 import { ThemeProvider as ThemeProviderJs } from './components/theme-provider.jsx';
 import { TooltipProvider as TooltipProviderJs } from './components/ui/tooltip.jsx';
@@ -234,11 +235,24 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <React.StrictMode>
     <ThemeProvider>
-      <TooltipProvider delayDuration={0} skipDelayDuration={0}>
-        <BrowserRouter>
-          <AppShell />
-        </BrowserRouter>
-      </TooltipProvider>
+      {/*
+        ── Floating chat panel state (AC 9 Sub-AC 4) ──────────────────
+        `<ChatPanelProvider>` sits above `<BrowserRouter>` so the
+        open/closed state of the floating chat panel survives every
+        route transition (the router never unmounts the provider) and
+        is addressable from any component in the SPA — header bell
+        variants, agent-list "chat" buttons, future deep-link routes —
+        without each surface having to lift its own state. Persistence
+        across full page reloads is handled by the provider's
+        localStorage backing (`aweek:chat-panel:open`).
+      */}
+      <ChatPanelProvider>
+        <TooltipProvider delayDuration={0} skipDelayDuration={0}>
+          <BrowserRouter>
+            <AppShell />
+          </BrowserRouter>
+        </TooltipProvider>
+      </ChatPanelProvider>
     </ThemeProvider>
   </React.StrictMode>,
 );

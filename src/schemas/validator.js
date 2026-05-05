@@ -37,6 +37,12 @@ import {
   notificationSchema,
   notificationFeedSchema,
 } from './notification.schema.js';
+import {
+  chatToolBlockSchema,
+  chatMessageSchema,
+  chatConversationSchema,
+  chatConversationListSchema,
+} from './chat-conversation.schema.js';
 
 const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
@@ -64,6 +70,14 @@ ajv.addSchema(executionLogSchema);
 ajv.addSchema(notificationLinkSchema);
 ajv.addSchema(notificationSchema);
 ajv.addSchema(notificationFeedSchema);
+// chat-conversation registration order mirrors the notification block above:
+// the tool-block sub-schema must be registered before the message schema
+// (which $refs it), and the message schema before the conversation /
+// conversation-list schemas (which $ref the message schema in turn).
+ajv.addSchema(chatToolBlockSchema);
+ajv.addSchema(chatMessageSchema);
+ajv.addSchema(chatConversationSchema);
+ajv.addSchema(chatConversationListSchema);
 ajv.addSchema(agentConfigSchema);
 
 /**
@@ -116,3 +130,7 @@ export const validateExecutionLog = (data) => validate('aweek://schemas/executio
 export const validateNotification = (data) => validate('aweek://schemas/notification', data);
 export const validateNotificationFeed = (data) => validate('aweek://schemas/notification-feed', data);
 export const validateNotificationLink = (data) => validate('aweek://schemas/notification-link', data);
+export const validateChatToolBlock = (data) => validate('aweek://schemas/chat-tool-block', data);
+export const validateChatMessage = (data) => validate('aweek://schemas/chat-message', data);
+export const validateChatConversation = (data) => validate('aweek://schemas/chat-conversation', data);
+export const validateChatConversationList = (data) => validate('aweek://schemas/chat-conversation-list', data);

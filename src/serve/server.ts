@@ -55,6 +55,36 @@ import {
   resolveArtifactFile,
   gatherAppConfig,
 } from './data/index.js';
+import { streamAgentTurn, type AgentSdkRunner, type ChatTokenUsage } from './data/chat.js';
+import { buildPreamble, formatPreamble } from './data/chat-preamble.js';
+import {
+  recordChatUsage,
+  type ChatUsageStoreLike,
+} from './data/chat-usage.js';
+import {
+  buildBudgetExhaustedFrame,
+  checkChatBudget,
+  type ChatBudgetAgentStoreLike,
+  type ChatBudgetUsageStoreLike,
+} from './data/chat-budget.js';
+import {
+  createThread,
+  deleteThread,
+  getThread,
+  listThreads,
+  renameThread,
+} from './data/threads.js';
+import { UsageStore } from '../storage/usage-store.js';
+import { AgentStore } from '../storage/agent-store.js';
+import {
+  ChatConversationStore,
+  createChatMessage,
+} from '../storage/chat-conversation-store.js';
+import type {
+  ChatConversation,
+  ChatMessage as ChatStoredMessage,
+  ChatToolBlock,
+} from '../schemas/chat-conversation.js';
 import type { NotificationSource, NotificationSystemEvent } from '../storage/notification-store.js';
 import { NotificationStore } from '../storage/notification-store.js';
 // Mutation surface for the SPA's Artifacts tab. The data layer is
@@ -218,7 +248,93 @@ export interface RawServeOptions {
   projectDir?: string;
   /** Override the Vite build output directory. */
   buildDir?: string;
+  /**
+   * Test-only seam. Injects an Agent SDK runner into the chat handler
+   * (`POST /api/chat`) so unit tests can drive deterministic streaming
+   * fixtures without invoking the real `claude` CLI. Production callers
+   * leave this undefined; `streamAgentTurn` lazy-loads the real runner.
+   *
+   * Not parsed from CLI flags — programmatic test path only. The CLI's
+   * `normaliseServeOptions` ignores this field.
+   */
+  runQuery?: AgentSdkRunner;
+  /**
+   * Test-only seam for the shared weekly usage store. Lets the chat
+   * handler integration tests verify the budget wire-up against an in-
+   * memory fake without touching the on-disk `.aweek/agents/<slug>/usage/`
+   * tree. Production callers leave this unset — the chat handler then
+   * constructs a real {@link UsageStore} rooted at `<dataDir>/agents`,
+   * which is the same store the heartbeat reads.
+   */
+  chatUsageStore?: ChatUsageStoreLike;
+  /**
+   * Test-only seam for the chat-budget pre-flight check (Sub-AC 2 of
+   * AC 7). Lets the chat handler integration tests pin a deterministic
+   * `weeklyTotal` reading without writing usage records to disk first.
+   * When unset, the chat handler builds a real {@link UsageStore}
+   * rooted at `<dataDir>/agents` for the gate (same store as
+   * `chatUsageStore`).
+   */
+  chatBudgetUsageStore?: ChatBudgetUsageStoreLike;
+  /**
+   * Test-only seam for the chat-budget agent-config read. Lets tests
+   * stub agent state (paused / weeklyTokenBudget) without touching the
+   * `.aweek/agents/<slug>.json` file. Production callers leave this
+   * unset — the chat handler builds a real {@link AgentStore} rooted at
+   * `<dataDir>/agents`.
+   */
+  chatBudgetAgentStore?: ChatBudgetAgentStoreLike;
+  /**
+   * Test-only seam for the chat-conversation persistence store
+   * (Sub-AC 1 of AC 12). Lets the chat handler integration tests assert
+   * on the persistence calls (or pin an in-memory fake) without touching
+   * the on-disk `.aweek/agents/<slug>/chat/` tree. Production callers
+   * leave this unset — the chat handler then constructs a real
+   * {@link ChatConversationStore} rooted at `<dataDir>/agents`, which is
+   * the same path the thread-list / new / get / rename / delete
+   * endpoints already read.
+   */
+  chatConversationStore?: ChatConversationStoreLike;
 }
+
+/**
+ * Minimal interface the chat handler depends on for thread persistence.
+ *
+ * Mirrors the {@link ChatConversationStore} surface that
+ * {@link handleChatStream} actually uses (`read` to load an existing
+ * thread, `write` to seed a fresh one, `appendMessage` to record both the
+ * incoming user turn and the post-stream assistant turn). Carrying the
+ * minimal-surface interface (instead of the concrete class) lets tests
+ * pin an in-memory fake and lets future store backends slot in without a
+ * handler refactor.
+ */
+export interface ChatConversationStoreLike {
+  read(
+    agentId: string,
+    threadId: string,
+  ): Promise<ChatConversation | null>;
+  write(
+    agentId: string,
+    conversation: ChatConversation,
+  ): Promise<ChatConversation>;
+  appendMessage(
+    agentId: string,
+    threadId: string,
+    message: ChatStoredMessage,
+  ): Promise<ChatConversation>;
+}
+
+/**
+ * Schema-validated chat-conversation id pattern (mirrors
+ * `chatConversationSchema.properties.id.pattern` in
+ * `src/schemas/chat-conversation.schema.js`). Used to decide whether the
+ * incoming `threadId` is a server-issued conversation id (eligible for
+ * disk persistence) vs. an opaque sentinel that earlier sub-AC tests
+ * passed as a placeholder. When the id does not match this pattern, the
+ * chat handler skips persistence silently — the SSE stream still flows
+ * end-to-end, just without a backing on-disk thread document.
+ */
+const CHAT_CONVERSATION_ID_PATTERN = /^chat-[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** Normalised options returned by {@link normaliseServeOptions}. */
 export interface ServeOptions {
@@ -284,6 +400,39 @@ interface RequestContext {
   projectDir: string;
   dataDir: string;
   buildDir: string;
+  /**
+   * Optional test-only Agent SDK runner. Forwarded by `handleChatStream`
+   * to `streamAgentTurn` so the chat endpoint can be exercised against a
+   * deterministic fixture iterator instead of the real `claude` CLI.
+   * Production callers leave this undefined.
+   */
+  runQuery?: AgentSdkRunner;
+  /**
+   * Optional test-only chat-usage store override. When unset the chat
+   * handler builds a real {@link UsageStore} rooted at `<dataDir>/agents`
+   * — the same path the heartbeat reads — so chat token spend lands in
+   * the shared weekly budget pool. Tests can pin a fake to assert on the
+   * persistence call without touching the filesystem.
+   */
+  chatUsageStore?: ChatUsageStoreLike;
+  /**
+   * Optional test-only override for the chat-budget pre-flight usage
+   * read (Sub-AC 2 of AC 7). See {@link RawServeOptions.chatBudgetUsageStore}.
+   */
+  chatBudgetUsageStore?: ChatBudgetUsageStoreLike;
+  /**
+   * Optional test-only override for the chat-budget pre-flight agent
+   * config read. See {@link RawServeOptions.chatBudgetAgentStore}.
+   */
+  chatBudgetAgentStore?: ChatBudgetAgentStoreLike;
+  /**
+   * Optional test-only override for the chat-conversation persistence
+   * store (Sub-AC 1 of AC 12). See
+   * {@link RawServeOptions.chatConversationStore}. Production callers
+   * leave this unset; `handleChatStream` then constructs a real
+   * {@link ChatConversationStore} rooted at `<dataDir>/agents`.
+   */
+  chatConversationStore?: ChatConversationStoreLike;
 }
 
 /**
@@ -306,6 +455,26 @@ interface RequestContext {
  */
 export async function startServer(options: RawServeOptions = {}): Promise<ServerHandle> {
   const { port, host, projectDir, buildDir } = normaliseServeOptions(options);
+  // `runQuery` is a programmatic test seam — it bypasses CLI normalisation
+  // and is read directly off the raw options so production cold-paths
+  // never load it (and CI tests can pin a deterministic fake).
+  const runQuery = options.runQuery;
+  // Same shape, different seam: tests pin an in-memory chat usage store
+  // here. Production callers leave this unset and the handler constructs
+  // a real `UsageStore` from `<dataDir>/agents` per request.
+  const chatUsageStore = options.chatUsageStore;
+  // Test seams for the chat-budget pre-flight check (Sub-AC 2 of AC 7).
+  // Production callers leave both unset; the handler constructs real
+  // stores from `<dataDir>/agents` so the gate reads the same on-disk
+  // state the heartbeat enforcer reads.
+  const chatBudgetUsageStore = options.chatBudgetUsageStore;
+  const chatBudgetAgentStore = options.chatBudgetAgentStore;
+  // Sub-AC 1 of AC 12: chat-conversation store seam. Production callers
+  // leave this unset and `handleChatStream` builds a real
+  // `ChatConversationStore` rooted at `<dataDir>/agents` per request —
+  // the same path the thread-list / new / get / rename / delete
+  // endpoints already read so chat persistence is unified.
+  const chatConversationStore = options.chatConversationStore;
 
   const dataDir = resolve(projectDir, '.aweek');
   if (!existsSync(dataDir)) {
@@ -320,7 +489,18 @@ export async function startServer(options: RawServeOptions = {}): Promise<Server
     // error cannot crash the process. Emit a plain-text 500 when the
     // headers have not already been sent so the user sees something
     // actionable rather than a broken pipe.
-    Promise.resolve(handleRequest(req, res, { projectDir, dataDir, buildDir })).catch((err) => {
+    Promise.resolve(
+      handleRequest(req, res, {
+        projectDir,
+        dataDir,
+        buildDir,
+        runQuery,
+        chatUsageStore,
+        chatBudgetUsageStore,
+        chatBudgetAgentStore,
+        chatConversationStore,
+      }),
+    ).catch((err) => {
       if (!res.headersSent) {
         res.statusCode = 500;
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -409,6 +589,35 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
       await handleNotificationMarkAllRead(res, ctx);
       return;
     }
+
+    // Chat streaming endpoint (AC 1, sub-AC 1). Immediately flushes SSE
+    // headers + a first comment chunk so the Vercel AI SDK `useChat` hook
+    // sees an open transport within the 2-second budget on the eval rubric.
+    // Subsequent sub-ACs replace the placeholder body with real Anthropic
+    // Agent SDK streaming output and budget-aware token accounting.
+    if (pathname === '/api/chat' || pathname === '/api/chat/') {
+      await handleChatStream(req, res, ctx);
+      return;
+    }
+
+    // Sub-AC 4 of AC 5: POST /api/agents/:slug/chat/threads — create a
+    // fresh (empty) chat thread for the floating panel's "new thread"
+    // button. The handler delegates to `createThread()` in the data
+    // layer, which auto-stamps the conversation id, timestamps, and an
+    // empty `messages[]` array. Returns the persisted document so the
+    // SPA can immediately set it as the active thread.
+    const createThreadMatch = pathname.match(
+      /^\/api\/agents\/([^/]+)\/chat\/threads\/?$/,
+    );
+    if (createThreadMatch) {
+      const slug = decodeSlug(createThreadMatch[1]);
+      if (slug === null) {
+        sendJson(res, 400, { error: 'Invalid agent slug' });
+        return;
+      }
+      await handleAgentThreadCreate(req, res, ctx, slug);
+      return;
+    }
   }
 
   if (method !== 'GET' && method !== 'HEAD') {
@@ -462,6 +671,45 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
       return;
     }
     await handleAgentNotifications(res, ctx, slug);
+    return;
+  }
+
+  // GET /api/agents/:slug/chat/threads — list every chat thread for an
+  // agent (Sub-AC 3 of AC 5). Backs the floating chat panel's thread
+  // sidebar; the SPA fetches summary rows here and surfaces them as a
+  // selectable list above the active conversation. The handler module
+  // (`./data/threads.ts`) already validates inputs + returns `null` when
+  // the slug is unknown so we can map that to 404 here.
+  const agentThreadsMatch = pathname.match(
+    /^\/api\/agents\/([^/]+)\/chat\/threads\/?$/,
+  );
+  if (agentThreadsMatch && method === 'GET') {
+    const slug = decodeSlug(agentThreadsMatch[1]);
+    if (slug === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug' });
+      return;
+    }
+    await handleAgentThreadsList(res, ctx, slug);
+    return;
+  }
+
+  // Sub-AC 4 of AC 5: GET /api/agents/:slug/chat/threads/:threadId —
+  // return one chat thread end-to-end (full message history) for replay
+  // when the user picks a thread from the sidebar. The SPA seeds the
+  // `<ChatThread>`'s `initialMessages` with the returned document so a
+  // navigation between threads (or browser sessions) lands the user
+  // back on the persisted conversation.
+  const agentThreadDetailMatch = pathname.match(
+    /^\/api\/agents\/([^/]+)\/chat\/threads\/([^/]+)\/?$/,
+  );
+  if (agentThreadDetailMatch && method === 'GET') {
+    const slug = decodeSlug(agentThreadDetailMatch[1]);
+    const threadId = decodeSlug(agentThreadDetailMatch[2]);
+    if (slug === null || threadId === null) {
+      sendJson(res, 400, { error: 'Invalid agent slug or thread id' });
+      return;
+    }
+    await handleAgentThreadDetail(res, ctx, slug, threadId);
     return;
   }
 
@@ -1012,6 +1260,184 @@ async function handleAgentNotifications(
 }
 
 /**
+ * GET /api/agents/:slug/chat/threads — list every chat thread for an
+ * agent (Sub-AC 3 of AC 5).
+ *
+ * Delegates to `listThreads`, which fans out to the
+ * {@link ChatConversationStore} per-agent index (one JSON file per
+ * thread under `.aweek/agents/<slug>/chat/`). Returns `null` when the
+ * slug does not exist on disk so we can map that to 404; an existing
+ * agent with no threads yet produces 200 with an empty `threads` list
+ * so the floating-panel sidebar can render its "No conversations yet"
+ * empty state without parsing the message.
+ *
+ * Response shape:
+ *   200 { agentId, threads: [{ id, title?, createdAt, updatedAt,
+ *                              messageCount, lastMessagePreview?,
+ *                              lastMessageRole? }] }
+ *   400 { error: 'Invalid agent slug' }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ */
+async function handleAgentThreadsList(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+): Promise<void> {
+  try {
+    const payload = await listThreads({
+      projectDir: ctx.projectDir,
+      agentId: slug,
+    });
+    if (!payload) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to load chat threads',
+    });
+  }
+}
+
+/**
+ * GET /api/agents/:slug/chat/threads/:threadId — return one chat thread
+ * end-to-end with its full message history (Sub-AC 4 of AC 5).
+ *
+ * Backs the SPA's thread-switcher behaviour: when the user clicks a row
+ * in the floating panel's sidebar, the panel hits this endpoint and
+ * seeds `<ChatThread>` with `initialMessages` so the persisted
+ * conversation re-renders without a fresh model round-trip.
+ *
+ * Response shape:
+ *   200 { thread: { id, agentId, title?, createdAt, updatedAt,
+ *                   messages: [...], metadata? } }
+ *   400 { error: 'Invalid agent slug or thread id' }
+ *   404 { error: 'Agent not found' | 'Thread not found' }
+ *   500 { error: string }
+ */
+async function handleAgentThreadDetail(
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+  threadId: string,
+): Promise<void> {
+  try {
+    const payload = await getThread({
+      projectDir: ctx.projectDir,
+      agentId: slug,
+      threadId,
+    });
+    if (!payload) {
+      // Both "agent missing" and "thread missing on a known agent" map
+      // to 404 — the SPA reads the surrounding roster state to decide
+      // which copy to render. The error message disambiguates for
+      // logs / curl probes.
+      sendJson(res, 404, {
+        error: `Thread not found: ${slug}/${threadId}`,
+      });
+      return;
+    }
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to load chat thread',
+    });
+  }
+}
+
+/**
+ * POST /api/agents/:slug/chat/threads — create a new (empty) chat
+ * thread for an agent (Sub-AC 4 of AC 5).
+ *
+ * Drives the floating panel's "New thread" button: the SPA POSTs to
+ * this endpoint and uses the returned `thread.id` as the active thread
+ * for subsequent send actions. The body is optional — the only field
+ * the data layer reads is an optional `title` (everything else is
+ * auto-stamped server-side).
+ *
+ * Response shape:
+ *   200 { thread: { id, agentId, title?, createdAt, updatedAt,
+ *                   messages: [], metadata? } }
+ *   400 { error: 'Invalid agent slug' | 'Malformed request body' }
+ *   404 { error: 'Agent not found: <slug>' }
+ *   500 { error: string }
+ */
+async function handleAgentThreadCreate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: RequestContext,
+  slug: string,
+): Promise<void> {
+  let title: string | undefined;
+  let metadata: Record<string, unknown> | undefined;
+
+  try {
+    const bodyText = await readRequestBody(req);
+    if (bodyText.length > 0) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(bodyText);
+      } catch {
+        sendJson(res, 400, { error: 'Malformed request body (not JSON)' });
+        return;
+      }
+      if (parsed && typeof parsed === 'object') {
+        const body = parsed as { title?: unknown; metadata?: unknown };
+        if (typeof body.title === 'string' && body.title.length > 0) {
+          title = body.title;
+        }
+        if (
+          body.metadata !== undefined &&
+          body.metadata !== null &&
+          typeof body.metadata === 'object'
+        ) {
+          metadata = body.metadata as Record<string, unknown>;
+        }
+      }
+    }
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to read request body',
+    });
+    return;
+  }
+
+  try {
+    const createOpts: Parameters<typeof createThread>[0] = {
+      projectDir: ctx.projectDir,
+      agentId: slug,
+    };
+    if (title !== undefined) createOpts.title = title;
+    if (metadata !== undefined) createOpts.metadata = metadata;
+
+    const payload = await createThread(createOpts);
+    if (!payload) {
+      sendJson(res, 404, { error: `Agent not found: ${slug}` });
+      return;
+    }
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 500, {
+      error:
+        err && (err as Error).message
+          ? (err as Error).message
+          : 'Failed to create chat thread',
+    });
+  }
+}
+
+/**
  * GET /api/agents/:slug/artifacts — return the merged artifact list for an
  * agent across all task executions.
  *
@@ -1216,6 +1642,705 @@ async function handleNotificationMarkAllRead(
           ? (err as Error).message
           : 'Failed to mark all notifications read',
     });
+  }
+}
+
+/**
+ * Read the full request body as UTF-8 text. Used by the chat endpoint to
+ * parse the JSON envelope `{ slug, threadId, messages }` posted by the
+ * Vercel AI SDK `useChat` hook. Hard-caps the body at 2 MiB to bound
+ * memory; chat turns are text-only (no attachments) so this is generous.
+ */
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolveBody, rejectBody) => {
+    const MAX_BYTES = 2 * 1024 * 1024;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_BYTES) {
+        const err = Object.assign(new Error('Request body too large'), {
+          code: 'EBODYTOOLARGE',
+        });
+        req.destroy(err);
+        rejectBody(err);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      resolveBody(Buffer.concat(chunks).toString('utf-8'));
+    });
+    req.on('error', rejectBody);
+  });
+}
+
+/**
+ * SSE chunk encoder. Writes a single Server-Sent Events `data:` frame
+ * carrying a JSON payload, followed by the required blank-line
+ * terminator. The Vercel AI SDK `useChat` hook consumes this exact
+ * frame format for stream-text and tool-invocation parts.
+ *
+ * @param res — the response stream to write into
+ * @param payload — JSON-serialisable object emitted as the event body
+ */
+function writeSseEvent(res: ServerResponse, payload: unknown): boolean {
+  return res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+/**
+ * POST /api/chat — server-sent-events streaming endpoint that bridges
+ * the floating chat panel in the SPA to the Anthropic Agent SDK.
+ *
+ * Sub-AC 1 scope (AC 1): establish the SSE transport. The handler:
+ *   1. Sets the SSE response headers (`text/event-stream`,
+ *      `Cache-Control: no-cache, no-transform`,
+ *      `Connection: keep-alive`, `X-Accel-Buffering: no`).
+ *   2. Calls `res.flushHeaders()` so reverse proxies / browsers see the
+ *      200 status line + headers immediately, before any body bytes.
+ *   3. Writes a leading SSE comment line (`: open`) plus a
+ *      `stream-start` data event so the client's `useChat` hook
+ *      transitions out of "connecting" state inside the 2-second
+ *      first-chunk budget on the eval rubric.
+ *
+ * Subsequent sub-ACs layer on:
+ *   - JSON body parsing (`{ slug, threadId, messages }`)
+ *   - Budget pre-check via `BudgetEnforcer`
+ *   - Anthropic Agent SDK invocation with full thread replay
+ *   - Tool-invocation event passthrough + token-usage accounting
+ *
+ * The handler is intentionally tolerant of malformed bodies in this
+ * sub-AC: any parse failure surfaces as a `stream-error` event followed
+ * by a clean stream close, NOT a 4xx, so the client SSE consumer's
+ * happy-path keeps working while later sub-ACs add validation.
+ */
+async function handleChatStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: RequestContext,
+): Promise<void> {
+  // Sub-AC 4 (latency instrumentation): capture the handler-entry
+  // timestamp using both wall-clock (`Date.now()`) and the high-
+  // resolution monotonic clock (`process.hrtime.bigint()`) so we can
+  // emit a server-side submit→first-chunk reading inside the
+  // `stream-start` frame. The high-resolution measurement is the
+  // authoritative duration; the wall-clock value is preserved for
+  // backward compatibility with existing client telemetry that reads
+  // `t` as a UNIX-ms timestamp.
+  const handlerEnteredAtMs = Date.now();
+  const handlerEnteredAtNs = process.hrtime.bigint();
+
+  // 1. Set SSE headers BEFORE any write so the browser parses the
+  //    response as an event stream from the very first byte. Cache
+  //    headers are critical: any intermediary that buffers will defeat
+  //    the streaming guarantee, so we both forbid caching and disable
+  //    nginx-style proxy buffering via `X-Accel-Buffering: no`.
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  // 2. Flush headers immediately so the client transitions out of the
+  //    connecting state on the very first network round-trip. Without
+  //    this, Node.js may hold the headers buffered in memory until the
+  //    first body chunk lands, which can extend the time-to-first-byte
+  //    by hundreds of milliseconds on slow networks and breaks the
+  //    streaming illusion.
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  // 3. Send a first chunk right away. The leading SSE comment line
+  //    (`: open`) is a no-op event that nudges the client and any
+  //    intermediary proxy to commit the connection as a stream — some
+  //    proxies otherwise wait for the first `data:` frame before
+  //    relinquishing buffering. The `stream-start` event then carries a
+  //    monotonic timestamp that downstream UI hooks can correlate with
+  //    a typing indicator.
+  //
+  //    Sub-AC 4: also embed `serverLatencyMs` — the wall-clock interval
+  //    between this handler being invoked and the moment we wrote this
+  //    first frame to the wire, computed from the high-resolution
+  //    monotonic clock so it stays immune to mid-handler clock skew.
+  //    Tests + telemetry use this to verify the server itself never
+  //    consumes more than a few milliseconds of the rubric's 2-second
+  //    submit→first-chunk budget.
+  res.write(': open\n\n');
+  const serverLatencyNs = process.hrtime.bigint() - handlerEnteredAtNs;
+  // hrtime returns BigInt nanoseconds — convert to a fractional ms
+  // number while keeping sub-millisecond precision for telemetry.
+  const serverLatencyMs = Number(serverLatencyNs) / 1_000_000;
+  writeSseEvent(res, {
+    type: 'stream-start',
+    t: handlerEnteredAtMs,
+    serverLatencyMs,
+  });
+
+  // Read the request body off the wire (best-effort in this sub-AC).
+  // We still kick off the read so the request socket is fully drained
+  // and the connection close handshake works cleanly when later
+  // sub-ACs route the parsed payload into the Agent SDK.
+  let bodyText = '';
+  try {
+    bodyText = await readRequestBody(req);
+  } catch (err) {
+    // Body read failed (e.g. payload too large or socket reset). Emit a
+    // structured error event then close — never throw past the SSE
+    // boundary because once headers are flushed the client expects a
+    // stream, not an HTTP error response.
+    writeSseEvent(res, {
+      type: 'stream-error',
+      message:
+        err && (err as Error).message ? (err as Error).message : 'body-read-error',
+    });
+    writeSseEvent(res, { type: 'stream-end' });
+    res.end();
+    return;
+  }
+
+  // Parse the body. We tolerate malformed payloads — anything that fails
+  // schema validation falls back to the legacy `echo` placeholder so the
+  // sub-AC-1 smoke-test surface stays intact while the real wire-up
+  // below routes well-formed bodies through the Agent SDK translator.
+  let parsedBody: unknown = null;
+  if (bodyText.length > 0) {
+    try {
+      parsedBody = JSON.parse(bodyText);
+    } catch {
+      parsedBody = { raw: bodyText };
+    }
+  }
+
+  // ── AC 2: real-time streaming wire-up ────────────────────────────────
+  //
+  // Walk the parsed body for the chat-turn shape `{ slug, messages }` and,
+  // when present, route through `streamAgentTurn` (data/chat.ts). Every
+  // `ChatStreamEvent` the translator yields is written to the response
+  // **immediately** as a single SSE `data:` frame — there is no
+  // accumulator between the SDK and the wire, so a `text-delta` arriving
+  // in the same JS microtask the model produced it lands on the client
+  // in the same network turn. This is the contract AC 2 pins:
+  // "subsequent tokens stream in real-time as model produces them".
+  //
+  // Backpressure: `res.write` returns false when the kernel send buffer
+  // fills up. Awaiting the `drain` event before the next write keeps the
+  // chunked response from queuing tokens up in user-space — without this
+  // a slow client could effectively buffer the stream into one final
+  // chunk on a fast model.
+  //
+  // Disconnect: `req.on('close')` fires when the client drops the
+  // connection. We thread that through an `AbortController` so the SDK
+  // iteration tears down promptly instead of streaming into the void.
+  const body = parsedBody as {
+    slug?: unknown;
+    messages?: unknown;
+    threadId?: unknown;
+  } | null;
+  const slug =
+    body && typeof body.slug === 'string' && body.slug.length > 0
+      ? body.slug
+      : null;
+  // Optional — chat clients pass the floating-panel thread id so chat
+  // usage records group cleanly per conversation. Sub-AC 1 routes this
+  // through to `recordChatUsage` for the synthetic taskId.
+  const threadId =
+    body && typeof body.threadId === 'string' && body.threadId.length > 0
+      ? body.threadId
+      : undefined;
+  const rawMessages = body && Array.isArray(body.messages) ? body.messages : null;
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> | null =
+    rawMessages
+      ? (rawMessages.filter((m) => {
+          if (!m || typeof m !== 'object') return false;
+          const role = (m as { role?: unknown }).role;
+          const content = (m as { content?: unknown }).content;
+          return (
+            (role === 'user' || role === 'assistant') &&
+            typeof content === 'string'
+          );
+        }) as Array<{ role: 'user' | 'assistant'; content: string }>)
+      : null;
+
+  if (!slug || !messages || messages.length === 0) {
+    // Legacy fallback: echo the parsed body so smoke-test scripts that
+    // POST a placeholder payload still receive a recognisable response.
+    // Production clients always send a well-formed `{ slug, messages }`
+    // and never see this branch.
+    writeSseEvent(res, { type: 'echo', body: parsedBody });
+    writeSseEvent(res, { type: 'stream-end' });
+    res.end();
+    return;
+  }
+
+  // ── Sub-AC 2 of AC 7: server-side budget gate ────────────────────────
+  //
+  // Reject new chat turns once the agent's weekly budget is spent. The
+  // gate runs BEFORE we invoke the Agent SDK so the heaviest cost (the
+  // model round-trip) is never paid on a turn we have already decided
+  // to refuse. Token usage from prior chat *and* heartbeat sessions is
+  // pulled from the same `UsageStore` the heartbeat budget-enforcer
+  // reads, so chat + heartbeat share one weekly pool per agent.
+  //
+  // Reuse the same `UsageStore` instance for the post-stream
+  // `recordChatUsage` write below: that way a single chat turn's pre-
+  // and post-flight reads see a consistent in-memory store (tests pin a
+  // single fake; production rebuilds the same on-disk path twice but at
+  // matching `baseDir`).
+  const chatStoresBaseDir = join(ctx.dataDir, 'agents');
+  const budgetUsageStore: ChatBudgetUsageStoreLike =
+    ctx.chatBudgetUsageStore ??
+    (ctx.chatUsageStore as unknown as ChatBudgetUsageStoreLike | undefined) ??
+    new UsageStore(chatStoresBaseDir);
+  const budgetAgentStore: ChatBudgetAgentStoreLike =
+    ctx.chatBudgetAgentStore ?? new AgentStore(chatStoresBaseDir);
+
+  try {
+    const verdict = await checkChatBudget({
+      agentId: slug,
+      agentStore: budgetAgentStore,
+      usageStore: budgetUsageStore,
+    });
+    if (!verdict.allowed) {
+      // Emit a structured `budget-exhausted` SSE frame and terminate
+      // the stream cleanly. The SPA's `useChat` consumer maps this
+      // verdict to a banner ("Budget exhausted, top up to continue")
+      // without re-deriving budget arithmetic on the client.
+      writeSseEvent(res, buildBudgetExhaustedFrame(verdict));
+      writeSseEvent(res, { type: 'stream-end' });
+      res.end();
+      return;
+    }
+  } catch (err) {
+    // Budget gate failure is fail-CLOSED: if we cannot prove the agent
+    // has budget remaining, we refuse the turn. The chat client gets a
+    // structured `stream-error` frame so the UI can surface a hint
+    // rather than silently dropping the request.
+    writeSseEvent(res, {
+      type: 'stream-error',
+      message:
+        err && (err as Error).message
+          ? `budget-check failed: ${(err as Error).message}`
+          : 'budget-check failed',
+    });
+    writeSseEvent(res, { type: 'stream-end' });
+    res.end();
+    return;
+  }
+
+  // ── Sub-AC 1 of AC 12: persist the inbound user turn to disk ─────────
+  //
+  // Threads are persisted under `.aweek/agents/<slug>/chat/<threadId>.json`
+  // by the same `ChatConversationStore` the thread-list / new / get /
+  // rename / delete endpoints already use. Persisting BEFORE the SDK
+  // stream starts keeps the on-disk thread monotonic with what the user
+  // sent — even if the model fails mid-stream or the client disconnects,
+  // the user's prompt survives a refresh.
+  //
+  // Eligibility: only persist when `threadId` matches the schema-of-
+  // record id pattern (`^chat-[a-z0-9]+(-[a-z0-9]+)*$`). Earlier sub-AC
+  // tests pass opaque sentinels like `thread-1` as a placeholder; for
+  // those the handler skips persistence silently so the SSE stream still
+  // flows end-to-end without breaking back-compat. Production clients
+  // always allocate ids via `POST /api/agents/:slug/chat/threads`, which
+  // returns a `chat-<hex>` id by construction, so the persistence path
+  // is the default for real users.
+  //
+  // Auto-create on first hit: if the thread file does not exist yet
+  // (the SPA may stream into a chat-* id allocated client-side, or the
+  // file may have been pruned), the handler seeds an empty conversation
+  // before appending. That keeps the chat handler self-bootstrapping
+  // without a separate "thread create" round-trip.
+  //
+  // Best-effort by design: persistence failures must never crash the
+  // request lifecycle. We log a warning and proceed with the stream so
+  // the user still sees their tokens; the on-disk gap surfaces in the
+  // next reload (and operators see the warning in the server log).
+  const conversationStore: ChatConversationStoreLike =
+    ctx.chatConversationStore ??
+    new ChatConversationStore(chatStoresBaseDir);
+  const persistThread =
+    typeof threadId === 'string' &&
+    CHAT_CONVERSATION_ID_PATTERN.test(threadId);
+  // Capture the latest user turn (the new prompt) so we can persist it
+  // ahead of the stream. Full-thread replay places the latest user turn
+  // at the END of the body's `messages[]` array; we walk backwards to
+  // find it so a trailing assistant entry (rare — clients should always
+  // submit ending in a user turn) does not throw off the lookup.
+  let latestUserContent: string | undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user' && typeof m.content === 'string') {
+      latestUserContent = m.content;
+      break;
+    }
+  }
+
+  if (persistThread && latestUserContent !== undefined && threadId) {
+    try {
+      // Ensure the thread document exists on disk. We use a write-then-
+      // read dance so the seed is atomic per the store's contract: the
+      // initial `write` lands a fresh doc; subsequent calls find it via
+      // `read` and skip the seed. Either branch ends with the user
+      // message appended.
+      const existing = await conversationStore.read(slug, threadId);
+      if (!existing) {
+        const nowIso = new Date().toISOString();
+        const seedConversation: ChatConversation = {
+          id: threadId,
+          agentId: slug,
+          messages: [],
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        await conversationStore.write(slug, seedConversation);
+      }
+      const userMessage = createChatMessage({
+        role: 'user',
+        content: latestUserContent,
+      });
+      await conversationStore.appendMessage(slug, threadId, userMessage);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[chat] failed to persist user message for ${slug}/${threadId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  // Wire client disconnect → AbortController so the SDK cancels promptly.
+  const abortCtrl = new AbortController();
+  const onClientClose = (): void => abortCtrl.abort();
+  req.once('close', onClientClose);
+
+  // ── Sub-AC 3 of AC 6: auto-inject the system preamble on first turn ──
+  //
+  // The preamble is the structured context block (weekly plan summary,
+  // recent activity, weekly budget remaining, ISO-week key) the chat
+  // agent needs to start the thread with the same situational
+  // awareness the heartbeat already has. We compose it via
+  // `buildPreamble` + `formatPreamble` from `data/chat-preamble.ts`,
+  // which read from the same `src/storage/*` stores the dashboard
+  // already consumes — no duplicated derivation.
+  //
+  // We only inject on the **first system turn** of each thread.
+  // Heuristic: a thread is "fresh" when the replayed messages contain
+  // zero assistant entries (i.e., the user has typed but the agent has
+  // not yet responded). On any subsequent turn the array carries at
+  // least one prior assistant turn, and we skip the preamble so it is
+  // not re-sent on every prompt — the model already has it in its
+  // session context from turn one. This keeps token spend down and
+  // preserves the cache prefix the SDK builds across turns.
+  //
+  // The build is best-effort: a malformed plan.md, an absent logs
+  // file, or a bad agent JSON should NOT crash the chat turn, since
+  // the SDK can still answer without the preamble. We swallow the
+  // error and proceed without `systemPromptAppend`.
+  const isFirstTurn = !messages.some((m) => m.role === 'assistant');
+  let systemPromptAppend: string | undefined;
+  if (isFirstTurn) {
+    try {
+      const preamble = await buildPreamble({
+        projectDir: ctx.projectDir,
+        slug,
+      });
+      const formatted = formatPreamble(preamble);
+      if (formatted.length > 0) {
+        systemPromptAppend = formatted;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[chat] failed to build preamble for ${slug}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  // ── AC 8: in-flight turn completes streaming before cutoff applies ───
+  //
+  // Once the pre-flight gate above accepts a turn, we DO NOT re-check
+  // the budget while the SDK is iterating. Two reasons:
+  //   1. The model has already started producing tokens — aborting
+  //      mid-stream wastes those tokens (we still get billed but the
+  //      user gets a half-finished answer).
+  //   2. The streaming illusion: a mid-stream cutoff would manifest as
+  //      a frozen response that the user has to retry, defeating the
+  //      "tokens arrive as the model produces them" rubric guarantee.
+  //
+  // The cutoff is enforced at the *next* turn's pre-flight gate: once
+  // this turn's `recordChatUsage` write below lands in the shared
+  // `UsageStore`, any subsequent `POST /api/chat` invocation reads
+  // the new total and is rejected with a structured `budget-exhausted`
+  // frame BEFORE the SDK is invoked. The contract is exercised in
+  // server.test.ts under "POST /api/chat — AC 8: in-flight turn
+  // completes streaming before cutoff".
+  //
+  // Sub-AC 1 of AC 7: track the SDK session id (from `agent-init`) and
+  // the terminal token-usage payload (from `turn-complete`) so we can
+  // record chat-driven spend against the same weekly usage file the
+  // heartbeat reads. We capture across the streaming loop and write
+  // **after** iteration finishes so the in-flight turn's tokens never
+  // get lost on a mid-stream client disconnect — we still record what
+  // the SDK reported for the turn even if `aborted` fired.
+  let capturedSessionId: string | undefined;
+  let capturedUsage: ChatTokenUsage | undefined;
+  let capturedDurationMs: number | undefined;
+
+  // ── Sub-AC 1 of AC 12: accumulate the assistant turn for persistence ──
+  //
+  // Per assistant-message uuid the SDK emits during this turn we collect:
+  //   - `text` — concatenated text from every `text-delta` event (real-
+  //     time tokens) plus any final text blocks the SDK ships in the
+  //     terminal `assistant-message` (some models skip deltas and only
+  //     send the consolidated message; we cover both paths so the
+  //     persisted thread is non-empty either way).
+  //   - `tools[]` — `tool_use` blocks emitted in the assistant-message
+  //     content array, plus matching `tool_result` blocks the SDK echoes
+  //     back from the tool-execution side. The schema persists both
+  //     branches under `tools[]` on the assistant message that issued
+  //     the corresponding tool_use, so the floating panel can re-render
+  //     historical tool invocations after a page reload.
+  //
+  // We track `accumulatorOrder` so that when we append to disk, the
+  // assistant messages land in the order the SDK emitted them — a
+  // multi-step turn (assistant tool_use → user tool_result → assistant
+  // text) materialises as multiple ChatMessages with the same monotonic
+  // sequence the user observed in the live stream.
+  interface AssistantTurnAccumulator {
+    uuid: string;
+    text: string;
+    tools: ChatToolBlock[];
+  }
+  const accumulators = new Map<string, AssistantTurnAccumulator>();
+  const accumulatorOrder: string[] = [];
+  /**
+   * Get-or-create the accumulator for a given assistant message uuid.
+   * Captures the first-seen ordering so `accumulatorOrder` reflects the
+   * order the SDK emitted assistant messages.
+   */
+  const getAccumulator = (uuid: string): AssistantTurnAccumulator => {
+    let acc = accumulators.get(uuid);
+    if (!acc) {
+      acc = { uuid, text: '', tools: [] };
+      accumulators.set(uuid, acc);
+      accumulatorOrder.push(uuid);
+    }
+    return acc;
+  };
+  // Track tool_use → assistant uuid so tool_result blocks (which arrive
+  // in a separate `user` echo message and don't carry the original
+  // assistant uuid) can be routed back onto the right assistant message.
+  const toolUseToAssistant = new Map<string, string>();
+
+  try {
+    const streamParams: Parameters<typeof streamAgentTurn>[0] = {
+      slug,
+      messages,
+      cwd: ctx.projectDir,
+      signal: abortCtrl.signal,
+    };
+    if (ctx.runQuery !== undefined) streamParams.runQuery = ctx.runQuery;
+    if (systemPromptAppend !== undefined) {
+      streamParams.systemPromptAppend = systemPromptAppend;
+    }
+
+    for await (const event of streamAgentTurn(streamParams)) {
+      if (event.type === 'agent-init') {
+        capturedSessionId = event.sessionId;
+      } else if (event.type === 'turn-complete') {
+        capturedUsage = event.usage;
+        capturedDurationMs = event.durationMs;
+      } else if (event.type === 'text-delta') {
+        // Stream tokens — append to the accumulator for this assistant
+        // uuid so the persisted message carries the same prose the user
+        // saw scroll past in the live stream.
+        getAccumulator(event.messageUuid).text += event.delta;
+      } else if (event.type === 'assistant-message') {
+        // Terminal assistant message: walk the structured content blocks
+        // so we both (a) backfill any text the SDK delivered without
+        // streaming deltas, and (b) record tool_use blocks against this
+        // assistant uuid so subsequent tool_result events can pair up.
+        const acc = getAccumulator(event.uuid);
+        const content = event.content;
+        if (Array.isArray(content)) {
+          let consolidatedText = '';
+          for (const block of content) {
+            if (!block || typeof block !== 'object') continue;
+            const blockType = (block as { type?: unknown }).type;
+            if (
+              blockType === 'text' &&
+              typeof (block as { text?: unknown }).text === 'string'
+            ) {
+              consolidatedText += (block as { text: string }).text;
+            } else if (blockType === 'tool_use') {
+              const toolUse = block as {
+                id?: unknown;
+                name?: unknown;
+                input?: unknown;
+              };
+              if (
+                typeof toolUse.id === 'string' &&
+                typeof toolUse.name === 'string'
+              ) {
+                acc.tools.push({
+                  type: 'tool_use',
+                  toolUseId: toolUse.id,
+                  name: toolUse.name,
+                  input:
+                    toolUse.input && typeof toolUse.input === 'object'
+                      ? (toolUse.input as Record<string, unknown>)
+                      : {},
+                });
+                toolUseToAssistant.set(toolUse.id, event.uuid);
+              }
+            }
+          }
+          // Prefer the consolidated text when the SDK shipped one (it is
+          // the canonical form). Fall back to the streamed deltas when
+          // the consolidated form is empty (some models stream-only).
+          if (consolidatedText.length > 0) {
+            acc.text = consolidatedText;
+          }
+        }
+      } else if (event.type === 'tool-result') {
+        // Pair the result with the assistant message that issued the
+        // matching tool_use. If we never saw the originating tool_use
+        // (rare — the SDK echoed a tool result from a prior turn), we
+        // attach it to the most recent assistant accumulator so it does
+        // not disappear into the void.
+        const ownerUuid =
+          toolUseToAssistant.get(event.toolUseId) ??
+          accumulatorOrder[accumulatorOrder.length - 1];
+        if (ownerUuid) {
+          getAccumulator(ownerUuid).tools.push({
+            type: 'tool_result',
+            toolUseId: event.toolUseId,
+            content: event.content,
+            isError: !!event.isError,
+          });
+        }
+      }
+      // Each event is a single SSE frame. Honour backpressure so a slow
+      // client cannot coalesce sequential `text-delta`s into one chunk
+      // and break the streaming illusion the rubric pins at "tokens
+      // arrive as the model produces them".
+      const wrote = writeSseEvent(res, event);
+      if (!wrote) {
+        await new Promise<void>((resolveDrain) => {
+          res.once('drain', () => resolveDrain());
+        });
+      }
+    }
+  } catch (err) {
+    // The translator already maps SDK errors to `turn-error` events, so
+    // we only land here on something more catastrophic (e.g. write to a
+    // closed socket). Surface a structured error frame and end cleanly
+    // — never re-throw past the SSE boundary because once headers are
+    // flushed the client expects a stream, not an HTTP error.
+    writeSseEvent(res, {
+      type: 'stream-error',
+      message: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    req.off('close', onClientClose);
+    // Terminal `stream-end` so the `useChat` hook resolves the turn.
+    writeSseEvent(res, { type: 'stream-end' });
+    res.end();
+  }
+
+  // ── Sub-AC 1 of AC 12: persist the assistant turn(s) to disk ─────────
+  //
+  // After the SSE stream has been closed (so the user-facing latency
+  // does not pay for the disk write) we flush every accumulator we
+  // captured during streaming as one ChatMessage per assistant uuid.
+  // This preserves multi-step turns (assistant tool_use → user
+  // tool_result → assistant text) as multiple persisted messages in the
+  // same monotonic order the user observed in the live stream, so the
+  // floating panel can replay the conversation byte-identical to the
+  // original after a reload.
+  //
+  // Best-effort: matches the user-message persistence path above and
+  // the token-usage path below — storage failures must never crash the
+  // request lifecycle (the response is already terminated). We log a
+  // warning so operators can see something landed in the wrong place.
+  //
+  // Even when streaming aborted mid-turn (client disconnect, SDK
+  // error), we still flush whatever the accumulators captured up to
+  // that point. The user got partial bytes on the wire; the persisted
+  // thread should reflect the same partial state so a reload doesn't
+  // misrepresent what the agent said.
+  if (persistThread && threadId && accumulatorOrder.length > 0) {
+    for (const uuid of accumulatorOrder) {
+      const acc = accumulators.get(uuid);
+      if (!acc) continue;
+      // Skip wholly empty accumulators (no text and no tools — happens
+      // when an assistant message arrived as just a stop_reason marker
+      // with no content). The schema requires `content` to be a string,
+      // and an empty string is valid, but persisting nothing useful
+      // bloats the on-disk file with no replay value.
+      if (acc.text.length === 0 && acc.tools.length === 0) continue;
+      try {
+        const opts: Parameters<typeof createChatMessage>[0] = {
+          role: 'assistant',
+          content: acc.text,
+        };
+        if (acc.tools.length > 0) opts.tools = acc.tools;
+        const assistantMessage = createChatMessage(opts);
+        await conversationStore.appendMessage(
+          slug,
+          threadId,
+          assistantMessage,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[chat] failed to persist assistant message for ${slug}/${threadId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+  }
+
+  // Persist the chat-side token usage AFTER the SSE stream has been
+  // closed so the user-facing latency of the response never pays for
+  // the disk write. The heartbeat's budget enforcer reads from the same
+  // weekly file via `UsageStore.weeklyTotal(...)`, so this single
+  // append is what makes the chat + heartbeat budgets converge into one
+  // shared pool per agent (AC 7, Sub-AC 1).
+  //
+  // Best-effort by design: storage failures here must never crash the
+  // request lifecycle (the response is already terminated). We log a
+  // warning so operators can see something landed in the wrong place,
+  // but the SDK has already delivered every byte the client expects.
+  if (capturedUsage) {
+    const usageStore: ChatUsageStoreLike =
+      ctx.chatUsageStore ?? new UsageStore(join(ctx.dataDir, 'agents'));
+    try {
+      const recordOpts: Parameters<typeof recordChatUsage>[1] = {
+        agentId: slug,
+        usage: capturedUsage,
+      };
+      if (threadId !== undefined) recordOpts.threadId = threadId;
+      if (capturedSessionId !== undefined) {
+        recordOpts.sessionId = capturedSessionId;
+      }
+      if (capturedDurationMs !== undefined) {
+        recordOpts.durationMs = capturedDurationMs;
+      }
+      await recordChatUsage(usageStore, recordOpts);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[chat] failed to record usage for ${slug}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 }
 

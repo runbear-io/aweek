@@ -143,6 +143,23 @@ describe('useAgents — module wiring', () => {
   it('exports useAgents as a named function', () => {
     expect(src).toMatch(/export\s+function\s+useAgents\s*\(/);
   });
+
+  // AC 13: the polling option exists in the hook's options interface
+  // and the body installs a `setInterval` keyed off it. We pin both
+  // halves with regex so a future refactor that drops one or renames
+  // the option can be caught at the source level even before the
+  // behavioural test below runs.
+  it('AC 13: declares pollIntervalMs option for background refresh', () => {
+    expect(src).toMatch(/pollIntervalMs\s*\?\s*:\s*number\s*\|\s*null/);
+  });
+
+  it('AC 13: installs a setInterval that calls refresh() on the cadence', () => {
+    expect(src).toMatch(/setInterval\s*\(/);
+    expect(src).toMatch(/clearInterval\s*\(/);
+    // The interval body forwards `refresh()` — anything else would
+    // mean we're not actually polling the roster.
+    expect(src).toMatch(/refresh\s*\(\s*\)/);
+  });
 });
 
 // ── Loader wiring — the contract the hook delegates to ───────────────

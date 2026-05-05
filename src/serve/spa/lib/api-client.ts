@@ -802,26 +802,40 @@ export interface NotificationRow {
 }
 
 /**
- * Internal helper: execute an HTTP POST with a JSON body (or empty body)
- * and parse the JSON response. Mirrors `getJson`'s error semantics so the
+ * Internal helper: execute an HTTP POST with an optional JSON body and
+ * parse the JSON response. Mirrors `getJson`'s error semantics so the
  * SPA's mutation paths behave identically to the read paths under
  * non-2xx and abort flows.
+ *
+ * The optional `body` parameter (Sub-AC 4 of AC 5) lets new-thread /
+ * future mutation paths POST a typed JSON envelope without re-rolling
+ * the fetch plumbing each call.
  */
 async function postJson<T>(
   endpoint: string,
   opts: RequestOptions = {},
+  body?: unknown,
 ): Promise<T> {
   const { baseUrl = '', signal, fetch: fetchImpl } = opts;
   const doFetch = fetchImpl ?? getDefaultFetch();
   const url = joinUrl(baseUrl, endpoint);
 
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  let bodyText: string | undefined;
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    bodyText = JSON.stringify(body);
+  }
+
   let response: Response;
   try {
-    response = await doFetch(url, {
+    const requestInit: RequestInit = {
       method: 'POST',
-      headers: { Accept: 'application/json' },
+      headers,
       signal,
-    });
+    };
+    if (bodyText !== undefined) requestInit.body = bodyText;
+    response = await doFetch(url, requestInit);
   } catch (err) {
     if (isAbortError(err)) throw err;
     const msg = err instanceof Error ? err.message : String(err);
@@ -1256,6 +1270,251 @@ export async function fetchAppConfig(
     );
   }
   return body;
+}
+
+// ── Chat threads ─────────────────────────────────────────────────────
+//
+// AC 5 Sub-AC 3: thread-list UI. The floating chat panel's sidebar
+// fetches summary rows (one per persisted conversation) so it can
+// surface a selectable list above the active thread. Mutation
+// endpoints (create / rename / delete) are wired in sibling sub-ACs;
+// this client surface keeps the read path isolated so the list UI
+// can land independently.
+
+/**
+ * Allowed roles on a persisted chat message. Mirrors
+ * `ChatMessageRole` in `src/schemas/chat-conversation.ts`.
+ *
+ * Re-declared in the api-client layer (rather than imported from the
+ * backend schema module) so SPA consumers don't drag the Node-only
+ * AJV plumbing into the bundler. The string-union shape is identical
+ * to the schema-of-record, and the `validateAgentSlug`-style
+ * defensive narrowing on each consumer keeps the wire boundary
+ * honest.
+ */
+export type ChatMessageRoleWire = 'user' | 'assistant';
+
+/**
+ * Lightweight summary row returned by `GET /api/agents/:slug/chat/threads`.
+ *
+ * Mirrors `ChatConversationSummary` in
+ * `src/storage/chat-conversation-store.ts` — kept purposely narrow so
+ * the thread sidebar can render without paying the cost of streaming
+ * each full thread document.
+ */
+export interface ChatThreadSummary {
+  /** Conversation id (basename of the on-disk JSON file). */
+  id: string;
+  /** Owning agent slug — equal to the URL slug under which it was fetched. */
+  agentId: string;
+  /** Optional user-editable label rendered in the sidebar. */
+  title?: string;
+  /** ISO-8601 datetime when the thread was created. */
+  createdAt: string;
+  /** ISO-8601 datetime of the last write (any append or title edit). */
+  updatedAt: string;
+  /** Total message count (user + assistant turns). */
+  messageCount: number;
+  /** Truncated content of the most recent message (≤ 200 chars). */
+  lastMessagePreview?: string;
+  /** Role of the most recent message — handy for sidebar icons. */
+  lastMessageRole?: ChatMessageRoleWire;
+}
+
+/**
+ * Wire-shape of the `GET /api/agents/:slug/chat/threads` envelope.
+ * Exported so tests / fixtures can build a payload without re-deriving
+ * the shape.
+ *
+ * The response carries the agent's slug back so a stale list returned
+ * after a rapid re-target can be detected by the consumer (the slug
+ * mismatches what the request was sent for).
+ */
+export interface AgentThreadsResponse {
+  agentId: string;
+  /** Sorted newest-updated-first server-side. */
+  threads: ChatThreadSummary[];
+}
+
+/**
+ * Single tool-invocation block embedded in a persisted chat message.
+ * Mirrors `ChatToolBlock` in `src/schemas/chat-conversation.ts` —
+ * re-declared at the api-client layer so SPA consumers don't pull in
+ * the Node-only AJV schema module through the bundler.
+ */
+export interface ChatToolBlockWire {
+  toolUseId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  state: 'pending' | 'success' | 'error';
+  result?: unknown;
+  errorMessage?: string;
+}
+
+/**
+ * Single message inside a persisted chat thread. Mirrors `ChatMessage`
+ * in `src/schemas/chat-conversation.ts`. Re-declared at the SPA layer
+ * for the same reason as {@link ChatThreadSummary} — keep the bundler
+ * graph clean.
+ */
+export interface ChatMessageWire {
+  id: string;
+  role: ChatMessageRoleWire;
+  content: string;
+  createdAt: string;
+  tools?: ChatToolBlockWire[];
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Full chat thread document returned by
+ * `GET /api/agents/:slug/chat/threads/:threadId`. Mirrors
+ * `ChatConversation` in `src/schemas/chat-conversation.ts`.
+ *
+ * Sub-AC 4 of AC 5: backs the thread-switching behaviour in the
+ * floating panel — the SPA fetches one of these and seeds the
+ * `<ChatThread>`'s `initialMessages` with the persisted history so the
+ * conversation reappears across navigation and browser sessions.
+ */
+export interface ChatThreadDocument {
+  id: string;
+  agentId: string;
+  title?: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ChatMessageWire[];
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * `GET /api/agents/:slug/chat/threads/:threadId` — return one chat
+ * thread end-to-end with its full message history.
+ *
+ * Throws `ApiError` with `status: 404` when either the slug or the
+ * thread id does not exist on disk; the dashboard reads its
+ * surrounding state to decide which copy to render (e.g. "thread was
+ * deleted" vs "agent gone").
+ */
+export async function fetchAgentThread(
+  slug: string,
+  threadId: string,
+  opts: RequestOptions = {},
+): Promise<ChatThreadDocument> {
+  const safeSlug = assertValidSlug(slug);
+  if (typeof threadId !== 'string' || threadId.length === 0) {
+    throw new TypeError('api-client: threadId must be a non-empty string');
+  }
+  if (
+    threadId.includes('/') ||
+    threadId.includes('\\') ||
+    threadId.includes('\0') ||
+    threadId === '.' ||
+    threadId === '..'
+  ) {
+    throw new TypeError(
+      `api-client: invalid threadId: ${JSON.stringify(threadId)}`,
+    );
+  }
+  const endpoint = `/api/agents/${encodeURIComponent(safeSlug)}/chat/threads/${encodeURIComponent(threadId)}`;
+  const body = await getJson<{ thread?: ChatThreadDocument }>(endpoint, opts);
+  if (!body || typeof body !== 'object' || !body.thread) {
+    throw new ApiError(
+      'Malformed thread payload (missing `thread` envelope)',
+      { status: 200, endpoint, body },
+    );
+  }
+  return body.thread;
+}
+
+/**
+ * Options accepted by {@link createAgentThread}.
+ */
+export interface CreateAgentThreadOptions extends RequestOptions {
+  /** Optional user-editable label rendered in the sidebar. */
+  title?: string;
+  /** Optional forward-compatible metadata bag. */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * `POST /api/agents/:slug/chat/threads` — create a new (empty) chat
+ * thread for an agent (Sub-AC 4 of AC 5).
+ *
+ * The server auto-stamps the conversation id (`chat-<hex>`) and the
+ * `createdAt` / `updatedAt` timestamps. Returns the persisted document
+ * so the SPA can immediately set it as the active thread without a
+ * follow-up list refresh.
+ *
+ * Throws `ApiError` with `status: 404` when the agent slug does not
+ * exist; 400 when the body fails validation server-side.
+ */
+export async function createAgentThread(
+  slug: string,
+  opts: CreateAgentThreadOptions = {},
+): Promise<ChatThreadDocument> {
+  const safeSlug = assertValidSlug(slug);
+  const { title, metadata, ...rest } = opts;
+  const endpoint = `/api/agents/${encodeURIComponent(safeSlug)}/chat/threads`;
+  // Build a minimal POST body — only forward fields the caller set so
+  // the server's optional-field paths stay clean.
+  const requestBody: { title?: string; metadata?: Record<string, unknown> } = {};
+  if (typeof title === 'string' && title.length > 0) {
+    requestBody.title = title;
+  }
+  if (metadata !== undefined) {
+    requestBody.metadata = metadata;
+  }
+  const body = await postJson<{ thread?: ChatThreadDocument }>(
+    endpoint,
+    rest,
+    requestBody,
+  );
+  if (!body || typeof body !== 'object' || !body.thread) {
+    throw new ApiError(
+      'Malformed create-thread payload (missing `thread` envelope)',
+      { status: 200, endpoint, body },
+    );
+  }
+  return body.thread;
+}
+
+/**
+ * `GET /api/agents/:slug/chat/threads` — list every chat thread for a
+ * single agent. Backs the floating chat panel's thread sidebar
+ * (Sub-AC 3 of AC 5).
+ *
+ * Throws `ApiError` with `status: 404` when the slug does not exist on
+ * disk, matching the same convention every other per-agent gatherer
+ * uses. An existing agent with no threads yet produces 200 with an
+ * empty `threads` list so the SPA can render its "No conversations
+ * yet" empty state without parsing the message.
+ */
+export async function fetchAgentThreads(
+  slug: string,
+  opts: RequestOptions = {},
+): Promise<AgentThreadsResponse> {
+  const safeSlug = assertValidSlug(slug);
+  const body = await getJson<{
+    agentId?: string;
+    threads?: ChatThreadSummary[];
+  }>(
+    `/api/agents/${encodeURIComponent(safeSlug)}/chat/threads`,
+    opts,
+  );
+  if (!body || typeof body !== 'object' || !Array.isArray(body.threads)) {
+    throw new ApiError(
+      'Malformed threads payload (missing `threads` envelope)',
+      {
+        status: 200,
+        endpoint: `/api/agents/${safeSlug}/chat/threads`,
+        body,
+      },
+    );
+  }
+  return {
+    agentId: typeof body.agentId === 'string' ? body.agentId : safeSlug,
+    threads: body.threads,
+  };
 }
 
 // ── Test-facing internals ────────────────────────────────────────────
