@@ -297,7 +297,7 @@ function FloatingChatBubbleSlot(): React.ReactElement {
   if (ctx) {
     return (
       <FloatingChatBubble open={ctx.open} onOpenChange={ctx.setOpen}>
-        {ctx.open ? <FloatingChatPanel /> : null}
+        {ctx.open ? <FloatingChatPanel autoCreateOnEmpty /> : null}
       </FloatingChatBubble>
     );
   }

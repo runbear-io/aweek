@@ -222,6 +222,22 @@ export interface UseChatStreamOptions {
    */
   onFirstChunk?: (latencyMs: number) => void;
   /**
+   * Notified whenever the messages array changes (every chunk during
+   * streaming, every user submit, every error). Lets the parent mirror
+   * the live conversation into its own cache so a remount with the
+   * same `${slug}:${threadId}` key — e.g. the user switching to another
+   * thread and switching back — re-hydrates from the latest in-memory
+   * state instead of the snapshot the parent had at mount time.
+   */
+  onMessagesChange?: (messages: ChatUIMessage[]) => void;
+  /**
+   * Notified once per turn after the SSE stream ends successfully.
+   * Lets the parent refresh side-state that depends on the conversation
+   * having grown by one assistant turn (e.g. the thread-list sidebar's
+   * `lastMessagePreview` / title fallback).
+   */
+  onTurnComplete?: () => void;
+  /**
    * Test seam — overrides the high-resolution clock used by the
    * latency-instrumentation path. Returns a monotonic millisecond
    * timestamp. Defaults to `performance.now()` when present, else
@@ -549,6 +565,8 @@ export function useChatStream(
     initialMessages = [],
     onError,
     onFirstChunk,
+    onMessagesChange,
+    onTurnComplete,
     generateId,
     now,
   } = options;
@@ -579,6 +597,25 @@ export function useChatStream(
   React.useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  // Mirror the latest `onMessagesChange` callback into a ref so the
+  // notification effect below depends only on `messages`, not on the
+  // identity of the consumer's callback (which typically closes over
+  // local state and re-allocates each render). Without the ref the
+  // effect would fire on every parent re-render even when the messages
+  // list itself was unchanged.
+  const onMessagesChangeRef = React.useRef(onMessagesChange);
+  React.useEffect(() => {
+    onMessagesChangeRef.current = onMessagesChange;
+  }, [onMessagesChange]);
+  React.useEffect(() => {
+    onMessagesChangeRef.current?.(messages);
+  }, [messages]);
+
+  const onTurnCompleteRef = React.useRef(onTurnComplete);
+  React.useEffect(() => {
+    onTurnCompleteRef.current = onTurnComplete;
+  }, [onTurnComplete]);
 
   const abortRef = React.useRef<AbortController | null>(null);
   const idGeneratorRef = React.useRef<() => string>(
@@ -804,6 +841,7 @@ export function useChatStream(
         }
 
         setStatus('ready');
+        onTurnCompleteRef.current?.();
       } catch (err) {
         if (isAbortError(err)) {
           // Caller invoked `stop()` — keep the partial assistant content

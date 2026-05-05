@@ -124,6 +124,8 @@ export function ChatThread({
   fetch: fetchImpl,
   initialMessages,
   onError,
+  onMessagesChange,
+  onTurnComplete,
   generateId,
   budgetExhausted: externalBudgetExhausted,
 }: ChatThreadProps): React.ReactElement {
@@ -138,6 +140,8 @@ export function ChatThread({
   if (fetchImpl !== undefined) hookOpts.fetch = fetchImpl;
   if (initialMessages !== undefined) hookOpts.initialMessages = initialMessages;
   if (onError !== undefined) hookOpts.onError = onError;
+  if (onMessagesChange !== undefined) hookOpts.onMessagesChange = onMessagesChange;
+  if (onTurnComplete !== undefined) hookOpts.onTurnComplete = onTurnComplete;
   if (generateId !== undefined) hookOpts.generateId = generateId;
 
   const {
@@ -197,6 +201,21 @@ export function ChatThread({
     }
   }, [messages]);
 
+  // Focus the composer when ChatThread mounts. The parent re-keys this
+  // component on `${slug}:${threadId}` so this fires every time the
+  // user creates or switches threads — they can start typing without
+  // having to click the textarea. The native `autoFocus` attribute is
+  // unreliable here because the previous-thread's textarea may briefly
+  // hold focus during the unmount/remount transition; an explicit
+  // `.focus()` post-mount sidesteps that race.
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  React.useEffect(() => {
+    const el = textareaRef.current;
+    if (el && typeof el.focus === 'function' && !el.disabled) {
+      el.focus();
+    }
+  }, []);
+
   return (
     <>
       <ChatPanelHeader>
@@ -238,6 +257,7 @@ export function ChatThread({
           className="flex w-full items-end gap-2"
         >
           <textarea
+            ref={textareaRef}
             data-component="chat-thread-input"
             aria-label={`Message ${headerLabel}`}
             placeholder={

@@ -448,23 +448,30 @@ function* translateSdkMessage(
 /**
  * Collapse the chat thread into the prompt string for `query()`.
  *
- * Sub-AC 2 form: emit just the latest user turn — the cheapest correct
- * shape that lets the SDK produce a streaming response. The full
- * thread replay (via `streamInput` over an `AsyncIterable<SDKUserMessage>`)
- * lands once the chat-conversation store ships in a later sub-AC.
+ * Single-turn threads send the user message verbatim. Multi-turn threads
+ * render a transcript with explicit role markers so the model has the
+ * prior context — without this, every follow-up was a fresh single-shot
+ * prompt and the assistant would respond as if it had no memory of the
+ * conversation. The trailing "Assistant:" cue tells the model where its
+ * reply belongs.
  */
 function formatPromptFromMessages(messages: ChatTurnMessage[]): string {
   if (!Array.isArray(messages) || messages.length === 0) return '';
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m && m.role === 'user' && typeof m.content === 'string') {
-      return m.content;
-    }
+
+  const turns = messages.filter(
+    (m) => m && typeof m.content === 'string' && m.content.length > 0,
+  );
+  if (turns.length === 0) return '';
+  if (turns.length === 1) {
+    const only = turns[0]!;
+    if (only.role === 'user') return only.content;
   }
-  // Defensive fallback — no user turn found, collapse the whole thread
-  // into a labelled transcript so the SDK still has something to react
-  // to (rather than throwing at the call site).
-  return messages
-    .map((m) => `${m.role}: ${m.content}`)
+
+  const transcript = turns
+    .map((m) => {
+      const label = m.role === 'assistant' ? 'Assistant' : 'User';
+      return `${label}: ${m.content}`;
+    })
     .join('\n\n');
+  return `${transcript}\n\nAssistant:`;
 }

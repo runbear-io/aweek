@@ -178,6 +178,19 @@ export interface FloatingChatPanelProps {
    * function via the live hook.
    */
   refreshThreadList?: () => Promise<unknown> | unknown;
+  /**
+   * When true, the panel auto-creates a default thread the first time
+   * it lands on an agent with zero existing threads, so the user's
+   * first message has a `threadId` to attach to and gets persisted to
+   * disk. Without this, a fresh agent renders an empty composer with
+   * no `threadId`, the chat POST goes out without one, the server's
+   * persistence gate skips the write, and refreshing the page loses
+   * the conversation. Defaults to `false` to keep the existing test
+   * fixtures (which mount the panel with empty thread lists to assert
+   * the empty state) unchanged; production wiring in `layout.tsx` opts
+   * in.
+   */
+  autoCreateOnEmpty?: boolean;
   /** Class names merged onto the wrapping `<div>`. */
   className?: string;
 }
@@ -199,6 +212,7 @@ export function FloatingChatPanel({
   fetchThread: fetchThreadOverride,
   createThread: createThreadOverride,
   refreshThreadList: refreshThreadListOverride,
+  autoCreateOnEmpty = false,
   className,
 }: FloatingChatPanelProps = {}): React.ReactElement {
   // Sub-AC 2 of AC 12: per-agent active-thread persistence. We read
@@ -462,6 +476,18 @@ export function FloatingChatPanel({
         ...prev,
         [`${effectiveSlug}:${created.id}`]: [],
       }));
+      // Refresh the sidebar list FIRST so the new row exists in the
+      // threads list before we update the active-thread state.
+      // Otherwise the auto-select effect (which keys on
+      // `threadList.threads`) runs against the stale list, can't find
+      // the new id, and falls back to `list[0]` — overwriting the
+      // intended pin and leaving the user on the previous thread.
+      try {
+        await refreshThreadListFn();
+      } catch {
+        // Ignore refresh failures — we still pin the new thread below
+        // and the user can manually reopen the panel to retry.
+      }
       // Make the new thread the active row + notify the parent.
       if (!isThreadControlled) {
         setInternalActiveThreadId(created.id);
@@ -474,15 +500,6 @@ export function FloatingChatPanel({
         chatPanel.setActiveThreadIdForAgent(effectiveSlug, created.id);
       }
       onActiveThreadChange?.(created.id);
-      // Refresh the sidebar list so the new row shows up. The override
-      // path returns a no-op for tests with a static `threadListOverride`
-      // — the test re-renders with an explicit roster instead.
-      try {
-        await refreshThreadListFn();
-      } catch {
-        // Ignore refresh failures — the new thread is already pinned
-        // as active and the user can manually reopen the panel to retry.
-      }
     } catch (err) {
       const message =
         err && (err as Error).message
@@ -500,6 +517,35 @@ export function FloatingChatPanel({
     onActiveThreadChange,
     refreshThreadListFn,
     chatPanel,
+  ]);
+
+  // Auto-create a default thread when an agent with zero threads is
+  // selected so the user's first message has a `threadId` to persist
+  // against. Gated on the explicit `autoCreateOnEmpty` opt-in so test
+  // fixtures that assert the empty state aren't surprised by a network
+  // call against the real `createAgentThread`. Production wiring in
+  // `layout.tsx` opts in.
+  const autoCreatedFor = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!autoCreateOnEmpty) return;
+    if (isThreadControlled) return;
+    if (!effectiveSlug) return;
+    if (threadList.loading) return;
+    if (threadList.threads.length > 0) return;
+    if (creatingThread) return;
+    if (createThreadError) return;
+    if (autoCreatedFor.current === effectiveSlug) return;
+    autoCreatedFor.current = effectiveSlug;
+    void handleNewThread();
+  }, [
+    autoCreateOnEmpty,
+    isThreadControlled,
+    effectiveSlug,
+    threadList.loading,
+    threadList.threads.length,
+    creatingThread,
+    createThreadError,
+    handleNewThread,
   ]);
 
   return (
@@ -596,6 +642,28 @@ export function FloatingChatPanel({
             key={`${effectiveSlug}:${activeThreadId ?? 'no-thread'}`}
             slug={effectiveSlug}
             {...(activeThreadId ? { threadId: activeThreadId } : {})}
+            // Mirror the live conversation back into our `threadHistory`
+            // cache so a switch-out / switch-back round-trip re-hydrates
+            // ChatThread with the latest messages instead of the empty
+            // snapshot we seeded the cache with at thread-create time.
+            // Without this, switching tabs and returning loses the
+            // in-memory turns; only a hard reload re-fetches from disk.
+            {...(historyKey
+              ? {
+                  onMessagesChange: (msgs) =>
+                    setThreadHistory((prev) => ({
+                      ...prev,
+                      [historyKey]: msgs,
+                    })),
+                }
+              : {})}
+            // After each successful turn, refresh the threads sidebar
+            // so the row's `lastMessagePreview` / title fallback picks
+            // up the new message (without this the row keeps reading
+            // "New chat" until the user manually refreshes).
+            onTurnComplete={() => {
+              void refreshThreadListFn();
+            }}
             title={resolveAgentTitle(agents.rows, effectiveSlug)}
             // Sub-AC 4 of AC 5: when the user picks a saved thread,
             // hydrate the chat surface with its persisted message
