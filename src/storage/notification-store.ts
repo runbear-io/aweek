@@ -50,12 +50,19 @@ import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { assertValid } from '../schemas/validator.js';
-import type { NotificationLink } from '../schemas/notification.js';
+import type {
+  NotificationLink,
+  NotificationSeverity,
+} from '../schemas/notification.js';
 
 // Re-export the typed link union so downstream consumers (CLI, dashboard,
 // system-event emitters) can import everything notification-related from
 // the storage entry point that AC 17 already designates as canonical.
-export type { NotificationLink, NotificationLinkObject } from '../schemas/notification.js';
+export type {
+  NotificationLink,
+  NotificationLinkObject,
+  NotificationSeverity,
+} from '../schemas/notification.js';
 
 const NOTIFICATION_SCHEMA_ID = 'aweek://schemas/notification';
 const FEED_SCHEMA_ID = 'aweek://schemas/notification-feed';
@@ -71,6 +78,7 @@ export type NotificationSource = 'agent' | 'system';
  * `NOTIFICATION_SYSTEM_EVENTS` in the schema definition.
  */
 export type NotificationSystemEvent =
+  | 'task-warnings'
   | 'budget-exhausted'
   | 'repeated-task-failure'
   | 'plan-ready';
@@ -113,6 +121,8 @@ export interface Notification {
   sourceTaskId?: string;
   /** Optional dedupe handle for system events. */
   dedupKey?: string;
+  /** Optional visual severity hint — defaults to `info` when absent. */
+  severity?: NotificationSeverity;
   /** Forward-compatible extensibility bag. */
   metadata?: Record<string, unknown>;
 }
@@ -135,6 +145,8 @@ export interface CreateNotificationOptions {
   sourceTaskId?: string;
   /** Optional dedupe key (system events). */
   dedupKey?: string;
+  /** Optional visual severity hint — defaults to `info` when absent. */
+  severity?: NotificationSeverity;
   /** Optional metadata bag (priority, category, action buttons, …). */
   metadata?: Record<string, unknown>;
   /** Override timestamp (defaults to now). Useful for tests. */
@@ -178,6 +190,8 @@ export interface SendNotificationOptions {
   sourceTaskId?: string;
   /** Optional dedupe key (system events). */
   dedupKey?: string;
+  /** Optional visual severity hint — defaults to `info` when absent. */
+  severity?: NotificationSeverity;
   /** Optional metadata bag (priority, category, action buttons, …). */
   metadata?: Record<string, unknown>;
   /**
@@ -289,6 +303,7 @@ export function createNotification(opts: CreateNotificationOptions): Notificatio
     link,
     sourceTaskId,
     dedupKey,
+    severity,
     metadata,
     createdAt,
   } = opts;
@@ -305,6 +320,7 @@ export function createNotification(opts: CreateNotificationOptions): Notificatio
   if (link !== undefined) notification.link = link;
   if (sourceTaskId !== undefined) notification.sourceTaskId = sourceTaskId;
   if (dedupKey !== undefined) notification.dedupKey = dedupKey;
+  if (severity !== undefined) notification.severity = severity;
   if (metadata !== undefined) notification.metadata = metadata;
   return notification;
 }
@@ -548,6 +564,7 @@ export class NotificationStore {
       link: opts.link,
       sourceTaskId: opts.sourceTaskId,
       dedupKey: opts.dedupKey,
+      severity: opts.severity,
       metadata: opts.metadata,
       createdAt: opts.createdAt,
     });

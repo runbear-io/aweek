@@ -81,6 +81,14 @@ export interface NotificationListItem {
   source?: string;
   /** System event id when `source === 'system'`. */
   systemEvent?: string;
+  /**
+   * Optional severity hint — `'info' | 'warning' | 'error'`. Loosely
+   * typed (string) so future severities pass through; the renderer
+   * recognises `'warning'` and `'error'` for amber / red variants and
+   * falls back to the canonical info styling for everything else
+   * (including absent / unknown values).
+   */
+  severity?: string;
 }
 
 // ── Props ────────────────────────────────────────────────────────────
@@ -299,6 +307,25 @@ function NotificationListRow({
   const agentLabel = notification.agent || notification.agentId || '';
   const showAgentLabel = !hideAgentLabel && agentLabel.length > 0;
   const isUnread = notification.read !== true;
+  const severity = notification.severity ?? 'info';
+  const isWarning = severity === 'warning';
+  const isError = severity === 'error';
+  // Severity drives the row's background tint and the unread-dot color.
+  // `warning` → amber, `error` → red, anything else → canonical muted.
+  // Unread-only tinting layers on top so a read warning still reads as
+  // a warning at a glance (while a read info row goes back to plain).
+  const severityRowTint = isWarning
+    ? 'bg-amber-500/10'
+    : isError
+      ? 'bg-red-500/10'
+      : isUnread
+        ? 'bg-muted/40'
+        : '';
+  const severityDotClass = isWarning
+    ? 'bg-amber-400'
+    : isError
+      ? 'bg-red-500'
+      : 'bg-destructive';
 
   return (
     <li
@@ -307,6 +334,7 @@ function NotificationListRow({
       data-agent-slug={notification.agent ?? notification.agentId ?? ''}
       data-source={notification.source ?? ''}
       data-system-event={notification.systemEvent ?? ''}
+      data-severity={severity}
       data-read={isUnread ? 'false' : 'true'}
       data-expanded={isExpanded ? 'true' : 'false'}
       data-clickable={clickable ? 'true' : undefined}
@@ -316,7 +344,7 @@ function NotificationListRow({
       onKeyDown={handleKeyDown}
       className={cn(
         'flex flex-col gap-1 px-6 py-3 text-sm',
-        isUnread && 'bg-muted/40',
+        severityRowTint,
         clickable &&
           'cursor-pointer transition-colors hover:bg-muted/50 focus-within:bg-muted/50',
       )}
@@ -336,8 +364,9 @@ function NotificationListRow({
           {isUnread ? (
             <span
               data-component="notification-list-row-unread-dot"
+              data-severity={severity}
               aria-label="Unread"
-              className="inline-block h-2 w-2 rounded-full bg-destructive"
+              className={cn('inline-block h-2 w-2 rounded-full', severityDotClass)}
             />
           ) : null}
           {hasBody ? (

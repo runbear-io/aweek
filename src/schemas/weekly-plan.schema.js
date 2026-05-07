@@ -156,6 +156,30 @@ export const weeklyTaskSchema = {
         'crossed again. Optional so legacy plans validate cleanly; ' +
         'absence is equivalent to false.',
     },
+    warnings: {
+      type: 'array',
+      items: { type: 'string', minLength: 1, maxLength: 500 },
+      maxItems: 10,
+      description:
+        'Soft-failure concerns surfaced by the post-execution verifier ' +
+        'when a task transitioned to `completed` but the agent did not ' +
+        'achieve the stated outcome (e.g. the task was to publish a ' +
+        'post but no publish action ran). Each entry is a short ' +
+        'human-readable concern. Empty / absent means the verifier ' +
+        'confirmed the outcome OR the verifier was skipped (failed ' +
+        'tasks, verifier disabled). Cleared on the next attempt of the ' +
+        'same task. The calendar chip reads this directly to render ' +
+        'an amber badge alongside the `completed` glyph.',
+    },
+    outcomeAchieved: {
+      type: 'boolean',
+      description:
+        'Verifier verdict — `true` when the post-execution verifier ' +
+        'confirmed the agent met the stated outcome, `false` when it ' +
+        'detected concerns (in which case `warnings` is non-empty). ' +
+        'Absent when the verifier was skipped (failed task, ' +
+        'config-disabled, no verifier callable wired in).',
+    },
   },
   additionalProperties: false,
 };

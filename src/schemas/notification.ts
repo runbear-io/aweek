@@ -53,10 +53,18 @@
 export {
   NOTIFICATION_SOURCES,
   NOTIFICATION_SYSTEM_EVENTS,
+  NOTIFICATION_SEVERITIES,
   notificationLinkSchema,
   notificationSchema,
   notificationFeedSchema,
 } from './notification.schema.js';
+
+/**
+ * Visual severity hint surfaced by the notification bell. Optional on
+ * the persisted notification — when absent the renderer treats the
+ * row as `info`.
+ */
+export type NotificationSeverity = 'info' | 'warning' | 'error';
 
 // ---------------------------------------------------------------------------
 // Re-exports of the convenience validators that consume the AJV registry.

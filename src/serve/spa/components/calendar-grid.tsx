@@ -515,7 +515,14 @@ export function TaskChip({
   const review = isReviewTask(task);
   const status = task.status as TaskStatus;
   const icon = review ? REVIEW_ICON : STATUS_ICONS[status] || '?';
-  const tone = review ? REVIEW_TONE : STATUS_TONE[status] || STATUS_TONE.pending;
+  // Verifier-flagged warnings on a `completed` task swap the emerald
+  // success tone for an amber "completed-with-concerns" tone so the
+  // chip is visually distinct from a clean success at a glance — the
+  // ⚠ glyph below adds an icon cue and the title tooltip carries the
+  // concern strings.
+  const warningTone =
+    'border-amber-400/60 bg-amber-500/10 text-amber-200';
+  let tone = review ? REVIEW_TONE : STATUS_TONE[status] || STATUS_TONE.pending;
   const reviewKey =
     task.objectiveId && task.objectiveId in REVIEW_DISPLAY_NAMES
       ? (task.objectiveId as ReviewObjectiveId)
@@ -524,11 +531,23 @@ export function TaskChip({
     ? (reviewKey ? REVIEW_DISPLAY_NAMES[reviewKey] : 'Review')
     : task.title;
   const minuteBadge = extractMinuteBadge(task);
+  const warnings: string[] = Array.isArray(
+    (task as { warnings?: unknown }).warnings,
+  )
+    ? ((task as { warnings?: unknown }).warnings as unknown[]).filter(
+        (w): w is string => typeof w === 'string' && w.length > 0,
+      )
+    : [];
+  const hasWarnings = status === 'completed' && warnings.length > 0;
+  if (hasWarnings && !review) tone = warningTone;
   const titleText = [
     `${icon} ${number ? `${number}. ` : ''}${label}`,
     task.runAt ? `runAt: ${task.runAt}` : null,
     task.estimatedMinutes ? `${task.estimatedMinutes} min` : null,
     task.track ? `track: ${task.track}` : null,
+    hasWarnings
+      ? `Concerns:\n${warnings.map((w) => `- ${w}`).join('\n')}`
+      : null,
   ]
     .filter(Boolean)
     .join('\n');
@@ -542,6 +561,7 @@ export function TaskChip({
     'data-task-review': review ? 'true' : undefined,
     'data-task-title': label,
     'data-task-minute': minuteBadge ?? undefined,
+    'data-task-warnings': hasWarnings ? 'true' : undefined,
     title: titleText,
   } as const;
 
@@ -560,6 +580,14 @@ export function TaskChip({
       <span aria-hidden="true" className="shrink-0 font-mono">
         {icon}
       </span>
+      {hasWarnings ? (
+        <span
+          aria-label={`completed with ${warnings.length} concern${warnings.length === 1 ? '' : 's'}`}
+          className="shrink-0 font-mono text-amber-400"
+        >
+          ⚠
+        </span>
+      ) : null}
       <span className="min-w-0 flex-1 line-clamp-2 break-words">{label}</span>
       {minuteBadge ? (
         <span

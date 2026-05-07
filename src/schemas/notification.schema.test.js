@@ -59,11 +59,12 @@ describe('notification schema — constants', () => {
     assert.deepStrictEqual(NOTIFICATION_SOURCES, ['agent', 'system']);
   });
 
-  it('NOTIFICATION_SYSTEM_EVENTS contains the three v1 events', () => {
+  it('NOTIFICATION_SYSTEM_EVENTS contains the canonical events', () => {
     assert.deepStrictEqual(NOTIFICATION_SYSTEM_EVENTS, [
       'budget-exhausted',
       'repeated-task-failure',
       'plan-ready',
+      'task-warnings',
     ]);
   });
 });

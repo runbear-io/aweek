@@ -22,6 +22,15 @@
 export const NOTIFICATION_SOURCES = ['agent', 'system'];
 
 /**
+ * Valid severity levels — surfaced visually by the dashboard
+ * (`info` = default blue/neutral, `warning` = amber, `error` = red).
+ * Optional per notification: when absent, consumers SHOULD treat the
+ * row as `info`. Reserved as an enum (rather than a free-form string)
+ * so the renderer's exhaustiveness check stays compile-safe.
+ */
+export const NOTIFICATION_SEVERITIES = ['info', 'warning', 'error'];
+
+/**
  * AJV sub-schema for the optional `link` field — a polymorphic
  * string-or-object union expressed via `oneOf` so the validator rejects
  * shapes that satisfy both branches (e.g., a primitive string would not
@@ -102,6 +111,7 @@ export const NOTIFICATION_SYSTEM_EVENTS = [
   'budget-exhausted',
   'repeated-task-failure',
   'plan-ready',
+  'task-warnings',
 ];
 
 /**
@@ -185,6 +195,13 @@ export const notificationSchema = {
       description:
         'Optional traceability link — e.g. the weekly-task id that ' +
         'triggered a repeated-failure notification.',
+    },
+    severity: {
+      type: 'string',
+      enum: NOTIFICATION_SEVERITIES,
+      description:
+        'Optional severity hint — drives icon/colour in the bell. ' +
+        'When absent the renderer treats the row as `info`.',
     },
     dedupKey: {
       type: 'string',

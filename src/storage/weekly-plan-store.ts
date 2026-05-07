@@ -77,6 +77,21 @@ export interface WeeklyTask {
    * fire a fresh notification.
    */
   failureNotificationEmitted?: boolean;
+  /**
+   * Soft-failure concerns surfaced by the post-execution verifier when
+   * the task transitioned to `completed` but the agent did not achieve
+   * the stated outcome. Rendered as an amber badge on the calendar
+   * chip. Cleared on the next attempt of the same task.
+   */
+  warnings?: string[];
+  /**
+   * Verifier verdict — `true` when the post-execution verifier confirmed
+   * the agent met the stated outcome, `false` when concerns were
+   * detected (in which case `warnings` is non-empty). Absent when the
+   * verifier was skipped (failed task, config-disabled, no verifier
+   * callable wired in).
+   */
+  outcomeAchieved?: boolean;
 }
 
 /**
@@ -283,6 +298,56 @@ export class WeeklyPlanStore {
       // hand-off (`delegated`), or explicit `skipped`.
       delete task.consecutiveFailures;
       delete task.failureNotificationEmitted;
+    }
+    // Verifier outcome from any prior attempt of this task is stale the
+    // moment status changes — drop it so the post-execution verifier
+    // (or its absence) writes the fresh verdict via `setTaskOutcome`.
+    delete task.warnings;
+    delete task.outcomeAchieved;
+    plan.updatedAt = new Date().toISOString();
+    await this.save(agentId, plan);
+    return task;
+  }
+
+  /**
+   * Persist the post-execution verifier verdict for a task. The
+   * heartbeat calls this AFTER `updateTaskStatus` has already flipped
+   * the status to `completed` and AFTER the verifier returned a
+   * `verdict` result.
+   *
+   * - When `achieved === true`, both fields land on the task and the
+   *   `warnings` array is empty (the calendar chip stays clean).
+   * - When `achieved === false`, the concerns array drives the amber
+   *   warning badge and the row tinting in the activity timeline.
+   *
+   * Idempotent: re-calling with an identical verdict does not rewrite
+   * the plan file. Verdicts of the form `{ achieved: true, concerns: [] }`
+   * vs an absent verdict produce indistinguishable rendering, so we
+   * still write so the field acts as a "verifier ran" tombstone.
+   *
+   * @returns The updated task, or null if the plan / task is missing.
+   */
+  async setTaskOutcome(
+    agentId: string,
+    week: string,
+    taskId: string,
+    verdict: { achieved: boolean; concerns: ReadonlyArray<string> },
+  ): Promise<WeeklyTask | null> {
+    const plan = await this.load(agentId, week);
+    const task = plan.tasks.find((t) => t.id === taskId);
+    if (!task) return null;
+    const concerns = verdict.achieved ? [] : verdict.concerns.slice();
+    const sameAchieved = task.outcomeAchieved === verdict.achieved;
+    const sameConcerns =
+      Array.isArray(task.warnings) &&
+      task.warnings.length === concerns.length &&
+      task.warnings.every((c, i) => c === concerns[i]);
+    if (sameAchieved && sameConcerns) return task;
+    task.outcomeAchieved = verdict.achieved;
+    if (concerns.length > 0) {
+      task.warnings = concerns;
+    } else {
+      delete task.warnings;
     }
     plan.updatedAt = new Date().toISOString();
     await this.save(agentId, plan);

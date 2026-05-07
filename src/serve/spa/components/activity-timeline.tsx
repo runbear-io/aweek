@@ -313,6 +313,14 @@ function TimelineRow({
           }
         }
       : undefined;
+  // Verifier-flagged warnings on a `completed` activity row tint the
+  // whole row amber so the issue is visible at a glance in the
+  // timeline. Only activity rows carry verifier metadata; execution
+  // rows are heartbeat audit entries with no per-task verdict.
+  const activityWarnings = extractActivityWarnings(
+    item.source === 'activity' ? (item.raw as ActivityLogEntry) : null,
+  );
+  const hasWarnings = activityWarnings.length > 0;
   // Mobile (< 768px): the row wears its own card chrome (rounded border,
   // bg-card surface, padded content) and — when clickable — promotes
   // itself into a 44×44px keyboard-and-touch target with a visible
@@ -322,7 +330,11 @@ function TimelineRow({
   // existing UX baseline at and above the breakpoint is preserved.
   return (
     <li
-      className={`flex items-start gap-3 rounded-md border border-border bg-card p-3 min-h-[44px] md:min-h-0 md:rounded-none md:border-0 md:bg-transparent md:px-4 md:py-2.5 ${
+      className={`flex items-start gap-3 rounded-md border p-3 min-h-[44px] md:min-h-0 md:rounded-none md:border-0 md:px-4 md:py-2.5 ${
+        hasWarnings
+          ? 'border-amber-400/40 bg-amber-500/5 md:bg-amber-500/5'
+          : 'border-border bg-card md:bg-transparent'
+      } ${
         clickable
           ? 'min-w-[44px] cursor-pointer transition-colors hover:bg-muted/50 focus-within:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 md:min-w-0'
           : ''
@@ -330,6 +342,7 @@ function TimelineRow({
       data-timeline-source={item.source}
       data-timeline-timestamp={item.timestamp || ''}
       data-timeline-clickable={clickable ? 'true' : undefined}
+      data-timeline-warnings={hasWarnings ? 'true' : undefined}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
       onClick={handleClick}
@@ -341,6 +354,7 @@ function TimelineRow({
           <ActivityRowBody
             entry={item.raw as ActivityLogEntry}
             timestamp={item.timestamp}
+            warnings={activityWarnings}
           />
         ) : (
           <ExecutionRowBody
@@ -350,6 +364,27 @@ function TimelineRow({
         )}
       </div>
     </li>
+  );
+}
+
+/**
+ * Extract the verifier-flagged warnings from an activity-log entry's
+ * metadata bag. Returns an empty array when:
+ *   - the entry is not an activity row (execution rows have no verifier);
+ *   - the metadata bag is missing or doesn't expose `warnings`;
+ *   - the array is empty / contains only non-string entries.
+ */
+function extractActivityWarnings(
+  entry: ActivityLogEntry | null,
+): string[] {
+  if (!entry) return [];
+  const meta = entry.metadata as
+    | { warnings?: unknown }
+    | undefined;
+  const raw = meta?.warnings;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (w): w is string => typeof w === 'string' && w.length > 0,
   );
 }
 
@@ -411,11 +446,18 @@ function SourceBadge({ source }: SourceBadgeProps): React.ReactElement {
 interface ActivityRowBodyProps {
   entry: ActivityLogEntry;
   timestamp: string | null;
+  /**
+   * Verifier-flagged concerns extracted from `entry.metadata.warnings`.
+   * Defaults to an empty array; non-empty arrays render an inline
+   * concerns block beneath the title.
+   */
+  warnings?: ReadonlyArray<string>;
 }
 
 function ActivityRowBody({
   entry,
   timestamp,
+  warnings = [],
 }: ActivityRowBodyProps): React.ReactElement {
   // Field names mirror `createLogEntry` in activity-log-store.js:
   //   { id, timestamp, agentId, status, title, taskId?, duration?, metadata? }
@@ -427,6 +469,7 @@ function ActivityRowBody({
       ? entry.duration
       : null;
   const taskId = entry?.taskId || null;
+  const hasWarnings = warnings.length > 0;
   return (
     <>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -434,8 +477,14 @@ function ActivityRowBody({
         <time dateTime={timestamp || undefined} className="tabular-nums">
           {formatDate(timestamp)}
         </time>
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-foreground">
-          {String(status)}
+        <span
+          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+            hasWarnings
+              ? 'bg-amber-500/20 text-amber-200'
+              : 'bg-muted text-foreground'
+          }`}
+        >
+          {hasWarnings ? `${String(status)} ⚠` : String(status)}
         </span>
         {taskId ? (
           <span className="min-w-0 break-all text-[11px] text-muted-foreground">
@@ -450,6 +499,25 @@ function ActivityRowBody({
       </div>
       {title ? (
         <div className="break-words text-sm text-foreground">{String(title)}</div>
+      ) : null}
+      {hasWarnings ? (
+        <details
+          data-component="activity-row-warnings"
+          className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200"
+        >
+          <summary className="cursor-pointer select-none text-[11px] font-semibold">
+            {warnings.length === 1
+              ? '1 verifier concern'
+              : `${warnings.length} verifier concerns`}
+          </summary>
+          <ul className="mt-1 list-disc pl-5">
+            {warnings.map((w, i) => (
+              <li key={i} className="break-words">
+                {w}
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
     </>
   );

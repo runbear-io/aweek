@@ -36,6 +36,8 @@ import {
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
 import { maybeEmitRepeatedFailureNotification } from '../services/repeated-failure-notifier.js';
+import { verifyTaskOutcome } from '../services/task-verifier.js';
+import { maybeEmitTaskWarningsNotification } from '../services/task-warning-notifier.js';
 import { loadConfig } from '../storage/config-store.js';
 import { detectSystemTimeZone, mondayOfWeek } from '../time/zone.js';
 import { WEEKLY_REVIEW_OBJECTIVE_ID, DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
@@ -833,6 +835,69 @@ async function executeOneSelection(
     }
   }
 
+  // Post-execution outcome verifier — fires only on the success path.
+  // Asks an Anthropic model whether the agent's captured output actually
+  // achieved the task's stated outcome (e.g. "publish a post" → did a
+  // publish action run?). Best-effort: a `skipped` result leaves the
+  // task's `warnings` / `outcomeAchieved` fields untouched and the
+  // pipeline continues normally. Skipped on the failed path because the
+  // task already carries a hard-failure status — verifying it would burn
+  // tokens for no actionable signal.
+  let verifierConcerns: string[] = [];
+  let verifierAchieved: boolean | undefined;
+  if (finalStatus === 'completed') {
+    try {
+      const session = execResult?.sessionResult;
+      const verdict = await verifyTaskOutcome({
+        taskId: task.id,
+        title: task.title,
+        prompt: task.prompt,
+        output: session?.stdout || '',
+        ...(session?.stderr ? { stderr: session.stderr } : {}),
+        cwd: projectDir,
+      });
+      if (verdict.kind === 'verdict') {
+        verifierAchieved = verdict.achieved;
+        verifierConcerns = verdict.concerns;
+        await weeklyPlanStore.setTaskOutcome(agentId, week, task.id, {
+          achieved: verdict.achieved,
+          concerns: verdict.concerns,
+        });
+      } else {
+        console.log(
+          `[${agentId}] task verifier skipped: ${verdict.reason}`,
+        );
+      }
+    } catch (verifyErr) {
+      console.warn(
+        `[${agentId}] task verifier warning: ${errMsg(verifyErr)}`,
+      );
+    }
+  }
+
+  // Fire the warning notification when the verifier flagged concerns.
+  // Idempotent via dedupKey so the heartbeat won't re-fire the same
+  // warning on a subsequent retry of the same task.
+  if (verifierAchieved === false && verifierConcerns.length > 0) {
+    try {
+      await maybeEmitTaskWarningsNotification({
+        notificationStore: ctx.notificationStore,
+        agentId,
+        week,
+        task: {
+          id: task.id,
+          title: task.title,
+          objectiveId: task.objectiveId,
+        },
+        concerns: verifierConcerns,
+      });
+    } catch (notifErr) {
+      console.warn(
+        `[${agentId}] task-warnings notifier warning: ${errMsg(notifErr)}`,
+      );
+    }
+  }
+
   try {
     const session = execResult?.sessionResult;
     const stdout = session?.stdout || '';
@@ -866,6 +931,13 @@ async function executeOneSelection(
       tokenUsage: execResult?.tokenUsage || null,
       usageTracked: execResult?.usageTracked ?? false,
     };
+
+    if (verifierAchieved !== undefined) {
+      metadata.outcomeAchieved = verifierAchieved;
+    }
+    if (verifierConcerns.length > 0) {
+      metadata.warnings = verifierConcerns;
+    }
 
     if (error) {
       metadata.error = {
