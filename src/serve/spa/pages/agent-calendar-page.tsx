@@ -691,9 +691,25 @@ function TaskDetailSheet({
               ) : null}
               {task.prompt ? (
                 <TaskField label="Prompt">
-                  <pre className="whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 font-mono text-xs text-foreground">
-                    {task.prompt}
-                  </pre>
+                  {/*
+                    Render the prompt as markdown so headings, lists,
+                    fenced code blocks, links, and inline `code` show
+                    rich formatting instead of one wall of plain text.
+                    The wrapper keeps the previous bordered "input
+                    box" affordance so the prompt stays visually
+                    demarcated from sibling fields. Fenced code blocks
+                    inside `<Markdown>` already supply their own
+                    `<pre>` + horizontal scroll, so the wrapper drops
+                    `whitespace-pre-wrap` (which would over-preserve
+                    whitespace inside markdown text nodes) and lets
+                    react-markdown manage block flow.
+                  */}
+                  <div
+                    className="rounded-md border bg-muted/40 p-3 text-sm text-foreground"
+                    data-task-prompt-rendered="markdown"
+                  >
+                    <Markdown source={task.prompt} />
+                  </div>
                 </TaskField>
               ) : null}
               <TaskActivityList
