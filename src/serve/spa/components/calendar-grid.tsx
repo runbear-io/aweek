@@ -514,14 +514,21 @@ export function TaskChip({
 }: TaskChipProps): React.ReactElement {
   const review = isReviewTask(task);
   const status = task.status as TaskStatus;
-  const icon = review ? REVIEW_ICON : STATUS_ICONS[status] || '?';
-  // Verifier-flagged warnings on a `completed` task swap the emerald
-  // success tone for an amber "completed-with-concerns" tone so the
-  // chip is visually distinct from a clean success at a glance — the
-  // ⚠ glyph below adds an icon cue and the title tooltip carries the
-  // concern strings.
+  // Verifier signals on a `completed` task override the default emerald
+  // success tone so the chip is visually distinct from a clean success.
+  // Two distinct cues, in precedence order:
+  //   1. `outcomeAchieved === false` → rose tone + ✗ icon. The verifier
+  //      explicitly judged the agent did not achieve the stated outcome
+  //      (the strongest negative signal — even with no concerns text).
+  //   2. else `warnings.length > 0` → amber tone + ⚠ glyph. Outcome was
+  //      either achieved or unscored, but the verifier flagged concerns
+  //      worth a human look (weaker but still actionable).
+  // Both signals only apply on `completed` tasks (verifier doesn't run
+  // on pending/in-progress/etc.) and never on review slots.
   const warningTone =
     'border-amber-400/60 bg-amber-500/10 text-amber-200';
+  const notAchievedTone =
+    'border-rose-400/60 bg-rose-500/10 text-rose-200';
   let tone = review ? REVIEW_TONE : STATUS_TONE[status] || STATUS_TONE.pending;
   const reviewKey =
     task.objectiveId && task.objectiveId in REVIEW_DISPLAY_NAMES
@@ -538,13 +545,29 @@ export function TaskChip({
         (w): w is string => typeof w === 'string' && w.length > 0,
       )
     : [];
-  const hasWarnings = status === 'completed' && warnings.length > 0;
-  if (hasWarnings && !review) tone = warningTone;
+  const outcomeAchieved = (task as { outcomeAchieved?: boolean })
+    .outcomeAchieved;
+  const isNotAchieved =
+    status === 'completed' && outcomeAchieved === false && !review;
+  const hasWarnings =
+    status === 'completed' && warnings.length > 0 && !review;
+  if (isNotAchieved) tone = notAchievedTone;
+  else if (hasWarnings) tone = warningTone;
+  // Reuse the canonical `failed` icon (✗) for not-achieved completed
+  // tasks so the icon vocabulary stays small (✓ ✗ ⚠ ► ○ ⊘ → ◆) — the
+  // tone difference still distinguishes a verifier-rejected ✗ chip from
+  // a runner-rejected `failed` ✗ chip (rose vs red border).
+  const icon = review
+    ? REVIEW_ICON
+    : isNotAchieved
+      ? STATUS_ICONS.failed
+      : STATUS_ICONS[status] || '?';
   const titleText = [
     `${icon} ${number ? `${number}. ` : ''}${label}`,
     task.runAt ? `runAt: ${task.runAt}` : null,
     task.estimatedMinutes ? `${task.estimatedMinutes} min` : null,
     task.track ? `track: ${task.track}` : null,
+    isNotAchieved ? 'Verifier: outcome NOT achieved' : null,
     hasWarnings
       ? `Concerns:\n${warnings.map((w) => `- ${w}`).join('\n')}`
       : null,
@@ -562,6 +585,7 @@ export function TaskChip({
     'data-task-title': label,
     'data-task-minute': minuteBadge ?? undefined,
     'data-task-warnings': hasWarnings ? 'true' : undefined,
+    'data-task-outcome-achieved': isNotAchieved ? 'false' : undefined,
     title: titleText,
   } as const;
 
@@ -580,7 +604,7 @@ export function TaskChip({
       <span aria-hidden="true" className="shrink-0 font-mono">
         {icon}
       </span>
-      {hasWarnings ? (
+      {hasWarnings && !isNotAchieved ? (
         <span
           aria-label={`completed with ${warnings.length} concern${warnings.length === 1 ? '' : 's'}`}
           className="shrink-0 font-mono text-amber-400"

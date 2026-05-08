@@ -62,6 +62,8 @@ function makeTask(partial: TaskFixture): CalendarTask {
     runAt: null,
     completedAt: null,
     delegatedTo: null,
+    outcomeAchieved: null,
+    warnings: [],
     slot: null,
     ...partial,
   } as CalendarTask;
@@ -781,6 +783,152 @@ describe('CalendarGrid — task cell rendering parity (Sub-AC 3)', () => {
     expect(extractMinuteBadge(null)).toBeNull();
     expect(extractMinuteBadge({})).toBeNull();
     expect(extractMinuteBadge({ runAt: 'not-a-date' })).toBeNull();
+  });
+});
+
+describe('CalendarGrid — verifier-flagged completed tasks', () => {
+  // The verifier (post-execution outcome check) writes two fields onto
+  // a `completed` task: `outcomeAchieved: bool | undefined` (the verdict
+  // — undefined when the verifier didn't run / skipped) and
+  // `warnings: string[]`. The chip renders three distinct visuals:
+  //
+  //   1. Clean success: `status: 'completed'`, `outcomeAchieved: true`
+  //      (or null) AND empty warnings → emerald chip + ✓ glyph.
+  //   2. Warned: `outcomeAchieved !== false` (true OR null) AND
+  //      `warnings.length > 0` → amber tone + ⚠ inline glyph.
+  //   3. Not achieved: `outcomeAchieved === false` → rose tone + ✗
+  //      glyph (the failed-status icon, reused so the icon vocabulary
+  //      stays small). Suppresses the amber ⚠ even when warnings are
+  //      also present, since the rose chip already conveys the stronger
+  //      signal and the warnings strings still surface in the tooltip.
+
+  it('clean completed task uses emerald tone + ✓ glyph and no verifier data attrs', () => {
+    const task = makeScheduledTask({
+      id: 'verif-clean',
+      title: 'Clean completed',
+      status: 'completed',
+      outcomeAchieved: true,
+      warnings: [],
+      runAt: '2026-04-20T11:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 11, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid tasks={[task]} weekMonday={WEEK_MONDAY} timeZone="UTC" />,
+    );
+    const chip = container.querySelector('[data-task-id="verif-clean"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain(STATUS_ICONS.completed);
+    expect(chip!.textContent).not.toContain('⚠');
+    expect(chip!.className).toMatch(/\bemerald\b/);
+    expect(chip!.getAttribute('data-task-warnings')).toBeNull();
+    expect(chip!.getAttribute('data-task-outcome-achieved')).toBeNull();
+  });
+
+  it('completed-with-warnings uses amber tone + ⚠ glyph alongside ✓', () => {
+    const task = makeScheduledTask({
+      id: 'verif-warn',
+      title: 'Warned but achieved',
+      status: 'completed',
+      outcomeAchieved: true,
+      warnings: ['Captured output only shows agent claiming task complete'],
+      runAt: '2026-04-20T12:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 12, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid tasks={[task]} weekMonday={WEEK_MONDAY} timeZone="UTC" />,
+    );
+    const chip = container.querySelector('[data-task-id="verif-warn"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain(STATUS_ICONS.completed);
+    expect(chip!.textContent).toContain('⚠');
+    expect(chip!.className).toMatch(/\bamber\b/);
+    expect(chip).toHaveAttribute('data-task-warnings', 'true');
+    expect(chip!.getAttribute('data-task-outcome-achieved')).toBeNull();
+    expect(chip!.getAttribute('title')).toContain('Concerns:');
+  });
+
+  it('outcomeAchieved=false swaps to rose tone + ✗ glyph and surfaces "outcome NOT achieved" in tooltip', () => {
+    const task = makeScheduledTask({
+      id: 'verif-fail',
+      title: 'Outcome not achieved',
+      status: 'completed',
+      outcomeAchieved: false,
+      warnings: [],
+      runAt: '2026-04-20T13:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 13, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid tasks={[task]} weekMonday={WEEK_MONDAY} timeZone="UTC" />,
+    );
+    const chip = container.querySelector('[data-task-id="verif-fail"]');
+    expect(chip).not.toBeNull();
+    // Status data attribute stays `completed` — only the verdict field flips.
+    expect(chip).toHaveAttribute('data-task-status', 'completed');
+    expect(chip).toHaveAttribute('data-task-outcome-achieved', 'false');
+    // Visual swap: ✗ icon (reused from STATUS_ICONS.failed) + rose tone.
+    expect(chip!.textContent).toContain(STATUS_ICONS.failed);
+    expect(chip!.textContent).not.toContain(STATUS_ICONS.completed);
+    expect(chip!.className).toMatch(/\brose\b/);
+    expect(chip!.className).not.toMatch(/\bemerald\b/);
+    // Tooltip includes the verifier verdict line.
+    expect(chip!.getAttribute('title')).toContain('Verifier: outcome NOT achieved');
+  });
+
+  it('outcomeAchieved=false suppresses the amber ⚠ inline glyph even when warnings are present', () => {
+    const task = makeScheduledTask({
+      id: 'verif-fail-with-warn',
+      title: 'Not achieved + concerns',
+      status: 'completed',
+      outcomeAchieved: false,
+      warnings: ['No publish action observed in stdout'],
+      runAt: '2026-04-20T14:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 14, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid tasks={[task]} weekMonday={WEEK_MONDAY} timeZone="UTC" />,
+    );
+    const chip = container.querySelector(
+      '[data-task-id="verif-fail-with-warn"]',
+    );
+    expect(chip).not.toBeNull();
+    // Rose tone wins — amber ⚠ glyph is suppressed because ✗ already
+    // conveys the stronger signal.
+    expect(chip!.className).toMatch(/\brose\b/);
+    expect(chip!.textContent).not.toContain('⚠');
+    // Warnings still surface via tooltip (and the data-task-warnings attr
+    // stays true so downstream consumers can pick them up).
+    expect(chip).toHaveAttribute('data-task-warnings', 'true');
+    expect(chip).toHaveAttribute('data-task-outcome-achieved', 'false');
+    expect(chip!.getAttribute('title')).toContain('Verifier: outcome NOT achieved');
+    expect(chip!.getAttribute('title')).toContain('Concerns:');
+    expect(chip!.getAttribute('title')).toContain(
+      'No publish action observed in stdout',
+    );
+  });
+
+  it('verifier verdict on a non-completed task is ignored (only fires on completed)', () => {
+    // outcomeAchieved=false on a `pending` task should NOT swap the tone —
+    // the verifier only runs post-execution, so any field set on a
+    // non-completed task is stale or invalid input and the chip should
+    // render its base status tone unchanged.
+    const task = makeScheduledTask({
+      id: 'verif-stale',
+      title: 'Pending with stale verdict',
+      status: 'pending',
+      outcomeAchieved: false,
+      warnings: ['stale concern'],
+      runAt: '2026-04-20T15:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 15, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid tasks={[task]} weekMonday={WEEK_MONDAY} timeZone="UTC" />,
+    );
+    const chip = container.querySelector('[data-task-id="verif-stale"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.className).not.toMatch(/\brose\b/);
+    expect(chip!.className).not.toMatch(/\bamber\b/);
+    expect(chip!.getAttribute('data-task-outcome-achieved')).toBeNull();
+    expect(chip!.getAttribute('data-task-warnings')).toBeNull();
   });
 });
 

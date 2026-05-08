@@ -215,6 +215,13 @@ export interface CalendarTask {
   runAt: string | null;
   completedAt: string | null;
   delegatedTo: string | null;
+  /** Verifier verdict — `false` means the agent did not achieve the
+   * stated outcome despite a clean session exit. Absent / `null` when
+   * the verifier hasn't run yet (pre-`completed`) or skipped. */
+  outcomeAchieved: boolean | null;
+  /** Verifier-flagged concerns, possibly empty. May be non-empty even
+   * when `outcomeAchieved === true` (defensive flagging). */
+  warnings: string[];
   slot: CalendarTaskSlot | null;
 }
 

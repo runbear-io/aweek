@@ -66,6 +66,8 @@ const FULL_CALENDAR = {
       runAt: '2026-04-22T14:00:00.000Z',
       completedAt: null,
       delegatedTo: null,
+      outcomeAchieved: null,
+      warnings: [],
       slot: {
         dayKey: 'wed',
         dayOffset: 2,
@@ -86,6 +88,8 @@ const FULL_CALENDAR = {
       runAt: '2026-04-20T09:00:00.000Z',
       completedAt: '2026-04-20T09:45:00.000Z',
       delegatedTo: null,
+      outcomeAchieved: null,
+      warnings: [],
       slot: {
         dayKey: 'mon',
         dayOffset: 0,
@@ -106,6 +110,8 @@ const FULL_CALENDAR = {
       runAt: '2026-04-21T17:00:00.000Z',
       completedAt: null,
       delegatedTo: null,
+      outcomeAchieved: null,
+      warnings: [],
       slot: {
         dayKey: 'tue',
         dayOffset: 1,
@@ -126,6 +132,8 @@ const FULL_CALENDAR = {
       runAt: null,
       completedAt: null,
       delegatedTo: null,
+      outcomeAchieved: null,
+      warnings: [],
       slot: null,
     },
   ],
@@ -483,6 +491,8 @@ describe('layoutTasks (pure helper)', () => {
       runAt: '2026-04-20T09:00:00.000Z',
       completedAt: null,
       delegatedTo: null,
+      outcomeAchieved: null,
+      warnings: [],
       slot: { dayKey: 'mon' as CalendarDayKey, dayOffset: 0, hour: 9, minute: 0, iso: '2026-04-20T09:00:00.000Z' },
     };
     const t0930: CalendarTask = {
@@ -511,6 +521,8 @@ describe('deriveReviewStem (calendar review-task → review file stem)', () => {
       runAt: null,
       completedAt: null,
       delegatedTo: null,
+      outcomeAchieved: null,
+      warnings: [],
       slot: null,
       ...partial,
     } as CalendarTask;

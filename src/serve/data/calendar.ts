@@ -131,6 +131,13 @@ export interface ProjectedTask {
   runAt: string | null;
   completedAt: string | null;
   delegatedTo: string | null;
+  /** Verifier verdict — `false` means the agent did not achieve the
+   * stated outcome despite a clean session exit. Absent when the
+   * verifier hasn't run yet (pre-`completed`) or skipped. */
+  outcomeAchieved: boolean | null;
+  /** Verifier-flagged concerns. May be non-empty even when
+   * `outcomeAchieved === true` (defensive flagging). */
+  warnings: string[];
   slot: TaskSlot | null;
 }
 
@@ -140,6 +147,11 @@ function projectTask(
   timeZone: string,
 ): ProjectedTask {
   const slot = weekMonday ? computeTaskSlot(task, weekMonday, timeZone) : null;
+  const warnings = Array.isArray(task.warnings)
+    ? task.warnings.filter(
+        (w): w is string => typeof w === 'string' && w.length > 0,
+      )
+    : [];
   return {
     id: task.id,
     title: task.title,
@@ -155,6 +167,9 @@ function projectTask(
       typeof task.completedAt === 'string' ? task.completedAt : null,
     delegatedTo:
       typeof task.delegatedTo === 'string' ? task.delegatedTo : null,
+    outcomeAchieved:
+      typeof task.outcomeAchieved === 'boolean' ? task.outcomeAchieved : null,
+    warnings,
     slot,
   };
 }
