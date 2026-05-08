@@ -57,6 +57,7 @@ import {
   type AgentListRow,
   type ChatMessageWire,
   type ChatThreadDocument,
+  type ChatToolResultBlockWire,
   type ChatThreadSummary,
 } from '../lib/api-client.js';
 import type { ChatUIMessage } from '../hooks/use-chat-stream.js';
@@ -461,6 +462,16 @@ export function FloatingChatPanel({
   const cachedHistory = historyKey ? threadHistory[historyKey] : undefined;
   const initialMessagesForThread =
     Array.isArray(cachedHistory) ? cachedHistory : undefined;
+  // Treat the pre-fetch window (`undefined`) the same as `'loading'` so
+  // we don't mount `<ChatThread>` before the persisted history resolves.
+  // Otherwise the hook's `useState(() => initialMessages.slice())`
+  // initializer fires with `[]`, and the array that lands a tick later
+  // is ignored (initializers don't re-run on prop change), leaving the
+  // panel stuck on the empty state until the user switches threads and
+  // back to force a remount.
+  const isHistoryUnresolved =
+    historyKey !== null &&
+    (cachedHistory === undefined || cachedHistory === 'loading');
 
   const handleNewThread = React.useCallback(async () => {
     if (!effectiveSlug || creatingThread) return;
@@ -629,7 +640,7 @@ export function FloatingChatPanel({
       ) : null}
 
       {effectiveSlug ? (
-        cachedHistory === 'loading' ? (
+        isHistoryUnresolved ? (
           <FloatingChatPanelHistoryLoading />
         ) : (
           <ChatThread
@@ -822,20 +833,43 @@ function mapPersistedMessagesToUi(
     // Build parts only for assistant turns that carry tools — user
     // turns and plain assistant prose render correctly through the
     // `content` fallback path.
+    //
+    // Persistence stores the canonical Anthropic SDK shape: a flat
+    // `tools` array containing both `tool_use` and `tool_result` blocks
+    // correlated by `toolUseId`. The UI renderer wants one
+    // `tool-invocation` part per logical call, with `state`, `result`,
+    // and `errorMessage` derived from the matching result block. So
+    // index results first, then walk uses in persisted order to emit
+    // one part per use (preserving order); orphan use → `pending`,
+    // result without a use is dropped.
     if (m.role === 'assistant' && Array.isArray(m.tools) && m.tools.length > 0) {
-      const parts: ChatUIMessage['parts'] = [];
-      // Re-emit tool invocations in the order they were persisted.
+      const resultsById = new Map<string, ChatToolResultBlockWire>();
       for (const tool of m.tools) {
+        if (tool.type === 'tool_result') {
+          resultsById.set(tool.toolUseId, tool);
+        }
+      }
+      const parts: ChatUIMessage['parts'] = [];
+      for (const tool of m.tools) {
+        if (tool.type !== 'tool_use') continue;
+        const matchingResult = resultsById.get(tool.toolUseId);
+        const state: 'pending' | 'success' | 'error' = matchingResult
+          ? matchingResult.isError
+            ? 'error'
+            : 'success'
+          : 'pending';
         const part: NonNullable<ChatUIMessage['parts']>[number] = {
           type: 'tool-invocation',
           toolUseId: tool.toolUseId,
-          toolName: tool.toolName,
-          args: tool.args ?? {},
-          state: tool.state,
+          toolName: tool.name,
+          args: tool.input ?? {},
+          state,
         };
-        if (tool.result !== undefined) part.result = tool.result;
-        if (tool.errorMessage !== undefined) {
-          part.errorMessage = tool.errorMessage;
+        if (matchingResult) {
+          part.result = matchingResult.content;
+          if (matchingResult.isError && typeof matchingResult.content === 'string') {
+            part.errorMessage = matchingResult.content;
+          }
         }
         parts.push(part);
       }
@@ -844,7 +878,13 @@ function mapPersistedMessagesToUi(
       if (m.content.length > 0) {
         parts.push({ type: 'text', text: m.content });
       }
-      ui.parts = parts;
+      // Only attach parts when the message actually contributed any —
+      // an assistant turn with only orphan `tool_result` blocks (no
+      // `tool_use`) and empty content falls back to the legacy content
+      // path so we don't render an empty bubble.
+      if (parts.length > 0) {
+        ui.parts = parts;
+      }
     }
     return ui;
   });
