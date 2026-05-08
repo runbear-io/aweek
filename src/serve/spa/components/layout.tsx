@@ -52,18 +52,16 @@ type SidebarProviderProps = React.HTMLAttributes<HTMLDivElement> & {
   style?: React.CSSProperties;
 };
 type SidebarInsetProps = React.HTMLAttributes<HTMLElement>;
-type SidebarTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement>;
 
 const SidebarProvider = SidebarModule.SidebarProvider as React.ComponentType<SidebarProviderProps>;
 const SidebarInset = SidebarModule.SidebarInset as React.ComponentType<SidebarInsetProps>;
-const SidebarTrigger = SidebarModule.SidebarTrigger as React.ComponentType<SidebarTriggerProps>;
 
 export interface LayoutProps {
   /** Optional title rendered inside the top `<Header>`. */
   title?: string;
   /** Optional subtitle paired with `title`. */
   subtitle?: string;
-  /** Trailing slot inside the header (rendered to the right of `SidebarTrigger`). */
+  /** Trailing slot inside the header (rendered after the mobile hamburger). */
   headerActions?: React.ReactNode;
   /** Trailing slot inside the footer (rendered after the attribution copy). */
   footer?: React.ReactNode;
@@ -131,39 +129,17 @@ export function Layout({
   }, [pathname]);
 
   // Bell + caller-supplied trailing slot share the right edge of the
-  // header so the bell stays a persistent affordance across routes
-  // (per AC 8 sub-AC 3 — "header bell trigger with unread count badge").
-  // The bell sits to the *right* of any caller-supplied controls so it
-  // anchors to the same spot regardless of how many extras the page pushes.
-  //
-  // The canonical shadcn `SidebarTrigger` is hidden below `md` because the
-  // desktop sidebar itself only renders at `md:block` — toggling its
-  // collapse state from a mobile viewport would have no visible effect.
-  // The mobile hamburger (rendered by `<Header>` via `onOpenMobileDrawer`)
-  // takes over below the breakpoint.
-  // Below `md` the sidebar is collapsed into a Sheet drawer (Sub-AC 1),
-  // so the canonical sidebar-footer Mode Toggle is one tap away rather
-  // than in-flow. Surface a duplicate icon-only `<ThemeToggle>` in the
-  // header on mobile (`md:hidden`) so light/dark switching stays a
-  // single tap on narrow viewports — and stays hidden on desktop where
-  // the sidebar footer toggle remains the canonical surface.
-  // Touch-target overrides (Sub-AC 7): the shadcn `Button size="icon"`
-  // recipe is `h-10 w-10` (= 40×40 px) — below the 44×44 px mobile
-  // a11y minimum. The shadcn primitive itself stays untouched (per
-  // project policy: do not hand-edit `components/ui/*.jsx`); instead
-  // each header trigger receives a responsive className override that
-  // bumps the hit area to `h-11 w-11` (= 44×44 px) below `md` and
-  // reverts to the canonical 40×40 px above the breakpoint so the
-  // desktop layout stays visually identical to the current baseline.
+  // header so the bell stays a persistent affordance across routes.
+  // Below `md` the sidebar is collapsed into a Sheet drawer, so the
+  // canonical sidebar-footer ThemeToggle is one tap away — surface a
+  // duplicate icon-only ThemeToggle in the header on mobile so
+  // light/dark switching stays a single tap on narrow viewports.
   const actions = (
-    <>
-      <SidebarTrigger className="-ml-1 hidden md:inline-flex" />
-      <div className="ml-auto flex items-center gap-2">
-        {headerActions}
-        <ThemeToggle className="h-11 w-11 md:hidden" />
-        <NotificationBell className="h-11 w-11 md:h-10 md:w-10" />
-      </div>
-    </>
+    <div className="ml-auto flex items-center gap-2">
+      {headerActions}
+      <ThemeToggle className="h-11 w-11 md:hidden" />
+      <NotificationBell className="h-11 w-11 md:h-10 md:w-10" />
+    </div>
   );
   // ── Mobile / desktop sidebar contract ───────────────────────────────
   //

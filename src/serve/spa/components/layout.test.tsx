@@ -227,18 +227,18 @@ describe('Layout — mobile sidebar contract (Sub-AC 3)', () => {
   // while the same nav stays one tap away through a Sheet-based drawer.
   // These tests pin the markup that delivers that contract:
   //
-  //   1. The desktop SidebarTrigger inside the header is `hidden md:inline-flex`
-  //      so mobile users don't see a no-op rail-collapse button.
-  //   2. The header carries a 44×44 hamburger trigger (`md:hidden`) wired
-  //      to open the MobileAppSidebar drawer.
-  //   3. The AgentDetailSidebar slot is wrapped in `hidden md:contents`
+  //   1. The header carries a 44×44 hamburger trigger (`md:hidden`) wired
+  //      to open the MobileAppSidebar drawer. (The desktop SidebarTrigger
+  //      that previously lived next to it was removed — the rail's
+  //      collapse state has no UI affordance now.)
+  //   2. The AgentDetailSidebar slot is wrapped in `hidden md:contents`
   //      so the secondary 16rem rail does not render an inline-flow box
   //      below `md`. At `md+` the wrapper is layout-transparent.
-  //   4. Clicking the hamburger flips the data-mobile-drawer-open marker
+  //   3. Clicking the hamburger flips the data-mobile-drawer-open marker
   //      on the inset so observers (analytics, tests, future polish) can
   //      detect the drawer state without reaching into Radix internals.
 
-  it('hides the desktop SidebarTrigger below md and shows a 44×44 hamburger trigger instead', async () => {
+  it('renders no desktop SidebarTrigger and shows a 44×44 hamburger trigger', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = stubFetch(0);
     try {
@@ -252,13 +252,11 @@ describe('Layout — mobile sidebar contract (Sub-AC 3)', () => {
         </MemoryRouter>,
       );
 
-      // Desktop SidebarTrigger lives in the header but is mobile-hidden.
-      const desktopTrigger = container.querySelector(
-        'header [data-component="sidebar-trigger"]',
-      );
-      expect(desktopTrigger).not.toBeNull();
-      expect(desktopTrigger!.className).toMatch(/\bhidden\b/);
-      expect(desktopTrigger!.className).toMatch(/\bmd:inline-flex\b/);
+      // The previous desktop SidebarTrigger was removed because clicking
+      // it had no observable effect. Assert it is gone from the header.
+      expect(
+        container.querySelector('header [data-component="sidebar-trigger"]'),
+      ).toBeNull();
 
       // Mobile hamburger trigger is present and `md:hidden` (only fires on
       // narrow viewports). 44×44 touch target via `h-11 w-11`.

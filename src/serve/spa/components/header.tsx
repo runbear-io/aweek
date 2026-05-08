@@ -2,10 +2,10 @@
  * `Header` — shared application top bar.
  *
  * Mirrors the canonical shadcn dashboard starter header: a thin strip
- * holding the `SidebarTrigger` (threaded in by `Layout` via `actions`)
- * and, optionally, a page title + subtitle. The brand lockup lives in
- * the sidebar header, not here — the default shadcn starter avoids
- * duplicating brand between the rail and the inset chrome.
+ * holding the mobile hamburger + `actions` slot, and optionally a page
+ * title + subtitle. The brand lockup lives in the sidebar header, not
+ * here — the default shadcn starter avoids duplicating brand between
+ * the rail and the inset chrome.
  *
  * Styling is Tailwind-only (no plain CSS, no inline styles) and uses
  * only shadcn token utilities (`border-border`, `bg-background`,
@@ -41,7 +41,7 @@ export interface HeaderProps {
   title?: string;
   /** Optional secondary text shown beneath the title. */
   subtitle?: string;
-  /** Leading slot — typically the `<SidebarTrigger />` plus any caller-supplied controls. */
+  /** Leading slot — caller-supplied controls rendered after the mobile hamburger. */
   actions?: React.ReactNode;
   /** Caller-supplied class names merged with the default Tailwind recipe. */
   className?: string;
@@ -98,12 +98,8 @@ export function Header({
           aria-label="Open navigation menu"
           aria-haspopup="dialog"
           data-component="mobile-drawer-trigger"
-          // 44×44 touch target (Tailwind h-11/w-11 = 2.75rem = 44px) per
-          // mobile a11y minimum. `md:hidden` keeps the desktop layout
-          // unchanged — the canonical shadcn `SidebarTrigger` continues to
-          // own the >= 768px sidebar collapse behaviour. `shrink-0` keeps
-          // the hamburger at its full 44×44 hit area even when the right-
-          // hand actions row is wide enough to compete for inline space.
+          // 44×44 touch target per mobile a11y minimum; `md:hidden` because
+          // the desktop sidebar is always-visible above `md`.
           className="-ml-2 h-11 w-11 shrink-0 md:hidden"
         >
           <Menu className="h-5 w-5" aria-hidden="true" />
