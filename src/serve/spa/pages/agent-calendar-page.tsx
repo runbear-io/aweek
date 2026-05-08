@@ -537,6 +537,68 @@ export function AgentCalendarPage({
  * for this task by the calendar endpoint. Each entry may carry an
  * `executionLogBasename` so we can deep-link to the full NDJSON log page.
  */
+/**
+ * Copy-on-click pill that surfaces the task ID at the top of the
+ * detail sheet. The ID is the field users most often want to grep, jq,
+ * or paste into Slack — moving it to the very top and making it
+ * single-click-copyable removes one of the dashboard's recurring
+ * paper cuts. Falls back silently if `navigator.clipboard.writeText`
+ * is unavailable (insecure context, very old browsers); the visible
+ * label still doubles as text the user can manually triple-click +
+ * `cmd-c` exactly as before.
+ */
+function CopyableTaskId({ taskId }: { taskId: string }): React.ReactElement {
+  const [copied, setCopied] = React.useState(false);
+  // Keep the timer ID in a ref so unmount + repeat clicks both clear
+  // the previous "copied!" timeout cleanly.
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => {
+    return () => {
+      if (timerRef.current != null) clearTimeout(timerRef.current);
+    };
+  }, []);
+  const handleCopy = React.useCallback(async () => {
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard?.writeText
+      ) {
+        await navigator.clipboard.writeText(taskId);
+      } else {
+        return;
+      }
+      setCopied(true);
+      if (timerRef.current != null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard write rejected (permission, secure-context, etc.).
+      // Stay silent — the user can still read + manually copy the text.
+    }
+  }, [taskId]);
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="group inline-flex w-fit items-center gap-1.5 rounded bg-muted px-2 py-1 font-mono text-[11px] text-foreground transition-colors hover:bg-muted/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      aria-label={
+        copied
+          ? `Task ID ${taskId} copied to clipboard`
+          : `Copy task ID ${taskId}`
+      }
+      data-task-detail-id={taskId}
+      data-task-detail-id-copied={copied ? 'true' : undefined}
+    >
+      <span className="break-all">{taskId}</span>
+      <span
+        aria-hidden="true"
+        className="shrink-0 text-muted-foreground group-hover:text-foreground"
+      >
+        {copied ? '✓ copied' : '⧉ copy'}
+      </span>
+    </button>
+  );
+}
+
 function TaskDetailSheet({
   task,
   agentSlug,
@@ -573,6 +635,7 @@ function TaskDetailSheet({
         {task ? (
           <>
             <SheetHeader>
+              {task.id ? <CopyableTaskId taskId={task.id} /> : null}
               <SheetTitle className="flex items-center gap-2">
                 <span aria-hidden="true" className="font-mono">
                   {icon}
@@ -631,13 +694,6 @@ function TaskDetailSheet({
                   <pre className="whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 font-mono text-xs text-foreground">
                     {task.prompt}
                   </pre>
-                </TaskField>
-              ) : null}
-              {task.id ? (
-                <TaskField label="Task ID">
-                  <code className="break-all rounded bg-muted px-1.5 py-0.5 text-[11px] text-foreground">
-                    {task.id}
-                  </code>
                 </TaskField>
               ) : null}
               <TaskActivityList
