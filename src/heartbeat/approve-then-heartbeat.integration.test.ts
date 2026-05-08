@@ -28,7 +28,7 @@ import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import { processApproval } from '../services/plan-approval.js';
 import { tickAgent } from './heartbeat-task-runner.js';
-import { runHeartbeatForAll } from './run.js';
+import { runHeartbeatForAgent, runHeartbeatForAll } from './run.js';
 import {
   createAgentConfig,
   createGoal,
@@ -138,10 +138,68 @@ describe('AC 7 — approval → heartbeat handoff (no per-agent crontab)', () =>
     assert.equal(tick.task.title, 'Outline the first essay');
   });
 
-  it('runHeartbeatForAll (aweek heartbeat --all entry point) picks up the freshly approved plan', async () => {
+  it('runHeartbeatForAll (aweek heartbeat --all entry point) dispatches one detached child per agent', async () => {
     // A subagent .md file at .claude/agents/<slug>.md is required by the
-    // tickAgent's subagent-file guard. Provide a minimal one so the tick
-    // proceeds past the auto-pause check.
+    // tickAgent's subagent-file guard. The detached child the dispatcher
+    // spawns will fail without it, but the dispatcher's contract is to
+    // hand off and exit — so the parent-side assertions below don't
+    // depend on the child succeeding.
+    const claudeAgentsDir = join(projectDir, '.claude', 'agents');
+    await mkdir(claudeAgentsDir, { recursive: true });
+
+    const { agentId } = await seedAgentWithPendingPlan({ agentsDir });
+
+    await writeFile(
+      join(claudeAgentsDir, `${agentId}.md`),
+      `---\nname: ${agentId}\ndescription: AC 7 fixture\n---\n\nFixture body.\n`,
+      'utf-8',
+    );
+
+    // Approve through the public service surface (the original AC 7 path).
+    const approveResult = await processApproval({
+      agentId,
+      decision: 'approve',
+      dataDir: agentsDir,
+    });
+    assert.equal(approveResult.success, true);
+
+    // The dispatcher MUST return immediately — no awaiting any per-agent
+    // CLI session — so it can never block the next launchd firing.
+    const t0 = Date.now();
+    const results = await runHeartbeatForAll({ projectDir });
+    const elapsed = Date.now() - t0;
+
+    assert.ok(
+      elapsed < 2000,
+      `dispatcher must return quickly; took ${elapsed}ms`,
+    );
+
+    assert.equal(Array.isArray(results), true);
+    assert.equal(results.length, 1);
+    const [entry] = results;
+    assert.equal(entry.agentId, agentId);
+    assert.equal(entry.dispatched, true, `dispatch failed: ${entry.error}`);
+    assert.equal(typeof entry.pid, 'number');
+
+    // The detached child outlives this test. Killing it keeps the test
+    // sandbox tidy; the child has already exited if it failed fast on
+    // missing fixtures, so SIGTERM may no-op.
+    if (entry.pid) {
+      try {
+        process.kill(entry.pid, 'SIGTERM');
+      } catch {
+        // child already exited
+      }
+    }
+  });
+
+  it('runHeartbeatForAgent (the per-agent codepath the dispatcher targets) sees the freshly approved plan', async () => {
+    // The original AC 7 invariant — "approval is durable across to the
+    // next tick" — was previously asserted via runHeartbeatForAll's
+    // in-process per-agent processing. After the move to detached-child
+    // dispatch, that processing happens in a separate OS process, so
+    // here we drive the per-agent function directly. Same contract,
+    // same disk handoff via WeeklyPlanStore.loadLatestApproved.
     const claudeAgentsDir = join(projectDir, '.claude', 'agents');
     await mkdir(claudeAgentsDir, { recursive: true });
 
@@ -153,7 +211,6 @@ describe('AC 7 — approval → heartbeat handoff (no per-agent crontab)', () =>
       'utf-8',
     );
 
-    // Approve through the public service surface.
     const approveResult = await processApproval({
       agentId,
       decision: 'approve',
@@ -161,33 +218,20 @@ describe('AC 7 — approval → heartbeat handoff (no per-agent crontab)', () =>
     });
     assert.equal(approveResult.success, true);
 
-    // Drive the same code path bin/aweek.ts calls for `aweek heartbeat --all`.
-    // We pre-mark the task as completed so the post-selection CLI launch is
-    // a no-op (no Claude binary needed in unit tests). The narrow assertion
-    // is "the heartbeat saw the agent and tried to act on the approved
-    // plan," not "the CLI session ran."
-    //
-    // To avoid the CLI launch entirely we mark the task completed AFTER
-    // approval but BEFORE the tick — the heartbeat will then see the
-    // approved plan, find no pending tasks, and return all_tasks_finished.
-    // That outcome can ONLY be reached if the heartbeat saw the approved
-    // plan (it would otherwise return no_approved_plan).
+    // Mark the task completed before the tick so the runner sees the
+    // approved plan but skips the CLI launch (no `claude` binary in unit
+    // tests). all_tasks_finished is reachable ONLY when an approved plan
+    // exists; no_approved_plan would mean the approval handoff broke.
     const weeklyPlanStore = new WeeklyPlanStore(agentsDir);
     await weeklyPlanStore.updateTaskStatus(agentId, week, task.id, 'completed');
 
-    const results = await runHeartbeatForAll({ projectDir });
+    const result = await runHeartbeatForAgent(agentId, { projectDir });
+    const tickResult = result as {
+      outcome: string;
+      week: string;
+      summary: { completed: number; pending: number };
+    };
 
-    assert.equal(Array.isArray(results), true);
-    assert.equal(results.length, 1);
-    const [entry] = results;
-    assert.equal(entry.agentId, agentId);
-    assert.equal(entry.error, undefined, `heartbeat threw: ${entry.error}`);
-
-    // The tick result the runner returns when no task is selected is the
-    // raw TaskTickResult from tickAgent. Outcome must be all_tasks_finished
-    // — proof that the approved plan was discovered (otherwise it would be
-    // no_approved_plan) and inspected (otherwise no task summary).
-    const tickResult = entry.result;
     assert.equal(tickResult.outcome, 'all_tasks_finished');
     assert.equal(tickResult.week, week);
     assert.equal(tickResult.summary.completed, 1);

@@ -15,6 +15,8 @@
 
 import { join } from 'node:path';
 import { readdir, writeFile, mkdir } from 'node:fs/promises';
+import { openSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
 import type { WeeklyTask } from '../storage/weekly-plan-store.js';
@@ -1088,14 +1090,28 @@ async function _sweepStaleTasks({
 }
 
 /**
- * Run heartbeat ticks for all agents in the data directory.
+ * Dispatch heartbeat ticks for all agents in the data directory as
+ * detached child processes, then return immediately.
+ *
+ * Why detached children, not Promise.allSettled in-process:
+ *   The previous design awaited every per-agent runner in the same
+ *   process, which meant the slowest CLI session held the whole
+ *   heartbeat process alive. launchd's `StartInterval` skips firings
+ *   whose previous instance is still running, so a 30-min planning
+ *   session for one agent silently dropped the next 2-3 ticks for ALL
+ *   agents — sibling agents with quick or already-eligible tasks were
+ *   delayed until the slow one finished. Spawning each per-agent run
+ *   as a detached `aweek heartbeat <slug>` decouples sibling lifetimes:
+ *   the parent dispatcher exits in ~1s, the next launchd firing always
+ *   lands on schedule, and per-agent overlap is still caught by
+ *   `runWithHeartbeatLock` (PID-tracked, in `heartbeat-lock.ts`).
  *
  * @param {object} [opts]
  * @param {string} [opts.projectDir] - Project root (default: cwd)
  */
 export async function runHeartbeatForAll(
   opts: RunHeartbeatForAgentOptions = {},
-): Promise<Array<{ agentId: string; result?: unknown; error?: string }>> {
+): Promise<Array<{ agentId: string; dispatched: boolean; pid?: number; error?: string }>> {
   const projectDir = opts.projectDir || process.cwd();
   const agentsDir = join(projectDir, '.aweek', 'agents');
 
@@ -1103,12 +1119,9 @@ export async function runHeartbeatForAll(
   // intent lives in the zone they configured in .aweek/config.json.
   // When those differ, print a single one-line warning so the mismatch
   // is visible in the heartbeat log rather than silently drifting hours.
-  //
-  // We piggyback on the same config load to install the user's
-  // staleTaskWindowMs override (if any) into the task-selector module
-  // before any per-agent tick runs. The override is read once per
-  // process; updating it requires a heartbeat process restart, which
-  // happens automatically every 10 minutes when launchd / cron fires.
+  // Each per-agent child loads the same config and re-applies its own
+  // staleTaskWindowMs override; running it here too is harmless and
+  // keeps the parent's warning behavior intact.
   try {
     const config = await loadConfig(agentsDir);
     const systemTz = detectSystemTimeZone();
@@ -1148,38 +1161,59 @@ export async function runHeartbeatForAll(
     return [];
   }
 
-  console.log(`Running heartbeat for ${agentIds.length} agent(s) in parallel...`);
+  // Open the heartbeat log once and pass the FD to each detached child.
+  // Children outlive the parent, so they can't inherit the parent's
+  // stdout pipe (launchd would close it). A direct file FD survives.
+  // Best-effort: if the open fails, fall back to 'ignore'; the children
+  // still record their own state via the execution store.
+  const logsDir = join(projectDir, '.aweek', 'logs');
+  let outFd: number | 'ignore' = 'ignore';
+  try {
+    await mkdir(logsDir, { recursive: true });
+    outFd = openSync(join(logsDir, 'heartbeat.out.log'), 'a');
+  } catch {
+    outFd = 'ignore';
+  }
 
-  // Run agents concurrently — each per-agent invocation is already
-  // sequential internally (inbox drain → queue drain → main task), and
-  // the per-agent file lock in `lock-manager.ts` protects against two
-  // ticks racing on the same agent. Crossing agents in parallel saves
-  // wall-clock time on multi-agent fleets without changing per-agent
-  // semantics. Failures are absorbed via `Promise.allSettled` so one
-  // agent's crash doesn't abort siblings (matches the previous
-  // `try/catch` per-agent guard).
-  const settled = await Promise.allSettled(
-    agentIds.map((agentId) =>
-      runHeartbeatForAgent(agentId, { projectDir }).then(
-        (result) => ({ agentId, result }),
-        (err: unknown) => {
-          const m = errMsg(err);
-          console.error(`[${agentId}] heartbeat error: ${m}`);
-          return { agentId, error: m };
+  const aweekScript = process.argv[1];
+  if (!aweekScript) {
+    console.error('Cannot dispatch per-agent heartbeats: process.argv[1] is empty.');
+    return agentIds.map((agentId) => ({
+      agentId,
+      dispatched: false,
+      error: 'process.argv[1] is empty',
+    }));
+  }
+
+  console.log(
+    `Dispatching heartbeat for ${agentIds.length} agent(s) as detached children...`,
+  );
+
+  const results: Array<{ agentId: string; dispatched: boolean; pid?: number; error?: string }> = [];
+  for (const agentId of agentIds) {
+    try {
+      const child = spawn(
+        process.execPath,
+        [aweekScript, 'heartbeat', agentId, '--project-dir', projectDir],
+        {
+          detached: true,
+          stdio: ['ignore', outFd, outFd],
+          env: process.env,
         },
-      ),
-    ),
-  );
-  // `Promise.allSettled` only rejects when the array itself rejects,
-  // never when an inner promise rejects. The inner mapper above already
-  // converts both branches to a fulfilled value, so every entry here is
-  // a fulfilled `{ agentId, … }` record.
-  return settled.map(
-    (s) =>
-      (s.status === 'fulfilled' ? s.value : { agentId: '', error: 'unknown' }) as {
-        agentId: string;
-        result?: unknown;
-        error?: string;
-      },
-  );
+      );
+      child.unref();
+      const entry: { agentId: string; dispatched: boolean; pid?: number } = {
+        agentId,
+        dispatched: true,
+      };
+      if (typeof child.pid === 'number') entry.pid = child.pid;
+      results.push(entry);
+    } catch (err) {
+      const m = errMsg(err);
+      console.error(`[${agentId}] dispatch error: ${m}`);
+      results.push({ agentId, dispatched: false, error: m });
+    }
+  }
+
+  return results;
 }
