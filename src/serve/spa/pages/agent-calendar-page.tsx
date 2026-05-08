@@ -140,6 +140,7 @@ type CalendarGridProps = {
   className?: string;
   daysToShow?: 1 | 3 | 5 | 7;
   anchorDayKey?: DayKey;
+  showWeekend?: boolean;
   onSelectTask?: (task: CalendarTask) => void;
 };
 
@@ -482,10 +483,16 @@ export function AgentCalendarPage({
         // tracks the date that matters most; viewing a non-current week
         // falls back to a Monday-anchored strip. AC 4 sub-AC 3 lets the
         // user override that anchor via the day-nav prev/next buttons.
-        // Desktop layouts (>= md) keep the existing 5/7-day auto-extension
-        // behaviour by leaving `daysToShow` undefined.
+        // Desktop layouts (>= md) leave `daysToShow` undefined and pass
+        // `showWeekend` so Sat + Sun always render — even when no tasks
+        // land on the weekend — so the user sees a stable Mon–Sun grid
+        // every week and isn't surprised by columns appearing /
+        // disappearing as weekend tasks come and go. The grid's
+        // precedence rule (`daysToShow` wins when set) means the
+        // mobile 3-day strip is unaffected.
         daysToShow={isMobile ? MOBILE_DAYS_TO_SHOW : undefined}
         anchorDayKey={resolvedMobileAnchor}
+        showWeekend={true}
         // Take the remaining vertical space inside the calendar tab and own
         // both-axis scrolling. The flex chain runs from `<Layout>` down
         // through the agent-detail section, the Tabs primitive, the active
