@@ -243,6 +243,17 @@ export async function* streamAgentTurn(
   const options: AgentSdkOptions = {};
   if (params.cwd !== undefined) options.cwd = params.cwd;
 
+  // Bypass tool permission prompts. The dashboard is a single-user
+  // surface running against the user's own `.aweek/` directory, and the
+  // sibling heartbeat already invokes the Claude Code CLI with
+  // `--dangerously-skip-permissions` (see `src/execution/cli-session.ts`)
+  // — so gating the chat panel separately would just block `aweek exec`,
+  // file reads, and edits with no human in the loop on the SSE stream
+  // to approve them. Match the heartbeat posture: trust the agent with
+  // the same authority it already has at every 10-min tick.
+  options.permissionMode = 'bypassPermissions';
+  options.allowDangerouslySkipPermissions = true;
+
   // Sub-AC 3 of AC 6: auto-inject the system preamble on the first
   // turn of each thread. The chat handler decides when to pass this
   // (first turn only — subsequent turns omit it so the preamble is

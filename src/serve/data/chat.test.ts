@@ -416,4 +416,25 @@ describe('streamAgentTurn — systemPromptAppend wiring (Sub-AC 3 of AC 6)', () 
     assert.ok(captured.options, 'expected options to be captured');
     assert.equal(captured.options?.systemPrompt, undefined);
   });
+
+  // The chat panel runs against the user's own `.aweek/` directory. The
+  // sibling heartbeat already invokes the Claude Code CLI with
+  // `--dangerously-skip-permissions`, so gating chat tools separately
+  // would block `aweek exec`, file reads, and edits with no human in
+  // the loop on the SSE stream to approve them. Pin the bypass posture
+  // so a regression that re-introduces interactive prompting trips a
+  // test instead of silently breaking the chat panel.
+  it('always sets bypassPermissions + allowDangerouslySkipPermissions to match the heartbeat posture', async () => {
+    const { runner, captured } = makeOptionsCapturingRunner();
+    await drain(
+      streamAgentTurn({
+        slug: 'writer',
+        messages: [{ role: 'user', content: 'hello' }],
+        runQuery: runner,
+      }),
+    );
+    assert.ok(captured.options, 'expected options to be captured');
+    assert.equal(captured.options?.permissionMode, 'bypassPermissions');
+    assert.equal(captured.options?.allowDangerouslySkipPermissions, true);
+  });
 });
