@@ -10,7 +10,7 @@ Slash-command distribution is handled by the Claude Code plugin system (manifest
 
 ## Development Environment
 
-- **Runtime:** Node.js (ES modules)
+- **Runtime:** Node.js (ES modules). Supported range: **>=20.0.0** (LTS baseline) as advertised in `package.json` `engines.node`. The repo pins a recommended toolchain version in `.nvmrc` (currently `24.13.1`) so contributors using `nvm` / `fnm` / Volta land on a tested Node automatically. `engineStrict` is intentionally NOT set — `pnpm install` won't refuse to run on older Node versions, but `pnpm test` and `pnpm typecheck` are only guaranteed green on Node >=20. Older releases (Node 18 and earlier) are unsupported. Note: `pnpm test` is Node-version-agnostic via `scripts/run-tests.mts` (which resolves the test-file glob list with a Node-side glob library) — do NOT regress to argv-glob expansion, since `node --test`'s native glob support only landed in Node 22.
 - **Package manager:** pnpm (v10.7.0)
 - **Language:** TypeScript for `src/**` and `bin/aweek.ts`; the SPA tree under `src/serve/spa/` is a mix of `.tsx` (pages, hooks, lib) and `.jsx` (layout, theme, shadcn primitives in `components/ui/`). The `src/schemas/*.js` AJV schema files plus the four root tool configs (`vite/vitest/tailwind/postcss.config.js`) intentionally stay `.js`.
 - **Entry point:** `src/index.ts` (ships compiled to `dist/src/index.js`)
@@ -54,6 +54,7 @@ Skill markdown lives in `skills/<name>/SKILL.md`. Each step shells out to `aweek
 | `aweek calendar` | `skills/calendar/SKILL.md` | Interactive weekly-plan calendar grid for one agent (numbered task selection, view options, inline status edits). Auto-bootstraps on first run |
 | `aweek delegate-task` | `skills/delegate-task/SKILL.md` | Async inter-agent task delegation through the recipient's inbox queue. Auto-bootstraps on first run |
 | `aweek config` | `skills/config/SKILL.md` | CLI counterpart to the dashboard Settings page. Renders every knob `.aweek/config.json` exposes (`timeZone`, `staleTaskWindowMs`, `heartbeatIntervalSec`) and edits any of them via an interactive picker that doubles as the confirmation gate. Editing `heartbeatIntervalSec` additionally calls `installHeartbeat` to rotate the live launchd plist's `StartInterval` in the same flow |
+| `aweek slack-init` | `skills/slack-init/SKILL.md` | Bootstrap an aweek-branded Slack app and persist its credentials to `.aweek/channels/slack/config.json` so the embedded `SlackAdapter` inside `aweek serve` can chat with the project's Claude through Slack. Two flows — provision-and-persist (uses a Slack Refresh Token to call `apps.manifest.create` + `apps.token.create`) or persist-only (user already has tokens). Both stages are confirmation-gated; the dispatcher refuses to run without `confirmed: true` |
 
 ### Subagent ↔ aweek contract
 
@@ -77,8 +78,10 @@ Per project policy, every destructive write must collect an explicit `AskUserQue
 | `top-up` (resets weekly usage) | `aweek manage` |
 | `delete` (removes agent JSON, optionally `.md`) | `aweek manage` |
 | `editConfig` (writes `.aweek/config.json`) | `aweek config` |
+| `provisionSlackApp` (creates a real Slack app + Socket-Mode token via `apps.manifest.create` / `apps.token.create`; rotates and invalidates the user's Slack Refresh Token) | `aweek slack-init` |
+| `persistSlackCredentials` / `slackInit` (writes `.aweek/channels/slack/config.json`) | `aweek slack-init` |
 
-The underlying adapters refuse to run without `confirmed: true` — do not bypass the gate.
+The underlying adapters refuse to run without `confirmed: true` — do not bypass the gate. The Slack-init dispatcher additionally throws `ESLACK_INIT_NOT_CONFIRMED` so a misbehaving caller surfaces an actionable error instead of silently writing.
 
 ## Architecture
 
@@ -135,6 +138,47 @@ DST seams are handled explicitly: `localWallClockToUtc` returns the first instan
 
 `src/subagents/subagent-discovery.ts` scans both `.claude/agents/` (project) and `~/.claude/agents/` (user) and returns `{ slug, scope, path, hired }` records. The hire wizard's pick-existing branch and the init four-option menu both consume this list, filtering out plugin-namespaced and already-hired slugs.
 
+### Slack channel (`aweek serve` embedded)
+
+`aweek serve` embeds a Slack Socket-Mode listener in the SAME Node process — no second daemon, no second port, Socket Mode WebSocket only. Slack is OPTIONAL: missing credentials never brick the boot, the dashboard stays up, and the user can run `aweek slack-init` to provision the bot without restarting.
+
+**v1 scope.** Project-level proxy only. Every Slack message reaching the bot (DM or `@`-mention per Slack defaults) becomes a project-level chat turn against the project's Claude. **Subagent identities are NOT directly addressable** from Slack in v1 — project Claude reaches them transitively via `Task()` / `aweek exec` under `bypassPermissions`. Out of scope (v2+): direct subagent addressing (`@researcher`), per-subagent Slack apps, slash commands, file uploads, channel-per-agent routing, content-classification routing.
+
+**Library dep.** Slack adapter and streaming bridge come from `agentchannels` — currently the LOCAL workspace package at `/Users/ssowonny/Workspace/agentchannels/agentchannels` (branch `aweek-integration`), wired in via `file:../../agentchannels/agentchannels`. Do NOT swap to the released npm package; the public exports `SlackAdapter`, `StreamingBridge`, and `SlackManifestAPI` live on that branch.
+
+**Per-thread Backend.** `src/channels/slack/project-claude-backend.ts` (`ProjectClaudeBackend`) implements agentchannels' `Backend` contract by spawning `claude --print --output-format stream-json --verbose --dangerously-skip-permissions [--resume <id>] [--append-system-prompt <banner>]` via `spawnProjectClaudeSession` in `src/execution/cli-session.ts`. The `--dangerously-skip-permissions` flag mirrors `permissionMode='bypassPermissions'` + `allowDangerouslySkipPermissions=true` (see `src/serve/data/chat.ts` after commit `bfd1e14`) and is scoped to Slack runs only — heartbeat runs do NOT use it. `backend_kind` is the literal `'project-claude'`; reserved as a string union for future per-subagent backends.
+
+**Stream-event adapter.** `src/serve/slack-stream-event-parser.ts` translates the CLI's stream-json NDJSON lines into agentchannels `AgentStreamEvent`s (`text_delta`, `tool_use`, `tool_result`, `done`, `error`). Out-of-band metadata — the leading `system init` line's `session_id` and the terminal `result` line's token usage — surface via `onSessionInit` / `onResult` callbacks rather than the event union. The `StreamEventQueue` is a backpressure-safe push/pull bridge between the synchronous `onStdoutLine` callback and the agentchannels async iterator.
+
+**System prompt.** Slack-driven runs use the project-level Claude system prompt (NO `--agents` flag in v1) plus a Slack-mode banner injected via `--append-system-prompt` (`SLACK_SYSTEM_PROMPT_BANNER` in `src/serve/slack-bridge.ts` — "conversational human chat, not task reports") so Slack replies don't read like heartbeat task summaries.
+
+**Persistence (per-thread session continuity).** `src/storage/slack-thread-store.ts` writes one file per Slack thread at `.aweek/channels/slack/threads/<safeThreadKey>.json` with `{ threadKey, claudeSessionId, lastUsedAt }`. The first message in a thread spawns Claude with NO `--resume`; the CLI mints a fresh session id on its leading `system init` line, the backend's `onSessionInit` hook fires, and `saveSlackThread` mirrors it to disk. Subsequent messages in the same thread pass `--resume <persisted-sessionId>`. Survives `aweek serve` restarts. **24h idle TTL with lazy GC on read** — `loadSlackThread` deletes records whose `lastUsedAt` is older than `SLACK_THREAD_TTL_MS` (24h) and returns `null`, so a stale thread starts a fresh session naturally; nothing proactively scans the directory. Thread keys are agentchannels-supplied `${adapterName}:${channelId}:${threadId}` — `encodeThreadKey` sanitises them to filesystem-safe slugs (the encoder is lossy; the persisted `threadKey` field is canonical). `src/channels/slack/backend-factory.ts` (`createPersistedSlackBackend`) is the SINGLE place that knows about the on-disk thread shape; the listener / bridge / backend stay oblivious.
+
+**Credential loader (env-first, file-fallback).** `src/storage/slack-config-store.ts` (`loadSlackCredentials`) reads `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, optional `SLACK_SIGNING_SECRET` from `process.env` first and falls back to `<projectRoot>/.aweek/channels/slack/config.json`. Both sources are gitignored (the file lives under the repo-wide `.aweek/` rule). Returns `null` when either required token is missing, which the listener treats as "Slack disabled" (NOT an error). Both snake_case keys (Slack manifest convention) and SCREAMING_SNAKE env-name keys are accepted in the file. Malformed JSON warns to stderr and falls through to env-only.
+
+**Listener bootstrap.** `src/serve/slack-listener.ts` (`startSlackListener`) is called from `startServer` in `src/serve/server.ts` immediately after the HTTP listener is bound. It resolves credentials via the loader, instantiates `SlackAdapter` from agentchannels, and calls `connect()`. Returns `{ adapter: null, disconnect: noop }` whenever credentials are absent or initialisation throws — `aweek serve` keeps running with the dashboard only.
+
+**Run-path bridge.** `src/serve/slack-bridge.ts` (`startSlackBridge`) wires a connected `ChannelAdapter` to the project-Claude backend factory via agentchannels' `StreamingBridge` and a `resolveBackend` hook backed by a per-`threadKey` cache. Inbound `adapter.onMessage` events flow into `bridge.handleMessage`. **Isolation contract** (see the slack-bridge module docstring for the static asserts):
+
+- **No per-agent heartbeat lock.** This module MUST NOT import `acquireLock` / `releaseLock` from `src/lock/lock-manager.ts`. Per-Slack-thread serialisation is owned by the `StreamingBridge.activeThreads` guard.
+- **No per-agent usage tree.** This module MUST NOT import `UsageStore` or the budget enforcer. Per-turn token accounting goes to `<projectRoot>/.aweek/channels/slack/usage.json` via `appendSlackUsageRecord` in `src/storage/slack-usage-store.ts`. The slack-bridge test suite asserts the per-agent tree (`.aweek/agents/`) is byte-identical before and after a Slack turn.
+- **No interaction with the weekly-budget pause flag.** Slack turns never pause an agent.
+
+**On-disk layout** (gitignored under the repo-wide `.aweek/` rule):
+
+```
+.aweek/channels/slack/
+  config.json              # bot/app/signing tokens — written by `aweek slack-init`,
+                           # read by `loadSlackCredentials` (env wins on conflict)
+  usage.json               # JSON array of slack-usage-<hex> records (one per Slack turn);
+                           # idempotent on `id`, last-writer-wins on the rename swap
+  threads/
+    <encodedThreadKey>.json # { threadKey, claudeSessionId, lastUsedAt } per thread;
+                           # 24h idle TTL, lazy GC on read
+```
+
+**Testing.** Module tests are colocated as `<module>.test.ts`. The replay-driven integration test at `src/channels/slack/replay-integration.test.ts` drives a fake inbound Slack message through `startSlackBridge` → real `createPersistedSlackBackend` → real `ProjectClaudeBackend` → real stream-json parser → fake CLI sink, asserting both the streamed reply text and the on-disk `.aweek/channels/slack/threads/<encodedThreadKey>.json` mutation in a single cycle. The shared scaffold lives at `src/serve/slack-replay-harness.ts` (`ReplayBackend` mirroring agentchannels' `replay-agent-client`, `makeFakeSlackAdapterSource` capturing `startStream` / `append` / `finish` / `setStatus`, plus the fake CLI spawn helper); the same harness is reused by `src/serve/slack-replay-harness.test.ts` and is the seam any future end-to-end Slack test should import rather than re-rolling its own doubles.
+
 ## Project Structure
 
 ```
@@ -155,12 +199,22 @@ skills/                         # Slash-command markdown (source of truth)
   summary/SKILL.md
   calendar/SKILL.md
   delegate-task/SKILL.md
+  slack-init/SKILL.md           # Provision-and-persist (or persist-only) the Slack bot wired into `aweek serve`
 src/
   cli/dispatcher.ts             # Registry-backed `aweek exec <module> <fn>` surface
   index.ts                      # Public API surface (re-exports for skill markdown)
   models/agent.ts               # Agent / goal / plan builders + helpers
   schemas/                      # AJV schema definitions (.js by design) + typed wrappers (.ts)
   storage/                      # File-based stores (agent, plan, inbox, usage, ...) — all .ts
+                                # Slack-channel stores: slack-config-store.ts (env+file credential loader),
+                                # slack-thread-store.ts (per-thread sessionId + 24h lazy-GC TTL),
+                                # slack-usage-store.ts (Slack-only `.aweek/channels/slack/usage.json` bucket)
+  channels/slack/               # Slack-channel Backend implementation (NOT shared with the heartbeat)
+    project-claude-backend.ts   #   `Backend` impl that spawns `claude --print` per Slack turn
+    backend-factory.ts          #   Wires `ProjectClaudeBackend` to slack-thread-store persistence
+    replay-integration.test.ts  #   End-to-end replay-driven test: fake Slack message →
+                                #   real bridge / backend / parser → fake CLI; asserts streamed
+                                #   reply text + `.aweek/channels/slack/threads/*.json` mutation
   subagents/                    # .claude/agents/<slug>.md primitives + discovery — .ts
   skills/                       # Skill business logic — .ts
     setup.ts, setup-hire-menu.ts
@@ -170,16 +224,31 @@ src/
     manage.ts, resume-agent.ts
     summary.ts, status.ts, weekly-calendar-grid.ts
     delegate-task.ts
+    slack-init.ts               # Provisioning + persistence primitives + composite `slackInit`
   services/                     # Cross-cutting services (planning, review, budget) — .ts
   heartbeat/                    # Scheduler + lock + per-agent tick runner — .ts.
                                 # The launchd-vs-cron install side lives in
                                 # src/skills/setup.ts + src/skills/launchd.ts;
                                 # this directory has no scheduler-install code.
   execution/                    # Claude Code CLI session launcher + tracker — .ts
-  lock/                         # PID-tracked file locks — .ts
+                                # cli-session.ts also exports `spawnProjectClaudeSession`,
+                                # the Slack-mode entry that emits `--dangerously-skip-permissions`
+                                # and optional `--resume <id>` / `--append-system-prompt <banner>`
+  lock/                         # PID-tracked file locks (heartbeat-only — Slack runs do NOT use this)
   queue/                        # Per-agent task queue — .ts
   serve/                        # Dashboard HTTP server (`aweek serve`)
-    server.ts                   # Handler — SPA shell + /api/* + static assets
+    server.ts                   # Handler — SPA shell + /api/* + static assets +
+                                # embedded Slack listener+bridge bootstrap
+    slack-listener.ts           # Resolves credentials → instantiates SlackAdapter → connect()
+    slack-bridge.ts             # Wires connected adapter to ProjectClaudeBackend via StreamingBridge;
+                                # owns the per-thread backend cache; isolation contract enforced here
+    slack-stream-event-parser.ts# CLI stream-json NDJSON → agentchannels AgentStreamEvent translator +
+                                # backpressure-safe StreamEventQueue
+    slack-replay-harness.ts     # Shared scaffold for replay-driven Slack integration tests:
+                                # ReplayBackend (mirrors agentchannels' replay-agent-client),
+                                # makeFakeSlackAdapterSource, fake CLI spawn helper.
+                                # Consumed by slack-replay-harness.test.ts and the end-to-end
+                                # src/channels/slack/replay-integration.test.ts
     data/*.ts                   # Thin JSON endpoint handlers over src/storage/*
     spa/                        # React + Vite + Tailwind + shadcn SPA source
       index.html                # Vite HTML entry (#root mount point)
@@ -206,7 +275,12 @@ dist/                           # `pnpm build` output (gitignored; published in 
 .aweek/                         # Runtime data (created by aweek init)
   agents/<slug>.json            # Per-agent scheduling state
   agents/<slug>/                # Per-agent subdirs (plans, usage, logs, inbox)
-  .locks/                       # Heartbeat + per-agent lock files
+  .locks/                       # Heartbeat + per-agent lock files (NOT used by Slack runs)
+  channels/slack/               # Slack execution surface — isolated from the heartbeat
+    config.json                 # Slack tokens (gitignored). Written by `aweek slack-init`,
+                                # read by loadSlackCredentials (env wins on conflict)
+    usage.json                  # Slack-only token-usage log (one record per Slack turn)
+    threads/<encodedKey>.json   # Per-thread Claude session id + lastUsedAt (24h lazy-GC TTL)
 ```
 
 `src/skills/status.ts` has no dedicated skill — it backs the per-agent drill-down inside `aweek summary`.

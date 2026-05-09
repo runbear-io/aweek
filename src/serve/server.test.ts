@@ -668,6 +668,268 @@ describe('startServer()', () => {
     assert.equal(res.statusCode, 200);
     assert.match(res.body, /spa/);
   });
+
+  // ── Embedded Slack listener wiring (Sub-AC 2.2) ──────────────────────────
+  //
+  // These tests prove that `startServer` boots the Slack Socket-Mode
+  // WebSocket alongside the HTTP listener in the same Node process when
+  // the credentials loader returns valid tokens, and skips it otherwise.
+  // The HTTP path must keep working in both cases.
+
+  it('exposes a null slackAdapter on the handle when no Slack credentials are configured', async () => {
+    buildDir = await makeBuildDir();
+    let factoryCalls = 0;
+    handle = await startServer({
+      projectDir,
+      buildDir,
+      port: 0,
+      host: '127.0.0.1',
+      // Loader explicitly returns null — same outcome a fresh project
+      // gets when neither env vars nor `.aweek/channels/slack/config.json`
+      // are present.
+      slackCredentialsLoader: async () => null,
+      slackAdapterFactory: () => {
+        factoryCalls += 1;
+        throw new Error('factory must not be called when credentials are missing');
+      },
+      slackLog: () => {},
+    });
+    assert.equal(handle.slackAdapter, null);
+    assert.equal(factoryCalls, 0);
+
+    // The HTTP dashboard must remain fully functional.
+    const res = await httpGet(`${handle.url}healthz`);
+    assert.equal(res.statusCode, 200);
+  });
+
+  // AC 3 of the Slack-aweek integration seed: when Slack credentials are
+  // absent, `aweek serve` must start cleanly with NO Socket Mode connection
+  // AND the existing dashboard / API endpoints must remain unaffected. The
+  // sibling "exposes a null slackAdapter" test above asserts the listener-
+  // disabled half (null adapter, factory not called, /healthz still 200).
+  // This test pins the unaffected-endpoints half by exercising a broader
+  // slice of the surface — SPA shell, hashed asset, SPA fallback, and the
+  // canonical /api/agents tree against a seeded fixture — so a future
+  // regression that wires Slack into a request handler (for example a 503
+  // gate keyed on `slackAdapter == null`) cannot slip past unnoticed.
+  it('keeps SPA shell, static assets, and /api/* endpoints unaffected when Slack credentials are absent (AC 3)', async () => {
+    // Tear down the empty `projectDir` from beforeEach and seed a fixture
+    // project that has a hired agent — we want the /api/agents tree to
+    // return real data, not just an empty list.
+    if (projectDir) await rm(projectDir, { recursive: true, force: true });
+    const fx = await makeProjectWithAgent({
+      slug: 'writer',
+      name: 'Writer',
+      description: 'Drafts copy.',
+      weeklyTokenBudget: 7_500,
+    });
+    projectDir = fx.root;
+    buildDir = await makeBuildDir({
+      indexHtml:
+        '<!doctype html><html><head><title>aweek SPA AC3</title></head><body data-spa="ac3"></body></html>',
+    });
+
+    const slackLogLines: string[] = [];
+    let factoryCalls = 0;
+
+    handle = await startServer({
+      projectDir,
+      buildDir,
+      port: 0,
+      host: '127.0.0.1',
+      // Sealed env override + null-returning loader together emulate a
+      // fresh checkout: no `SLACK_*` env vars, no
+      // `.aweek/channels/slack/config.json`. Both are required because
+      // the loader is given the env source verbatim and we want to prove
+      // the disabled-listener path AND a clean operator log line.
+      slackEnvSource: Object.freeze({}),
+      slackCredentialsLoader: async () => null,
+      slackAdapterFactory: () => {
+        factoryCalls += 1;
+        throw new Error('factory must not be called when credentials are missing');
+      },
+      slackLog: (msg) => slackLogLines.push(msg),
+    });
+
+    // 1. Listener-side invariants: no Socket Mode connection, and a
+    //    single skip-reason line is emitted so the operator sees WHY
+    //    Slack stayed off.
+    assert.equal(handle.slackAdapter, null);
+    assert.equal(factoryCalls, 0);
+    assert.ok(
+      slackLogLines.some((m) =>
+        /Slack listener disabled \(no credentials in env or \.aweek\/channels\/slack\/config\.json\)/.test(
+          m,
+        ),
+      ),
+      `expected a "no credentials" skip-reason log line, got: ${JSON.stringify(slackLogLines)}`,
+    );
+
+    // 2. /healthz: liveness probe + projectDir echo unaffected.
+    const healthRes = await httpGet(`${handle.url}healthz`);
+    assert.equal(healthRes.statusCode, 200);
+    assert.match(healthRes.headers['content-type'] || '', /application\/json/);
+    assert.match(healthRes.headers['cache-control'] || '', /no-store/);
+    const healthBody = JSON.parse(healthRes.body);
+    assert.equal(healthBody.ok, true);
+    assert.equal(healthBody.projectDir, projectDir);
+
+    // 3. SPA shell at `/` still serves index.html from the build dir.
+    const shellRes = await httpGet(handle.url);
+    assert.equal(shellRes.statusCode, 200);
+    assert.match(shellRes.headers['content-type'] || '', /text\/html/);
+    assert.match(shellRes.body, /aweek SPA AC3/);
+
+    // 4. SPA client-side route fallback still resolves to the shell so
+    //    the React router can render `/agents/writer/calendar` after a
+    //    direct deep link.
+    const spaFallback = await httpGet(`${handle.url}agents/writer/calendar`);
+    assert.equal(spaFallback.statusCode, 200);
+    assert.match(spaFallback.headers['content-type'] || '', /text\/html/);
+    assert.match(spaFallback.body, /data-spa="ac3"/);
+
+    // 5. Hashed asset still served with immutable caching.
+    const jsRes = await httpGet(`${handle.url}assets/app-abc123.js`);
+    assert.equal(jsRes.statusCode, 200);
+    assert.match(jsRes.headers['content-type'] || '', /application\/javascript/);
+    assert.match(jsRes.headers['cache-control'] || '', /immutable/);
+
+    // 6. /api/agents returns the seeded fixture agent.
+    const listRes = await httpGet(`${handle.url}api/agents`);
+    assert.equal(listRes.statusCode, 200);
+    assert.match(listRes.headers['content-type'] || '', /application\/json/);
+    const listBody = JSON.parse(listRes.body);
+    assert.equal(listBody.agents.length, 1);
+    assert.equal(listBody.agents[0].slug, 'writer');
+    assert.equal(listBody.agents[0].tokenLimit, 7_500);
+    assert.deepEqual(listBody.issues, []);
+
+    // 7. /api/agents/:slug returns the detail envelope for the same fixture.
+    const detailRes = await httpGet(`${handle.url}api/agents/writer`);
+    assert.equal(detailRes.statusCode, 200);
+    const detailBody = JSON.parse(detailRes.body);
+    assert.ok(detailBody.agent, 'expected { agent: {...} } envelope');
+    assert.equal(detailBody.agent.slug, 'writer');
+    assert.equal(detailBody.agent.tokenLimit, 7_500);
+
+    // 8. /api/agents/:slug/plan, /usage, /logs all still respond cleanly.
+    const planRes = await httpGet(`${handle.url}api/agents/writer/plan`);
+    assert.equal(planRes.statusCode, 200);
+    const planBody = JSON.parse(planRes.body);
+    assert.equal(planBody.plan.slug, 'writer');
+
+    const usageRes = await httpGet(`${handle.url}api/agents/writer/usage`);
+    assert.equal(usageRes.statusCode, 200);
+    const usageBody = JSON.parse(usageRes.body);
+    assert.equal(usageBody.usage.slug, 'writer');
+    assert.equal(usageBody.usage.tokenLimit, 7_500);
+
+    const logsRes = await httpGet(`${handle.url}api/agents/writer/logs`);
+    assert.equal(logsRes.statusCode, 200);
+    const logsBody = JSON.parse(logsRes.body);
+    assert.equal(logsBody.logs.slug, 'writer');
+
+    // 9. Unknown slug still 404s, not the SPA shell. Proves the JSON
+    //    error envelope on /api/* hasn't been silently swallowed by a
+    //    Slack-aware fallback.
+    const missingRes = await httpGet(`${handle.url}api/agents/does-not-exist`);
+    assert.equal(missingRes.statusCode, 404);
+    assert.match(missingRes.headers['content-type'] || '', /application\/json/);
+
+    // 10. close() must complete cleanly even though the listener was
+    //     never connected — the no-op disconnect must not block teardown.
+    await handle.close();
+    handle = null; // signal afterEach to skip the duplicate close
+  });
+
+  it('connects the Slack adapter when credentials are present and disconnects on close()', async () => {
+    buildDir = await makeBuildDir();
+    let connectCalls = 0;
+    let disconnectCalls = 0;
+    let receivedConfig = null;
+    const fakeAdapter = {
+      name: 'slack',
+      connect: async () => {
+        connectCalls += 1;
+      },
+      disconnect: async () => {
+        disconnectCalls += 1;
+      },
+      onMessage: () => {},
+      sendMessage: async () => {},
+      startStream: async () => ({ append: async () => {}, finish: async () => {} }),
+    };
+    handle = await startServer({
+      projectDir,
+      buildDir,
+      port: 0,
+      host: '127.0.0.1',
+      slackCredentialsLoader: async () => ({
+        botToken: 'xoxb-test',
+        appToken: 'xapp-test',
+      }),
+      slackAdapterFactory: (config) => {
+        receivedConfig = config;
+        return fakeAdapter;
+      },
+      slackLog: () => {},
+    });
+    assert.equal(handle.slackAdapter, fakeAdapter);
+    assert.equal(connectCalls, 1);
+    assert.deepEqual(receivedConfig, {
+      botToken: 'xoxb-test',
+      appToken: 'xapp-test',
+    });
+
+    // Sanity: the HTTP listener must still be reachable while Slack is
+    // connected — proves the two surfaces really share one Node process
+    // with no port conflict.
+    const res = await httpGet(`${handle.url}healthz`);
+    assert.equal(res.statusCode, 200);
+
+    await handle.close();
+    handle = null; // signal afterEach to skip the duplicate close
+    assert.equal(disconnectCalls, 1, 'close() must call adapter.disconnect()');
+  });
+
+  it('keeps the HTTP server running when Slack connect() throws', async () => {
+    buildDir = await makeBuildDir();
+    let disconnectCalls = 0;
+    const fakeAdapter = {
+      name: 'slack',
+      connect: async () => {
+        throw new Error('invalid_app_token');
+      },
+      disconnect: async () => {
+        disconnectCalls += 1;
+      },
+      onMessage: () => {},
+      sendMessage: async () => {},
+      startStream: async () => ({ append: async () => {}, finish: async () => {} }),
+    };
+
+    handle = await startServer({
+      projectDir,
+      buildDir,
+      port: 0,
+      host: '127.0.0.1',
+      slackCredentialsLoader: async () => ({
+        botToken: 'xoxb-bad',
+        appToken: 'xapp-bad',
+      }),
+      slackAdapterFactory: () => fakeAdapter,
+      slackLog: () => {},
+    });
+    // Connect failure → adapter is reset to null and best-effort
+    // disconnect was called once during the failure handler.
+    assert.equal(handle.slackAdapter, null);
+    assert.equal(disconnectCalls, 1);
+
+    // The HTTP dashboard must still be reachable — a Slack misconfig
+    // is not allowed to brick `aweek serve`.
+    const res = await httpGet(`${handle.url}healthz`);
+    assert.equal(res.statusCode, 200);
+  });
 });
 
 // ── isWildcardHost ─────────────────────────────────────────────────────────

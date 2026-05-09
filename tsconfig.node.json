@@ -166,10 +166,12 @@
     "src/services/**/*.ts",
     "src/storage/**/*.ts",
     "src/skills/**/*.ts",
+    "src/channels/**/*.ts",
     "src/cli/**/*.ts",
     "src/serve/data/**/*.ts",
     "src/serve/errors.ts",
-    "src/serve/server.ts"
+    "src/serve/server.ts",
+    "src/serve/agentchannels-smoke.ts"
   ],
 
   // Carve-outs:

@@ -1038,7 +1038,15 @@ describe('FloatingChatPanel — Sub-AC 4 of AC 5: thread-history hydration', () 
     // Resolve the fetch and confirm ChatThread now mounts with the
     // persisted messages — proving the loading window kept it from
     // mounting prematurely with `[]`.
-    resolveFetch?.(
+    // The `as` widen below works around a TS 6.0 control-flow analysis
+    // quirk: `let resolveFetch: F | null = null` is narrowed to `null`
+    // after the initializer, and the closure-captured reassignment
+    // inside the Promise executor (`(resolve) => { resolveFetch = resolve }`)
+    // is not credited to the outer flow type, so a bare `resolveFetch?.()`
+    // surfaces as "Type 'never' has no call signatures." The widen
+    // restores the declared type at the call site without changing
+    // runtime behavior.
+    (resolveFetch as ((doc: ThreadDoc) => void) | null)?.(
       makeThreadDoc('chat-aaaa', [
         {
           id: 'msg-1',

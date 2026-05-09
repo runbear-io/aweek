@@ -131,6 +131,7 @@ function startCliServer({
   port = 0,
   host = '127.0.0.1',
   extraArgs = [],
+  env,
 } = {}) {
   return new Promise((resolveStart, rejectStart) => {
     const args = [
@@ -146,9 +147,16 @@ function startCliServer({
       projectDir,
       ...extraArgs,
     ];
-    const child = spawn(process.execPath, args, {
+    // When the caller passes an explicit `env`, use it verbatim (so a
+    // test that wants to assert the Slack listener's "no credentials"
+    // skip-reason can scrub `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` out of
+    // the inherited environment). When omitted, inherit the parent's
+    // env so the existing tests keep their previous behaviour.
+    const spawnOptions = {
       stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    };
+    if (env) spawnOptions.env = env;
+    const child = spawn(process.execPath, args, spawnOptions);
 
     let stdoutBuf = '';
     let stderrBuf = '';
@@ -395,6 +403,63 @@ describe('aweek serve CLI — lifecycle', () => {
     // `runServe` logs `Could not auto-open a browser...` only when it
     // tried and failed. With --no-open it must not try at all.
     assert.doesNotMatch(handle.stdout(), /auto-open/);
+  });
+
+  // Sub-AC 2.3 of the Slack-aweek integration seed: HTTP listener and
+  // Slack Socket Mode connection must each emit a distinct startup log
+  // line (with a skip-reason log when Slack tokens are absent) so an
+  // operator running `aweek serve` can see BOTH startups in the same
+  // terminal output. The HTTP line lands on stdout (it is the
+  // user-facing dashboard URL summary). The Slack line lands on stderr
+  // via the embedded listener's logger. Both must coexist in the
+  // captured output of a single `aweek serve` invocation.
+  it('emits distinct startup log lines for HTTP listener and Slack Socket Mode (skip-reason when no tokens)', async () => {
+    // Scrub any SLACK_* token that might leak from the developer's env
+    // so the listener deterministically follows the "no credentials"
+    // skip-reason branch. We pass a clean env explicitly (rather than
+    // relying on `process.env`) so this test stays deterministic across
+    // workstations and CI.
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.SLACK_BOT_TOKEN;
+    delete cleanEnv.SLACK_APP_TOKEN;
+    delete cleanEnv.SLACK_SIGNING_SECRET;
+
+    handle = await startCliServer({ projectDir, env: cleanEnv });
+
+    // 1. HTTP listener startup is observable on stdout (user-facing
+    //    dashboard URL summary emitted by bin/aweek.ts after the bind
+    //    succeeds).
+    assert.match(
+      handle.stdout(),
+      /aweek dashboard listening on http:\/\/127\.0\.0\.1:\d+\/?/,
+      `expected the HTTP listener startup line on stdout. stdout=${handle.stdout()}`,
+    );
+
+    // 2. Slack Socket Mode startup is observable on stderr — the
+    //    skip-reason variant, since no SLACK_* tokens were exported and
+    //    the fixture project has no .aweek/channels/slack/config.json.
+    //    The line must explicitly explain WHY Slack was skipped so an
+    //    operator can fix it without reading source.
+    assert.match(
+      handle.stderr(),
+      /aweek: Slack listener disabled \(no credentials in env or \.aweek\/channels\/slack\/config\.json\)/,
+      `expected the Slack listener skip-reason line on stderr. stderr=${handle.stderr()}`,
+    );
+
+    // 3. The two log lines must be DISTINCT — the HTTP line must not
+    //    accidentally also match the Slack regex (and vice versa). This
+    //    catches a future regression where a refactor collapses both
+    //    logs into a single shared message.
+    assert.doesNotMatch(
+      handle.stdout(),
+      /Slack listener/,
+      'HTTP listener summary must not mention Slack',
+    );
+    assert.doesNotMatch(
+      handle.stderr(),
+      /aweek dashboard listening on/,
+      'Slack listener log must not duplicate the HTTP dashboard summary',
+    );
   });
 });
 

@@ -99,6 +99,32 @@ import { removeAgentArtifact } from './artifact-mutations.js';
 // surfaces — any future tweak to summary.js shows up in both without
 // per-consumer drift.
 import { buildSummary } from '../skills/summary.js';
+// Embedded Slack Socket-Mode listener bootstrap (Sub-AC 2.2 of the
+// Slack-aweek integration seed). Starts the WebSocket alongside the
+// HTTP listener in the same Node process when the credentials loader
+// returns valid tokens; quietly skips otherwise. Failures never crash
+// `aweek serve` — the dashboard stays up so the user can re-run
+// `/aweek:slack-init` without restarting.
+import {
+  startSlackListener,
+  type SlackAdapterFactory,
+  type SlackCredentialsLoader,
+  type SlackListenerHandle,
+} from './slack-listener.js';
+// Slack run-path bridge (Sub-AC 8.2 of the Slack-aweek integration
+// seed). Sits on top of the connected adapter and turns inbound Slack
+// messages into project-level Claude turns. Imports neither
+// `lock-manager` nor `UsageStore` / `budget-enforcer` — the Slack
+// execution surface is intentionally isolated from the heartbeat
+// per the seed contract.
+import {
+  startSlackBridge,
+  type CreateSlackBackendFn,
+  type SlackBridgeHandle,
+  type SlackUsageRecorder,
+} from './slack-bridge.js';
+import type { ChannelAdapter } from 'agentchannels';
+import type { SlackEnvSource } from '../storage/slack-config-store.js';
 
 // Re-export the friendly-error surface so callers that already import
 // from `./server.js` (CLI layer, tests) don't need to reach into the
@@ -295,6 +321,54 @@ export interface RawServeOptions {
    * endpoints already read.
    */
   chatConversationStore?: ChatConversationStoreLike;
+  /**
+   * Test-only override for the Slack credentials loader (Sub-AC 2.2 of
+   * the Slack-aweek integration seed). Lets `startServer` integration
+   * tests assert on the boot path without touching `process.env` or
+   * writing `.aweek/channels/slack/config.json`. Production callers
+   * leave this unset and {@link startSlackListener} falls back to the
+   * real {@link loadSlackCredentials}.
+   */
+  slackCredentialsLoader?: SlackCredentialsLoader;
+  /**
+   * Test-only override for the SlackAdapter constructor. Lets tests
+   * pin a fake adapter that records `connect()` / `disconnect()` calls
+   * without spinning up a real Socket-Mode WebSocket. Production
+   * callers leave this unset and the listener falls back to
+   * `new SlackAdapter(config)` from agentchannels.
+   */
+  slackAdapterFactory?: SlackAdapterFactory;
+  /**
+   * Test-only override for `process.env`. Threaded straight through to
+   * the credentials loader so tests can assert env-first precedence
+   * without mutating the real `process.env` (which would leak across
+   * the parallel `node --test` runs).
+   */
+  slackEnvSource?: SlackEnvSource;
+  /**
+   * Test-only logger override for the Slack listener boot status
+   * messages (connected / disabled / failed). Production callers leave
+   * this unset and the listener writes to stderr alongside the
+   * existing `aweek serve` console output.
+   */
+  slackLog?: (message: string) => void;
+  /**
+   * Test-only override for the Slack run-path backend factory
+   * (Sub-AC 8.2 of the Slack-aweek integration seed). Lets `startServer`
+   * integration tests pin a fake backend that emits a synthetic stream
+   * without spawning a real `claude` CLI. Production callers leave this
+   * unset and {@link startSlackBridge} falls back to
+   * {@link createPersistedSlackBackend}.
+   */
+  slackBackendFactory?: CreateSlackBackendFn;
+  /**
+   * Test-only override for the Slack run-path usage recorder
+   * (Sub-AC 8.2). Lets the isolation tests pin a sink that records
+   * calls without writing to `.aweek/channels/slack/usage.json` so the
+   * vertical-slice assertion that the per-agent tree is byte-identical
+   * stays self-contained.
+   */
+  slackUsageRecorder?: SlackUsageRecorder;
 }
 
 /**
@@ -392,6 +466,28 @@ export interface ServerHandle {
   url: string;
   projectDir: string;
   buildDir: string;
+  /**
+   * Connected Slack `ChannelAdapter`, or `null` when the embedded
+   * Slack Socket-Mode listener stayed disabled at boot. The field is
+   * populated by {@link startSlackListener} (Sub-AC 2.2): non-null
+   * when both `botToken` and `appToken` resolved AND `connect()`
+   * succeeded; `null` when either credential was missing, the
+   * adapter constructor threw, or `connect()` threw.
+   *
+   * Carried on the handle so future sub-ACs (3+: SlackAdapter ↔
+   * StreamingBridge ↔ ProjectClaudeBackend wiring) can attach
+   * `onMessage()` handlers without re-resolving the adapter, and so
+   * tests can assert that the listener actually came up.
+   */
+  slackAdapter: ChannelAdapter | null;
+  /**
+   * Connected Slack {@link StreamingBridge}, or `null` when the
+   * embedded Slack listener stayed disabled at boot. Sub-AC 8.2 of the
+   * Slack-aweek integration seed. Carried on the handle so tests can
+   * assert that the bridge actually wired up — and so future sub-ACs
+   * can hook lifecycle observers without re-resolving the adapter.
+   */
+  slackBridge: import('agentchannels').StreamingBridge | null;
   close: () => Promise<void>;
 }
 
@@ -517,6 +613,56 @@ export async function startServer(options: RawServeOptions = {}): Promise<Server
   const boundPort = await listenWithRetry(server, port, host, PORT_SCAN_LIMIT);
   const url = formatDashboardUrl(host, boundPort);
 
+  // Boot the embedded Slack Socket-Mode listener IN THE SAME Node
+  // process as the HTTP listener. Sequenced AFTER `listenWithRetry` so
+  // a failure to bind the HTTP socket (EADDRINUSE past the scan limit,
+  // EACCES, etc.) propagates immediately and we never leak a Slack
+  // WebSocket on a process that can't actually serve the dashboard.
+  //
+  // The listener never throws — it returns a `null` adapter when
+  // credentials are absent or `connect()` fails (see slack-listener.ts
+  // for the full disable matrix). That means a missing or bad token
+  // does NOT brick `aweek serve`: the HTTP dashboard stays up so the
+  // user can run `/aweek:slack-init` to re-provision the bot without
+  // restarting the whole server.
+  const slackListener: SlackListenerHandle = await startSlackListener({
+    dataDir,
+    ...(options.slackCredentialsLoader ? { loader: options.slackCredentialsLoader } : {}),
+    ...(options.slackAdapterFactory ? { adapterFactory: options.slackAdapterFactory } : {}),
+    ...(options.slackEnvSource ? { envSource: options.slackEnvSource } : {}),
+    ...(options.slackLog ? { log: options.slackLog } : {}),
+  });
+
+  // Wire the Slack run path on top of the connected adapter. Only
+  // engage when the listener actually came up — a `null` adapter means
+  // credentials were absent (or `connect()` threw) and there is no
+  // WebSocket to drain messages from. This MUST stay below
+  // `startSlackListener` so the bridge only sees adapters that have
+  // already gone through the listener's failure-mode matrix.
+  //
+  // The bridge is a NO-OP for the heartbeat: it never imports
+  // `lock-manager`, `UsageStore`, or the budget enforcer (sub-AC 8.2
+  // contract). Per-Slack-thread serialisation lives inside agentchannels'
+  // `StreamingBridge.activeThreads` map, and per-turn token accounting
+  // goes to `.aweek/channels/slack/usage.json` via
+  // `appendSlackUsageRecord`. Neither path touches `.aweek/agents/`.
+  let slackBridge: SlackBridgeHandle | null = null;
+  if (slackListener.adapter) {
+    slackBridge = startSlackBridge({
+      adapter: slackListener.adapter,
+      projectRoot: projectDir,
+      // The bridge follows the same `<.aweek>/agents` calling
+      // convention every other store accepts. The Slack usage
+      // bucket lives one level up at `.aweek/channels/slack/usage.json`,
+      // so passing `<.aweek>/agents` here means
+      // `appendSlackUsageRecord` resolves the right path.
+      dataDir: join(dataDir, 'agents'),
+      ...(options.slackBackendFactory ? { createBackend: options.slackBackendFactory } : {}),
+      ...(options.slackUsageRecorder ? { recordUsage: options.slackUsageRecorder } : {}),
+      ...(options.slackLog ? { log: options.slackLog } : {}),
+    });
+  }
+
   return {
     server,
     port: boundPort,
@@ -524,9 +670,30 @@ export async function startServer(options: RawServeOptions = {}): Promise<Server
     url,
     projectDir,
     buildDir,
+    slackAdapter: slackListener.adapter,
+    slackBridge: slackBridge ? slackBridge.bridge : null,
     close: () =>
+      // Tear down the bridge, then the Slack WebSocket, then the HTTP
+      // listener. Bridge → adapter → server is the reverse of the boot
+      // order so in-flight Slack messages get their abort signal before
+      // the underlying WebSocket closes underneath them. Each step
+      // swallows its own errors so a misbehaving teardown step never
+      // blocks Ctrl-C of `aweek serve`.
       new Promise<void>((resolveClose, rejectClose) => {
-        server.close((err) => (err ? rejectClose(err) : resolveClose()));
+        const dropBridge = async (): Promise<void> => {
+          if (slackBridge) {
+            await slackBridge.shutdown().catch(() => undefined);
+          }
+        };
+        dropBridge()
+          .then(() => slackListener.disconnect())
+          .catch(() => {
+            // Already logged inside the listener / bridge. Don't
+            // propagate so Ctrl-C of `aweek serve` always returns cleanly.
+          })
+          .finally(() => {
+            server.close((err) => (err ? rejectClose(err) : resolveClose()));
+          });
       }),
   };
 }
