@@ -247,6 +247,19 @@ function parseAssistant(msg: Record<string, unknown>): AgentStreamEvent[] {
       events.push({ type: 'text_delta', text: b.text });
       continue;
     }
+    if (b.type === 'thinking' && typeof b.thinking === 'string') {
+      // Anthropic's extended-thinking content blocks ship as
+      // `{ type: 'thinking', thinking: '<text>', signature?: '...' }` inside
+      // the `assistant.message.content[]` array. Same drop-on-floor problem
+      // the text branch above just fixed: without this case the
+      // StreamingBridge never sees a thinking event and skips the plan-task
+      // indicator (`appendTasks` arm in agentchannels' streaming-bridge.js
+      // case 'thinking'). Mapped to agentchannels' `ThinkingEvent` shape
+      // (`{ type: 'thinking', text?: string }`), which is `text` not
+      // `thinking` on the output side.
+      events.push({ type: 'thinking', text: b.thinking });
+      continue;
+    }
     if (b.type === 'tool_use') {
       const name = typeof b.name === 'string' ? b.name : 'unknown';
       events.push({ type: 'tool_use', name, input: b.input });

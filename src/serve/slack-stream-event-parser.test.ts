@@ -11,7 +11,7 @@
  *      - `system` `init` invokes onSessionInit + emits []
  *      - `stream_event` content_block_delta/text_delta → text_delta
  *      - `stream_event` content_block_delta/thinking_delta → []
- *      - `assistant` with mixed text+tool_use blocks → tool_use only
+ *      - `assistant` with mixed text+thinking+tool_use blocks → text_delta + thinking + tool_use, in source order
  *      - `user` with tool_result blocks → tool_result events (with toolUseId)
  *      - `result` success → done with stop_reason
  *      - `result` is_error: true → error
@@ -212,7 +212,7 @@ describe('parseStreamJsonLine()', () => {
     assert.deepEqual(parseStreamJsonLine(line), []);
   });
 
-  it('translates assistant tool_use blocks (skipping text blocks)', () => {
+  it('translates assistant content blocks (text + tool_use, source order preserved)', () => {
     const line = JSON.stringify({
       type: 'assistant',
       message: {
@@ -239,6 +239,57 @@ describe('parseStreamJsonLine()', () => {
       { type: 'tool_use', name: 'Bash', input: { command: 'ls' } },
       { type: 'tool_use', name: 'Read', input: { path: '/tmp/x' } },
     ]);
+  });
+
+  it('translates assistant thinking blocks into thinking events with text', () => {
+    // Anthropic ships extended-thinking content blocks as
+    // `{ type: 'thinking', thinking: '<text>', signature?: '...' }` inside
+    // `assistant.message.content[]`. The parser must surface them so
+    // agentchannels' StreamingBridge can render the plan-task indicator
+    // (`case 'thinking'` in streaming-bridge.js's appendTasks pipeline).
+    // The output shape is `{ type: 'thinking', text?: string }` — the
+    // OUTPUT field is `text`, not `thinking`, even though the input is
+    // `thinking`. Multiple thinking blocks coexist with text + tool_use
+    // in source order.
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'Let me think about this.' },
+          { type: 'text', text: 'Here is what I found.' },
+          {
+            type: 'tool_use',
+            id: 'tool_abc',
+            name: 'Bash',
+            input: { command: 'ls' },
+          },
+          { type: 'thinking', thinking: 'And one more thought.' },
+        ],
+      },
+    });
+    const out = parseStreamJsonLine(line);
+    assert.deepEqual(out, [
+      { type: 'thinking', text: 'Let me think about this.' },
+      { type: 'text_delta', text: 'Here is what I found.' },
+      { type: 'tool_use', name: 'Bash', input: { command: 'ls' } },
+      { type: 'thinking', text: 'And one more thought.' },
+    ]);
+  });
+
+  it('drops assistant thinking blocks whose `thinking` field is missing or non-string', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking' },
+          { type: 'thinking', thinking: 42 },
+          { type: 'thinking', thinking: null },
+          { type: 'text', text: 'done' },
+        ],
+      },
+    });
+    const out = parseStreamJsonLine(line);
+    assert.deepEqual(out, [{ type: 'text_delta', text: 'done' }]);
   });
 
   it('falls back to "unknown" when an assistant tool_use has no name', () => {
