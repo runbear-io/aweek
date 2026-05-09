@@ -994,6 +994,78 @@ describe('FloatingChatPanel — Sub-AC 4 of AC 5: thread-history hydration', () 
     };
   }
 
+  it('renders the loading placeholder before the thread fetch resolves so ChatThread does not mount with empty initialMessages', async () => {
+    type ThreadDoc = ReturnType<typeof makeThreadDoc>;
+    let resolveFetch: ((doc: ThreadDoc) => void) | null = null;
+    const fetchThreadStub = vi.fn(
+      (_slug: string, _threadId: string) =>
+        new Promise<ThreadDoc>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+
+    const { container } = render(
+      withProviders(
+        <FloatingChatPanel
+          selectionOverride={makeSelection({ effectiveSlug: 'writer' })}
+          agentsOverride={{ rows: ROSTER }}
+          threadPropsOverride={{ fetch: noopFetch() }}
+          threadListOverride={{
+            threads: [makeThread({ id: 'chat-aaaa' })],
+            loading: false,
+          }}
+          fetchThread={fetchThreadStub}
+        />,
+      ),
+    );
+
+    // Before the fetch resolves the panel must show the history-loading
+    // placeholder, NOT a freshly-mounted ChatThread (whose useChatStream
+    // hook would freeze with empty initialMessages and never re-seed
+    // when the array lands a tick later).
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-component="floating-chat-panel-history-loading"]'),
+      ).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-component="chat-thread-empty"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-component="chat-thread-messages"]'),
+    ).toBeNull();
+
+    // Resolve the fetch and confirm ChatThread now mounts with the
+    // persisted messages — proving the loading window kept it from
+    // mounting prematurely with `[]`.
+    // The `as` widen below works around a TS 6.0 control-flow analysis
+    // quirk: `let resolveFetch: F | null = null` is narrowed to `null`
+    // after the initializer, and the closure-captured reassignment
+    // inside the Promise executor (`(resolve) => { resolveFetch = resolve }`)
+    // is not credited to the outer flow type, so a bare `resolveFetch?.()`
+    // surfaces as "Type 'never' has no call signatures." The widen
+    // restores the declared type at the call site without changing
+    // runtime behavior.
+    (resolveFetch as ((doc: ThreadDoc) => void) | null)?.(
+      makeThreadDoc('chat-aaaa', [
+        {
+          id: 'msg-1',
+          role: 'user',
+          content: 'persisted hello',
+          createdAt: '2026-04-30T00:00:00.000Z',
+        },
+      ]),
+    );
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-component="chat-thread-message"]'),
+      ).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-component="floating-chat-panel-history-loading"]'),
+    ).toBeNull();
+  });
+
   it('fetches the active thread on mount and hydrates the chat surface', async () => {
     const fetchThreadStub = vi.fn(async (slug: string, threadId: string) => {
       expect(slug).toBe('writer');
@@ -1584,7 +1656,7 @@ describe('mapPersistedMessagesToUi helper', () => {
     expect(out[1]?.parts).toBeUndefined();
   });
 
-  it('projects assistant tools into structured parts', async () => {
+  it('projects paired tool_use + tool_result blocks into a single tool-invocation part', async () => {
     const { __test } = await import('./floating-chat-panel.tsx');
     const out = __test.mapPersistedMessagesToUi([
       {
@@ -1594,11 +1666,16 @@ describe('mapPersistedMessagesToUi helper', () => {
         createdAt: '2026-04-30T00:00:00.000Z',
         tools: [
           {
+            type: 'tool_use',
             toolUseId: 'tool-1',
-            toolName: 'Read',
-            args: { path: '/tmp/x' },
-            state: 'success',
-            result: 'file contents',
+            name: 'Read',
+            input: { path: '/tmp/x' },
+          },
+          {
+            type: 'tool_result',
+            toolUseId: 'tool-1',
+            content: 'file contents',
+            isError: false,
           },
         ],
       },
@@ -1608,6 +1685,7 @@ describe('mapPersistedMessagesToUi helper', () => {
       type: 'tool-invocation',
       toolUseId: 'tool-1',
       toolName: 'Read',
+      args: { path: '/tmp/x' },
       state: 'success',
       result: 'file contents',
     });
@@ -1617,7 +1695,7 @@ describe('mapPersistedMessagesToUi helper', () => {
     });
   });
 
-  it('omits the trailing text part when assistant content is empty', async () => {
+  it('marks an unmatched tool_use as pending and omits trailing text when empty', async () => {
     const { __test } = await import('./floating-chat-panel.tsx');
     const out = __test.mapPersistedMessagesToUi([
       {
@@ -1627,10 +1705,10 @@ describe('mapPersistedMessagesToUi helper', () => {
         createdAt: '2026-04-30T00:00:00.000Z',
         tools: [
           {
+            type: 'tool_use',
             toolUseId: 'tool-1',
-            toolName: 'Read',
-            args: {},
-            state: 'pending',
+            name: 'Read',
+            input: {},
           },
         ],
       },
@@ -1638,8 +1716,83 @@ describe('mapPersistedMessagesToUi helper', () => {
     expect(out[0]?.parts?.length).toBe(1);
     expect(out[0]?.parts?.[0]).toMatchObject({
       type: 'tool-invocation',
+      toolUseId: 'tool-1',
+      toolName: 'Read',
       state: 'pending',
     });
+  });
+
+  it('marks errored tool_result with state="error" and pins errorMessage from string content', async () => {
+    const { __test } = await import('./floating-chat-panel.tsx');
+    const out = __test.mapPersistedMessagesToUi([
+      {
+        id: 'msg-1',
+        role: 'assistant',
+        content: '',
+        createdAt: '2026-04-30T00:00:00.000Z',
+        tools: [
+          {
+            type: 'tool_use',
+            toolUseId: 'tool-err',
+            name: 'Bash',
+            input: { command: 'false' },
+          },
+          {
+            type: 'tool_result',
+            toolUseId: 'tool-err',
+            content: 'exit 1',
+            isError: true,
+          },
+        ],
+      },
+    ]);
+    expect(out[0]?.parts?.[0]).toMatchObject({
+      type: 'tool-invocation',
+      state: 'error',
+      result: 'exit 1',
+      errorMessage: 'exit 1',
+    });
+  });
+
+  it('preserves persisted tool_use order across multiple tool calls in one turn', async () => {
+    const { __test } = await import('./floating-chat-panel.tsx');
+    const out = __test.mapPersistedMessagesToUi([
+      {
+        id: 'msg-1',
+        role: 'assistant',
+        content: 'Done.',
+        createdAt: '2026-04-30T00:00:00.000Z',
+        tools: [
+          {
+            type: 'tool_use',
+            toolUseId: 'a',
+            name: 'Read',
+            input: {},
+          },
+          {
+            type: 'tool_use',
+            toolUseId: 'b',
+            name: 'Bash',
+            input: {},
+          },
+          {
+            type: 'tool_result',
+            toolUseId: 'a',
+            content: 'aa',
+            isError: false,
+          },
+          {
+            type: 'tool_result',
+            toolUseId: 'b',
+            content: 'bb',
+            isError: false,
+          },
+        ],
+      },
+    ]);
+    expect(out[0]?.parts?.[0]).toMatchObject({ toolUseId: 'a', toolName: 'Read', result: 'aa' });
+    expect(out[0]?.parts?.[1]).toMatchObject({ toolUseId: 'b', toolName: 'Bash', result: 'bb' });
+    expect(out[0]?.parts?.[2]).toMatchObject({ type: 'text', text: 'Done.' });
   });
 });
 

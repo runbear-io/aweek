@@ -744,6 +744,65 @@ export {
   loadConfig,
   saveConfig,
 } from './storage/config-store.js';
+// Slack-channel credentials loader. Used by the embedded Slack listener
+// inside `aweek serve` (Sub-AC 2.1 of the Slack-aweek integration seed).
+export {
+  loadSlackCredentials,
+  slackConfigPath,
+  SLACK_CHANNEL_DIRNAME,
+  SLACK_CONFIG_FILENAME,
+} from './storage/slack-config-store.js';
+export type {
+  SlackCredentials,
+  SlackEnvSource,
+} from './storage/slack-config-store.js';
+// Slack-channel per-thread session-id mirror (Sub-AC 5 of the
+// Slack-aweek integration seed). Persists `{ claudeSessionId,
+// lastUsedAt }` under `.aweek/channels/slack/threads/<threadKey>.json`
+// so the second message in a Slack thread can `--resume` the same
+// Claude Code CLI session that the first message minted. Includes
+// 24h idle TTL with lazy GC on read.
+export {
+  SLACK_THREADS_DIRNAME,
+  SLACK_THREAD_TTL_MS,
+  deleteSlackThread,
+  encodeThreadKey,
+  loadSlackThread,
+  saveSlackThread,
+  slackThreadPath,
+} from './storage/slack-thread-store.js';
+export type {
+  NowFn as SlackThreadNowFn,
+  SaveSlackThreadOptions,
+  SlackThreadRecord,
+} from './storage/slack-thread-store.js';
+// Slack-channel backend factory (Sub-AC 5). Wires
+// ProjectClaudeBackend's `onSessionInit` to `saveSlackThread` and
+// rehydrates `claudeSessionId` from disk when constructing a backend
+// for an existing thread.
+export {
+  createPersistedSlackBackend,
+} from './channels/slack/backend-factory.js';
+export type {
+  CreatePersistedSlackBackendOptions,
+} from './channels/slack/backend-factory.js';
+// Slack-channel token-usage store (Sub-AC 8.1 of the Slack-aweek
+// integration seed). Records one entry per Slack-thread turn into a
+// single `<projectRoot>/.aweek/channels/slack/usage.json` file,
+// independent of the per-agent UsageStore so Slack runs never feed
+// the weekly-budget pause flag.
+export {
+  SLACK_USAGE_FILENAME,
+  appendSlackUsageRecord,
+  createSlackUsageRecord,
+  readSlackUsage,
+  slackUsagePath,
+  writeSlackUsage,
+} from './storage/slack-usage-store.js';
+export type {
+  CreateSlackUsageRecordOptions,
+  SlackUsageRecord,
+} from './storage/slack-usage-store.js';
 // Free-form per-agent planning markdown (replaces config.goals /
 // config.monthlyPlans). See src/storage/plan-markdown-store.js.
 export {

@@ -49,6 +49,7 @@ import { AlertTriangle, Loader2, Send, Square } from 'lucide-react';
 
 import * as ButtonModule from './ui/button.jsx';
 import { cn } from '../lib/cn.js';
+import { Markdown } from '../lib/markdown.js';
 import {
   useChatStream,
   type BudgetExhaustedInfo,
@@ -399,16 +400,24 @@ function ChatMessageBubble({
             part={part}
           />
         ))
-      ) : (
+      ) : isUser ? (
         <div
           className={cn(
             'max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-2 text-sm',
-            isUser
-              ? 'self-end bg-primary text-primary-foreground'
-              : 'self-start bg-muted text-foreground',
+            'self-end bg-primary text-primary-foreground',
           )}
         >
           {message.content}
+        </div>
+      ) : (
+        <div
+          data-markdown="true"
+          className={cn(
+            'max-w-[85%] break-words rounded-lg px-3 py-2 text-sm',
+            'self-start bg-muted text-foreground',
+          )}
+        >
+          <Markdown source={message.content} />
         </div>
       )}
     </li>
@@ -439,12 +448,13 @@ function ChatMessagePartRenderer({
     return (
       <div
         data-component="chat-thread-message-text"
+        data-markdown="true"
         className={cn(
-          'self-start max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-2 text-sm',
+          'self-start max-w-[85%] break-words rounded-lg px-3 py-2 text-sm',
           'bg-muted text-foreground',
         )}
       >
-        {part.text}
+        <Markdown source={part.text} />
       </div>
     );
   }

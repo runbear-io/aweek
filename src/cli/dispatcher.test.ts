@@ -35,6 +35,7 @@ describe('dispatcher registry', () => {
       'run-once',
       'setup',
       'setup-hire-menu',
+      'slack-init',
       'summary',
       'teardown',
     ];

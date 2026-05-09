@@ -15,8 +15,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import tsx --test \"src/cli/**/*.test.js\" \"src/cli/**/*.test.ts\" \"src/execution/**/*.test.js\" \"src/execution/**/*.test.ts\" \"src/heartbeat/**/*.test.js\" \"src/heartbeat/**/*.test.ts\" \"src/lock/**/*.test.js\" \"src/lock/**/*.test.ts\" \"src/models/**/*.test.js\" \"src/models/**/*.test.ts\" \"src/queue/**/*.test.js\" \"src/queue/**/*.test.ts\" \"src/schemas/**/*.test.js\" \"src/schemas/**/*.test.ts\" \"src/services/**/*.test.js\" \"src/services/**/*.test.ts\" \"src/serve/data/**/*.test.js\" \"src/serve/data/**/*.test.ts\" \"src/serve/*.test.js\" \"src/serve/*.test.ts\" \"src/skills/**/*.test.js\" \"src/skills/**/*.test.ts\" \"src/storage/**/*.test.js\" \"src/storage/**/*.test.ts\" \"src/subagents/**/*.test.js\" \"src/subagents/**/*.test.ts\" \"src/time/**/*.test.js\" \"src/time/**/*.test.ts\" \"src/serve/spa/pages/pages.contract.test.js\" \"src/serve/spa/pages/pages.contract.test.ts\"",
-    "test:verbose": "node --import tsx --test --test-reporter=spec \"src/cli/**/*.test.js\" \"src/cli/**/*.test.ts\" \"src/execution/**/*.test.js\" \"src/execution/**/*.test.ts\" \"src/heartbeat/**/*.test.js\" \"src/heartbeat/**/*.test.ts\" \"src/lock/**/*.test.js\" \"src/lock/**/*.test.ts\" \"src/models/**/*.test.js\" \"src/models/**/*.test.ts\" \"src/queue/**/*.test.js\" \"src/queue/**/*.test.ts\" \"src/schemas/**/*.test.js\" \"src/schemas/**/*.test.ts\" \"src/services/**/*.test.js\" \"src/services/**/*.test.ts\" \"src/serve/data/**/*.test.js\" \"src/serve/data/**/*.test.ts\" \"src/serve/*.test.js\" \"src/serve/*.test.ts\" \"src/skills/**/*.test.js\" \"src/skills/**/*.test.ts\" \"src/storage/**/*.test.js\" \"src/storage/**/*.test.ts\" \"src/subagents/**/*.test.js\" \"src/subagents/**/*.test.ts\" \"src/time/**/*.test.js\" \"src/time/**/*.test.ts\" \"src/serve/spa/pages/pages.contract.test.js\" \"src/serve/spa/pages/pages.contract.test.ts\"",
+    "test": "tsx scripts/run-tests.mts",
+    "test:verbose": "tsx scripts/run-tests.mts --reporter=spec",
     "test:spa": "vitest run --config vitest.config.js",
     "test:spa:watch": "vitest --config vitest.config.js",
     "typecheck": "tsc --noEmit -p tsconfig.node.json",
@@ -49,8 +49,12 @@
     "access": "public"
   },
   "packageManager": "pnpm@10.7.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.126",
+    "agentchannels": "^0.2.0",
     "@radix-ui/react-dialog": "^1.1.6",
     "@radix-ui/react-dropdown-menu": "^2.1.6",
     "@radix-ui/react-label": "^2.1.2",

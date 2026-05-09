@@ -1344,19 +1344,38 @@ export interface AgentThreadsResponse {
 }
 
 /**
- * Single tool-invocation block embedded in a persisted chat message.
- * Mirrors `ChatToolBlock` in `src/schemas/chat-conversation.ts` —
- * re-declared at the api-client layer so SPA consumers don't pull in
- * the Node-only AJV schema module through the bundler.
+ * `tool_use` branch of a persisted tool block — agent invokes a tool.
+ * Mirrors `ChatToolUseBlock` in `src/schemas/chat-conversation.ts`.
  */
-export interface ChatToolBlockWire {
+export interface ChatToolUseBlockWire {
+  type: 'tool_use';
   toolUseId: string;
-  toolName: string;
-  args: Record<string, unknown>;
-  state: 'pending' | 'success' | 'error';
-  result?: unknown;
-  errorMessage?: string;
+  name: string;
+  input: Record<string, unknown>;
 }
+
+/**
+ * `tool_result` branch — matched with a `tool_use` by `toolUseId`.
+ * Mirrors `ChatToolResultBlock` in `src/schemas/chat-conversation.ts`.
+ */
+export interface ChatToolResultBlockWire {
+  type: 'tool_result';
+  toolUseId: string;
+  content: unknown;
+  isError: boolean;
+}
+
+/**
+ * Polymorphic tool-invocation block embedded in a persisted chat
+ * message. Consumers MUST narrow on `block.type` before reading
+ * branch-specific fields. Mirrors `ChatToolBlock` in
+ * `src/schemas/chat-conversation.ts` — re-declared at the api-client
+ * layer so SPA consumers don't pull in the Node-only AJV schema module
+ * through the bundler.
+ */
+export type ChatToolBlockWire =
+  | ChatToolUseBlockWire
+  | ChatToolResultBlockWire;
 
 /**
  * Single message inside a persisted chat thread. Mirrors `ChatMessage`

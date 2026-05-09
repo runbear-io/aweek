@@ -507,6 +507,389 @@ export function buildSessionConfig(
   };
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Project Claude Session (Slack execution surface)
+// ──────────────────────────────────────────────────────────────────────
+//
+// The functions below are the CLI driver for the Slack channel adapter
+// (`src/channels/slack/project-claude-backend.ts`). They are
+// intentionally separate from `launchSession` above:
+//
+//   - `launchSession` is the heartbeat path: subagent-scoped, task-shaped,
+//     persisted to per-agent execution logs, accounted against per-agent
+//     weekly budgets.
+//   - `spawnProjectClaudeSession` is the Slack path: project-level
+//     Claude (no `--agent`), conversational prompt piped via stdin,
+//     persisted under `.aweek/channels/slack/`, isolated from the
+//     heartbeat lock and budget.
+//
+// Both share the spawn-based CLI plumbing (`SpawnFn`, `nodeSpawn`,
+// readline-driven NDJSON capture) which is why this lives in the same
+// module — but their argv shape, lifecycle, and accounting paths
+// diverge so the helpers stay distinct.
+
+/**
+ * Options for {@link buildProjectClaudeCliArgs}. All fields optional;
+ * an empty object yields the project-Claude default argv.
+ */
+export interface BuildProjectClaudeCliArgsOpts {
+  /**
+   * Resume an existing Claude Code CLI session id. Set on every turn
+   * after the first; omitted on the first turn so the CLI mints a new
+   * session id we can persist for the thread.
+   */
+  resumeSessionId?: string;
+  /**
+   * Slack-mode banner appended to the system prompt via
+   * `--append-system-prompt`. Empty / undefined are treated identically
+   * (the flag is omitted entirely so the CLI uses its own default).
+   */
+  systemPromptAppend?: string;
+  /** Optional model override (e.g. `'opus'`, `'sonnet'`). */
+  model?: string;
+}
+
+/**
+ * Build the argv for a Slack-driven project-level Claude CLI invocation.
+ *
+ * Fixed flags (always present):
+ *   - `--print` — non-interactive run; exit when the turn completes.
+ *   - `--output-format stream-json --verbose` — one NDJSON event per
+ *     line covering system init, every assistant block, every tool_use
+ *     / tool_result, and the final `{type:"result"}` event with token
+ *     usage. Verbose is required by the CLI under `--print stream-json`.
+ *   - `--dangerously-skip-permissions` — Slack-mode bypass. The Slack
+ *     thread is the human-in-the-loop, not a CLI approval prompt;
+ *     mirrors `permissionMode='bypassPermissions'` +
+ *     `allowDangerouslySkipPermissions=true` from
+ *     `src/serve/data/chat.ts`.
+ *
+ * Conditional flags:
+ *   - `--resume <id>` — appended only when `resumeSessionId` is set.
+ *   - `--append-system-prompt <banner>` — appended only when
+ *     `systemPromptAppend` is a non-empty string.
+ *   - `--model <name>` — appended only when `model` is set.
+ *
+ * v1 NEVER appends `--agent`: subagent identities are not directly
+ * addressable from Slack. Project Claude reaches them transitively via
+ * `Task()` / `aweek exec` under bypassPermissions.
+ */
+export function buildProjectClaudeCliArgs(
+  opts: BuildProjectClaudeCliArgsOpts = {},
+): string[] {
+  const args: string[] = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--dangerously-skip-permissions',
+  ];
+
+  if (opts.resumeSessionId) {
+    args.push('--resume', opts.resumeSessionId);
+  }
+
+  if (
+    typeof opts.systemPromptAppend === 'string' &&
+    opts.systemPromptAppend.length > 0
+  ) {
+    args.push('--append-system-prompt', opts.systemPromptAppend);
+  }
+
+  if (opts.model) {
+    args.push('--model', opts.model);
+  }
+
+  return args;
+}
+
+/**
+ * Options for {@link spawnProjectClaudeSession}.
+ */
+export interface SpawnProjectClaudeSessionOpts
+  extends BuildProjectClaudeCliArgsOpts {
+  /**
+   * Working directory for the spawned CLI — the aweek project root.
+   * The CLI inherits this path so `Task()` / `aweek exec` invocations
+   * land in the right `.claude/agents/` and `.aweek/` trees.
+   */
+  cwd: string;
+  /**
+   * Prompt text. Piped verbatim to the child's stdin and stdin is then
+   * closed. Stdin piping (instead of a positional argv) avoids quoting
+   * traps for free-form Slack messages that may contain newlines,
+   * single/double quotes, or shell metacharacters.
+   */
+  prompt: string;
+  /** Optional CLI binary override (default: `'claude'`). */
+  cli?: string;
+  /** Additional environment variables merged onto `process.env`. */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Abort signal — when fired, the child receives `SIGTERM`, then
+   * `SIGKILL` after a 5s grace period if it has not exited cleanly.
+   * Idempotent: aborting twice is a no-op. Aborting after the child
+   * has already exited is also a no-op.
+   *
+   * The promise still resolves once the child has actually exited (it
+   * does NOT reject on abort) — this lets the caller distinguish
+   * "killed cleanly" (`killed: true, exitCode: null`) from "errored"
+   * (rejection).
+   */
+  signal?: AbortSignal;
+  /**
+   * Per-line stdout callback. Invoked once per stream-json NDJSON event
+   * the CLI emits, in arrival order, with no internal buffering.
+   * Callbacks that throw are swallowed so a downstream parsing bug
+   * cannot orphan the spawned process.
+   */
+  onStdoutLine?: (line: string) => void;
+  /**
+   * Per-chunk stderr callback. Invoked with each decoded UTF-8 chunk
+   * the CLI writes to stderr. The same content is also accumulated
+   * into the resolved {@link SpawnProjectClaudeSessionResult.stderr}
+   * for callers that prefer the buffered form.
+   */
+  onStderrChunk?: (chunk: string) => void;
+  /** Injectable spawn function (testing seam). */
+  spawnFn?: SpawnFn;
+}
+
+/**
+ * Result of a {@link spawnProjectClaudeSession} call.
+ */
+export interface SpawnProjectClaudeSessionResult {
+  /** Exit code reported by the child, or `null` if it was killed. */
+  exitCode: number | null;
+  /** True when the child was terminated via the AbortSignal. */
+  killed: boolean;
+  /** Full stderr capture (also delivered live via `onStderrChunk`). */
+  stderr: string;
+  /** Argv actually passed to spawn (for debugging / log trails). */
+  cliArgs: string[];
+}
+
+/**
+ * Spawn `claude --print --output-format stream-json --verbose ...` in
+ * the aweek project root, pipe `prompt` to stdin, stream stdout NDJSON
+ * lines back through `onStdoutLine`, and resolve with the final exit
+ * code + buffered stderr.
+ *
+ * Designed for the Slack execution surface: project-level Claude (no
+ * `--agent`), `--resume <id>` reuse for thread continuity, and
+ * abort-driven termination so a stalled CLI cannot pin a Slack
+ * thread's per-thread lock indefinitely.
+ *
+ * Lifecycle / failure modes:
+ *
+ *   - **Synchronous spawn failure** — `spawnFn` throws (e.g.
+ *     `spawn ENOENT` because `claude` is not on PATH). The promise
+ *     rejects with `Failed to spawn CLI process: <message>`.
+ *
+ *   - **Asynchronous child error** — the child emits an `'error'`
+ *     event before close. The promise rejects with
+ *     `CLI process error: <message>`.
+ *
+ *   - **Abort before spawn** — `opts.signal.aborted === true` on
+ *     entry. The promise resolves immediately with
+ *     `{ killed: true, exitCode: null, stderr: '', cliArgs }` and no
+ *     child is spawned.
+ *
+ *   - **Abort during run** — `signal` fires while the child is alive.
+ *     We deliver `SIGTERM` and start a 5s timer; if the child still
+ *     hasn't exited we deliver `SIGKILL`. The promise resolves once
+ *     the child actually closes, with `killed: true`.
+ *
+ *   - **Non-zero exit code** — the child runs to completion but exits
+ *     with `code !== 0`. The promise resolves normally — non-zero is
+ *     the caller's policy decision (e.g. emit an `error` AgentStreamEvent
+ *     to Slack), not a spawn failure.
+ *
+ *   - **Clean exit** — the child closes with exit code 0. The promise
+ *     resolves with `{ killed: false, exitCode: 0, ... }` once both
+ *     the child has closed AND readline has flushed any buffered
+ *     stdout lines (otherwise the trailing `{type:"result"}` NDJSON
+ *     event can race past the resolver).
+ */
+export async function spawnProjectClaudeSession(
+  opts: SpawnProjectClaudeSessionOpts,
+): Promise<SpawnProjectClaudeSessionResult> {
+  if (!opts) throw new Error('spawnProjectClaudeSession: opts is required');
+  if (!opts.cwd) throw new Error('spawnProjectClaudeSession: cwd is required');
+  if (typeof opts.prompt !== 'string') {
+    throw new Error('spawnProjectClaudeSession: prompt must be a string');
+  }
+
+  const cliArgs = buildProjectClaudeCliArgs({
+    resumeSessionId: opts.resumeSessionId,
+    systemPromptAppend: opts.systemPromptAppend,
+    model: opts.model,
+  });
+
+  // Fast path: caller already aborted before we did any work. Skip the
+  // spawn entirely and report `killed: true` so the caller can short
+  // circuit identically to the post-spawn abort branch.
+  if (opts.signal?.aborted) {
+    return { exitCode: null, killed: true, stderr: '', cliArgs };
+  }
+
+  const cli = opts.cli || DEFAULT_CLI;
+  const spawnFn: SpawnFn = opts.spawnFn || (nodeSpawn as unknown as SpawnFn);
+
+  const spawnOpts: SpawnOptions = {
+    cwd: opts.cwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...opts.env },
+  };
+
+  return new Promise<SpawnProjectClaudeSessionResult>((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawnFn(cli, cliArgs, spawnOpts);
+    } catch (err) {
+      reject(
+        new Error(
+          `Failed to spawn CLI process: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ),
+      );
+      return;
+    }
+
+    if (!child.stdout) {
+      reject(new Error('Spawned child has no stdout stream'));
+      return;
+    }
+    if (!child.stderr) {
+      reject(new Error('Spawned child has no stderr stream'));
+      return;
+    }
+    if (!child.stdin) {
+      reject(new Error('Spawned child has no stdin stream'));
+      return;
+    }
+
+    let stderr = '';
+    let killed = false;
+    let settled = false;
+    let childExitCode: number | null = null;
+    let childExited = false;
+    let rlClosed = false;
+    let killTimer: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
+      if (opts.signal) {
+        opts.signal.removeEventListener('abort', onAbort);
+      }
+    };
+
+    const onAbort = () => {
+      if (killed || childExited) return;
+      killed = true;
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // Already dead — `close` will fire and we resolve normally.
+      }
+      // Escalate to SIGKILL if the child has not closed within 5s.
+      // The timer is cleared in cleanup() if the child exits cleanly
+      // before the deadline.
+      killTimer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // Already dead.
+        }
+      }, 5000);
+    };
+
+    if (opts.signal) {
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const maybeResolve = () => {
+      if (!childExited || !rlClosed) return;
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ exitCode: childExitCode, killed, stderr, cliArgs });
+    };
+
+    // Stream-json emits one event per line. Use readline so the caller
+    // sees each event atomically and we still resolve only after every
+    // buffered line has flushed.
+    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    rl.on('line', (line) => {
+      if (opts.onStdoutLine) {
+        try {
+          opts.onStdoutLine(line);
+        } catch {
+          // Listener errors must not abort the spawn — Slack persistence
+          // and AgentStreamEvent translation live in callers, and a bug
+          // there should surface as a `turn-error`, not as an orphaned
+          // child process.
+        }
+      }
+    });
+    rl.on('close', () => {
+      rlClosed = true;
+      maybeResolve();
+    });
+
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      const str = chunk.toString();
+      stderr += str;
+      if (opts.onStderrChunk) {
+        try {
+          opts.onStderrChunk(str);
+        } catch {
+          // Same reasoning as onStdoutLine — never let a listener
+          // bug kill the child.
+        }
+      }
+    });
+
+    child.on('error', (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(`CLI process error: ${err.message}`));
+    });
+
+    child.on('close', (code: number | null) => {
+      childExitCode = code;
+      childExited = true;
+      // If a kill timer is still pending, the child exited before the
+      // grace window — drop the SIGKILL so we don't escalate against
+      // an already-closed process.
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
+      maybeResolve();
+    });
+
+    // Pipe the prompt to stdin and close. EPIPE shows up if the CLI
+    // exits before reading all of stdin (e.g. because `--print` rejected
+    // the argv); we swallow the error event because the canonical
+    // signal is the child's exit code, not the stdin write status.
+    child.stdin.on('error', () => {
+      // Ignored on purpose — see the comment above.
+    });
+
+    try {
+      child.stdin.write(opts.prompt);
+      child.stdin.end();
+    } catch {
+      // Same reasoning — defer to the child's exit code.
+    }
+  });
+}
+
 /**
  * Parse token usage from CLI session JSON output.
  *

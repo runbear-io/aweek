@@ -12,13 +12,16 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
+import { Writable } from 'node:stream';
 import {
   buildRuntimeContext,
   buildTaskPrompt,
   buildCliArgs,
+  buildProjectClaudeCliArgs,
   launchSession,
   buildSessionConfig,
   parseTokenUsage,
+  spawnProjectClaudeSession,
 } from './cli-session.js';
 import type {
   BuildSessionAgentConfig,
@@ -750,5 +753,664 @@ describe('parseTokenUsage', () => {
     assert.equal(usage.outputTokens, 0);
     assert.equal(usage.totalTokens, 0);
     assert.equal(usage.costUsd, 0);
+  });
+});
+
+// ===========================================================================
+// buildProjectClaudeCliArgs (Slack execution surface)
+// ===========================================================================
+describe('buildProjectClaudeCliArgs', () => {
+  it('emits the fixed Slack-mode flags by default', () => {
+    const args = buildProjectClaudeCliArgs();
+    assert.ok(args.includes('--print'));
+    const ofIdx = args.indexOf('--output-format');
+    assert.ok(ofIdx >= 0);
+    assert.equal(args[ofIdx + 1], 'stream-json');
+    assert.ok(args.includes('--verbose'));
+    assert.ok(args.includes('--dangerously-skip-permissions'));
+  });
+
+  it('NEVER includes --agent (project-level Claude in v1)', () => {
+    const args = buildProjectClaudeCliArgs({
+      resumeSessionId: 'sess-1',
+      systemPromptAppend: 'You are in Slack mode.',
+      model: 'opus',
+    });
+    assert.ok(!args.includes('--agent'));
+  });
+
+  it('appends --resume <id> when resumeSessionId is set', () => {
+    const args = buildProjectClaudeCliArgs({ resumeSessionId: 'sess-abc' });
+    const idx = args.indexOf('--resume');
+    assert.ok(idx >= 0, 'expected --resume in argv');
+    assert.equal(args[idx + 1], 'sess-abc');
+  });
+
+  it('omits --resume when resumeSessionId is undefined', () => {
+    const args = buildProjectClaudeCliArgs();
+    assert.ok(!args.includes('--resume'));
+  });
+
+  it('omits --resume when resumeSessionId is the empty string', () => {
+    // Empty string must be treated identically to undefined — passing
+    // `--resume ""` to the CLI is a hard error and an empty string is
+    // a common "no session yet" sentinel.
+    const args = buildProjectClaudeCliArgs({ resumeSessionId: '' });
+    assert.ok(!args.includes('--resume'));
+  });
+
+  it('appends --append-system-prompt <banner> when set', () => {
+    const banner = 'You are running in Slack-mode (conversational chat).';
+    const args = buildProjectClaudeCliArgs({ systemPromptAppend: banner });
+    const idx = args.indexOf('--append-system-prompt');
+    assert.ok(idx >= 0);
+    assert.equal(args[idx + 1], banner);
+  });
+
+  it('omits --append-system-prompt when systemPromptAppend is empty', () => {
+    const args = buildProjectClaudeCliArgs({ systemPromptAppend: '' });
+    assert.ok(!args.includes('--append-system-prompt'));
+  });
+
+  it('appends --model when set', () => {
+    const args = buildProjectClaudeCliArgs({ model: 'opus' });
+    const idx = args.indexOf('--model');
+    assert.ok(idx >= 0);
+    assert.equal(args[idx + 1], 'opus');
+  });
+
+  it('omits --model when not set', () => {
+    const args = buildProjectClaudeCliArgs();
+    assert.ok(!args.includes('--model'));
+  });
+});
+
+// ===========================================================================
+// spawnProjectClaudeSession (Slack execution surface)
+// ===========================================================================
+describe('spawnProjectClaudeSession', () => {
+  // ---- Mock helper: child with stdin ----------------------------------
+  interface ProjectClaudeMockChild extends EventEmitter {
+    stdout: Readable;
+    stderr: Readable;
+    stdin: Writable & { writes: string[]; ended: boolean };
+    kill: (signal?: string) => boolean;
+    killed: boolean;
+    _signals: string[];
+  }
+
+  interface ProjectClaudeSpawnCall {
+    cmd: string;
+    args: ReadonlyArray<string>;
+    opts: {
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+      stdio?: unknown;
+    };
+  }
+
+  interface ProjectClaudeMockSpawn extends SpawnFn {
+    lastCall: () => ProjectClaudeSpawnCall | null;
+    lastChild: () => ProjectClaudeMockChild | null;
+  }
+
+  interface ProjectClaudeMockOpts {
+    exitCode?: number | null;
+    stdout?: string;
+    stderr?: string;
+    error?: Error | null;
+    /** When true, the child does not auto-close — the test drives the lifecycle. */
+    manual?: boolean;
+    /**
+     * When true, the child auto-closes on first SIGTERM. Use to verify
+     * abort-driven graceful kill.
+     */
+    closeOnSigterm?: boolean;
+  }
+
+  function createProjectClaudeMockSpawn(
+    cfg: ProjectClaudeMockOpts = {},
+  ): ProjectClaudeMockSpawn {
+    let lastCall: ProjectClaudeSpawnCall | null = null;
+    let lastChild: ProjectClaudeMockChild | null = null;
+
+    const mockSpawn = ((cmd: string, args: ReadonlyArray<string>, opts: ProjectClaudeSpawnCall['opts']) => {
+      lastCall = { cmd, args, opts };
+
+      const child = new EventEmitter() as ProjectClaudeMockChild;
+      const stdoutStream = new Readable({ read() {} });
+      const stderrStream = new Readable({ read() {} });
+      const stdinWrites: string[] = [];
+      const stdinStream = new Writable({
+        write(chunk, _encoding, cb) {
+          stdinWrites.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+          cb();
+        },
+      }) as ProjectClaudeMockChild['stdin'];
+      stdinStream.writes = stdinWrites;
+      stdinStream.ended = false;
+      const origEnd = stdinStream.end.bind(stdinStream);
+      stdinStream.end = (...args: Parameters<typeof origEnd>) => {
+        stdinStream.ended = true;
+        return origEnd(...args);
+      };
+
+      child.stdout = stdoutStream;
+      child.stderr = stderrStream;
+      child.stdin = stdinStream;
+      child.killed = false;
+      child._signals = [];
+
+      child.kill = (signal?: string) => {
+        child.killed = true;
+        child._signals.push(signal || 'SIGTERM');
+        if (cfg.closeOnSigterm && (signal === 'SIGTERM' || signal === undefined)) {
+          setImmediate(() => {
+            stdoutStream.push(null);
+            stderrStream.push(null);
+            child.emit('close', null);
+          });
+        }
+        return true;
+      };
+
+      lastChild = child;
+
+      setImmediate(() => {
+        if (cfg.error) {
+          child.emit('error', cfg.error);
+          return;
+        }
+        if (cfg.manual || cfg.closeOnSigterm) {
+          // Push any pre-arranged stdout / stderr but leave the streams
+          // open so the test can drive the lifecycle.
+          if (cfg.stdout) stdoutStream.push(cfg.stdout);
+          if (cfg.stderr) stderrStream.push(cfg.stderr);
+          return;
+        }
+        if (cfg.stdout) stdoutStream.push(cfg.stdout);
+        stdoutStream.push(null);
+        if (cfg.stderr) stderrStream.push(cfg.stderr);
+        stderrStream.push(null);
+        setImmediate(() => child.emit('close', cfg.exitCode ?? 0));
+      });
+
+      return child;
+    }) as unknown as ProjectClaudeMockSpawn;
+
+    mockSpawn.lastCall = () => lastCall;
+    mockSpawn.lastChild = () => lastChild;
+    return mockSpawn;
+  }
+
+  // ---- argv / cwd / cli wiring ---------------------------------------
+  it('passes the project-Claude argv and cwd through to spawn', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({ exitCode: 0 });
+    const result = await spawnProjectClaudeSession({
+      cwd: '/work/project',
+      prompt: 'hello',
+      spawnFn: mockSpawn,
+    });
+
+    const call = mockSpawn.lastCall();
+    assert.ok(call);
+    assert.equal(call.cmd, 'claude');
+    assert.equal(call.opts.cwd, '/work/project');
+    assert.deepEqual(call.opts.stdio, ['pipe', 'pipe', 'pipe']);
+    assert.ok(call.args.includes('--print'));
+    assert.ok(call.args.includes('--output-format'));
+    assert.ok(call.args.includes('stream-json'));
+    assert.ok(call.args.includes('--verbose'));
+    assert.ok(call.args.includes('--dangerously-skip-permissions'));
+    assert.ok(!call.args.includes('--agent'));
+    assert.deepEqual(result.cliArgs, call.args);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.killed, false);
+  });
+
+  it('honours the cli override', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn();
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      cli: '/usr/local/bin/claude',
+      spawnFn: mockSpawn,
+    });
+    const call = mockSpawn.lastCall();
+    assert.ok(call);
+    assert.equal(call.cmd, '/usr/local/bin/claude');
+  });
+
+  it('appends --resume <id> when resumeSessionId is set', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn();
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      resumeSessionId: 'sess-42',
+      spawnFn: mockSpawn,
+    });
+    const call = mockSpawn.lastCall();
+    assert.ok(call);
+    const idx = call.args.indexOf('--resume');
+    assert.ok(idx >= 0);
+    assert.equal(call.args[idx + 1], 'sess-42');
+  });
+
+  it('appends --append-system-prompt <banner> when set', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn();
+    const banner = 'Slack-mode banner';
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      systemPromptAppend: banner,
+      spawnFn: mockSpawn,
+    });
+    const call = mockSpawn.lastCall();
+    assert.ok(call);
+    const idx = call.args.indexOf('--append-system-prompt');
+    assert.ok(idx >= 0);
+    assert.equal(call.args[idx + 1], banner);
+  });
+
+  it('passes additional env variables', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn();
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      env: { SLACK_THREAD_KEY: 'slack:C1:T2' },
+      spawnFn: mockSpawn,
+    });
+    const call = mockSpawn.lastCall();
+    assert.ok(call);
+    assert.equal(call.opts.env?.SLACK_THREAD_KEY, 'slack:C1:T2');
+  });
+
+  // ---- stdin prompt piping -------------------------------------------
+  it('pipes the prompt to stdin and ends stdin', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({ exitCode: 0 });
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'Hello, project Claude — multi-line\nprompt with "quotes".',
+      spawnFn: mockSpawn,
+    });
+    const child = mockSpawn.lastChild();
+    assert.ok(child);
+    assert.equal(child.stdin.writes.join(''), 'Hello, project Claude — multi-line\nprompt with "quotes".');
+    assert.equal(child.stdin.ended, true);
+  });
+
+  it('accepts an empty-string prompt (still ends stdin)', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({ exitCode: 0 });
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: '',
+      spawnFn: mockSpawn,
+    });
+    const child = mockSpawn.lastChild();
+    assert.ok(child);
+    assert.equal(child.stdin.writes.join(''), '');
+    assert.equal(child.stdin.ended, true);
+  });
+
+  // ---- stdout line streaming -----------------------------------------
+  it('delivers stdout lines to onStdoutLine in arrival order', async () => {
+    const ndjson = [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"assistant","content":"hi"}',
+      '{"type":"result","usage":{"input_tokens":10,"output_tokens":2}}',
+    ].join('\n');
+    const mockSpawn = createProjectClaudeMockSpawn({
+      exitCode: 0,
+      stdout: ndjson,
+    });
+    const lines: string[] = [];
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      spawnFn: mockSpawn,
+      onStdoutLine: (line) => lines.push(line),
+    });
+    assert.deepEqual(lines, [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"assistant","content":"hi"}',
+      '{"type":"result","usage":{"input_tokens":10,"output_tokens":2}}',
+    ]);
+  });
+
+  it('swallows onStdoutLine listener errors so the spawn still resolves', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({
+      exitCode: 0,
+      stdout: 'line-a\nline-b\n',
+    });
+    const result = await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      spawnFn: mockSpawn,
+      onStdoutLine: () => { throw new Error('listener bug'); },
+    });
+    assert.equal(result.exitCode, 0);
+  });
+
+  // ---- stderr capture -------------------------------------------------
+  it('captures stderr both as a buffered string and via onStderrChunk', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({
+      exitCode: 1,
+      stderr: 'boom: bad arg\n',
+    });
+    const chunks: string[] = [];
+    const result = await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      spawnFn: mockSpawn,
+      onStderrChunk: (c) => chunks.push(c),
+    });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stderr, 'boom: bad arg\n');
+    assert.equal(chunks.join(''), 'boom: bad arg\n');
+  });
+
+  // ---- exit code handling --------------------------------------------
+  it('returns non-zero exit codes without rejecting', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({ exitCode: 7, stderr: 'x' });
+    const result = await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      spawnFn: mockSpawn,
+    });
+    assert.equal(result.exitCode, 7);
+    assert.equal(result.killed, false);
+    assert.equal(result.stderr, 'x');
+  });
+
+  // ---- abort lifecycle -----------------------------------------------
+  it('returns immediately with killed=true when the signal is already aborted', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const result = await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      signal: ctrl.signal,
+      spawnFn: mockSpawn,
+    });
+    assert.equal(result.killed, true);
+    assert.equal(result.exitCode, null);
+    // No spawn should have happened.
+    assert.equal(mockSpawn.lastCall(), null);
+  });
+
+  it('kills the child via SIGTERM when the signal aborts mid-run', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({ closeOnSigterm: true });
+    const ctrl = new AbortController();
+    const p = spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      signal: ctrl.signal,
+      spawnFn: mockSpawn,
+    });
+    // Give the spawn a tick to settle, then abort.
+    await new Promise((r) => setImmediate(r));
+    ctrl.abort();
+    const result = await p;
+    assert.equal(result.killed, true);
+    assert.equal(result.exitCode, null);
+    const child = mockSpawn.lastChild();
+    assert.ok(child);
+    assert.ok(child._signals.includes('SIGTERM'));
+  });
+
+  it('does not crash if abort fires after the child already exited', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({ exitCode: 0 });
+    const ctrl = new AbortController();
+    const result = await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'p',
+      signal: ctrl.signal,
+      spawnFn: mockSpawn,
+    });
+    // Late abort — must be a no-op.
+    ctrl.abort();
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.killed, false);
+  });
+
+  // ---- spawn failures -------------------------------------------------
+  it('rejects when spawnFn throws synchronously', async () => {
+    const badSpawn = (() => { throw new Error('ENOENT'); }) as unknown as SpawnFn;
+    await assert.rejects(
+      () => spawnProjectClaudeSession({
+        cwd: '/x',
+        prompt: 'p',
+        spawnFn: badSpawn,
+      }),
+      /Failed to spawn CLI process: ENOENT/,
+    );
+  });
+
+  it('rejects on async child error event', async () => {
+    const mockSpawn = createProjectClaudeMockSpawn({ error: new Error('crashed') });
+    await assert.rejects(
+      () => spawnProjectClaudeSession({
+        cwd: '/x',
+        prompt: 'p',
+        spawnFn: mockSpawn,
+      }),
+      /CLI process error: crashed/,
+    );
+  });
+
+  // ---- input validation ----------------------------------------------
+  it('throws when cwd is missing', async () => {
+    await assert.rejects(
+      () => spawnProjectClaudeSession({
+        cwd: '' as string,
+        prompt: 'p',
+      }),
+      /cwd is required/,
+    );
+  });
+
+  it('throws when prompt is not a string', async () => {
+    await assert.rejects(
+      () => spawnProjectClaudeSession({
+        cwd: '/x',
+        prompt: 123 as unknown as string,
+      }),
+      /prompt must be a string/,
+    );
+  });
+});
+
+// ===========================================================================
+// Sub-AC 5: --append-system-prompt flag wiring (banner end-to-end)
+// ===========================================================================
+//
+// The seed contract requires Slack-driven runs to inject a Slack-mode
+// banner via `--append-system-prompt`. This block locks down the wiring
+// from the slack-bridge constant through {@link buildProjectClaudeCliArgs}
+// and out of {@link spawnProjectClaudeSession} as a single argv pair —
+// so a future refactor that splits, repeats, or drops the flag is caught
+// at test time.
+//
+// The simpler "is the flag in argv when set?" / "is it omitted when
+// unset?" assertions live in the buildProjectClaudeCliArgs and
+// spawnProjectClaudeSession describes above; this block is the
+// integration-style end-to-end wiring contract.
+describe('Sub-AC 5: --append-system-prompt flag wiring (banner end-to-end)', () => {
+  // Re-import locally so the dynamic import lives next to the
+  // assertions that depend on it; keeps the contract self-contained
+  // to this block rather than threading a top-of-file import that
+  // would suggest broader coupling.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const slackBridgeModule = '../serve/slack-bridge.js';
+
+  it('the SLACK_SYSTEM_PROMPT_BANNER from slack-bridge flows through buildProjectClaudeCliArgs verbatim', async () => {
+    const { SLACK_SYSTEM_PROMPT_BANNER } = await import(slackBridgeModule);
+    const args = buildProjectClaudeCliArgs({
+      systemPromptAppend: SLACK_SYSTEM_PROMPT_BANNER,
+    });
+    const idx = args.indexOf('--append-system-prompt');
+    assert.ok(idx >= 0, '--append-system-prompt must appear in argv');
+    assert.strictEqual(
+      args[idx + 1],
+      SLACK_SYSTEM_PROMPT_BANNER,
+      'the constant flows through verbatim, no re-quoting / re-wrapping',
+    );
+  });
+
+  it('emits exactly ONE --append-system-prompt pair (no duplication)', () => {
+    const banner = 'banner-x';
+    const args = buildProjectClaudeCliArgs({ systemPromptAppend: banner });
+    const occurrences = args.filter((a) => a === '--append-system-prompt');
+    assert.equal(
+      occurrences.length,
+      1,
+      `--append-system-prompt must appear exactly once, got ${occurrences.length}`,
+    );
+  });
+
+  it('preserves multi-line banners verbatim (no line splitting)', () => {
+    const banner = 'line one\nline two\nline three with "quotes" and a tab\there';
+    const args = buildProjectClaudeCliArgs({ systemPromptAppend: banner });
+    const idx = args.indexOf('--append-system-prompt');
+    assert.ok(idx >= 0);
+    assert.strictEqual(
+      args[idx + 1],
+      banner,
+      'multi-line banner must reach argv as a single string with all whitespace intact',
+    );
+  });
+
+  it('preserves shell-metachar banners verbatim (no escaping)', () => {
+    // The CLI is spawned via execve, not /bin/sh, so the banner
+    // must NOT be shell-escaped. Round-trip a banner full of
+    // metachars to lock that down.
+    const banner = `$VAR \`backtick\` && echo "x" | cat ; rm -rf / # comment`;
+    const args = buildProjectClaudeCliArgs({ systemPromptAppend: banner });
+    const idx = args.indexOf('--append-system-prompt');
+    assert.ok(idx >= 0);
+    assert.strictEqual(args[idx + 1], banner);
+  });
+
+  it('treats undefined and empty-string banners identically — flag omitted', () => {
+    const fromUndefined = buildProjectClaudeCliArgs({});
+    const fromEmpty = buildProjectClaudeCliArgs({ systemPromptAppend: '' });
+    assert.ok(!fromUndefined.includes('--append-system-prompt'));
+    assert.ok(!fromEmpty.includes('--append-system-prompt'));
+  });
+
+  it('--append-system-prompt comes after the fixed Slack-mode flags', () => {
+    // Ordering matters for human readability of the argv when it
+    // shows up in `aweek serve` logs / debug traces. Lock it down
+    // so a future refactor that re-orders the args (e.g. to put
+    // --model first) doesn't accidentally interleave the banner
+    // between --print and --output-format.
+    const args = buildProjectClaudeCliArgs({
+      systemPromptAppend: 'banner',
+      resumeSessionId: 'sess-1',
+    });
+    const printIdx = args.indexOf('--print');
+    const ofIdx = args.indexOf('--output-format');
+    const verboseIdx = args.indexOf('--verbose');
+    const dskipIdx = args.indexOf('--dangerously-skip-permissions');
+    const appendIdx = args.indexOf('--append-system-prompt');
+    assert.ok(printIdx >= 0 && ofIdx >= 0 && verboseIdx >= 0 && dskipIdx >= 0 && appendIdx >= 0);
+    assert.ok(appendIdx > printIdx, '--append-system-prompt after --print');
+    assert.ok(appendIdx > ofIdx, '--append-system-prompt after --output-format');
+    assert.ok(appendIdx > verboseIdx, '--append-system-prompt after --verbose');
+    assert.ok(
+      appendIdx > dskipIdx,
+      '--append-system-prompt after --dangerously-skip-permissions',
+    );
+  });
+
+  // ----- spawnProjectClaudeSession argv passthrough -------------------
+
+  /**
+   * Local mock factory for this block — a minimal spawn that records
+   * the argv it was invoked with and auto-closes cleanly. The
+   * `spawnProjectClaudeSession` describe above already has a richer
+   * helper but it lives in scope of that describe; mirroring a tiny
+   * version here keeps the Sub-AC 5 contract self-contained.
+   */
+  function makeArgvSpyMockSpawn(): { spawnFn: SpawnFn; lastArgs: () => ReadonlyArray<string> | null } {
+    let lastArgs: ReadonlyArray<string> | null = null;
+    const spawnFn = ((_cmd: string, args: ReadonlyArray<string>) => {
+      lastArgs = args;
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: Readable;
+        stderr: Readable;
+        stdin: Writable;
+        kill: () => boolean;
+        killed: boolean;
+      };
+      child.stdout = new Readable({ read() {} });
+      child.stderr = new Readable({ read() {} });
+      child.stdin = new Writable({ write(_c, _e, cb) { cb(); } });
+      child.killed = false;
+      child.kill = () => { child.killed = true; return true; };
+      setImmediate(() => {
+        (child.stdout as Readable).push(null);
+        (child.stderr as Readable).push(null);
+        setImmediate(() => child.emit('close', 0));
+      });
+      return child;
+    }) as unknown as SpawnFn;
+    return { spawnFn, lastArgs: () => lastArgs };
+  }
+
+  it('spawnProjectClaudeSession with the SLACK_SYSTEM_PROMPT_BANNER passes one --append-system-prompt pair to spawn', async () => {
+    const { SLACK_SYSTEM_PROMPT_BANNER } = await import(slackBridgeModule);
+    const { spawnFn, lastArgs } = makeArgvSpyMockSpawn();
+    const result = await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'hi',
+      systemPromptAppend: SLACK_SYSTEM_PROMPT_BANNER,
+      spawnFn,
+    });
+    const args = lastArgs();
+    assert.ok(args, 'spawn was called');
+    const idx = args!.indexOf('--append-system-prompt');
+    assert.ok(idx >= 0, '--append-system-prompt must appear in argv');
+    assert.strictEqual(
+      args![idx + 1],
+      SLACK_SYSTEM_PROMPT_BANNER,
+      'the SLACK_SYSTEM_PROMPT_BANNER reaches spawn argv verbatim',
+    );
+    const occurrences = args!.filter((a) => a === '--append-system-prompt');
+    assert.equal(occurrences.length, 1, 'no duplication of the banner flag');
+    // Result.cliArgs should be the same argv that hit spawn.
+    assert.deepEqual(result.cliArgs, args);
+  });
+
+  it('spawnProjectClaudeSession with NO banner does NOT include --append-system-prompt', async () => {
+    const { spawnFn, lastArgs } = makeArgvSpyMockSpawn();
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'hi',
+      spawnFn,
+    });
+    const args = lastArgs();
+    assert.ok(args);
+    assert.ok(
+      !args!.includes('--append-system-prompt'),
+      'absent banner means absent flag — no empty-string fallthrough',
+    );
+  });
+
+  it('spawnProjectClaudeSession with an empty-string banner ALSO omits --append-system-prompt', async () => {
+    const { spawnFn, lastArgs } = makeArgvSpyMockSpawn();
+    await spawnProjectClaudeSession({
+      cwd: '/x',
+      prompt: 'hi',
+      systemPromptAppend: '',
+      spawnFn,
+    });
+    const args = lastArgs();
+    assert.ok(args);
+    assert.ok(
+      !args!.includes('--append-system-prompt'),
+      'empty-string banner is treated identically to undefined',
+    );
   });
 });

@@ -43,6 +43,7 @@ import * as execution from '../skills/execution.js';
 import * as artifact from '../skills/artifact.js';
 import * as config from '../skills/config.js';
 import * as planAmbiguity from '../skills/plan-ambiguity.js';
+import * as slackInit from '../skills/slack-init.js';
 import * as planInterviewStore from '../storage/plan-interview-store.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
 import * as planMarkdown from '../storage/plan-markdown-store.js';
@@ -395,6 +396,26 @@ const REGISTRY_LITERAL = Object.freeze({
     ambiguityFromBreakdown: (input: any) =>
       planAmbiguity.ambiguityFromBreakdown(input?.breakdown),
     milestoneFromScore: (input: any) => planAmbiguity.milestoneFromScore(input?.score),
+  },
+  // /aweek:slack-init — bootstrap an aweek-branded Slack app and persist its
+  // credentials so the embedded SlackAdapter inside `aweek serve` can connect
+  // to Slack via Socket Mode. Both `provisionSlackApp` (calls Slack's
+  // apps.manifest.create + apps.token.create) and `persistSlackCredentials`
+  // (writes .aweek/channels/slack/config.json) refuse to run unless the
+  // caller passes `confirmed: true` — the SKILL markdown collects consent via
+  // AskUserQuestion before invoking. The composite `slackInit` runs both
+  // stages and is the high-level entry the markdown calls.
+  'slack-init': {
+    provisionSlackApp: slackInit.provisionSlackApp,
+    persistSlackCredentials: slackInit.persistSlackCredentials,
+    slackInit: slackInit.slackInit,
+    previewCredentialOverwrite: slackInit.previewCredentialOverwrite,
+    buildAweekSlackManifest: (input: any) =>
+      slackInit.buildAweekSlackManifest(input ?? {}),
+    parseSlackCredentials: (input: any) =>
+      slackInit.parseSlackCredentials(input?.raw ?? ''),
+    slackChannelDir: (input: any) => slackInit.slackChannelDir(input?.projectDir),
+    slackConfigPath: (input: any) => slackInit.slackConfigPath(input?.projectDir),
   },
   'plan-interview-store': {
     createInterviewState: (input: any) =>
