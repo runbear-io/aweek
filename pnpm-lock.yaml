@@ -43,8 +43,8 @@ importers:
         specifier: ^1.1.8
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       agentchannels:
-        specifier: file:../../agentchannels/agentchannels
-        version: file:../../agentchannels/agentchannels(@types/express@5.0.6)(@types/node@25.6.0)
+        specifier: ^0.2.0
+        version: 0.2.0(@types/express@5.0.6)(@types/node@25.6.0)
       ajv:
         specifier: ^8.17.1
         version: 8.18.0
@@ -1713,8 +1713,8 @@ packages:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
     engines: {node: '>= 0.6'}
 
-  agentchannels@file:../../agentchannels/agentchannels:
-    resolution: {directory: ../../agentchannels/agentchannels, type: directory}
+  agentchannels@0.2.0:
+    resolution: {integrity: sha512-IVG1XGDCud8dvJZm+rO69hxkojh4ojW6ILihqkef5GuI345fRjwKTp1Ct8bPtsWAD33fKNzrnhJk5KvrrtLvig==}
     engines: {node: '>=18.0.0'}
     hasBin: true
 
@@ -4901,7 +4901,7 @@ snapshots:
       mime-types: 3.0.2
       negotiator: 1.0.0
 
-  agentchannels@file:../../agentchannels/agentchannels(@types/express@5.0.6)(@types/node@25.6.0):
+  agentchannels@0.2.0(@types/express@5.0.6)(@types/node@25.6.0):
     dependencies:
       '@anthropic-ai/sdk': 0.87.0(zod@4.4.2)
       '@inquirer/prompts': 8.4.2(@types/node@25.6.0)
