@@ -496,18 +496,26 @@ export async function selectNextTask(
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
 
-  const plan = await store.loadLatestApproved(agentId);
-  if (!plan) return null;
+  // Walk approved plans oldest-first so a still-pending task in last
+  // week's plan gets picked before next week's plan steals priority.
+  // Without this, approving W20 ahead of time would mask every due W19
+  // task because `loadLatestApproved` returns W20 (latest by key) and
+  // W20's tasks all have future `runAt` → `isRunAtReady` rejects them
+  // → tick outcome "no_pending_tasks" even though W19 has live work.
+  const approved = await store.loadAllApproved(agentId);
+  if (approved.length === 0) return null;
 
-  const result = selectNextTaskFromPlan(plan);
-  if (!result) return null;
-
-  return {
-    task: result.task,
-    index: result.index,
-    week: plan.week,
-    plan,
-  };
+  for (const plan of approved) {
+    const result = selectNextTaskFromPlan(plan);
+    if (!result) continue;
+    return {
+      task: result.task,
+      index: result.index,
+      week: plan.week,
+      plan,
+    };
+  }
+  return null;
 }
 
 /**
@@ -531,11 +539,21 @@ export async function selectTasksForTick(
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
 
-  const plan = await store.loadLatestApproved(agentId);
-  if (!plan) return { picks: [], week: null, plan: null };
+  // Same oldest-week-first walk as `selectNextTask`: finish W19's
+  // open work before borrowing from W20. We return the picks from the
+  // first plan that produces any (per-tick drains run within a single
+  // plan, so mixing weeks in one tick would muddle the trackKey
+  // namespace).
+  const approved = await store.loadAllApproved(agentId);
+  if (approved.length === 0) return { picks: [], week: null, plan: null };
 
-  const picks = selectTasksForTickFromPlan(plan);
-  return { picks, week: plan.week, plan };
+  for (const plan of approved) {
+    const picks = selectTasksForTickFromPlan(plan);
+    if (picks.length > 0) {
+      return { picks, week: plan.week, plan };
+    }
+  }
+  return { picks: [], week: null, plan: null };
 }
 
 /**

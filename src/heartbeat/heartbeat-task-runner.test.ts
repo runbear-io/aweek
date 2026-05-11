@@ -272,8 +272,15 @@ describe('tickAgent', () => {
 
   it('handles error gracefully and returns error outcome', async () => {
     const agentId = `agent-${uid()}`;
-    // Create a store with a broken path to trigger an error
+    // Create a store with a broken path to trigger an error. The
+    // selector now drives task selection through `loadAllApproved`
+    // (see `src/heartbeat/task-selector.ts:selectNextTask`), so the
+    // mock has to fail there to reproduce the load-error path; the
+    // `loadLatestApproved` fallback is only consulted by the
+    // post-selection status probe (`_loadLatestApprovedSafe`) — both
+    // throw the same message so the outcome reason copy stays stable.
     const brokenStore = {
+      loadAllApproved: async () => { throw new Error('disk on fire'); },
       loadLatestApproved: async () => { throw new Error('disk on fire'); },
     };
 
@@ -285,26 +292,35 @@ describe('tickAgent', () => {
     assert.ok(result.tickedAt);
   });
 
-  it('selects from latest approved plan, ignoring earlier weeks', async () => {
+  it('drains an older approved plan before a newer one (oldest-week-first)', async () => {
+    // Heartbeat priority contract: when multiple approved plans coexist
+    // (e.g. the user has approved next week's plan ahead of time before
+    // this week's work is fully reconciled), the selector walks plans
+    // oldest-first so a still-pending task in last week's plan gets
+    // picked before next week's plan steals priority. Without this,
+    // approving W20 ahead of time would mask every due W19 task because
+    // the legacy `loadLatestApproved` returned W20 — its tasks all have
+    // future `runAt` → isRunAtReady rejects them → tick reports
+    // "no_pending_tasks" while the W19 back-log silently rots.
     const agentId = `agent-${uid()}`;
 
     await store.save(agentId, makePlan({
       week: '2026-W15',
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ priority: 'critical', description: 'old-week-task' })],
+      tasks: [makeTask({ priority: 'low', description: 'old-week-task' })],
     }));
     await store.save(agentId, makePlan({
       week: '2026-W16',
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ priority: 'low', description: 'current-week-task' })],
+      tasks: [makeTask({ priority: 'critical', description: 'current-week-task' })],
     }));
 
     const result = await tickAgent(agentId, { weeklyPlanStore: store });
     assert.equal(result.outcome, 'task_selected');
-    assert.equal(result.task.title, 'current-week-task');
-    assert.equal(result.week, '2026-W16');
+    assert.equal(result.task.title, 'old-week-task');
+    assert.equal(result.week, '2026-W15');
   });
 });
 
@@ -1596,6 +1612,7 @@ describe('tickAgent shell-agent guard (AC 11 Sub-AC 2)', () => {
 
     const brokenStore = {
       list: async () => { throw new Error('disk melted'); },
+      loadAllApproved: async () => [],
       loadLatestApproved: async () => null,
     };
 
@@ -1609,7 +1626,10 @@ describe('tickAgent shell-agent guard (AC 11 Sub-AC 2)', () => {
     const agentId = `agent-${uid()}`;
 
     const legacyStore = {
-      // No list() method at all — older store shape.
+      // No list() method at all — older store shape. `loadAllApproved`
+      // and `loadLatestApproved` both return "no approved plans" so the
+      // selector and the status probe agree that there's nothing to run.
+      loadAllApproved: async () => [],
       loadLatestApproved: async () => null,
     };
 

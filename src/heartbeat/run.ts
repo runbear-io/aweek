@@ -19,7 +19,7 @@ import { openSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { AgentStore } from '../storage/agent-store.js';
 import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
-import type { WeeklyTask } from '../storage/weekly-plan-store.js';
+import type { WeeklyPlan, WeeklyTask } from '../storage/weekly-plan-store.js';
 import { ExecutionStore, createExecutionRecord } from '../storage/execution-store.js';
 import { UsageStore } from '../storage/usage-store.js';
 import { ActivityLogStore, createLogEntry } from '../storage/activity-log-store.js';
@@ -35,6 +35,7 @@ import {
   findStaleTasks,
   setStaleTaskWindowMsRuntime,
 } from './task-selector.js';
+import type { TickPick } from './task-selector.js';
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
 import { maybeEmitRepeatedFailureNotification } from '../services/repeated-failure-notifier.js';
@@ -239,12 +240,22 @@ export async function runHeartbeatForAgent(
     const paused = await _isAgentPaused(agentStore, agentId);
     if (paused) break;
 
-    const plan = await weeklyPlanStore.loadLatestApproved(agentId);
-    if (!plan) break;
-
-    const picks = selectTasksForTickFromPlan(plan);
-    const nextPick = picks.find((p) => !firedTrackKeys.has(p.trackKey));
-    if (!nextPick) break;
+    // Walk approved plans oldest-first (same priority as the initial
+    // selectTasksForTick call): finish W19's tracks before borrowing
+    // from W20. Returns the first plan that has any unfired pick left.
+    const approvedPlans = await weeklyPlanStore.loadAllApproved(agentId);
+    if (approvedPlans.length === 0) break;
+    let plan: WeeklyPlan | null = null;
+    let nextPick: TickPick | undefined;
+    for (const candidate of approvedPlans) {
+      const picks = selectTasksForTickFromPlan(candidate);
+      nextPick = picks.find((p) => !firedTrackKeys.has(p.trackKey));
+      if (nextPick) {
+        plan = candidate;
+        break;
+      }
+    }
+    if (!plan || !nextPick) break;
 
     firedTrackKeys.add(nextPick.trackKey);
     await _recordStarted(executionStore, agentId, nextPick.task.id);
@@ -1037,53 +1048,73 @@ async function _sweepStaleTasks({
   activityLogStore,
   now = new Date(),
 }: SweepStaleArgs): Promise<void> {
-  let plan: Awaited<ReturnType<WeeklyPlanStore['loadLatestApproved']>>;
+  // Sweep every approved plan, not just the latest. Once the user has
+  // approved next week's plan ahead of time, `loadLatestApproved`
+  // returns that future plan — leaving this week's past-due pending
+  // tasks orphaned (selector skips them, sweep doesn't see them, they
+  // stay `pending` in the calendar forever). Walking every approved
+  // plan fixes both the immediate symptom AND the recurring class:
+  // any plan with pending stragglers (past or current week) gets its
+  // stale tasks flipped to `skipped` on the next tick. Cost stays
+  // bounded by the per-plan `tasks.some(pending)` early-out below —
+  // historical plans whose stragglers are already reconciled bail in
+  // microseconds.
+  let plans: WeeklyPlan[];
   try {
-    plan = await weeklyPlanStore.loadLatestApproved(agentId);
+    plans = await weeklyPlanStore.loadAllApproved(agentId);
   } catch (err) {
     console.warn(`[${agentId}] stale-sweep: load failed: ${errMsg(err)}`);
     return;
   }
-  if (!plan) return;
+  if (plans.length === 0) return;
 
-  const stale = findStaleTasks(plan, { nowMs: now.getTime() });
-  if (stale.length === 0) return;
+  for (const plan of plans) {
+    // Early-out: once a plan has zero `pending` tasks left, every
+    // remaining task is either `completed`, `skipped`, or in-progress
+    // — none of which the sweep can touch. Bails before findStaleTasks
+    // walks the array a second time.
+    if (!plan.tasks.some((t) => t.status === 'pending')) continue;
 
-  for (const item of stale) {
-    try {
-      await weeklyPlanStore.updateTaskStatus(agentId, plan.week, item.taskId, 'skipped');
-    } catch (err) {
-      console.warn(
-        `[${agentId}] stale-sweep: failed to skip ${item.taskId}: ${errMsg(err)}`,
-      );
-      continue;
-    }
+    const stale = findStaleTasks(plan, { nowMs: now.getTime() });
+    if (stale.length === 0) continue;
 
-    const ageMin = Math.round(item.ageMs / 60000);
-    console.log(
-      `[${agentId}] stale task ${item.taskId} (${ageMin}m past runAt) → skipped`,
-    );
-
-    if (activityLogStore) {
-      const task = plan.tasks.find((t: WeeklyTask) => t.id === item.taskId);
+    for (const item of stale) {
       try {
-        await activityLogStore.append(
-          agentId,
-          createLogEntry({
-            agentId,
-            taskId: item.taskId,
-            status: 'skipped',
-            title: task?.title || `(task ${item.taskId})`,
-            metadata: {
-              reason: 'stale_runAt',
-              runAt: item.runAt,
-              ageMs: item.ageMs,
-              tickedAt: now.toISOString(),
-            },
-          }),
-        );
+        await weeklyPlanStore.updateTaskStatus(agentId, plan.week, item.taskId, 'skipped');
       } catch (err) {
-        console.warn(`[${agentId}] stale-sweep log warning: ${errMsg(err)}`);
+        console.warn(
+          `[${agentId}] stale-sweep: failed to skip ${item.taskId}: ${errMsg(err)}`,
+        );
+        continue;
+      }
+
+      const ageMin = Math.round(item.ageMs / 60000);
+      console.log(
+        `[${agentId}] stale task ${item.taskId} (${plan.week}, ${ageMin}m past runAt) → skipped`,
+      );
+
+      if (activityLogStore) {
+        const task = plan.tasks.find((t: WeeklyTask) => t.id === item.taskId);
+        try {
+          await activityLogStore.append(
+            agentId,
+            createLogEntry({
+              agentId,
+              taskId: item.taskId,
+              status: 'skipped',
+              title: task?.title || `(task ${item.taskId})`,
+              metadata: {
+                reason: 'stale_runAt',
+                runAt: item.runAt,
+                ageMs: item.ageMs,
+                week: plan.week,
+                tickedAt: now.toISOString(),
+              },
+            }),
+          );
+        } catch (err) {
+          console.warn(`[${agentId}] stale-sweep log warning: ${errMsg(err)}`);
+        }
       }
     }
   }

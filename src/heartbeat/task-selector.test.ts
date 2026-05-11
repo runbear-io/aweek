@@ -469,22 +469,61 @@ describe('selectNextTask (store integration)', () => {
     assert.equal(result, null);
   });
 
-  it('picks from latest approved plan, not earlier ones', async () => {
+  it('walks approved plans oldest-week-first so back-logged work runs before next week', async () => {
+    // Cross-week priority contract: when both weeks are approved, the
+    // older week wins. A low-priority straggler in W15 trumps a
+    // critical task in W16 — finish open work in the prior week before
+    // dipping into the next. This is what makes "approve next week's
+    // plan ahead of time" safe: today's tasks in W15 still get picked
+    // even though W16 also has approved work waiting.
     const agentId = `agent-test-${uid()}`;
     const oldPlan = makePlan({
       week: '2026-W15',
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ priority: 'critical', description: 'old-critical' })],
+      tasks: [makeTask({ priority: 'low', description: 'old-low' })],
     });
     const newPlan = makePlan({
       week: '2026-W16',
       approved: true,
       approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ priority: 'low', description: 'new-low' })],
+      tasks: [makeTask({ priority: 'critical', description: 'new-critical' })],
     });
     await store.save(agentId, oldPlan);
     await store.save(agentId, newPlan);
+
+    const result = await selectNextTask(store, agentId);
+    assert.ok(result);
+    assert.equal(result.task.title, 'old-low');
+    assert.equal(result.week, '2026-W15');
+  });
+
+  it('falls through to the next-week plan when the older approved plan has no eligible picks', async () => {
+    // When the older plan has nothing the selector can dispatch (all
+    // tasks completed/skipped, or future `runAt`s), iteration continues
+    // to the next-most-recent approved plan. This is the same loop that
+    // gates "approve next week before this week is finished" — once
+    // this-week's work is fully reconciled, next-week's tasks take over
+    // without an extra manual step.
+    const agentId = `agent-test-${uid()}`;
+    await store.save(
+      agentId,
+      makePlan({
+        week: '2026-W15',
+        approved: true,
+        approvedAt: new Date().toISOString(),
+        tasks: [makeTask({ status: 'completed', description: 'old-done' })],
+      }),
+    );
+    await store.save(
+      agentId,
+      makePlan({
+        week: '2026-W16',
+        approved: true,
+        approvedAt: new Date().toISOString(),
+        tasks: [makeTask({ priority: 'low', description: 'new-low' })],
+      }),
+    );
 
     const result = await selectNextTask(store, agentId);
     assert.ok(result);
