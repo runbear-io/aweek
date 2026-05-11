@@ -1267,7 +1267,10 @@ function formatMobileDayLabel(
 }
 
 /**
- * Map `approved` onto stock shadcn Badge variants only.
+ * Approved → calm default badge. Pending → amber "needs your approval"
+ * warning so an un-approved plan can't be skimmed past — the heartbeat
+ * silently no-ops on unapproved plans, so this badge is the user's only
+ * in-app signal that scheduled work is parked.
  */
 function ApprovalBadge({
   approved,
@@ -1275,7 +1278,11 @@ function ApprovalBadge({
   return (
     <Badge
       variant={approved ? 'default' : 'outline'}
-      className="tracking-widest"
+      className={
+        approved
+          ? 'tracking-widest'
+          : 'tracking-widest border-transparent bg-amber-500 text-amber-50 hover:bg-amber-500/90 dark:bg-amber-400 dark:text-amber-950 dark:hover:bg-amber-400/90'
+      }
     >
       {approved ? 'approved' : 'pending'}
     </Badge>
