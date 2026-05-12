@@ -528,6 +528,101 @@ describe('reportToCeo Slack delivery wiring', () => {
     assert.equal(saves[0]!.sourceTaskId, 'task-xyz');
   });
 
+  it('returns deliveredToSlack=true ONLY after the chat.postMessage fetch has resolved (drain)', async () => {
+    // Pin the bug fix: previously, the skill returned the moment a
+    // Slack channel was wired — before any fetch happened — so a CLI
+    // `process.exit(0)` aborted the in-flight POST and the message
+    // never landed. After the drain primitive, the skill must await
+    // the fetch before resolving so `deliveredToSlack: true` means
+    // "Slack returned ok: true", not "we tried to attempt a POST".
+    const events: string[] = [];
+    let resolveFetch: (response: Response) => void = () => {};
+    const fetchGate = new Promise<Response>((res) => {
+      resolveFetch = res;
+    });
+    const fetchStub: typeof fetch = () => fetchGate;
+
+    const reportPromise = reportToCeo(
+      {
+        senderSlug: SENDER_ID,
+        kind: 'report',
+        title: 'order-pin',
+        body: 'b',
+      },
+      {
+        agentStore,
+        notificationStore,
+        slackCredentialsLoader: async () => ({
+          botToken: 'xoxb',
+          appToken: 'xapp',
+          ceoChannel: 'D1',
+        }),
+        slackFetchFn: fetchStub,
+        saveReportThreadFn: async () => ({} as never),
+      },
+    );
+
+    // Let the skill park on `await drain()`.
+    await new Promise((r) => setImmediate(r));
+    events.push('beforeFetchResolve');
+
+    // Resolve Slack's response NOW — only after we've proven the
+    // skill is parked. If `drain()` weren't awaited, `reportPromise`
+    // would have resolved already and `events` would include
+    // 'reportReturned' before 'beforeFetchResolve'.
+    resolveFetch(
+      new Response(
+        JSON.stringify({ ok: true, channel: 'D1', ts: '1.2' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const result = await reportPromise;
+    events.push('reportReturned');
+
+    assert.deepEqual(events, ['beforeFetchResolve', 'reportReturned']);
+    assert.equal(result.deliveredToSlack, true);
+  });
+
+  it('returns deliveredToSlack=false when Slack responds {ok: false} — the bug-report symptom', async () => {
+    // The CLI was claiming `deliveredToSlack: true` for messages that
+    // never landed because Slack's REST surface returns HTTP 200 even
+    // on `ok: false` (channel_not_found / invalid_auth / not_in_channel).
+    // After the fix, the outcome MUST reflect the JSON body's `ok`.
+    const fetchStub: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({ ok: false, error: 'channel_not_found' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    const sinkErrors: unknown[] = [];
+    const result = await reportToCeo(
+      {
+        senderSlug: SENDER_ID,
+        kind: 'report',
+        title: 't',
+        body: 'b',
+      },
+      {
+        agentStore,
+        notificationStore,
+        slackCredentialsLoader: async () => ({
+          botToken: 'xoxb',
+          appToken: 'xapp',
+          ceoChannel: 'C404',
+        }),
+        slackFetchFn: fetchStub,
+        saveReportThreadFn: async () => ({} as never),
+        onSlackError: (err) => sinkErrors.push(err),
+      },
+    );
+
+    assert.equal(result.deliveredToSlack, false);
+    // The notification still persists — only the Slack push failed.
+    assert.equal(result.persisted, true);
+    assert.equal(sinkErrors.length, 1);
+    assert.match((sinkErrors[0] as Error).message, /channel_not_found/);
+  });
+
   it('does NOT persist a report-thread record when Slack push is skipped (no ceoChannel)', async () => {
     const saves: SaveReportThreadOptions[] = [];
     await reportToCeo(

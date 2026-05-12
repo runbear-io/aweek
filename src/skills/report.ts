@@ -53,6 +53,7 @@ import { AgentStore } from '../storage/agent-store.js';
 import {
   NotificationStore,
   type Notification,
+  type NotificationDeliveryChannel,
   type NotificationSeverity,
   type NotificationLink,
 } from '../storage/notification-store.js';
@@ -249,10 +250,23 @@ export interface ReportToCeoResult {
   /** Persisted notification — same shape as {@link notify.sendNotification}'s return. */
   notification: Notification;
   /**
-   * True iff a Slack delivery channel was successfully attached to the
-   * store before the persist call. The `NotificationStore` fan-out is
-   * fire-and-forget, so this does NOT promise the Slack API responded
-   * 200 — Slack-side failures surface through the `onSlackError` sink.
+   * Reflects the actual Slack delivery outcome — `true` iff a Slack
+   * delivery channel was attached AND its `deliver()` resolved without
+   * error (Slack returned `{ ok: true }`). `false` means one of:
+   *
+   *   - no `ceoChannel` was configured → Slack push was skipped on
+   *     purpose, only the dashboard inbox got the write;
+   *   - Slack returned `{ ok: false, error }` (e.g. `channel_not_found`,
+   *     `not_in_channel`, `invalid_auth`) → the error code surfaces via
+   *     the `onSlackError` sink (stderr by default);
+   *   - the Slack `fetch()` itself threw before getting a response.
+   *
+   * The skill awaits the per-call `NotificationStore.drain()` BEFORE
+   * returning so the outcome is honest by the time the function
+   * resolves — earlier versions of this contract returned `true` the
+   * moment a channel was wired (before the POST happened), which lied
+   * to short-lived CLI callers whose `process.exit(0)` aborted the
+   * in-flight `fetch()`.
    */
   deliveredToSlack: boolean;
   /**
@@ -294,18 +308,29 @@ export async function reportToCeo(
   // Per-call NotificationStore so the channel subscription doesn't leak
   // across invocations (production callers spawn a fresh process per
   // `aweek exec report send`; tests pin their own stores via deps).
-  const onChannelError = deps.onSlackError
-    ? (err: unknown) => deps.onSlackError!(err)
-    : (err: unknown) => {
-        process.stderr.write(
-          `aweek: report Slack delivery failed: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      };
+  //
+  // The error sink wired into the store is intentionally a no-op — the
+  // channel wrapper below is the SOLE place that fans the failure out
+  // to `deps.onSlackError` / stderr, so any caller-supplied store
+  // (whose own sink we don't control) still gets the right user-facing
+  // behaviour without double-firing.
   const notificationStore =
-    deps.notificationStore || new NotificationStore(dataDir, { onChannelError });
+    deps.notificationStore || new NotificationStore(dataDir, { onChannelError: () => undefined });
 
   // Attach the Slack channel BEFORE the persist call fires the fanout.
-  let deliveredToSlack = false;
+  //
+  //   slackChannelWired — `true` iff we successfully subscribed a Slack
+  //                       channel to the per-call NotificationStore.
+  //                       Tracks subscription, not outcome.
+  //   slackDeliveryError — set inside the channel wrapper when Slack
+  //                        returns `ok: false` or `fetch()` throws.
+  //                        Used after `await drain()` to flip the
+  //                        public `deliveredToSlack` to `false` so the
+  //                        return value reflects the actual delivery
+  //                        outcome the user will see in Slack — not
+  //                        just "we attempted a POST".
+  let slackChannelWired = false;
+  let slackDeliveryError: unknown = null;
   const loader = deps.slackCredentialsLoader || loadSlackCredentials;
   const credentials = await loader(dataDir, deps.slackEnvSource);
   if (credentials && credentials.ceoChannel && credentials.botToken) {
@@ -342,9 +367,42 @@ export async function reportToCeo(
           onPosted,
           ...(deps.slackFetchFn ? { fetchFn: deps.slackFetchFn } : {}),
         }));
-    const channel = factory(credentials);
-    notificationStore.subscribe(channel);
-    deliveredToSlack = true;
+    const rawChannel = factory(credentials);
+    // Wrap the channel so we can capture the delivery outcome locally
+    // even when the caller passes their own `deps.notificationStore`
+    // (whose `onChannelError` sink we don't control). The wrapper
+    // re-throws the error so the store's existing fanout-error
+    // reporting still fires — this is purely an observation layer.
+    const wrappedChannel: NotificationDeliveryChannel = {
+      name: rawChannel.name,
+      deliver: async (notif, agentId) => {
+        try {
+          await rawChannel.deliver(notif, agentId);
+        } catch (err) {
+          // Record locally so the post-drain outcome check can flip
+          // `deliveredToSlack` to false. ALSO forward to the user
+          // sink (or stderr default) here rather than relying on the
+          // store's `onChannelError` — caller-supplied stores would
+          // otherwise carry their own sink and ours would never fire.
+          slackDeliveryError = err;
+          if (deps.onSlackError) {
+            try {
+              deps.onSlackError(err);
+            } catch {
+              // A misbehaving caller sink must not poison the
+              // wrapper. The store fanout still gets the rethrow.
+            }
+          } else {
+            process.stderr.write(
+              `aweek: report Slack delivery failed: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+          throw err;
+        }
+      },
+    };
+    notificationStore.subscribe(wrappedChannel);
+    slackChannelWired = true;
   }
 
   // Verify the sender exists so a typo surfaces immediately rather than
@@ -379,6 +437,26 @@ export async function reportToCeo(
       : {}),
     ...(validated.createdAt !== undefined ? { createdAt: validated.createdAt } : {}),
   });
+
+  // Drain the per-call store's in-flight delivery promises BEFORE we
+  // resolve, so a CLI caller's `process.exit(0)` (in `bin/aweek.ts`)
+  // can't abort the in-flight `fetch()` to slack.com. Without this,
+  // `deliveredToSlack: true` was a lie — it only meant "a Slack
+  // channel was subscribed", not "the message landed in Slack".
+  //
+  // `drain()` is a no-op when no async deliveries are pending (e.g.
+  // when no Slack channel was wired, or when tests pin a synchronous
+  // fake channel), so this is safe to call unconditionally.
+  await notificationStore.drain();
+
+  // `deliveredToSlack` reflects the ACTUAL outcome — `true` iff a
+  // Slack channel was wired AND its `deliver()` resolved cleanly
+  // (Slack returned `{ ok: true }`). Any Slack-side failure already
+  // surfaced through the `onSlackError` sink (stderr by default);
+  // we just need to ensure the return value tells the caller the
+  // truth so a CLI consumer can decide whether to retry or surface
+  // the error to the user.
+  const deliveredToSlack = slackChannelWired && slackDeliveryError == null;
 
   return {
     notification,

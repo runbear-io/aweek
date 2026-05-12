@@ -340,6 +340,19 @@ export class NotificationStore {
   /** See {@link NotificationStoreOptions.onChannelError}. */
   private readonly _onChannelError: NotificationChannelErrorHandler;
 
+  /**
+   * In-flight async delivery promises. The store tracks every promise
+   * `_fanout()` kicks off so {@link drain} can await them before a
+   * short-lived CLI process exits — without it, `process.exit(0)` in
+   * `bin/aweek.ts` aborts the in-flight `fetch()` to slack.com and the
+   * notification silently never lands even though `deliver()` claimed
+   * success. Each entry deletes itself in its own `finally` so the Set
+   * doesn't grow without bound; synchronous deliveries that throw or
+   * return `void` are never tracked because there's no promise to
+   * settle.
+   */
+  private readonly _pending: Set<Promise<void>> = new Set();
+
   constructor(baseDir: string, options: NotificationStoreOptions = {}) {
     this.baseDir = baseDir;
     this._onChannelError = options.onChannelError || (() => undefined);
@@ -485,6 +498,13 @@ export class NotificationStore {
    * Channels are invoked in registration order. The store snapshots
    * `_channels` before iterating so a channel that unsubscribes during
    * its own callback does not skip a sibling.
+   *
+   * Every async delivery promise is registered in {@link _pending} so
+   * {@link drain} can flush them before a short-lived CLI process exits
+   * — the bug this guards against is `process.exit(0)` in
+   * `bin/aweek.ts` aborting the in-flight `fetch()` to slack.com and
+   * the notification silently never landing. Each entry self-removes in
+   * a `finally` so the Set doesn't grow.
    */
   private _fanout(agentId: string, notification: Notification): void {
     if (this._channels.length === 0) return;
@@ -498,14 +518,56 @@ export class NotificationStore {
       try {
         const result = channel.deliver(notification, agentId);
         if (result && typeof (result as Promise<void>).then === 'function') {
-          (result as Promise<void>).catch((err: unknown) => {
-            this._reportChannelError(err, ctx);
-          });
+          const promise = (result as Promise<void>)
+            .catch((err: unknown) => {
+              this._reportChannelError(err, ctx);
+            });
+          this._pending.add(promise);
+          // Self-remove on settle so the Set never grows without bound.
+          // We attach the cleanup via `.then(() => …)` rather than a
+          // second `.catch()` because the `.catch` above already
+          // swallows rejections — the chained promise always resolves.
+          promise.then(() => this._pending.delete(promise));
         }
       } catch (err) {
         this._reportChannelError(err, ctx);
       }
     }
+  }
+
+  /**
+   * Await every async delivery promise currently in flight.
+   *
+   * Required for short-lived CLI invocations (`aweek exec report send`,
+   * `aweek exec notify send`, …) where `bin/aweek.ts` calls
+   * `process.exit(0)` immediately after the skill returns — without
+   * `drain()` the Node process tears down while the Slack `fetch()`
+   * is still mid-flight, the HTTP request is aborted, and the user
+   * sees `deliveredToSlack: true` for a message that never actually
+   * landed in Slack.
+   *
+   * Implementation notes:
+   *
+   *   - Uses `Promise.allSettled` so a rejecting delivery doesn't
+   *     short-circuit the wait; per-channel errors have already been
+   *     forwarded to {@link _onChannelError} inside `_fanout`.
+   *   - Snapshots `_pending` before awaiting so a new delivery
+   *     registered DURING the await is not included. Callers that
+   *     need to drain a quiescent-then-active workload should call
+   *     `drain()` again after their next `send()`.
+   *   - No-op when `_pending` is empty.
+   *   - Safe to call multiple times — each call awaits whatever's
+   *     currently in flight.
+   */
+  async drain(): Promise<void> {
+    if (this._pending.size === 0) return;
+    const snapshot = Array.from(this._pending);
+    await Promise.allSettled(snapshot);
+  }
+
+  /** Test helper — number of in-flight delivery promises. */
+  get pendingCount(): number {
+    return this._pending.size;
   }
 
   /** Forward a delivery error to the configured sink, swallowing sink errors. */

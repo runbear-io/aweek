@@ -106,7 +106,7 @@ echo "$RESULT" | aweek exec report formatReportResult --input-json - --format te
 Highlight:
 
 - `notification.id` — for traceability in `.aweek/agents/<slug>/notifications.json` and on the dashboard inbox.
-- `deliveredToSlack` — `true` when a Slack channel was wired; `false` when the project has no `ceoChannel` configured (instruct the user to set one — see below).
+- `deliveredToSlack` — reflects the **actual delivery outcome**: `true` iff Slack returned `ok: true` for the `chat.postMessage`. `false` means one of (a) no `ceoChannel` was configured so the Slack push was deliberately skipped (only the dashboard inbox got the write — instruct the user to set one if they want Slack push), (b) Slack returned `ok: false` (the error code — `channel_not_found`, `not_in_channel`, `invalid_auth`, etc. — appears in STDERR), or (c) the network/fetch itself failed. The skill awaits the Slack POST before returning, so by the time you read this field the message has either landed in Slack or visibly failed there is no longer an "in-flight maybe" window.
 
 If the user declines, say "Report cancelled. No notification persisted, no Slack message sent." and stop.
 

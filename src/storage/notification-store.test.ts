@@ -855,6 +855,87 @@ describe('NotificationStore — storage/delivery decoupling (AC 17)', () => {
     const loaded = await store.load(AGENT_A);
     assert.equal(loaded.length, 1);
   });
+
+  it('drain() awaits in-flight async deliveries before resolving', async () => {
+    // Pin the load-bearing invariant from the `aweek exec report send`
+    // bug fix: without drain(), `process.exit(0)` in `bin/aweek.ts`
+    // aborts an in-flight fetch() to slack.com and the user sees
+    // `deliveredToSlack: true` for a message that never landed. The
+    // drain primitive is what makes the outcome honest by the time
+    // the CLI returns.
+    const events: string[] = [];
+    let resolveDeliver: () => void = () => {};
+    const deliverGate = new Promise<void>((res) => {
+      resolveDeliver = res;
+    });
+    store.subscribe({
+      name: 'slow-async-channel',
+      deliver: async () => {
+        await deliverGate;
+        events.push('delivered');
+      },
+    });
+    await store.append(AGENT_A, notif(AGENT_A));
+    assert.equal(store.pendingCount, 1, 'one in-flight delivery');
+    assert.deepEqual(events, []);
+
+    // Resolve the in-flight deliver AFTER kicking off the drain await
+    // so we can prove drain() actually blocks on the promise. We race
+    // the drain() against a synthetic post-drain event: if drain()
+    // returned early, `drainReturned` would land before `delivered`.
+    const draining = (async () => {
+      await store.drain();
+      events.push('drainReturned');
+    })();
+    // Let the microtask queue settle so `draining` is parked on
+    // Promise.allSettled before we resolve the gate.
+    await new Promise((r) => setImmediate(r));
+    resolveDeliver();
+    await draining;
+
+    assert.deepEqual(events, ['delivered', 'drainReturned']);
+    assert.equal(store.pendingCount, 0, 'drained set must be empty after settle');
+  });
+
+  it('drain() is a no-op when no async deliveries are pending', async () => {
+    // The skill calls drain() unconditionally — guard the cheap path
+    // so callers don't have to gate on `store.pendingCount`.
+    assert.equal(store.pendingCount, 0);
+    const t0 = Date.now();
+    await store.drain();
+    // Sanity: no synchronous wait, well under 50ms even on a slow CI.
+    assert.ok(Date.now() - t0 < 50);
+  });
+
+  it('drain() resolves even when a delivery rejects (Promise.allSettled semantics)', async () => {
+    const errors: unknown[] = [];
+    const failingStore = new NotificationStore(tmpDir, {
+      onChannelError: (err) => errors.push(err),
+    });
+    failingStore.subscribe({
+      name: 'fails-async',
+      deliver: async () => {
+        throw new Error('boom');
+      },
+    });
+    await failingStore.append(AGENT_A, notif(AGENT_A));
+    // drain() awaits the rejection without throwing through.
+    await failingStore.drain();
+    assert.equal(failingStore.pendingCount, 0);
+    assert.equal(errors.length, 1);
+    assert.match((errors[0] as Error).message, /boom/);
+  });
+
+  it('drain() tracks only ASYNC deliveries — sync void returns are not registered', async () => {
+    // Synchronous deliveries either run inline or throw inline; either
+    // way there's no promise to await. `_pending` MUST NOT see them.
+    store.subscribe({
+      name: 'sync-void',
+      deliver: () => undefined,
+    });
+    await store.append(AGENT_A, notif(AGENT_A));
+    assert.equal(store.pendingCount, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
