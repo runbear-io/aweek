@@ -39,6 +39,7 @@ import * as query from '../skills/query.js';
 import * as calendar from '../skills/weekly-calendar-grid.js';
 import * as delegateTask from '../skills/delegate-task.js';
 import * as notify from '../skills/notify.js';
+import * as report from '../skills/report.js';
 import * as execution from '../skills/execution.js';
 import * as artifact from '../skills/artifact.js';
 import * as config from '../skills/config.js';
@@ -251,6 +252,20 @@ const REGISTRY_LITERAL = Object.freeze({
     validateSendParams: notify.validateSendParams,
     formatNotificationResult: (input: any) =>
       notify.formatNotificationResult(input?.notification ?? input),
+  },
+  // Agent → CEO report skill — `aweek exec report send` is the canonical
+  // entry point an agent uses during a heartbeat session to report or ask
+  // the user (CEO). Semantically narrower than `notify` (always carries a
+  // `kind: 'report' | 'question'` discriminator) AND wires a Slack delivery
+  // channel into the per-call NotificationStore when both `botToken` and
+  // `ceoChannel` are configured. `validateReportParams` mirrors the
+  // pre-flight pattern of the other skills so the dispatcher surfaces a
+  // friendly error before any I/O.
+  report: {
+    send: report.reportToCeo,
+    validateReportParams: report.validateReportParams,
+    formatReportResult: (input: any) =>
+      report.formatReportResult(input?.result ?? input?.notification ?? input),
   },
   // Free-form per-agent plan.md — authored by the user, read by skills as
   // context for weekly-plan generation. Each adapter promotes the

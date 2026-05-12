@@ -57,6 +57,16 @@ export interface SlackCredentials {
    * future HTTP-events fallback path can reuse the same loader.
    */
   signingSecret?: string;
+  /**
+   * Slack target for agent → CEO report delivery — channel ID (`C…`/`G…`),
+   * user ID (`U…`), or DM ID (`D…`). Consumed by the
+   * `SlackNotificationDelivery` channel that `src/skills/report.ts`
+   * subscribes per call. Optional: when absent, Slack push is disabled
+   * but agents can still emit notifications to the dashboard inbox.
+   * Sourced from `SLACK_CEO_CHANNEL` env first, then `ceo_channel` /
+   * `ceoChannel` / `SLACK_CEO_CHANNEL` keys in `config.json`.
+   */
+  ceoChannel?: string;
 }
 
 /**
@@ -78,9 +88,11 @@ interface RawSlackConfigDocument {
   bot_token?: unknown;
   app_token?: unknown;
   signing_secret?: unknown;
+  ceo_channel?: unknown;
   SLACK_BOT_TOKEN?: unknown;
   SLACK_APP_TOKEN?: unknown;
   SLACK_SIGNING_SECRET?: unknown;
+  SLACK_CEO_CHANNEL?: unknown;
   // camelCase keys are what `src/skills/slack-init.ts` writes via
   // `persistSlackCredentials`. The loader has to accept them too — without
   // these, files produced by `/aweek:slack-init` would be invisible to
@@ -89,6 +101,7 @@ interface RawSlackConfigDocument {
   botToken?: unknown;
   appToken?: unknown;
   signingSecret?: unknown;
+  ceoChannel?: unknown;
 }
 
 /**
@@ -134,11 +147,18 @@ export async function loadSlackCredentials(
     fileConfig?.signing_secret,
     fileConfig?.SLACK_SIGNING_SECRET,
   );
+  const ceoChannel = pickToken(
+    envSource.SLACK_CEO_CHANNEL,
+    fileConfig?.ceoChannel,
+    fileConfig?.ceo_channel,
+    fileConfig?.SLACK_CEO_CHANNEL,
+  );
 
   if (!botToken || !appToken) return null;
 
   const out: SlackCredentials = { botToken, appToken };
   if (signingSecret) out.signingSecret = signingSecret;
+  if (ceoChannel) out.ceoChannel = ceoChannel;
   return out;
 }
 

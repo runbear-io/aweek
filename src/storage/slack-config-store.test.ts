@@ -324,4 +324,87 @@ describe('slack-config-store', () => {
       await rm(base, { recursive: true, force: true });
     }
   });
+
+  it('exposes ceoChannel from env when set', async () => {
+    const { base, dataDir } = await tempDataDir();
+    try {
+      const creds = await loadSlackCredentials(dataDir, {
+        SLACK_BOT_TOKEN: 'xoxb-x',
+        SLACK_APP_TOKEN: 'xapp-x',
+        SLACK_CEO_CHANNEL: 'D-from-env',
+      });
+      assert.deepEqual(creds, {
+        botToken: 'xoxb-x',
+        appToken: 'xapp-x',
+        ceoChannel: 'D-from-env',
+      });
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts ceoChannel from any of the camelCase / snake_case / screaming-snake keys in the file', async () => {
+    const { base, dataDir } = await tempDataDir();
+    try {
+      await writeSlackConfig(dataDir, {
+        bot_token: 'xoxb-file',
+        app_token: 'xapp-file',
+        ceo_channel: 'D-snake',
+      });
+      const credsSnake = await loadSlackCredentials(dataDir, {});
+      assert.equal(credsSnake?.ceoChannel, 'D-snake');
+
+      await writeSlackConfig(dataDir, {
+        botToken: 'xoxb-file',
+        appToken: 'xapp-file',
+        ceoChannel: 'D-camel',
+      });
+      const credsCamel = await loadSlackCredentials(dataDir, {});
+      assert.equal(credsCamel?.ceoChannel, 'D-camel');
+
+      await writeSlackConfig(dataDir, {
+        botToken: 'xoxb-file',
+        appToken: 'xapp-file',
+        SLACK_CEO_CHANNEL: 'D-screaming',
+      });
+      const credsScreaming = await loadSlackCredentials(dataDir, {});
+      assert.equal(credsScreaming?.ceoChannel, 'D-screaming');
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('env ceoChannel wins over file ceoChannel', async () => {
+    const { base, dataDir } = await tempDataDir();
+    try {
+      await writeSlackConfig(dataDir, {
+        botToken: 'xoxb-file',
+        appToken: 'xapp-file',
+        ceoChannel: 'D-file',
+      });
+      const creds = await loadSlackCredentials(dataDir, {
+        SLACK_CEO_CHANNEL: 'D-env',
+      });
+      assert.equal(creds?.ceoChannel, 'D-env');
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('omits ceoChannel when neither env nor file provide one', async () => {
+    const { base, dataDir } = await tempDataDir();
+    try {
+      const creds = await loadSlackCredentials(dataDir, {
+        SLACK_BOT_TOKEN: 'xoxb-x',
+        SLACK_APP_TOKEN: 'xapp-x',
+      });
+      assert.deepEqual(creds, {
+        botToken: 'xoxb-x',
+        appToken: 'xapp-x',
+      });
+      assert.equal((creds as { ceoChannel?: string }).ceoChannel, undefined);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
 });
