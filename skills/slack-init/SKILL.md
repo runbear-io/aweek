@@ -169,6 +169,46 @@ prompts:
 
 Skip the refresh token and manifest branding — they are not needed.
 
+#### 3c. Capture the optional CEO report channel (both flows)
+
+Agents emit ad-hoc reports / questions to the user (CEO) via the
+`aweek report` skill. When `ceoChannel` is present in the persisted
+credentials, every agent report is also pushed to Slack as a Block Kit
+message via `chat.postMessage` — when absent, reports still land in the
+dashboard inbox but the Slack push is skipped. This sub-step is
+intentionally placed **before the destructive confirmation gate** so the
+overwrite preview (Step 4) lists `ceoChannel` alongside the tokens.
+
+Ask via `AskUserQuestion`: "Where should agent CEO reports be posted in
+Slack? (channel ID `C…`/`G…`, user ID `U…`, or DM ID `D…` — leave blank
+to configure later)."
+
+Accept any non-empty string trimmed of whitespace; do **not** prefix-
+validate locally — `chat.postMessage` will reject `channel_not_found`
+with a clear error on the first report attempt, and a typo here would
+otherwise block install. Empty / skipped input means the user wants to
+configure it later (manually edit `.aweek/channels/slack/config.json`
+or re-run `/aweek:slack-init`). The persistence step (Step 5) only
+includes `ceoChannel` in the payload when the user supplied a value —
+omitting it from the JSON preserves whatever is currently on disk, so
+re-running the skill to ROTATE other tokens won't clobber an existing
+`ceoChannel`.
+
+How the user finds their Slack target (Slack desktop / web client):
+
+- **Channel ID** (`C…` / `G…`): right-click the channel → "View channel
+  details" → scroll to the bottom of the modal → "Channel ID". The bot
+  must be a member; invite it via `/invite @<bot>` first.
+- **User ID** (`U…`): click your avatar → "Profile" → "…" overflow →
+  "Copy member ID". The bot does NOT need to be added — `chat.postMessage`
+  opens an IM lazily.
+- **DM ID** (`D…`): only useful if you've already opened a DM with the
+  bot. Easier to use the user-ID path.
+
+For first-time installs, the user-ID path is the highest-fidelity choice
+(reports land in the CEO's DM with the bot, no channel-membership setup
+required). Document this hint inline when asking.
+
 ### Step 4: Confirm the destructive action
 
 > **Confirmation gate (required).** `confirmed: true` MUST NOT be set on
@@ -187,10 +227,15 @@ echo '{
   "proposed": {
     "botToken": "<BOT_TOKEN_OR_OMIT>",
     "appToken": "<APP_TOKEN_OR_OMIT>",
-    "signingSecret": "<SIGNING_SECRET_OR_OMIT>"
+    "signingSecret": "<SIGNING_SECRET_OR_OMIT>",
+    "ceoChannel": "<CEO_CHANNEL_OR_OMIT>"
   }
 }' | aweek exec slack-init previewCredentialOverwrite --input-json -
 ```
+
+Omit any field the user skipped. `ceoChannel` is optional; leave it out
+of the `proposed` object when Step 3c collected no value so the preview
+doesn't falsely flag an unrelated channel as "will overwrite".
 
 The result has this shape:
 
@@ -358,16 +403,26 @@ it is non-empty and warn if it does not start with `xoxb-`.
 
 After collecting the bot token, run a **second** `slackInit` call with
 `skipProvision: true` so the persistence stage merges the bot token
-into the on-disk doc without re-creating the Slack app:
+into the on-disk doc without re-creating the Slack app. When the user
+supplied a `ceoChannel` in Step 3c, fold it into the `credentials`
+object on this same call so it lands in the same atomic write as the
+bot token (saves a third merge round-trip):
 
 ```bash
 RESULT=$(echo '{
   "confirmed": true,
   "skipProvision": true,
-  "botToken": "<BOT_TOKEN>"
+  "botToken": "<BOT_TOKEN>",
+  "credentials": {
+    "ceoChannel": "<CEO_CHANNEL_OR_OMIT_BLOCK>"
+  }
 }' | aweek exec slack-init slackInit --input-json -)
 echo "$RESULT"
 ```
+
+Omit the `credentials` block entirely when no `ceoChannel` was collected
+in Step 3c — passing an empty object is harmless but the cleaner shape
+matches what `persistSlackCredentials` expects for a tokens-only merge.
 
 The merge step preserves everything the provision phase wrote (app ID,
 client credentials, app token, signing secret, refresh token, OAuth URL,
@@ -394,14 +449,18 @@ RESULT=$(echo '{
   "botToken": "<BOT_TOKEN>",
   "credentials": {
     "appToken": "<APP_TOKEN>",
-    "signingSecret": "<SIGNING_SECRET>"
+    "signingSecret": "<SIGNING_SECRET>",
+    "ceoChannel": "<CEO_CHANNEL>"
   }
 }' | aweek exec slack-init slackInit --input-json -)
 echo "$RESULT"
 ```
 
-`signingSecret` may be omitted. The `credentials` field is merged on
-top of any existing on-disk document — fields not passed are preserved.
+`signingSecret` and `ceoChannel` may be omitted from `credentials`
+individually — the merge preserves whatever is already on disk, so a
+re-run that supplies only the bot/app tokens does not clobber a
+previously-set `ceoChannel`. The `credentials` field is merged on top
+of any existing on-disk document — fields not passed are preserved.
 
 ### Step 6: Summarize
 
@@ -420,6 +479,7 @@ Credentials file   : /abs/path/.aweek/channels/slack/config.json (updated)
 
 Saved fields: botToken, appToken, signingSecret, appId, clientId,
               clientSecret, refreshToken (NEW), teamId, oauthAuthorizeUrl
+              [, ceoChannel]   ← present iff Step 3c collected a value
 
 Next steps:
   1. Restart `aweek serve` so the embedded SlackAdapter picks up the new
@@ -429,6 +489,10 @@ Next steps:
      proxies to the project's Claude under bypassPermissions.
   3. If you ever rotate the refresh token, re-run /aweek:slack-init —
      the old refresh token has been invalidated.
+  4. (Optional, only mention if Step 3c was skipped.) Set `ceoChannel`
+     later by editing the credentials file directly OR by re-running
+     /aweek:slack-init and supplying it in Step 3c — the merge step
+     preserves all other fields.
 ```
 
 **Persist-only flow:**
@@ -436,12 +500,14 @@ Next steps:
 ```
 === aweek slack-init ===
 Credentials file   : /abs/path/.aweek/channels/slack/config.json (created|updated)
-Saved fields       : botToken, appToken[, signingSecret]
+Saved fields       : botToken, appToken[, signingSecret][, ceoChannel]
 
 Next steps:
   1. Restart `aweek serve` so the embedded SlackAdapter picks up the
      credentials.
   2. DM the bot or @-mention it in a channel.
+  3. (Optional, only mention if Step 3c was skipped.) Set `ceoChannel`
+     later — see the provision-flow note above.
 ```
 
 ### Step 7 (optional): Inspect the persisted config
@@ -491,9 +557,16 @@ trailing newline.
   "refreshToken": "xoxe-1-…",
   "oauthAuthorizeUrl": "https://slack.com/oauth/authorize?…",
   "teamId": "T0XXXXXXXXX",
+  "ceoChannel": "U0CEOMEMBERID",
   "updatedAt": 1735689600000
 }
 ```
+
+`ceoChannel` is **optional** — when Step 3c was skipped (or the user
+chose to set it later), the file is identical except this key is
+absent. The `aweek report` skill checks for both `botToken` and
+`ceoChannel` at the runtime loader boundary; missing `ceoChannel`
+degrades silently to dashboard-only delivery (no error, no Slack push).
 
 **Persist-only flow result** — only the credentials the user supplied
 (`signingSecret` is optional):

@@ -114,6 +114,18 @@ export interface SlackCredentials {
   /** OAuth install URL the user must visit to install the app in their
    *  workspace and obtain the bot token. */
   oauthAuthorizeUrl?: string;
+  /**
+   * Slack target for agent → CEO report delivery — Slack channel ID
+   * (`C…`/`G…`), user ID (`U…`), or DM ID (`D…`). Consumed by the
+   * `SlackNotificationDelivery` channel that `src/skills/report.ts`
+   * subscribes per call when an agent invokes `aweek exec report send`.
+   * Optional: when absent, agent reports still land in the dashboard
+   * inbox but the Slack push is skipped. Mirrors the loader-side field
+   * in `src/storage/slack-config-store.ts` — keep aligned so a write
+   * through this skill is visible to the runtime loader without a
+   * second hop.
+   */
+  ceoChannel?: string;
   /** Unix epoch (ms) of the most recent successful update. */
   updatedAt?: number;
 }
@@ -372,6 +384,7 @@ export async function previewCredentialOverwrite(
     'teamId',
     'refreshToken',
     'oauthAuthorizeUrl',
+    'ceoChannel',
   ] as const;
 
   const fieldsCurrentlyPresent: (keyof SlackCredentials)[] = [];
@@ -517,6 +530,7 @@ export function parseSlackCredentials(raw: string): SlackCredentials {
     'teamId',
     'refreshToken',
     'oauthAuthorizeUrl',
+    'ceoChannel',
   ] as const;
   for (const k of stringKeys) {
     const v = obj[k];

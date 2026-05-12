@@ -350,6 +350,44 @@ describe('persistSlackCredentials', () => {
     assert.equal(result.credentials.signingSecret, 'sigsec-old');
     assert.equal(result.credentials.updatedAt, 2);
   });
+
+  it('persists ceoChannel alongside the other credentials and preserves it across merges', async () => {
+    const fs = makeMemoryFs();
+    // First write — bot token + ceoChannel land together (mirrors what
+    // the slack-init markdown does in Step 5a's second slackInit call:
+    // it folds the user's Step-3c value into the same atomic write as
+    // the bot token).
+    const first = await persistSlackCredentials({
+      confirmed: true,
+      projectDir: '/tmp/proj',
+      credentials: { botToken: 'xoxb-1', ceoChannel: 'U0CEOXYZ' },
+      now: () => 1,
+      writeFileFn: fs.writeFileFn,
+      readFileFn: fs.readFileFn,
+      mkdirFn: fs.mkdirFn,
+    });
+    assert.equal(first.credentials.ceoChannel, 'U0CEOXYZ');
+    const persisted = JSON.parse(
+      fs.files.get('/tmp/proj/.aweek/channels/slack/config.json')!,
+    ) as SlackCredentials;
+    assert.equal(persisted.ceoChannel, 'U0CEOXYZ');
+
+    // Second write — a tokens-only rotate must NOT clobber the existing
+    // ceoChannel. This pins the SKILL.md guarantee that re-running the
+    // skill to update credentials leaves the report target intact.
+    const second = await persistSlackCredentials({
+      confirmed: true,
+      projectDir: '/tmp/proj',
+      credentials: { appToken: 'xapp-1' },
+      now: () => 2,
+      writeFileFn: fs.writeFileFn,
+      readFileFn: fs.readFileFn,
+      mkdirFn: fs.mkdirFn,
+    });
+    assert.equal(second.credentials.ceoChannel, 'U0CEOXYZ');
+    assert.equal(second.credentials.appToken, 'xapp-1');
+    assert.equal(second.credentials.botToken, 'xoxb-1');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -376,6 +414,20 @@ describe('parseSlackCredentials', () => {
   it('drops non-string values for string fields', () => {
     const out = parseSlackCredentials(JSON.stringify({ botToken: 123 }));
     assert.deepEqual(out, {});
+  });
+
+  it('round-trips ceoChannel through the tolerant parser', () => {
+    const out = parseSlackCredentials(
+      JSON.stringify({
+        botToken: 'xoxb-1',
+        appToken: 'xapp-1',
+        ceoChannel: 'D01ABCXYZ',
+      }),
+    );
+    assert.equal(out.ceoChannel, 'D01ABCXYZ');
+    // A non-string ceoChannel is dropped like every other string field.
+    const dropped = parseSlackCredentials(JSON.stringify({ ceoChannel: 42 }));
+    assert.deepEqual(dropped, {});
   });
 });
 
@@ -490,6 +542,39 @@ describe('previewCredentialOverwrite', () => {
         }),
       /EACCES/,
     );
+  });
+
+  it('surfaces ceoChannel as an add when the file does not carry it yet', async () => {
+    const fs = makeMemoryFs({
+      '/tmp/proj/.aweek/channels/slack/config.json': JSON.stringify({
+        botToken: 'xoxb-existing',
+      }),
+    });
+    const out = await previewCredentialOverwrite({
+      projectDir: '/tmp/proj',
+      proposed: { ceoChannel: 'U0CEO' },
+      readFileFn: fs.readFileFn,
+    });
+    assert.ok(out.fieldsThatWouldBeAdded.includes('ceoChannel'));
+    assert.ok(!out.fieldsThatWouldBeOverwritten.includes('ceoChannel'));
+    assert.ok(!out.fieldsCurrentlyPresent.includes('ceoChannel'));
+  });
+
+  it('flags ceoChannel as an overwrite when the value on disk differs', async () => {
+    const fs = makeMemoryFs({
+      '/tmp/proj/.aweek/channels/slack/config.json': JSON.stringify({
+        botToken: 'xoxb-1',
+        ceoChannel: 'U0OLD',
+      }),
+    });
+    const out = await previewCredentialOverwrite({
+      projectDir: '/tmp/proj',
+      proposed: { ceoChannel: 'U0NEW' },
+      readFileFn: fs.readFileFn,
+    });
+    assert.ok(out.fieldsCurrentlyPresent.includes('ceoChannel'));
+    assert.ok(out.fieldsThatWouldBeOverwritten.includes('ceoChannel'));
+    assert.ok(!out.fieldsThatWouldBeAdded.includes('ceoChannel'));
   });
 });
 
