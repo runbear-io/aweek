@@ -75,6 +75,10 @@ import {
   createSlackUsageRecord,
   type SlackUsageRecord,
 } from '../storage/slack-usage-store.js';
+import {
+  loadReportThread,
+  type SlackReportThreadRecord,
+} from '../storage/slack-report-thread-store.js';
 import type { ResultInfo, SystemInitInfo } from './slack-stream-event-parser.js';
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -113,6 +117,52 @@ export type SlackUsageRecorder = (
   record: SlackUsageRecord,
 ) => Promise<unknown>;
 
+/**
+ * Loader signature compatible with {@link loadReportThread}. Tests pin
+ * a stub that returns a canned record without touching the disk so the
+ * banner-composition vertical-slice can be asserted in-memory.
+ */
+export type SlackReportThreadLoader = (
+  dataDir: string,
+  threadKey: string,
+) => Promise<SlackReportThreadRecord | null>;
+
+/**
+ * Compose the first-turn system-prompt-append banner that surfaces an
+ * earlier `aweek report` to the project Claude when the CEO replies in
+ * that thread. The text is shaped so Claude (a) knows the message is
+ * a reply to a specific report rather than a cold-start chat, (b)
+ * has the original title / body / source-task ID in context, and (c)
+ * understands the agent slug for the case where the user asks to push
+ * changes back to that agent — but is explicitly told to speak AS
+ * project Claude, not impersonating the agent.
+ *
+ * Exported so the colocated tests can pin the rendered shape and the
+ * report-skill side can stay aligned with the bridge-side renderer
+ * without duplicating the format.
+ */
+export function buildReportContextBanner(
+  record: SlackReportThreadRecord,
+): string {
+  const lines = [
+    'This Slack thread started with an `aweek report` posted by one of the project\'s agents — the user is replying to that report, NOT starting a cold conversation. Original report context:',
+    '',
+    `Agent: ${record.senderSlug}`,
+    `Kind: ${record.kind}`,
+    `Title: ${record.title}`,
+    'Body:',
+    record.body,
+  ];
+  if (record.sourceTaskId) {
+    lines.push('', `Source task: ${record.sourceTaskId}`);
+  }
+  lines.push(
+    '',
+    'You are project Claude responding to the user. DO NOT impersonate the agent. If the user asks for changes to the agent\'s plan, dispatch back via `Task()` or `aweek exec` rather than speaking in the agent\'s voice.',
+  );
+  return lines.join('\n');
+}
+
 /** Options accepted by {@link startSlackBridge}. */
 export interface SlackBridgeOptions {
   /**
@@ -140,6 +190,11 @@ export interface SlackBridgeOptions {
   createBackend?: CreateSlackBackendFn;
   /** Test seam — override the usage recorder. */
   recordUsage?: SlackUsageRecorder;
+  /**
+   * Test seam — override the report-thread loader. Defaults to
+   * {@link loadReportThread}. Production callers leave this unset.
+   */
+  loadReportThreadFn?: SlackReportThreadLoader;
   /**
    * Logger sink for the bridge's status / warning lines. Defaults to
    * stderr so the messages appear alongside the existing `aweek serve`
@@ -261,6 +316,8 @@ export function startSlackBridge(opts: SlackBridgeOptions): SlackBridgeHandle {
     opts.createBackend ?? (createPersistedSlackBackend as CreateSlackBackendFn);
   const recordUsage: SlackUsageRecorder =
     opts.recordUsage ?? (appendSlackUsageRecord as SlackUsageRecorder);
+  const loadReportThreadFn: SlackReportThreadLoader =
+    opts.loadReportThreadFn ?? (loadReportThread as SlackReportThreadLoader);
   const systemPromptAppend = opts.systemPromptAppend ?? SLACK_SYSTEM_PROMPT_BANNER;
 
   // Per-thread cache. The bridge calls `resolveBackend` on every
@@ -277,6 +334,25 @@ export function startSlackBridge(opts: SlackBridgeOptions): SlackBridgeHandle {
       projectRoot: opts.projectRoot,
       thread: ctx,
       systemPromptAppend,
+      // First-turn report-context injection. The factory only invokes
+      // this callback when there is no existing slack-thread-store
+      // record for this threadKey (i.e., the FIRST Claude spawn for
+      // this Slack thread in the current process — either a brand-new
+      // thread or one whose chat-session TTL has expired). When no
+      // matching `aweek report` exists, this returns `null` and the
+      // factory falls back to the conversational-banner-only path.
+      loadFirstTurnSystemPromptAppend: async (): Promise<string | null> => {
+        try {
+          const record = await loadReportThreadFn(opts.dataDir, ctx.threadKey);
+          if (!record) return null;
+          return buildReportContextBanner(record);
+        } catch (err) {
+          log(
+            `aweek: Slack report-thread lookup failed for ${ctx.threadKey} (${formatError(err)})`,
+          );
+          return null;
+        }
+      },
       onResult: (info: ResultInfo) => {
         // Slack-only usage accounting. The factory wires this through
         // to the backend's `onResult` callback, which fires once per

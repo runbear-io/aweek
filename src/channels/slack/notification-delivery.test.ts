@@ -178,6 +178,101 @@ describe('SlackNotificationDelivery.deliver', () => {
     assert.match(logs[0]!, /channel_not_found/);
   });
 
+  it('invokes onPosted with the canonical channel + ts from Slack`s success response', async () => {
+    const records: RecordedRequest[] = [];
+    const seen: Array<{ info: { channel: string; ts: string }; notifTitle: string }> = [];
+    // Return a Slack-shaped success body that includes channel + ts.
+    const fetchFn: typeof fetch = async (url, init) => {
+      const bodyText =
+        typeof init?.body === 'string' ? init.body : init?.body?.toString() ?? '';
+      let parsedBody: unknown = bodyText;
+      try {
+        parsedBody = JSON.parse(bodyText);
+      } catch {
+        // leave as string
+      }
+      records.push({ url: String(url), init, body: parsedBody });
+      return new Response(
+        JSON.stringify({ ok: true, channel: 'D9999', ts: '1700000000.000123' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const channel = new SlackNotificationDelivery({
+      botToken: 'xoxb-test',
+      ceoChannel: 'U1234',
+      fetchFn,
+      onPosted: (info, n) => {
+        seen.push({ info, notifTitle: n.title });
+      },
+    });
+    const notification = createNotification({
+      agentId: 'a',
+      title: 'hello',
+      body: 'world',
+    });
+    await channel.deliver(notification, 'a');
+
+    assert.equal(records.length, 1);
+    assert.equal(seen.length, 1);
+    // Slack canonicalizes user-ID → DM-ID — always trust the response, not the input.
+    assert.deepEqual(seen[0]!.info, { channel: 'D9999', ts: '1700000000.000123' });
+    assert.equal(seen[0]!.notifTitle, 'hello');
+  });
+
+  it('awaits onPosted so persistence completes before deliver() resolves', async () => {
+    const records: RecordedRequest[] = [];
+    const events: string[] = [];
+    const fetchFn = makeFetchStub(
+      { ok: true, channel: 'D1', ts: '1' } as unknown as {
+        ok?: boolean;
+        error?: string;
+      },
+      records,
+    );
+    const channel = new SlackNotificationDelivery({
+      botToken: 'xoxb-test',
+      ceoChannel: 'D1',
+      fetchFn,
+      onPosted: async () => {
+        await new Promise((r) => setImmediate(r));
+        events.push('persisted');
+      },
+    });
+    const notification = createNotification({
+      agentId: 'a',
+      title: 't',
+      body: 'b',
+    });
+    await channel.deliver(notification, 'a');
+    events.push('deliverReturned');
+    assert.deepEqual(events, ['persisted', 'deliverReturned']);
+  });
+
+  it('logs a warning and skips onPosted when Slack omits channel/ts in the success response', async () => {
+    const records: RecordedRequest[] = [];
+    const logs: string[] = [];
+    let posted = 0;
+    // Slack normally always returns channel+ts on ok:true, but defend
+    // against partial responses so the delivery channel never trips.
+    const fetchFn = makeFetchStub({ ok: true } as unknown as { ok?: boolean }, records);
+    const channel = new SlackNotificationDelivery({
+      botToken: 'xoxb-test',
+      ceoChannel: 'D1',
+      fetchFn,
+      log: (msg) => logs.push(msg),
+      onPosted: () => {
+        posted += 1;
+      },
+    });
+    await channel.deliver(
+      createNotification({ agentId: 'a', title: 't', body: 'b' }),
+      'a',
+    );
+    assert.equal(posted, 0, 'onPosted must NOT fire without channel+ts');
+    assert.equal(logs.length, 1);
+    assert.match(logs[0]!, /missing channel\/ts/);
+  });
+
   it('throws when Slack returns a non-JSON body', async () => {
     const records: RecordedRequest[] = [];
     const channel = new SlackNotificationDelivery({

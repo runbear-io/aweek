@@ -90,6 +90,27 @@ export interface CreatePersistedSlackBackendOptions {
    */
   onPersisted?: (record: SlackThreadRecord) => void;
   /**
+   * Optional callback invoked ONLY when there is no existing
+   * `slack-thread-store` record for this threadKey — i.e., the FIRST
+   * turn the bridge is about to spawn for this thread. The callback's
+   * resolved string is appended to {@link systemPromptAppend} (joined
+   * by a blank line) so the bridge can inject one-shot context like
+   * "this thread started with an `aweek report` from agent X — here's
+   * the body and source task" the first time the user replies.
+   *
+   * Returning `null` / `undefined` (or omitting the callback entirely)
+   * skips the injection — that's the cold-start chat path, and is
+   * load-bearing as the default for everyday DMs that don't trace
+   * back to a CEO report.
+   *
+   * Why first-turn-only: Claude Code CLI's `--resume` reloads the
+   * session with its frozen system prompt; re-injecting the report
+   * context on resumed turns is at best wasted tokens, at worst a
+   * confusing duplicate. Limiting the callback to the cold-start
+   * branch keeps the contract crisp.
+   */
+  loadFirstTurnSystemPromptAppend?: () => Promise<string | null | undefined>;
+  /**
    * Optional callback fired with the terminal `result` line. The
    * factory passes this through to the backend so the Slack usage
    * bucket layer (sibling AC) can hook in without learning about the
@@ -213,9 +234,35 @@ export async function createPersistedSlackBackend(
     },
   };
   if (existing) backendOpts.claudeSessionId = existing.claudeSessionId;
-  if (opts.systemPromptAppend) {
-    backendOpts.systemPromptAppend = opts.systemPromptAppend;
+
+  // Compose the final --append-system-prompt banner.
+  //
+  //   - Base banner (`opts.systemPromptAppend`) is the conversational
+  //     "you are chatting with a human in Slack" rule the bridge passes
+  //     for every Slack turn.
+  //   - First-turn context (`opts.loadFirstTurnSystemPromptAppend()`)
+  //     is consulted ONLY when `existing` is null, so resumed turns
+  //     skip the per-thread one-shot injection by design.
+  //
+  // Failures in the callback fall back to the base banner — we'd
+  // rather mint a Claude session with the conversational banner alone
+  // than refuse to reply because the report-context loader threw.
+  let banner = opts.systemPromptAppend;
+  if (!existing && opts.loadFirstTurnSystemPromptAppend) {
+    try {
+      const extra = await opts.loadFirstTurnSystemPromptAppend();
+      if (typeof extra === 'string' && extra.length > 0) {
+        banner = banner ? `${banner}\n\n${extra}` : extra;
+      }
+    } catch (err) {
+      process.stderr.write(
+        `aweek: Slack first-turn context loader failed for ${opts.thread.threadKey} (${
+          err instanceof Error ? err.message : String(err)
+        }) — falling back to conversational banner only\n`,
+      );
+    }
   }
+  if (banner) backendOpts.systemPromptAppend = banner;
   if (opts.spawnFn) backendOpts.spawnFn = opts.spawnFn;
   if (opts.cli) backendOpts.cli = opts.cli;
   if (opts.onResult) backendOpts.onResult = opts.onResult;

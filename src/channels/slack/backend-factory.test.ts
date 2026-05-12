@@ -34,6 +34,7 @@ import type { AgentStreamEvent, ThreadContext } from 'agentchannels';
 import { createPersistedSlackBackend } from './backend-factory.js';
 import {
   loadSlackThread,
+  saveSlackThread,
   slackThreadPath,
   SLACK_THREAD_TTL_MS,
 } from '../../storage/slack-thread-store.js';
@@ -506,6 +507,7 @@ describe('createPersistedSlackBackend — first message persists session_id', ()
   it('forwards --append-system-prompt banner verbatim', async () => {
     const projectRoot = await tempProjectRoot();
     try {
+      const persisted = deferred<unknown>();
       const spawnFn = createMockSpawn({
         stdoutLines: [systemInitLine('sess'), resultLine()],
       });
@@ -514,8 +516,14 @@ describe('createPersistedSlackBackend — first message persists session_id', ()
         thread: THREAD,
         spawnFn,
         systemPromptAppend: 'Slack mode — keep replies conversational.',
+        // Wait for the async thread-store write so the `rm` in `finally`
+        // doesn't race with the in-flight mkdir+writeFile+rename and
+        // throw ENOTEMPTY. Other tests in this file already use the
+        // same synchronisation pattern.
+        onPersisted: (rec) => persisted.notify(rec),
       });
       await drain(backend.sendMessage('hi'));
+      await persisted.promise;
 
       const call = spawnFn.lastCall();
       assert.ok(call);
@@ -559,6 +567,131 @@ describe('createPersistedSlackBackend — first message persists session_id', ()
         }),
       /threadKey is required/,
     );
+  });
+
+  it('invokes loadFirstTurnSystemPromptAppend on cold start and appends its return to the banner', async () => {
+    const projectRoot = await tempProjectRoot();
+    try {
+      let firstTurnCalls = 0;
+      const persisted = deferred<unknown>();
+      const spawnFn = createMockSpawn({
+        stdoutLines: [systemInitLine('sess'), resultLine()],
+      });
+      const backend = await createPersistedSlackBackend({
+        projectRoot,
+        thread: THREAD,
+        spawnFn,
+        systemPromptAppend: 'Conversational banner.',
+        loadFirstTurnSystemPromptAppend: async () => {
+          firstTurnCalls += 1;
+          return 'REPORT_CONTEXT_BLOCK';
+        },
+        onPersisted: (rec) => persisted.notify(rec),
+      });
+      await drain(backend.sendMessage('hi'));
+      await persisted.promise;
+
+      assert.equal(firstTurnCalls, 1);
+      const call = spawnFn.lastCall();
+      assert.ok(call);
+      const idx = call.args.indexOf('--append-system-prompt');
+      assert.ok(idx >= 0);
+      const composed = String(call.args[idx + 1]);
+      // Banner is the conversational banner joined with the report block
+      // by a blank line — matches the factory's documented composition.
+      assert.ok(composed.includes('Conversational banner.'));
+      assert.ok(composed.includes('REPORT_CONTEXT_BLOCK'));
+      assert.match(composed, /Conversational banner\.\n\nREPORT_CONTEXT_BLOCK/);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('SKIPS loadFirstTurnSystemPromptAppend on the resume path (existing chat-thread record)', async () => {
+    const projectRoot = await tempProjectRoot();
+    try {
+      // Seed an existing slack-thread-store record so the factory takes
+      // the --resume branch.
+      const dataDir = join(projectRoot, '.aweek', 'agents');
+      await saveSlackThread(dataDir, {
+        threadKey: THREAD.threadKey,
+        claudeSessionId: 'sess_resumed',
+        now: () => 1_000,
+      });
+
+      let firstTurnCalls = 0;
+      const persisted = deferred<unknown>();
+      const spawnFn = createMockSpawn({
+        stdoutLines: [systemInitLine('sess_resumed'), resultLine()],
+      });
+      const backend = await createPersistedSlackBackend({
+        projectRoot,
+        thread: THREAD,
+        spawnFn,
+        now: () => 1_500,
+        systemPromptAppend: 'Conversational banner.',
+        loadFirstTurnSystemPromptAppend: async () => {
+          firstTurnCalls += 1;
+          return 'REPORT_CONTEXT_BLOCK';
+        },
+        onPersisted: (rec) => persisted.notify(rec),
+      });
+      await drain(backend.sendMessage('hi'));
+      await persisted.promise;
+
+      assert.equal(firstTurnCalls, 0, 'must NOT invoke first-turn callback on resume');
+      const call = spawnFn.lastCall();
+      assert.ok(call);
+      assert.ok(
+        call.args.includes('--resume'),
+        'resume path MUST include --resume',
+      );
+      const idx = call.args.indexOf('--append-system-prompt');
+      const composed = idx >= 0 ? String(call.args[idx + 1]) : '';
+      assert.ok(!composed.includes('REPORT_CONTEXT_BLOCK'));
+      assert.ok(composed.includes('Conversational banner.'));
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the base banner when loadFirstTurnSystemPromptAppend throws', async () => {
+    const projectRoot = await tempProjectRoot();
+    try {
+      // Swallow the stderr warning the factory emits.
+      const origWrite = process.stderr.write.bind(process.stderr);
+      (process.stderr as unknown as { write: (s: string) => boolean }).write = () => true;
+      try {
+        const persisted = deferred<unknown>();
+        const spawnFn = createMockSpawn({
+          stdoutLines: [systemInitLine('sess'), resultLine()],
+        });
+        const backend = await createPersistedSlackBackend({
+          projectRoot,
+          thread: THREAD,
+          spawnFn,
+          systemPromptAppend: 'Conversational banner.',
+          loadFirstTurnSystemPromptAppend: async () => {
+            throw new Error('boom');
+          },
+          onPersisted: (rec) => persisted.notify(rec),
+        });
+        await drain(backend.sendMessage('hi'));
+        await persisted.promise;
+
+        const call = spawnFn.lastCall();
+        assert.ok(call);
+        const idx = call.args.indexOf('--append-system-prompt');
+        assert.ok(idx >= 0);
+        const composed = String(call.args[idx + 1]);
+        // No injection — the spawn happened with the base banner alone.
+        assert.equal(composed, 'Conversational banner.');
+      } finally {
+        (process.stderr as unknown as { write: typeof origWrite }).write = origWrite;
+      }
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it('fires onPersisted observer with the committed record', async () => {

@@ -53,6 +53,26 @@ const SEVERITY_EMOJI: Record<NotificationSeverity, string> = {
   error: ':rotating_light:',
 };
 
+/** Information surfaced to {@link SlackNotificationDeliveryOptions.onPosted}. */
+export interface SlackPostedInfo {
+  /**
+   * Slack's canonical channel ID for the post. When the caller's
+   * `ceoChannel` is a user ID (`U…`), Slack returns the corresponding
+   * DM channel ID (`D…`) — always use the response value when
+   * constructing routing keys, not the caller's input.
+   */
+  channel: string;
+  /**
+   * Slack message timestamp (e.g. `"1762560000.000123"`). Doubles as
+   * the future `thread_ts` for replies in this thread — the inbound
+   * `SlackAdapter` emits a `threadKey` of
+   * `slack:<channel>:<thread_ts>` when a user replies, which must
+   * match what `aweek report` persisted at post time so the bridge
+   * can rehydrate the report context.
+   */
+  ts: string;
+}
+
 /** Constructor options for {@link SlackNotificationDelivery}. */
 export interface SlackNotificationDeliveryOptions {
   /** Slack bot token (`xoxb-…`). Required — without it the channel refuses to construct. */
@@ -74,6 +94,21 @@ export interface SlackNotificationDeliveryOptions {
    * sink array so they can assert on the warning text.
    */
   log?: (message: string) => void;
+  /**
+   * Optional async hook fired AFTER Slack returns `{ ok: true }` and
+   * BEFORE `deliver()` resolves. Used by `src/skills/report.ts` to
+   * persist a report-thread record (`.aweek/channels/slack/report-threads/`)
+   * keyed by `slack:<channel>:<ts>` so the inbound listener can rehydrate
+   * the original report context the first time someone replies in-thread.
+   *
+   * The callback is awaited so the persistence is on-disk before
+   * `deliver()` returns. If the hook throws / rejects, the error
+   * propagates through `deliver()` to the `NotificationStore`'s
+   * `onChannelError` sink — storage of the notification itself has
+   * already succeeded by the time fan-out runs, so this only affects
+   * the report-thread bridge, not the inbox write.
+   */
+  onPosted?: (info: SlackPostedInfo, notification: Notification) => void | Promise<void>;
 }
 
 /** Default stderr sink — one `\n`-terminated line per warning. */
@@ -96,6 +131,9 @@ export class SlackNotificationDelivery implements NotificationDeliveryChannel {
   private readonly _ceoChannel: string;
   private readonly _fetch: typeof fetch;
   private readonly _log: (message: string) => void;
+  private readonly _onPosted:
+    | ((info: SlackPostedInfo, notification: Notification) => void | Promise<void>)
+    | undefined;
 
   constructor(opts: SlackNotificationDeliveryOptions) {
     if (!opts || typeof opts.botToken !== 'string' || opts.botToken.trim() === '') {
@@ -108,6 +146,7 @@ export class SlackNotificationDelivery implements NotificationDeliveryChannel {
     this._ceoChannel = opts.ceoChannel.trim();
     this._fetch = opts.fetchFn ?? fetch;
     this._log = opts.log ?? defaultLog;
+    this._onPosted = opts.onPosted;
   }
 
   /** Slack target the channel posts to. Exposed for diagnostics / tests. */
@@ -152,6 +191,30 @@ export class SlackNotificationDelivery implements NotificationDeliveryChannel {
         `agent=${agentId}, notif=${notification.id}): ${errCode}`;
       this._log(`aweek: ${message}`);
       throw new Error(message);
+    }
+
+    // Success path: extract Slack's canonical channel + message ts so
+    // `aweek report` can persist a report-thread record keyed by the
+    // same `slack:<channel>:<ts>` shape the inbound `SlackAdapter`
+    // emits on replies. Missing/malformed fields surface as a single
+    // stderr warning rather than a throw — the notification itself
+    // landed in Slack, so the (rare) failure to capture the threading
+    // metadata shouldn't bubble up as a delivery error.
+    if (this._onPosted) {
+      const okPayload = payload as { channel?: unknown; ts?: unknown };
+      const channel = typeof okPayload.channel === 'string' ? okPayload.channel : undefined;
+      const ts = typeof okPayload.ts === 'string' ? okPayload.ts : undefined;
+      if (!channel || !ts) {
+        this._log(
+          `aweek: Slack chat.postMessage missing channel/ts in success response ` +
+            `(notif=${notification.id}); skipping report-thread persistence`,
+        );
+      } else {
+        // Await so persistence is on-disk before deliver() resolves —
+        // matters when a reply arrives within milliseconds of the
+        // POST returning.
+        await this._onPosted({ channel, ts }, notification);
+      }
     }
   }
 }

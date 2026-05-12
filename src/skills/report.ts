@@ -62,6 +62,19 @@ import {
   type SlackEnvSource,
 } from '../storage/slack-config-store.js';
 import { SlackNotificationDelivery } from '../channels/slack/notification-delivery.js';
+import {
+  saveReportThread,
+  type SaveReportThreadOptions,
+  type SlackReportThreadRecord,
+} from '../storage/slack-report-thread-store.js';
+
+/**
+ * agentchannels `SlackAdapter.name`. Used to construct the `threadKey`
+ * the inbound listener will emit on replies — keep aligned with the
+ * adapter so the bridge can rehydrate the report-thread record by the
+ * SAME key the bot sees on inbound traffic.
+ */
+const SLACK_ADAPTER_NAME = 'slack';
 
 /** Valid report kind discriminators. */
 export const REPORT_KINDS = ['report', 'question'] as const;
@@ -211,6 +224,24 @@ export interface ReportToCeoDeps {
    * swallow Slack push failures while storage stays green.
    */
   onSlackError?: (err: unknown) => void;
+  /**
+   * Test seam — overrides the report-thread persistence function the
+   * default Slack delivery channel's `onPosted` hook calls. Production
+   * callers leave this unset; the skill writes through the canonical
+   * {@link saveReportThread} to `.aweek/channels/slack/report-threads/`.
+   */
+  saveReportThreadFn?: (
+    dataDir: string,
+    options: SaveReportThreadOptions,
+  ) => Promise<SlackReportThreadRecord>;
+  /**
+   * Test seam — replaces the global `fetch` the default
+   * `SlackNotificationDelivery` constructor uses. Lets tests exercise
+   * the canonical default-factory path (the one that wires the
+   * skill-built `onPosted` closure) without touching slack.com.
+   * Production callers leave this unset.
+   */
+  slackFetchFn?: typeof fetch;
 }
 
 /** Result returned by {@link reportToCeo}. */
@@ -273,17 +304,43 @@ export async function reportToCeo(
   const notificationStore =
     deps.notificationStore || new NotificationStore(dataDir, { onChannelError });
 
-  // Attach the Slack channel BEFORE notify.sendNotification fires append().
+  // Attach the Slack channel BEFORE the persist call fires the fanout.
   let deliveredToSlack = false;
   const loader = deps.slackCredentialsLoader || loadSlackCredentials;
   const credentials = await loader(dataDir, deps.slackEnvSource);
   if (credentials && credentials.ceoChannel && credentials.botToken) {
+    const persistReportThread =
+      deps.saveReportThreadFn || saveReportThread;
+    // `onPosted` only runs in the default factory path — tests that
+    // pass `deps.slackDeliveryFactory` to override the channel
+    // construction are responsible for wiring (or not wiring) their
+    // own persistence. Captures `validated` + `dataDir` by closure
+    // so the persisted record carries the exact report fields the
+    // notification was built with.
+    const onPosted = async (
+      info: { channel: string; ts: string },
+      _notification: Notification,
+    ): Promise<void> => {
+      const options: SaveReportThreadOptions = {
+        threadKey: `${SLACK_ADAPTER_NAME}:${info.channel}:${info.ts}`,
+        senderSlug: validated.senderSlug,
+        kind: validated.kind,
+        title: validated.title,
+        body: validated.body,
+      };
+      if (validated.sourceTaskId !== undefined) {
+        options.sourceTaskId = validated.sourceTaskId;
+      }
+      await persistReportThread(dataDir, options);
+    };
     const factory: SlackDeliveryFactory =
       deps.slackDeliveryFactory ||
       ((creds) =>
         new SlackNotificationDelivery({
           botToken: creds.botToken,
           ceoChannel: creds.ceoChannel as string,
+          onPosted,
+          ...(deps.slackFetchFn ? { fetchFn: deps.slackFetchFn } : {}),
         }));
     const channel = factory(credentials);
     notificationStore.subscribe(channel);

@@ -36,6 +36,10 @@ import {
   REPORT_KINDS,
 } from './report.js';
 import type { SlackCredentials } from '../storage/slack-config-store.js';
+import type {
+  SaveReportThreadOptions,
+  SlackReportThreadRecord,
+} from '../storage/slack-report-thread-store.js';
 
 function makeAgent(slug: string): any {
   return createAgentConfig({
@@ -453,6 +457,101 @@ describe('reportToCeo Slack delivery wiring', () => {
     await new Promise((r) => setImmediate(r));
     assert.equal(errors.length, 1);
     assert.match((errors[0] as Error).message, /boom_from_slack/);
+  });
+
+  it('persists a report-thread record via the default factory (canonical path)', async () => {
+    // Exercises the FULL canonical path with NO slackDeliveryFactory
+    // override. The skill builds the SlackNotificationDelivery itself,
+    // wires onPosted internally, and after fetch returns ok+channel+ts
+    // the onPosted closure calls saveReportThreadFn with the threadKey
+    // shape (`slack:<channel>:<ts>`) the inbound bridge will look up.
+    const saves: SaveReportThreadOptions[] = [];
+    let fetchCalls = 0;
+    const fetchStub: typeof fetch = async () => {
+      fetchCalls += 1;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          channel: 'D9999',
+          ts: '1700000000.000123',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+
+    await reportToCeo(
+      {
+        senderSlug: SENDER_ID,
+        kind: 'question',
+        title: 'Need approval',
+        body: 'Approve the W21 plan?',
+        sourceTaskId: 'task-xyz',
+      },
+      {
+        agentStore,
+        notificationStore,
+        slackCredentialsLoader: async () => ({
+          botToken: 'xoxb-test',
+          appToken: 'xapp-test',
+          ceoChannel: 'U1234',
+        }),
+        slackFetchFn: fetchStub,
+        saveReportThreadFn: async (_dir, opts) => {
+          saves.push(opts);
+          const record: SlackReportThreadRecord = {
+            threadKey: opts.threadKey,
+            senderSlug: opts.senderSlug,
+            kind: opts.kind,
+            title: opts.title,
+            body: opts.body,
+            postedAt: 0,
+          };
+          if (opts.sourceTaskId !== undefined) record.sourceTaskId = opts.sourceTaskId;
+          return record;
+        },
+      },
+    );
+
+    // Let the async fan-out + deliver() settle.
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(fetchCalls, 1, 'fetch must be called exactly once');
+    assert.equal(saves.length, 1, 'report-thread save must fire on success');
+    // Slack canonicalizes user-ID → DM-channel ID; the persisted
+    // threadKey uses Slack's response value so it matches the inbound
+    // bridge's threadKey on the eventual reply.
+    assert.equal(saves[0]!.threadKey, 'slack:D9999:1700000000.000123');
+    assert.equal(saves[0]!.senderSlug, SENDER_ID);
+    assert.equal(saves[0]!.kind, 'question');
+    assert.equal(saves[0]!.title, 'Need approval');
+    assert.equal(saves[0]!.body, 'Approve the W21 plan?');
+    assert.equal(saves[0]!.sourceTaskId, 'task-xyz');
+  });
+
+  it('does NOT persist a report-thread record when Slack push is skipped (no ceoChannel)', async () => {
+    const saves: SaveReportThreadOptions[] = [];
+    await reportToCeo(
+      {
+        senderSlug: SENDER_ID,
+        kind: 'report',
+        title: 't',
+        body: 'b',
+      },
+      {
+        agentStore,
+        notificationStore,
+        // botToken present but ceoChannel absent — Slack subscribe is skipped.
+        slackCredentialsLoader: async () => ({
+          botToken: 'xoxb-test',
+          appToken: 'xapp-test',
+        }),
+        saveReportThreadFn: async (_dir, opts) => {
+          saves.push(opts);
+          return {} as never;
+        },
+      },
+    );
+    assert.equal(saves.length, 0);
   });
 
   it('forwards env-source through to the credentials loader', async () => {
