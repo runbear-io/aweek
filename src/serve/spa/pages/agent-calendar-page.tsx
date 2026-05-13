@@ -636,6 +636,7 @@ function TaskDetailSheet({
     reviewStem && agentSlug
       ? `/agents/${encodeURIComponent(agentSlug)}/reviews/${encodeURIComponent(reviewStem)}`
       : null;
+
   return (
     <Sheet open={open} onOpenChange={(next: boolean) => (next ? null : onClose())}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-3xl">

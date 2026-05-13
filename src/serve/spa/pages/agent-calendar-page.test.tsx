@@ -593,6 +593,155 @@ describe('deriveReviewStem (calendar review-task → review file stem)', () => {
   });
 });
 
+// ── Sub-AC 9.1: prev / next / today week-navigation controls ────────
+
+describe('AgentCalendarPage — week navigation controls (Sub-AC 9.1)', () => {
+  it('renders prev / current / next buttons inside the header when onWeekChange is wired', async () => {
+    const onWeekChange = vi.fn();
+    const { container } = renderCalendar(
+      FULL_CALENDAR,
+      {},
+      { week: '2026-W17', onWeekChange },
+    );
+    const nav = await waitFor(() => {
+      const el = container.querySelector('[data-calendar-week-nav="true"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(
+      nav.querySelector('[data-calendar-prev-week="2026-W16"]'),
+    ).not.toBeNull();
+    expect(
+      nav.querySelector('[data-calendar-current-week="true"]'),
+    ).not.toBeNull();
+    expect(
+      nav.querySelector('[data-calendar-next-week="2026-W18"]'),
+    ).not.toBeNull();
+  });
+
+  it('omits the week-navigation row entirely when onWeekChange is not supplied', async () => {
+    const { container } = renderCalendar(FULL_CALENDAR);
+    await waitFor(() => {
+      expect(container.querySelector('[data-calendar-header="true"]')).not.toBeNull();
+    });
+    expect(
+      container.querySelector('[data-calendar-week-nav="true"]'),
+    ).toBeNull();
+  });
+
+  it('clicking Previous calls onWeekChange with the prior ISO week', async () => {
+    const onWeekChange = vi.fn();
+    const { container } = renderCalendar(
+      FULL_CALENDAR,
+      {},
+      { week: '2026-W17', onWeekChange },
+    );
+    const prev = await waitFor(() => {
+      const el = container.querySelector(
+        '[data-calendar-prev-week="2026-W16"]',
+      ) as HTMLButtonElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    fireEvent.click(prev);
+    expect(onWeekChange).toHaveBeenCalledWith('2026-W16');
+  });
+
+  it('clicking Next calls onWeekChange with the following ISO week', async () => {
+    const onWeekChange = vi.fn();
+    const { container } = renderCalendar(
+      FULL_CALENDAR,
+      {},
+      { week: '2026-W17', onWeekChange },
+    );
+    const next = await waitFor(() => {
+      const el = container.querySelector(
+        '[data-calendar-next-week="2026-W18"]',
+      ) as HTMLButtonElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    fireEvent.click(next);
+    expect(onWeekChange).toHaveBeenCalledWith('2026-W18');
+  });
+
+  it('clicking the current (today) button clears the week override by calling onWeekChange(null)', async () => {
+    const onWeekChange = vi.fn();
+    const { container } = renderCalendar(
+      FULL_CALENDAR,
+      {},
+      { week: '2026-W17', onWeekChange },
+    );
+    const today = await waitFor(() => {
+      const el = container.querySelector(
+        '[data-calendar-current-week="true"]',
+      ) as HTMLButtonElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(today).not.toBeDisabled();
+    fireEvent.click(today);
+    expect(onWeekChange).toHaveBeenCalledWith(null);
+  });
+
+  it('disables the current (today) button when no week override is active', async () => {
+    const onWeekChange = vi.fn();
+    const { container } = renderCalendar(
+      FULL_CALENDAR,
+      {},
+      { onWeekChange },
+    );
+    const today = await waitFor(() => {
+      const el = container.querySelector(
+        '[data-calendar-current-week="true"]',
+      ) as HTMLButtonElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(today).toBeDisabled();
+  });
+
+  it('crosses year boundaries when stepping prev/next (W01 → previous-year W52/W53)', async () => {
+    const onWeekChange = vi.fn();
+    const { container } = renderCalendar(
+      FULL_CALENDAR,
+      {},
+      { week: '2026-W01', onWeekChange },
+    );
+    const prev = await waitFor(() => {
+      const el = container.querySelector(
+        '[data-calendar-prev-week]',
+      ) as HTMLButtonElement | null;
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    // 2025 is a 52-week ISO year, so W01 ← W52 of 2025.
+    expect(prev).toHaveAttribute('data-calendar-prev-week', '2025-W52');
+    fireEvent.click(prev);
+    expect(onWeekChange).toHaveBeenCalledWith('2025-W52');
+  });
+
+  it('renders the week-nav even on a no-plan response so empty agents are still navigable', async () => {
+    const onWeekChange = vi.fn();
+    const noPlanWithActiveWeek = { ...NO_PLAN_CALENDAR };
+    const { container } = renderCalendar(
+      noPlanWithActiveWeek,
+      {},
+      { week: '2026-W17', onWeekChange },
+    );
+    await screen.findByText(/no weekly plan yet/i);
+    const nav = container.querySelector('[data-calendar-week-nav="true"]');
+    expect(nav).not.toBeNull();
+    // Pivot falls back to activeWeek when calendar.week is null.
+    expect(
+      nav!.querySelector('[data-calendar-prev-week="2026-W16"]'),
+    ).not.toBeNull();
+    expect(
+      nav!.querySelector('[data-calendar-next-week="2026-W18"]'),
+    ).not.toBeNull();
+  });
+});
+
 // ── AC 4 sub-AC 3: mobile day-navigation controls ───────────────────
 
 /**
@@ -802,3 +951,4 @@ describe('AgentCalendarPage — mobile day-navigation (AC 4 sub-AC 3)', () => {
     ).toBeNull();
   });
 });
+

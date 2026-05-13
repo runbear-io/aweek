@@ -111,6 +111,14 @@ const ALLOWED_IMPORT_PREFIXES = [
  */
 const PER_FILE_EXTRA_IMPORTS: Record<string, readonly string[]> = {
   'chat.ts': ['@anthropic-ai/claude-agent-sdk'],
+  // `calendar.ts` lazily expands per-agent recurring rules into the
+  // requested ISO week so the dashboard's "render every week" promise
+  // holds for agents without an on-disk weekly-plan file. The expander
+  // (`src/services/recurrence-expander.ts`) is a pure, read-only,
+  // deterministic projection — no fs writes, no clock reads — so the
+  // narrow services carve-out preserves the AC 9 "no new persistence"
+  // invariant for the data layer.
+  'calendar.ts': ['../../services/recurrence-expander.js'],
   // `lock-status.ts` is the read-only SPA gatherer for the chat panel's
   // heartbeat-activity banner (AC 11). It calls `queryLock` from the
   // lock manager — a pure read of `.aweek/.locks/` state with no
@@ -545,24 +553,193 @@ test('gatherAgentUsage requires projectDir and slug', async () => {
   );
 });
 
-test('gatherAgentCalendar degrades to noPlan when no plan exists', async () => {
+test('gatherAgentCalendar renders an empty grid (noPlan:false, tasks:[]) when no plan AND no occurrences exist (AC8)', async () => {
   const { root, agentId } = await makeFixtureProject();
   try {
+    // No weekly-plan file AND no recurring-tasks.json — AC8: the API
+    // must surface `noPlan: false` with `tasks: []` AND a resolvable
+    // `week` / `weekMonday` so the SPA can render the full empty grid
+    // (prev/next/today navigation, hour rows, day columns) instead of
+    // the destructive "no plan yet" banner.
     const cal = await dataIndex.gatherAgentCalendar({
       projectDir: root,
       slug: agentId,
+      week: '2026-W17',
+      now: new Date('2026-04-22T12:00:00.000Z'),
     });
     assert.equal(cal.agentId, agentId);
-    assert.equal(cal.noPlan, true);
-    assert.deepEqual(cal.tasks, []);
+    assert.equal(cal.noPlan, false, 'AC8: noPlan must be false even without a plan file');
+    assert.deepEqual(cal.tasks, [], 'AC8: tasks must be empty when no occurrences');
     assert.equal(cal.counts.total, 0);
+    assert.equal(cal.week, '2026-W17', 'AC8: week resolves from the request param');
+    assert.ok(
+      cal.weekMonday,
+      'AC8: weekMonday must be set so the SPA can build the grid',
+    );
+    // Monday 2026-04-20 UTC is the start of ISO week 2026-W17.
+    assert.equal(cal.weekMonday, '2026-04-20T00:00:00.000Z');
+    assert.equal(cal.month, '2026-04');
+    assert.equal(cal.approved, false);
+    assert.equal(cal.loadError, null);
+    assert.ok(
+      cal.activityByTask && typeof cal.activityByTask === 'object',
+      'activityByTask must still be an object on empty-grid responses',
+    );
 
-    // Unknown slug → notFound
+    // Without a `week` param the gatherer falls back to the current
+    // ISO week of the injected clock. The grid still renders.
+    const calCurrent = await dataIndex.gatherAgentCalendar({
+      projectDir: root,
+      slug: agentId,
+      now: new Date('2026-04-22T12:00:00.000Z'),
+    });
+    assert.equal(calCurrent.noPlan, false);
+    assert.deepEqual(calCurrent.tasks, []);
+    assert.equal(calCurrent.week, '2026-W17');
+    assert.equal(calCurrent.weekMonday, '2026-04-20T00:00:00.000Z');
+
+    // Unknown slug → notFound (unchanged behaviour).
     const nf = await dataIndex.gatherAgentCalendar({
       projectDir: root,
       slug: 'does-not-exist',
     });
     assert.equal(nf.notFound, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('gatherAgentCalendar synthesizes a virtual plan from recurring expansion when no plan file exists (AC7)', async () => {
+  const { root, agentId } = await makeFixtureProject();
+  try {
+    // AC7 contract: when there is no on-disk weekly-plan file BUT there
+    // are active recurring-task rules that produce occurrences inside
+    // the requested ISO week, the gatherer must synthesize a virtual
+    // plan from the expansion result. The response must surface:
+    //
+    //   - `noPlan: false` (the dashboard treats this as "a plan exists",
+    //     even though no `weekly-plans/<YYYY-Www>.json` is on disk),
+    //   - the expanded occurrences as pending WeeklyTask rows with
+    //     deterministic ids (`task-rec-<ruleId>-<yyyymmddThhmm>`),
+    //   - per-task calendar slots so the SPA grid renders them,
+    //   - counts that reflect the synthesized tasks.
+    //
+    // This is what powers "the calendar page renders EVERY week with
+    // recurring occurrences visible" — without this, an agent that has
+    // only recurring rules (no manually-generated weekly plan yet) would
+    // see an empty grid for every future week.
+    const { RecurringTaskStore } = await import(
+      '../../storage/recurring-task-store.js'
+    );
+    const agentsDir = join(root, '.aweek', 'agents');
+    const recurringStore = new RecurringTaskStore(agentsDir);
+
+    // Weekly rule firing Mon/Wed/Fri at 10:00 UTC. Inside 2026-W17
+    // (Mon 2026-04-20 → Sun 2026-04-26) this produces exactly three
+    // occurrences:
+    //   - 2026-04-20T10:00:00Z (Monday)
+    //   - 2026-04-22T10:00:00Z (Wednesday)
+    //   - 2026-04-24T10:00:00Z (Friday)
+    await recurringStore.save(agentId, {
+      id: 'rec-standup',
+      template: {
+        title: 'Daily standup',
+        prompt: 'Run the standup checklist.',
+        objectiveId: 'team-rituals',
+        priority: 'high',
+        estimatedMinutes: 15,
+      },
+      rule: {
+        freq: 'weekly',
+        interval: 1,
+        byDay: ['MO', 'WE', 'FR'],
+        dtStart: '2026-04-20T10:00:00.000Z',
+        timeZone: 'UTC',
+      },
+      createdAt: '2026-04-19T00:00:00.000Z',
+    });
+
+    // Confirm NO weekly-plan file exists (the synthesis contract is
+    // load-bearing on the file's absence — if a plan file gets created
+    // by a sibling AC's helper, this test would silently exercise the
+    // plan-merge path instead of the synthesis path).
+    const planFile = join(
+      agentsDir,
+      agentId,
+      'weekly-plans',
+      '2026-W17.json',
+    );
+    await assert.rejects(
+      readFile(planFile, 'utf-8'),
+      (err) => err && err.code === 'ENOENT',
+      'AC7 precondition: no weekly-plan file may exist on disk for the target week',
+    );
+
+    const cal = await dataIndex.gatherAgentCalendar({
+      projectDir: root,
+      slug: agentId,
+      week: '2026-W17',
+      now: new Date('2026-04-22T12:00:00.000Z'),
+    });
+    assert.equal(cal.agentId, agentId);
+    assert.equal(cal.week, '2026-W17');
+    assert.equal(cal.weekMonday, '2026-04-20T00:00:00.000Z');
+    assert.equal(cal.month, '2026-04');
+    assert.equal(cal.approved, false);
+    assert.equal(cal.loadError, null);
+    assert.equal(
+      cal.noPlan,
+      false,
+      'AC7: noPlan must be false — the virtual plan synthesized from ' +
+        'recurring expansion satisfies "a plan exists" for the dashboard',
+    );
+
+    // Three occurrences expanded into the week (Mon/Wed/Fri at 10:00 UTC).
+    assert.equal(cal.tasks.length, 3, 'AC7: every occurrence in the week must surface');
+    assert.equal(cal.counts.total, 3);
+    assert.equal(cal.counts.pending, 3, 'AC7: synthesized occurrences are pending');
+    assert.equal(cal.counts.completed, 0);
+
+    // Deterministic occurrence ids — task-rec-<ruleId>-<yyyymmddThhmm>
+    // using UTC components, sorted ascending by runAt.
+    const ids = cal.tasks.map((t) => t.id);
+    assert.deepEqual(ids, [
+      'task-rec-rec-standup-20260420T1000',
+      'task-rec-rec-standup-20260422T1000',
+      'task-rec-rec-standup-20260424T1000',
+    ]);
+
+    // Each synthesized task carries the template fields verbatim.
+    for (const task of cal.tasks) {
+      assert.equal(task.title, 'Daily standup');
+      assert.equal(task.prompt, 'Run the standup checklist.');
+      assert.equal(task.objectiveId, 'team-rituals');
+      assert.equal(task.priority, 'high');
+      assert.equal(task.estimatedMinutes, 15);
+      assert.equal(task.status, 'pending');
+    }
+
+    // Calendar slot must be set so the SPA grid can place each chip.
+    const monday = cal.tasks.find((t) => t.id === 'task-rec-rec-standup-20260420T1000');
+    const wednesday = cal.tasks.find((t) => t.id === 'task-rec-rec-standup-20260422T1000');
+    const friday = cal.tasks.find((t) => t.id === 'task-rec-rec-standup-20260424T1000');
+    assert.ok(monday && wednesday && friday);
+    assert.ok(monday.slot && wednesday.slot && friday.slot, 'AC7: every occurrence must carry a slot');
+    assert.equal(monday.slot.dayKey, 'mon');
+    assert.equal(wednesday.slot.dayKey, 'wed');
+    assert.equal(friday.slot.dayKey, 'fri');
+    assert.equal(monday.slot.hour, 10);
+    assert.equal(wednesday.slot.hour, 10);
+    assert.equal(friday.slot.hour, 10);
+
+    // No plan file was authored as a side-effect of the read path —
+    // synthesis is a pure projection (the heartbeat materializer is
+    // the only writer of weekly-plan files for recurring tasks).
+    await assert.rejects(
+      readFile(planFile, 'utf-8'),
+      (err) => err && err.code === 'ENOENT',
+      'AC7: gatherAgentCalendar must not author a weekly-plan file as a side-effect',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

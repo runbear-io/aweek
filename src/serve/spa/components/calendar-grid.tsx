@@ -182,6 +182,17 @@ export const STATUS_ICONS: Readonly<Record<TaskStatus, string>> = {
 /** Review-slot icon — matches terminal baseline. */
 export const REVIEW_ICON = '◆';
 
+/**
+ * Recurring-occurrence badge — the ↻ glyph distinguishes a chip that came
+ * from a recurring-task rule (either materialized at heartbeat tick time
+ * or lazily projected by `gatherAgentCalendar`) from a one-shot weekly
+ * task. AC10. Detection keys on the occurrence-id prefix the expander
+ * stamps (`task-rec-<ruleId>-<yyyymmddThhmm>`, AC6) so both the eager
+ * (materializer) and lazy (SPA) populations are caught with a single
+ * prefix check — no parallel schema field needed.
+ */
+export const RECURRING_ICON = '↻';
+
 /** Status → tailwind utility string for chip borders / backgrounds. */
 export const STATUS_TONE: Readonly<Record<TaskStatus, string>> = {
   pending: 'border-border bg-muted/60 text-foreground',
@@ -513,6 +524,7 @@ export function TaskChip({
   onSelect,
 }: TaskChipProps): React.ReactElement {
   const review = isReviewTask(task);
+  const recurring = isRecurringTask(task);
   const status = task.status as TaskStatus;
   // Verifier signals on a `completed` task override the default emerald
   // success tone so the chip is visually distinct from a clean success.
@@ -564,6 +576,7 @@ export function TaskChip({
       : STATUS_ICONS[status] || '?';
   const titleText = [
     `${icon} ${number ? `${number}. ` : ''}${label}`,
+    recurring ? 'Recurring occurrence' : null,
     task.runAt ? `runAt: ${task.runAt}` : null,
     task.estimatedMinutes ? `${task.estimatedMinutes} min` : null,
     task.track ? `track: ${task.track}` : null,
@@ -582,6 +595,7 @@ export function TaskChip({
     'data-task-number': number,
     'data-task-status': task.status,
     'data-task-review': review ? 'true' : undefined,
+    'data-task-recurring': recurring ? 'true' : undefined,
     'data-task-title': label,
     'data-task-minute': minuteBadge ?? undefined,
     'data-task-warnings': hasWarnings ? 'true' : undefined,
@@ -604,6 +618,14 @@ export function TaskChip({
       <span aria-hidden="true" className="shrink-0 font-mono">
         {icon}
       </span>
+      {recurring ? (
+        <span
+          aria-label="recurring occurrence"
+          className="shrink-0 font-mono text-sky-300"
+        >
+          {RECURRING_ICON}
+        </span>
+      ) : null}
       {hasWarnings && !isNotAchieved ? (
         <span
           aria-label={`completed with ${warnings.length} concern${warnings.length === 1 ? '' : 's'}`}
@@ -692,6 +714,30 @@ export function isReviewTask(
   task: Pick<CalendarTask, 'objectiveId'> | null | undefined,
 ): boolean {
   return !!task && REVIEW_OBJECTIVE_IDS.has(task.objectiveId || '');
+}
+
+/**
+ * Whether a task originated from a recurring-task rule.
+ *
+ * Detection is keyed on the occurrence-id prefix (`task-rec-…`) the
+ * expander stamps onto every materialized / lazy occurrence per AC6
+ * (`task-rec-<ruleId>-<yyyymmddThhmm>`). Sharing one prefix means the same
+ * check catches both populations:
+ *
+ *   - Eagerly materialized recurring tasks written into a weekly-plan
+ *     file by `src/services/recurring-materializer.ts` at heartbeat tick
+ *     time (the heartbeat's execution path).
+ *   - Lazily expanded occurrences merged in by
+ *     `gatherAgentCalendar` for weeks with no on-disk plan file (the
+ *     SPA's "render every week" path, AC7/AC8).
+ *
+ * Tolerates `null` / `undefined` / partial inputs so test-only fixtures
+ * that don't bother filling in every `CalendarTask` field still type-check.
+ */
+export function isRecurringTask(
+  task: Pick<CalendarTask, 'id'> | null | undefined,
+): boolean {
+  return !!task && typeof task.id === 'string' && task.id.startsWith('task-rec-');
 }
 
 /**

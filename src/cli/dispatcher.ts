@@ -45,6 +45,7 @@ import * as artifact from '../skills/artifact.js';
 import * as config from '../skills/config.js';
 import * as planAmbiguity from '../skills/plan-ambiguity.js';
 import * as slackInit from '../skills/slack-init.js';
+import * as recurring from '../skills/recurring.js';
 import * as planInterviewStore from '../storage/plan-interview-store.js';
 import * as agentHelpers from '../storage/agent-helpers.js';
 import * as planMarkdown from '../storage/plan-markdown-store.js';
@@ -432,6 +433,35 @@ const REGISTRY_LITERAL = Object.freeze({
     slackChannelDir: (input: any) => slackInit.slackChannelDir(input?.projectDir),
     slackConfigPath: (input: any) => slackInit.slackConfigPath(input?.projectDir),
   },
+  // Per-agent recurring-task management — `aweek exec recurring <fn>` is the
+  // canonical CLI surface for the four lifecycle operations (list/add/update/
+  // remove) the skill markdown drives. Each handler is a thin orchestrator on
+  // top of RecurringTaskStore; AJV validation runs inside `save()` while the
+  // pre-flight `validate*Params` helpers surface friendly error messages
+  // before any I/O. Destructive operations (`update` with a rule overlay,
+  // `remove`) refuse to run without `confirmed: true` — the SKILL.md layer
+  // collects consent via AskUserQuestion before invoking. The handlers
+  // accept an optional second `deps` arg for tests; the dispatcher only
+  // forwards the JSON params object, so production calls use the default
+  // store + agent-store instances.
+  recurring: {
+    listRecurringTasks: recurring.listRecurringTasks,
+    addRecurringTask: recurring.addRecurringTask,
+    updateRecurringTask: recurring.updateRecurringTask,
+    removeRecurringTask: recurring.removeRecurringTask,
+    validateListParams: recurring.validateListParams,
+    validateAddParams: recurring.validateAddParams,
+    validateUpdateParams: recurring.validateUpdateParams,
+    validateRemoveParams: recurring.validateRemoveParams,
+    formatListResult: (input: any) =>
+      recurring.formatListResult(input?.result ?? input),
+    formatAddResult: (input: any) =>
+      recurring.formatAddResult(input?.record ?? input),
+    formatUpdateResult: (input: any) =>
+      recurring.formatUpdateResult(input?.record ?? input),
+    formatRemoveResult: (input: any) =>
+      recurring.formatRemoveResult(input?.result ?? input),
+  },
   'plan-interview-store': {
     createInterviewState: (input: any) =>
       planInterviewStore.createInterviewState({
@@ -499,6 +529,9 @@ const REQUIRES_HEARTBEAT = new Set<string>([
   'calendar:loadAndRenderGrid',
   'delegate-task:delegateTask',
   'setup-hire-menu:routeInitHireMenuChoice',
+  'recurring:addRecurringTask',
+  'recurring:updateRecurringTask',
+  'recurring:removeRecurringTask',
 ]);
 
 /**
@@ -510,6 +543,7 @@ const REQUIRES_READONLY = new Set<string>([
   'summary:buildAgentDrillDown',
   'summary:getAgentDrillDownChoices',
   'query:queryAgents',
+  'recurring:listRecurringTasks',
 ]);
 
 /** Parameter shape for `dispatchExec`. */

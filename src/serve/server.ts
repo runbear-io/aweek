@@ -785,6 +785,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
       await handleAgentThreadCreate(req, res, ctx, slug);
       return;
     }
+
   }
 
   if (method !== 'GET' && method !== 'HEAD') {
@@ -1211,10 +1212,13 @@ async function handleAgentPlan(res: ServerResponse, ctx: RequestContext, slug: s
  * shared `computeTaskSlot` helper, and co-gathers per-task activity rows
  * so the Calendar tab can render the grid without additional round-trips.
  *
- * When the agent exists but has no weekly plan yet, the gatherer returns
- * `noPlan: true` and we forward that as a 200 — the SPA renders a "no
- * plan yet" empty state instead of an error. 404 only fires when the
- * slug is unknown on disk.
+ * For any known agent the gatherer always returns a renderable payload
+ * (200) with `week`, `weekMonday`, and `month` resolved from either the
+ * `?week` param, the in-progress weekly plan, or the server's current
+ * ISO week. When no on-disk plan AND no recurring-task occurrences
+ * exist for the window, the response carries `noPlan: false` with an
+ * empty `tasks` array so the SPA can render the full empty grid
+ * (AC8). 404 only fires when the slug is unknown on disk.
  *
  * Optional `?week=YYYY-Www` overrides the current-week default (matches
  * the terminal `/aweek:calendar` `--week` flag).

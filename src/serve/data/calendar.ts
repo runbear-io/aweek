@@ -33,6 +33,9 @@ import type { WeeklyPlan, WeeklyTask } from '../../storage/weekly-plan-store.js'
 import { ActivityLogStore } from '../../storage/activity-log-store.js';
 import type { ActivityLogEntry } from '../../storage/activity-log-store.js';
 import { loadConfig } from '../../storage/config-store.js';
+import { RecurringTaskStore } from '../../storage/recurring-task-store.js';
+import type { RecurringTask } from '../../storage/recurring-task-store.js';
+import { expandForWindow } from '../../services/recurrence-expander.js';
 import {
   currentWeekKey,
   isValidTimeZone,
@@ -456,12 +459,113 @@ export interface AgentCalendarNotFound {
 }
 
 /**
+ * Build a deterministic ISO-week month key (`YYYY-MM`) from the local
+ * Monday of the week. Matches the convention used by
+ * `recurring-materializer` and `WeeklyPlanStore`: the month that owns
+ * the Monday of the ISO week (not the calendar-month majority of the
+ * seven days).
+ */
+function monthFromMonday(weekMonday: Date, timeZone: string): string {
+  try {
+    const tz = isValidTimeZone(timeZone) ? timeZone : 'UTC';
+    const p = localParts(weekMonday, tz);
+    return `${p.year}-${String(p.month).padStart(2, '0')}`;
+  } catch {
+    const y = weekMonday.getUTCFullYear();
+    const m = weekMonday.getUTCMonth() + 1;
+    return `${y}-${String(m).padStart(2, '0')}`;
+  }
+}
+
+/**
+ * Project a recurrence-expander {@link Occurrence} into the WeeklyTask
+ * shape the calendar UI consumes. Templates carry over verbatim with no
+ * override (the materializer handles per-occurrence overrides at tick
+ * time; the SPA lazy view shows the canonical recurring task as-is).
+ */
+function occurrenceToTask(
+  record: RecurringTask,
+  occurrence: { id: string; runAt: string },
+): WeeklyTask {
+  const template = record.template;
+  const task: WeeklyTask = {
+    id: occurrence.id,
+    title: template.title,
+    prompt: template.prompt,
+    status: 'pending',
+    runAt: occurrence.runAt,
+  };
+  if (template.objectiveId !== undefined) task.objectiveId = template.objectiveId;
+  if (template.priority !== undefined) task.priority = template.priority;
+  if (template.estimatedMinutes !== undefined) {
+    task.estimatedMinutes = template.estimatedMinutes;
+  }
+  if (template.track !== undefined) task.track = template.track;
+  return task;
+}
+
+/**
+ * Lazily expand every per-agent RecurringTask into the WeeklyTask[] that
+ * fire inside the given ISO week. Pure read — no on-disk writes. Used
+ * by `gatherAgentCalendar` to keep the dashboard's "render every week"
+ * promise even when no on-disk weekly-plans/<YYYY-Www>.json file exists.
+ *
+ * Errors are absorbed: a corrupt recurring-tasks.json must not knock the
+ * calendar offline (the agent-list `issues` banner surfaces those).
+ */
+async function gatherRecurringOccurrences(
+  dataDir: string,
+  agentId: string,
+  weekMonday: Date,
+  timeZone: string,
+): Promise<WeeklyTask[]> {
+  let records: RecurringTask[];
+  try {
+    const store = new RecurringTaskStore(dataDir);
+    records = await store.loadAll(agentId);
+  } catch {
+    return [];
+  }
+  if (records.length === 0) return [];
+
+  const tz = isValidTimeZone(timeZone) ? timeZone : 'UTC';
+  const out: WeeklyTask[] = [];
+  for (const record of records) {
+    let occurrences;
+    try {
+      occurrences = expandForWindow(record.rule, weekMonday, tz, record.id);
+    } catch {
+      // Skip a single malformed rule rather than failing the whole grid.
+      continue;
+    }
+    for (const occ of occurrences) {
+      out.push(occurrenceToTask(record, occ));
+    }
+  }
+  // Sort by runAt (ascending) so identical inputs always produce the
+  // same task ordering. Stable for cross-render hydration.
+  out.sort((a, b) => {
+    const aRun = a.runAt ?? '';
+    const bRun = b.runAt ?? '';
+    if (aRun !== bRun) return aRun < bRun ? -1 : 1;
+    return a.id < b.id ? -1 : 1;
+  });
+  return out;
+}
+
+/**
  * Gather a single agent's current-week calendar payload.
  *
  * Returns `{ notFound: true, agentId }` when the slug is unknown on
- * disk so the HTTP layer can map it to 404. When the agent exists but
- * no weekly plan is present, returns `noPlan: true` with an empty task
- * list so the SPA can still render a useful empty state.
+ * disk so the HTTP layer can map it to 404.
+ *
+ * When the agent exists but no on-disk weekly-plan file is present, the
+ * gatherer still renders a usable grid: it derives `week`/`weekMonday`
+ * from the requested (or current) ISO week and lazily expands any
+ * per-agent recurring rules into that window. Per AC8, the response is
+ * `noPlan: false, tasks: []` when no plan AND no occurrences exist —
+ * the SPA renders the full empty grid (prev/next/today nav, hour rows,
+ * day columns) rather than the destructive "no plan yet" banner.
  */
 export async function gatherAgentCalendar(
   { projectDir, slug, week, now }: GatherAgentCalendarOptions = {},
@@ -495,34 +599,20 @@ export async function gatherAgentCalendar(
     clock,
   );
 
-  if (!plan) {
-    return {
-      agentId: slug,
-      week: null,
-      month: null,
-      approved: false,
-      timeZone,
-      weekMonday: null,
-      noPlan: true,
-      loadError,
-      tasks: [],
-      counts: summariseStatuses([]),
-      activityByTask: {},
-    };
-  }
-
+  // Resolve the week key + Monday anchor independent of whether a plan
+  // file exists. AC8 requires the calendar grid to render for every
+  // week the user navigates to, with recurring occurrences visible —
+  // even when no `weekly-plans/<YYYY-Www>.json` file exists yet.
+  const tzForWeek = timeZone && isValidTimeZone(timeZone) ? timeZone : 'UTC';
+  const resolvedWeek = plan?.week
+    ?? week
+    ?? currentWeekKey(tzForWeek, clock);
   let weekMonday: Date | null = null;
   try {
-    weekMonday = mondayOfWeek(
-      plan.week,
-      timeZone && timeZone !== 'UTC' ? timeZone : 'UTC',
-    );
+    weekMonday = mondayOfWeek(resolvedWeek, tzForWeek);
   } catch {
     weekMonday = null;
   }
-
-  const rawTasks: WeeklyTask[] = Array.isArray(plan.tasks) ? plan.tasks : [];
-  const tasks = rawTasks.map((t) => projectTask(t, weekMonday, timeZone));
 
   // Task-level activity is co-gathered so the calendar drawer does not
   // require a second HTTP round-trip. Errors are absorbed — a malformed
@@ -531,6 +621,47 @@ export async function gatherAgentCalendar(
     projectDir,
     slug,
   }).catch(() => ({} as Record<string, ProjectedActivityEntry[]>));
+
+  // Lazily expand recurring tasks for the resolved week. Idempotent and
+  // pure with respect to the on-disk weekly-plan file (we do NOT write
+  // a materialized plan from the read path — that's the heartbeat
+  // materializer's job). When a plan file already exists, the file's
+  // tasks pass through verbatim and recurring occurrences merge in only
+  // for ids that aren't already present (so a materialized occurrence
+  // surfaces with its real status, not the lazy `pending` clone).
+  const recurringTasks = weekMonday
+    ? await gatherRecurringOccurrences(dataDir, slug, weekMonday, timeZone)
+    : [];
+
+  if (!plan) {
+    // AC8: no on-disk plan AND no recurring occurrences → noPlan:false,
+    // tasks:[] so the SPA still renders the full empty grid. When
+    // occurrences exist they surface as pending tasks with computed
+    // slots, identical to a regular weekly-plan task.
+    const tasks = recurringTasks.map((t) => projectTask(t, weekMonday, timeZone));
+    return {
+      agentId: slug,
+      week: resolvedWeek,
+      month: weekMonday ? monthFromMonday(weekMonday, timeZone) : null,
+      approved: false,
+      timeZone,
+      weekMonday: weekMonday ? weekMonday.toISOString() : null,
+      noPlan: false,
+      loadError,
+      tasks,
+      counts: summariseStatuses(recurringTasks),
+      activityByTask,
+    };
+  }
+
+  const rawTasks: WeeklyTask[] = Array.isArray(plan.tasks) ? plan.tasks : [];
+  // Merge recurring occurrences that aren't already present in the plan
+  // (the materializer's eager job may have already merged them — in
+  // which case the on-disk version wins and the lazy clone is dropped).
+  const existingIds = new Set(rawTasks.map((t) => t.id));
+  const extraRecurring = recurringTasks.filter((t) => !existingIds.has(t.id));
+  const allTasks: WeeklyTask[] = [...rawTasks, ...extraRecurring];
+  const tasks = allTasks.map((t) => projectTask(t, weekMonday, timeZone));
 
   return {
     agentId: slug,
@@ -542,7 +673,7 @@ export async function gatherAgentCalendar(
     noPlan: false,
     loadError,
     tasks,
-    counts: summariseStatuses(rawTasks),
+    counts: summariseStatuses(allTasks),
     activityByTask,
   };
 }

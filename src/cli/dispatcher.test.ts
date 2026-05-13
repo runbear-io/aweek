@@ -32,6 +32,7 @@ describe('dispatcher registry', () => {
       'plan-interview-store',
       'plan-markdown',
       'query',
+      'recurring',
       'report',
       'run-once',
       'setup',

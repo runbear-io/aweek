@@ -43,6 +43,13 @@ import {
   chatConversationSchema,
   chatConversationListSchema,
 } from './chat-conversation.schema.js';
+import {
+  recurringTaskTemplateSchema,
+  recurrenceRuleSchema,
+  recurrenceExceptionSchema,
+  recurringTaskSchema,
+  recurringTaskListSchema,
+} from './recurring-task.schema.js';
 
 const ajv = new Ajv({ allErrors: true });
 addFormats(ajv);
@@ -78,6 +85,15 @@ ajv.addSchema(chatToolBlockSchema);
 ajv.addSchema(chatMessageSchema);
 ajv.addSchema(chatConversationSchema);
 ajv.addSchema(chatConversationListSchema);
+// Recurring-task schemas — registered in $ref dependency order: the
+// template + rule + exception sub-schemas are referenced by the top-level
+// recurringTaskSchema, which is in turn referenced by the per-agent
+// recurringTaskListSchema (`recurring-tasks.json` is an array of these).
+ajv.addSchema(recurringTaskTemplateSchema);
+ajv.addSchema(recurrenceRuleSchema);
+ajv.addSchema(recurrenceExceptionSchema);
+ajv.addSchema(recurringTaskSchema);
+ajv.addSchema(recurringTaskListSchema);
 ajv.addSchema(agentConfigSchema);
 
 /**
@@ -134,3 +150,13 @@ export const validateChatToolBlock = (data) => validate('aweek://schemas/chat-to
 export const validateChatMessage = (data) => validate('aweek://schemas/chat-message', data);
 export const validateChatConversation = (data) => validate('aweek://schemas/chat-conversation', data);
 export const validateChatConversationList = (data) => validate('aweek://schemas/chat-conversation-list', data);
+export const validateRecurringTaskTemplate = (data) =>
+  validate('aweek://schemas/recurring-task-template', data);
+export const validateRecurrenceRule = (data) =>
+  validate('aweek://schemas/recurrence-rule', data);
+export const validateRecurrenceException = (data) =>
+  validate('aweek://schemas/recurrence-exception', data);
+export const validateRecurringTask = (data) =>
+  validate('aweek://schemas/recurring-task', data);
+export const validateRecurringTaskList = (data) =>
+  validate('aweek://schemas/recurring-task-list', data);

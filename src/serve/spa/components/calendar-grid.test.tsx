@@ -33,9 +33,11 @@ import {
   DAY_LABELS,
   DEFAULT_END_HOUR,
   DEFAULT_START_HOUR,
+  RECURRING_ICON,
   REVIEW_ICON,
   STATUS_ICONS,
   extractMinuteBadge,
+  isRecurringTask,
   isReviewTask,
   layoutTasks,
 } from './calendar-grid.tsx';
@@ -1050,6 +1052,155 @@ describe('CalendarGrid — mobile-fit track widths (Sub-AC 2.2)', () => {
     // wrapper rather than letting the grid push the page sideways.
     expect(wrapper.className).toMatch(/\bmax-w-full\b/);
     expect(wrapper.className).toMatch(/\boverflow-x-auto\b/);
+  });
+});
+
+// ── AC10: recurring-occurrence ↻ badge ───────────────────────────────
+//
+// Recurring tasks (both eagerly materialized into the weekly-plan file
+// by `src/services/recurring-materializer.ts` and lazily expanded by
+// `gatherAgentCalendar` for weeks with no on-disk plan) carry the
+// occurrence-id prefix `task-rec-<ruleId>-<yyyymmddThhmm>` (AC6). The
+// chip surfaces them with a ↻ glyph + `data-task-recurring="true"` data
+// attribute so they're visually distinct from one-shot weekly tasks.
+//
+// These tests pin down four invariants:
+//   1. Recurring tasks render the ↻ badge and the data-attribute.
+//   2. One-shot weekly tasks (id NOT starting with `task-rec-`) do NOT
+//      render the badge or the data-attribute.
+//   3. The badge tooltip mentions "Recurring occurrence" so the chip is
+//      self-describing to a hovering user.
+//   4. The `isRecurringTask` pure helper tolerates partial / nullish
+//      inputs the way `isReviewTask` does.
+describe('CalendarGrid — recurring occurrence ↻ badge (AC10)', () => {
+  it('renders ↻ + data-task-recurring="true" on chips with a task-rec-* id', () => {
+    const occurrence = makeScheduledTask({
+      id: 'task-rec-daily-standup-20260420T0900',
+      title: 'Daily standup',
+      status: 'pending',
+      runAt: '2026-04-20T09:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 9, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid
+        tasks={[occurrence]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-task-id="task-rec-daily-standup-20260420T0900"]',
+    );
+    expect(chip).not.toBeNull();
+    // Data attribute exposed so tests + future integrations can locate
+    // recurring chips deterministically.
+    expect(chip).toHaveAttribute('data-task-recurring', 'true');
+    // ↻ glyph is rendered as part of the chip's visible content.
+    expect(chip!.textContent).toContain(RECURRING_ICON);
+    // Tooltip carries the "Recurring occurrence" line so the chip is
+    // self-describing on hover.
+    expect(chip!.getAttribute('title')).toContain('Recurring occurrence');
+  });
+
+  it('does NOT render the ↻ badge or data attribute on one-shot weekly tasks', () => {
+    const oneShot = makeScheduledTask({
+      id: 'task-handcrafted-monday',
+      title: 'Hand-crafted Monday task',
+      status: 'pending',
+      runAt: '2026-04-20T10:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 10, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid
+        tasks={[oneShot]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-task-id="task-handcrafted-monday"]',
+    );
+    expect(chip).not.toBeNull();
+    // No data-attribute on non-recurring chips.
+    expect(chip!.getAttribute('data-task-recurring')).toBeNull();
+    // No ↻ glyph rendered.
+    expect(chip!.textContent).not.toContain(RECURRING_ICON);
+    expect(chip!.getAttribute('title')).not.toContain('Recurring occurrence');
+  });
+
+  it('keeps recurring chips visually distinct from one-shots side-by-side', () => {
+    const recurring = makeScheduledTask({
+      id: 'task-rec-weekly-review-20260420T1000',
+      title: 'Weekly review',
+      status: 'pending',
+      runAt: '2026-04-20T10:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 10, minute: 0 },
+    });
+    const oneShot = makeScheduledTask({
+      id: 'task-ship-rc',
+      title: 'Ship the release candidate',
+      status: 'pending',
+      runAt: '2026-04-20T11:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 11, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid
+        tasks={[recurring, oneShot]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+      />,
+    );
+    const recChip = container.querySelector(
+      '[data-task-id="task-rec-weekly-review-20260420T1000"]',
+    );
+    const oneChip = container.querySelector('[data-task-id="task-ship-rc"]');
+    expect(recChip).toHaveAttribute('data-task-recurring', 'true');
+    expect(oneChip!.getAttribute('data-task-recurring')).toBeNull();
+    // The presence of the ↻ glyph on one chip but not the other is the
+    // visual distinction AC10 requires.
+    expect(recChip!.textContent).toContain(RECURRING_ICON);
+    expect(oneChip!.textContent).not.toContain(RECURRING_ICON);
+  });
+
+  it('renders ↻ alongside the canonical status icon (icon vocabulary stays small)', () => {
+    // Recurring + completed: the chip still shows ✓ for status; the ↻
+    // badge sits alongside it (distinct span) so the recurring signal
+    // doesn't hijack the existing status indicator.
+    const completedRec = makeScheduledTask({
+      id: 'task-rec-daily-standup-20260420T0900',
+      title: 'Daily standup',
+      status: 'completed',
+      runAt: '2026-04-20T09:00:00.000Z',
+      slot: { dayKey: 'mon', dayOffset: 0, hour: 9, minute: 0 },
+    });
+    const { container } = render(
+      <CalendarGrid
+        tasks={[completedRec]}
+        weekMonday={WEEK_MONDAY}
+        timeZone="UTC"
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-task-id="task-rec-daily-standup-20260420T0900"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain(STATUS_ICONS.completed);
+    expect(chip!.textContent).toContain(RECURRING_ICON);
+    expect(chip).toHaveAttribute('data-task-recurring', 'true');
+    expect(chip).toHaveAttribute('data-task-status', 'completed');
+  });
+
+  it('isRecurringTask recognises the task-rec-* id prefix', () => {
+    expect(
+      isRecurringTask({ id: 'task-rec-daily-standup-20260420T0900' }),
+    ).toBe(true);
+    expect(isRecurringTask({ id: 'task-rec-r1-20260420T1700' })).toBe(true);
+    expect(isRecurringTask({ id: 'task-handcrafted' })).toBe(false);
+    // Hand-crafted task ids never start with `task-rec-`, so a plain
+    // `task-` id is NOT a recurring occurrence.
+    expect(isRecurringTask({ id: 'task-1234' })).toBe(false);
+    expect(isRecurringTask(null)).toBe(false);
+    expect(isRecurringTask(undefined)).toBe(false);
   });
 });
 

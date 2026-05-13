@@ -118,8 +118,13 @@ const CASES = [
     // `week` narrows the API query; `selectedTaskId` / `onOpenTaskId` /
     // `onCloseTaskId` are URL-driven drawer orchestration props threaded
     // through by the parent route. `onWeekChange` is the URL-update
-    // callback for the prev/current/next week buttons. None of them
-    // encode server-rendered domain data — the hook still owns the fetch.
+    // callback for the prev/current/next week buttons.
+    // `onSubmitRecurrenceEdit` (Sub-AC 11.4.2 / 11.4.3) is the test-
+    // injection seam for the recurrence-edit Sheet; production wiring
+    // falls back to `useEditRecurrence` internally so the prop carries
+    // no server-rendered payload either.
+    // None of them encode server-rendered domain data — the hook still
+    // owns the fetch.
     allowedProps: [
       'slug',
       'week',
@@ -129,6 +134,7 @@ const CASES = [
       'onOpenTaskId',
       'onCloseTaskId',
       'onWeekChange',
+      'onSubmitRecurrenceEdit',
     ],
   },
   {

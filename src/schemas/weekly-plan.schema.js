@@ -55,7 +55,13 @@ export const weeklyTaskSchema = {
   properties: {
     id: {
       type: 'string',
-      pattern: '^task-[a-z0-9-]+$',
+      // Pattern is intentionally case-INSENSITIVE on letters so the
+      // recurring-materializer can persist occurrence ids of the form
+      // `task-rec-<ruleId>-<yyyymmddThhmm>` (note the uppercase ISO-8601
+      // date/time separator `T`). Plain hand-authored ids like
+      // `task-research-2026-05-01` are still valid — widening the regex
+      // is strictly additive.
+      pattern: '^task-[a-zA-Z0-9-]+$',
       description: 'Unique task identifier',
     },
     title: {

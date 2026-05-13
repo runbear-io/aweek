@@ -8,6 +8,8 @@
  *   aweek heartbeat --all [--project-dir <dir>]
  *   aweek exec <module> <fn> [--input-json - | <file>] [--format json|text]
  *   aweek serve [--port <n>] [--host <addr>] [--no-open] [--project-dir <dir>]
+ *   aweek recurring <list|add|update|remove> [flags…]
+ *   aweek plan recurring <list|add|update|remove> [flags…]   (alias)
  *
  * TypeScript migration note (seed-10-glue-final): mechanical rename from
  * `.js` → `.ts`. The shebang above is preserved so `dist/bin/aweek.js`
@@ -25,6 +27,7 @@ import {
   listFunctions,
 } from '../src/cli/dispatcher.js';
 import { runJsonCli } from '../src/cli/json-helper.js';
+import { runRecurringCli } from '../src/cli/recurring-cli.js';
 import {
   startServer,
   openBrowser,
@@ -58,6 +61,9 @@ Usage:
   aweek exec <module> <fn>      Invoke a skill export with JSON in/out
   aweek json <op> ...           Tiny JSON helper for skill bash glue
   aweek serve                   Launch local read-only dashboard (HTTP)
+  aweek recurring <op> ...      Manage per-agent recurring tasks
+                                (list / add / update / remove). Aliased
+                                as "aweek plan recurring <op> ...".
   aweek --help                  Show this help
 
 Options:
@@ -91,6 +97,26 @@ if (command === 'exec') {
 if (command === 'json') {
   try {
     await runJsonCli(args.slice(1));
+    process.exit(0);
+  } catch (err) {
+    const e = err as { code?: string; message?: string } | undefined;
+    const code = e && e.code ? ` [${e.code}]` : '';
+    console.error(`Error${code}: ${e && e.message ? e.message : err}`);
+    process.exit(1);
+  }
+}
+
+// `aweek recurring <op>` is the top-level surface; `aweek plan recurring
+// <op>` is the documented alias so the recurring management UX is also
+// reachable through the broader plan family of commands. Both flow through
+// the same runRecurringCli handler — the only difference is which slice of
+// argv we forward (drop `recurring` vs. drop `plan recurring`).
+const isRecurring = command === 'recurring';
+const isPlanRecurring = command === 'plan' && args[1] === 'recurring';
+if (isRecurring || isPlanRecurring) {
+  try {
+    const sliceFrom = isPlanRecurring ? 2 : 1;
+    await runRecurringCli(args.slice(sliceFrom));
     process.exit(0);
   } catch (err) {
     const e = err as { code?: string; message?: string } | undefined;

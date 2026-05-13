@@ -246,9 +246,15 @@ export interface CalendarCounts {
  * Mirrors the `gatherAgentCalendar` return shape in
  * `src/serve/data/calendar.js`.
  *
- * When the agent has no weekly plan yet, `noPlan === true`, `tasks === []`,
- * and `week` / `weekMonday` / `month` are `null` so the SPA can render a
- * dedicated empty state that points the user at `/aweek:plan`.
+ * For any known agent the server always returns a renderable response
+ * (`noPlan: false`) with `week`, `weekMonday`, and `month` resolved
+ * from either the requested ISO week, the in-progress weekly plan, or
+ * (as a fallback) the current ISO week of the server clock. When no
+ * on-disk plan file AND no recurring-task occurrences exist for the
+ * window, `tasks` is `[]` and the SPA renders the full empty grid
+ * rather than the legacy "no plan yet" banner (AC8). The legacy
+ * `noPlan === true` branch is preserved in the type for backward
+ * compatibility with cached / older API responses only.
  *
  * `activityByTask` is a map from `task.id` to recent activity rows (see
  * `gatherTaskActivity`) so the grid can show per-task execution history
@@ -634,10 +640,13 @@ export interface FetchAgentCalendarOptions extends RequestOptions {
  * `GET /api/agents/:slug/calendar[?week=YYYY-Www]` — weekly calendar
  * payload for the per-agent Calendar tab.
  *
- * When the agent exists but has no weekly plan yet, the server still
- * returns 200 with `noPlan: true` so the SPA can render a "no plan yet"
- * empty state that matches the terminal `/aweek:calendar` behaviour.
- * 404 only fires when the slug is unknown on disk.
+ * The server always returns a renderable payload for a known agent:
+ * `noPlan: false` with `tasks: []` when neither an on-disk weekly-plan
+ * file nor any recurring-task occurrence exists for the requested week,
+ * so the SPA can still draw the full empty grid (prev / next / today
+ * navigation, hour rows, day columns). The legacy `noPlan: true` branch
+ * remains in the SPA as a defensive backstop only — current servers do
+ * not produce it. 404 fires when the slug is unknown on disk.
  */
 export async function fetchAgentCalendar(
   slug: string,

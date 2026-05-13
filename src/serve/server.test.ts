@@ -2072,22 +2072,31 @@ describe('GET /api/agents/:slug/calendar', () => {
     if (buildDir) await rm(buildDir, { recursive: true, force: true });
   });
 
-  it('returns noPlan=true for a known slug with no weekly plan yet', async () => {
+  it('returns an empty grid (noPlan:false, tasks:[]) for a known slug with no weekly plan AND no recurring occurrences (AC8)', async () => {
     const fx = await makeProjectWithAgent({ slug: 'writer', name: 'Writer' });
     projectDir = fx.root;
     buildDir = await makeBuildDir();
     handle = await startServer({ projectDir, buildDir, port: 0, host: '127.0.0.1' });
 
-    const res = await httpGet(`${handle.url}api/agents/writer/calendar`);
+    // Pin the requested week so the assertion is deterministic across
+    // run dates — AC8 requires the calendar grid to render for any
+    // navigated week, even when no on-disk weekly-plan file exists.
+    const res = await httpGet(`${handle.url}api/agents/writer/calendar?week=2026-W17`);
     assert.equal(res.statusCode, 200);
     assert.match(res.headers['content-type'] || '', /application\/json/);
     assert.match(res.headers['cache-control'] || '', /no-store/);
     const body = JSON.parse(res.body);
     assert.ok(body.calendar, 'expected { calendar: {...} } envelope');
     assert.equal(body.calendar.agentId, 'writer');
-    assert.equal(body.calendar.noPlan, true);
+    // AC8: no file AND no occurrences must surface as noPlan:false with
+    // an empty task list. The SPA renders the full empty grid (prev /
+    // next / today navigation, hour rows, day columns) rather than the
+    // legacy "no plan yet" empty state.
+    assert.equal(body.calendar.noPlan, false);
     assert.deepEqual(body.calendar.tasks, []);
     assert.equal(body.calendar.counts.total, 0);
+    assert.equal(body.calendar.week, '2026-W17');
+    assert.ok(body.calendar.weekMonday, 'weekMonday must be set so the grid renders');
   });
 
   it('returns tasks with computed day/hour slots from the weekly-plan-store', async () => {
@@ -4845,3 +4854,4 @@ describe('POST /api/chat — thread persistence (Sub-AC 1 of AC 12)', () => {
     assert.equal(userTurns[1].content, 'turn 2');
   });
 });
+
