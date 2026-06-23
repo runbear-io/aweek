@@ -49,7 +49,6 @@ const FULL_CALENDAR = {
   agentId: 'alice',
   week: WEEK,
   month: '2026-04',
-  approved: true,
   timeZone: 'UTC',
   weekMonday: WEEK_MONDAY,
   noPlan: false,
@@ -155,7 +154,6 @@ const NO_PLAN_CALENDAR = {
   agentId: 'alice',
   week: null,
   month: null,
-  approved: false,
   timeZone: 'UTC',
   weekMonday: null,
   noPlan: true,
@@ -266,16 +264,16 @@ describe('AgentCalendarPage — loading / empty / error states', () => {
     await screen.findByText(/no weekly plan yet/i);
     const wrapper = container.querySelector('[data-page="agent-calendar"]');
     expect(wrapper).toHaveAttribute('data-state', 'no-plan');
-    // Header still renders so the user can see the agent name.
+    // Header still renders so the user can see the agent name in the
+    // copy ("No weekly plan yet for alice").
     expect(wrapper).toHaveTextContent('alice');
-    expect(wrapper).toHaveTextContent(/pending/i);
   });
 });
 
 // ── Header / counts / grid ───────────────────────────────────────────
 
 describe('AgentCalendarPage — header + counts + grid rendering', () => {
-  it('renders a tight week/approval/TZ meta strip (agent identity lives in the breadcrumb, not here)', async () => {
+  it('renders a tight week/TZ meta strip (agent identity lives in the breadcrumb, not here)', async () => {
     const { container } = renderCalendar(FULL_CALENDAR);
     const header = await waitFor(() => {
       const el = container.querySelector('[data-calendar-header="true"]');
@@ -287,24 +285,15 @@ describe('AgentCalendarPage — header + counts + grid rendering', () => {
     // stays one line.
     expect(header).not.toHaveTextContent(/alice/);
     expect(header).toHaveTextContent(WEEK);
-    expect(header).toHaveTextContent(/approved/i);
     expect(header).toHaveTextContent(/UTC/);
     // Per-status counts live in the separate StatusLegend row below —
     // header should not repeat that info.
     expect(header).not.toHaveTextContent(/tasks/i);
     expect(header).not.toHaveTextContent(/review/i);
-  });
-
-  it('renders a pending badge for unapproved plans', async () => {
-    const pending = { ...FULL_CALENDAR, approved: false };
-    const { container } = renderCalendar(pending);
-    const header = await waitFor(() => {
-      const el = container.querySelector('[data-calendar-header="true"]');
-      expect(el).not.toBeNull();
-      return el;
-    });
-    expect(header).toHaveTextContent(/pending/i);
+    // Plans no longer carry an approval gate — the header must not surface
+    // approved / pending copy.
     expect(header).not.toHaveTextContent(/approved/i);
+    expect(header).not.toHaveTextContent(/pending/i);
   });
 
   it('renders the status legend with per-status counts alongside each glyph', async () => {

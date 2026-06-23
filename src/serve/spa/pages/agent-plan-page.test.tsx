@@ -92,8 +92,6 @@ const FULL_PLAN = {
   weeklyPlans: [
     {
       week: '2026-W16',
-      approved: true,
-      approvedAt: '2026-04-13T09:00:00.000Z',
       tasks: [
         { id: 't1', title: 'Kickoff review', status: 'completed' },
         { id: 't2', title: 'Draft SPA shell', status: 'completed' },
@@ -101,8 +99,6 @@ const FULL_PLAN = {
     },
     {
       week: '2026-W17',
-      approved: true,
-      approvedAt: '2026-04-20T09:00:00.000Z',
       tasks: [
         { id: 't3', title: 'Wire Strategy tab', status: 'in-progress' },
         { id: 't4', title: 'Author tests', status: 'pending' },
@@ -111,13 +107,11 @@ const FULL_PLAN = {
     },
     {
       week: '2026-W18',
-      approved: false,
       tasks: [{ id: 't6', title: 'Cut beta', status: 'pending' }],
     },
   ],
-  latestApproved: {
-    week: '2026-W17',
-    approved: true,
+  latestPlan: {
+    week: '2026-W18',
   },
 };
 
@@ -128,7 +122,7 @@ const NO_PLAN = {
   hasPlan: false,
   markdown: '',
   weeklyPlans: [],
-  latestApproved: null,
+  latestPlan: null,
 };
 
 /** Agent exists and has plan.md but no weekly plans yet. */
@@ -138,7 +132,7 @@ const PLAN_NO_WEEKS = {
   hasPlan: true,
   markdown: '# Carol\n\n## Long-term goals\n\n- Learn Rust\n',
   weeklyPlans: [],
-  latestApproved: null,
+  latestPlan: null,
 };
 
 // ── Fetch stub helpers ───────────────────────────────────────────────
@@ -436,33 +430,21 @@ describe('AgentPlanPage — weekly plans list parity with WeeklyPlanStore', () =
     expect(rows[2]).toHaveTextContent(/1 task(?!s)/);
   });
 
-  it('marks the latest-approved week with its badge', async () => {
+  it('marks the latest week with its badge', async () => {
     const { container } = renderPlan(FULL_PLAN);
     await waitFor(() => {
       expect(
         container.querySelector('[data-page="agent-plan"]'),
       ).not.toBeNull();
     });
-    const latest = container.querySelector('li[data-week="2026-W17"]');
+    // `latestPlan.week` in FULL_PLAN is 2026-W18 (the highest week key on
+    // disk). That row should carry the "latest" badge; older rows should not.
+    const latest = container.querySelector('li[data-week="2026-W18"]');
     expect(latest).not.toBeNull();
-    expect(latest).toHaveTextContent(/latest approved/i);
-    // Older approved rows should NOT carry the "latest approved" badge.
+    expect(latest).toHaveTextContent(/latest/i);
     const older = container.querySelector('li[data-week="2026-W16"]');
     expect(older).not.toBeNull();
-    expect(older!.textContent).not.toMatch(/latest approved/i);
-  });
-
-  it('renders the approval badge tone per week (approved vs pending)', async () => {
-    const { container } = renderPlan(FULL_PLAN);
-    await waitFor(() => {
-      expect(
-        container.querySelector('[data-page="agent-plan"]'),
-      ).not.toBeNull();
-    });
-    const approved = container.querySelector('li[data-week="2026-W16"]');
-    const pending = container.querySelector('li[data-week="2026-W18"]');
-    expect(approved!.textContent).toMatch(/approved/i);
-    expect(pending!.textContent).toMatch(/pending/i);
+    expect(older!.textContent).not.toMatch(/latest/i);
   });
 
   it('surfaces the plan count in the Strategy header summary', async () => {

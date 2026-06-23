@@ -65,8 +65,6 @@ type FactoryRecord = Record<string, unknown> & {
   delegatedTo?: string;
   week?: string;
   tasks?: FactoryRecord[];
-  approved?: boolean;
-  approvedAt?: string;
   from?: string;
   to?: string;
   taskDescription?: string;
@@ -398,18 +396,6 @@ describe('createWeeklyPlan — construction', () => {
     ];
     const plan = createWeeklyPlan('2026-W16', '2026-04', tasks) as FactoryRecord;
     assert.equal(plan.tasks?.length, 3);
-  });
-});
-
-describe('createWeeklyPlan — defaults', () => {
-  it('defaults approved to true', () => {
-    const plan = createWeeklyPlan('2026-W16', '2026-04', []) as FactoryRecord;
-    assert.equal(plan.approved, true);
-  });
-
-  it('does not include approvedAt by default', () => {
-    const plan = createWeeklyPlan('2026-W16', '2026-04', []) as FactoryRecord;
-    assert.equal(plan.approvedAt, undefined);
   });
 });
 

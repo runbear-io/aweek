@@ -191,21 +191,6 @@ export {
   generateTasksForObjective,
   buildReviewTasks,
 } from './services/weekly-plan-generator.js';
-// Plan-ready system-event emitter — fires a `plan-ready` notification when a
-// pending weekly plan (`approved: false`) is persisted, so the user is
-// surfaced the approval prompt in the dashboard inbox without polling. The
-// sender slug is the agent whose plan needs approval. See AC 6.
-export {
-  emitPlanReadyNotification,
-  planReadyDedupKey,
-  planReadyTitle,
-  planReadyBody,
-} from './services/plan-ready-notifier.js';
-export type {
-  EmitPlanReadyOptions,
-  EmitPlanReadyResult,
-  PlanReadyPlanShape,
-} from './services/plan-ready-notifier.js';
 // Next-week context assembler — reads plan.md, the just-written retrospective
 // file, and the activity log for the completed week, then returns a context
 // object ready to spread into generateWeeklyPlan's options parameter.
@@ -227,17 +212,6 @@ export {
   scoreThemeDays,
   scorePriorityWaterfall,
 } from './services/day-layout-detector.js';
-export {
-  APPROVAL_DECISIONS,
-  findPendingPlan,
-  formatPlanForReview,
-  validateDecision,
-  validateEdits,
-  applyEdits,
-  processApproval,
-  formatApprovalResult,
-  loadPlanForReview,
-} from './services/plan-approval.js';
 // Heartbeat scheduler — runtime execution with lock-based isolation
 export {
   createScheduler,

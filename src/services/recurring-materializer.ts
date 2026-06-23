@@ -64,32 +64,6 @@
  *     RecurringTaskStore is read-only here. Strictly additive to the
  *     existing storage tree (seed: "no parallel storage tree").
  *
- *  6. **Auto-approval of recurring-only plans (AC15).** A weekly plan that
- *     contains ONLY recurring-derived tasks (every task id starts with
- *     `task-rec-`, matching the AC6 occurrence-id contract) is approved
- *     automatically by this module. The intent is that an unattended week
- *     — no human in the loop, only the heartbeat's recurring-task
- *     materialization — still executes through the existing approval gate.
- *
- *     Trigger rules:
- *       - Creating a fresh plan whose materialized tasks are all
- *         recurring → set `approved: true` + `approvedAt: now`.
- *       - Merging into an existing UN-approved plan whose post-merge task
- *         list is all recurring → flip `approved: false` → `approved: true`
- *         + stamp `approvedAt: now`.
- *       - Existing plan already `approved: true` → leave the historical
- *         `approvedAt` intact (no re-stamp).
- *       - Mixed plan (≥1 hand-crafted task, id NOT starting with
- *         `task-rec-`) → leave `approved` exactly as it was.
- *
- *     The flip itself is a "write" (counts as a material change), so the
- *     idempotence fast-paths still need a way to recognise that no
- *     auto-approval transition is pending; otherwise a recurring-only,
- *     already-approved, no-new-occurrences run would tripwire a needless
- *     re-write. The implementation gates the flip on
- *     `!existing.approved && allRecurringDerived(merged)` so a second run
- *     finds nothing to flip and falls through to the existing
- *     `unchanged: true` early-return.
  */
 
 import { mondayOfWeek, localParts } from '../time/zone.js';
@@ -147,15 +121,6 @@ export interface MaterializeResult {
   unchanged: boolean;
   /** Occurrence ids appended to the plan on this run. */
   addedTaskIds: string[];
-  /**
-   * `true` when this run flipped the plan's `approved` flag from `false`
-   * (or absent) to `true` because every task in the merged plan was
-   * recurring-derived (AC15). Useful for telemetry / log lines so a
-   * caller can see "the heartbeat auto-approved 2026-W19 because it
-   * contained only recurring tasks". Always `false` when `unchanged` is
-   * `true`.
-   */
-  autoApproved: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,34 +225,6 @@ function monthFromMondayUtc(weekMondayUtc: Date, tz: string): string {
   return `${p.year}-${String(p.month).padStart(2, '0')}`;
 }
 
-/**
- * AC15 predicate: does this task carry a recurring-derived id?
- *
- * The expander stamps every occurrence with an id of the form
- * `task-rec-<ruleId>-<yyyymmddThhmm>` (AC6). Hand-authored tasks use
- * `task-<something>` without the `rec-` segment, so a simple prefix check
- * distinguishes the two populations cheaply and without a parallel field
- * on the task schema.
- *
- * The check is intentionally permissive about the suffix shape — we
- * trust the expander/materializer to mint correct ids; the predicate
- * only protects against a hand-authored task accidentally being treated
- * as recurring (which would mis-fire the auto-approval gate).
- */
-function isRecurringDerivedTask(task: { id: string }): boolean {
-  return typeof task.id === 'string' && task.id.startsWith('task-rec-');
-}
-
-/**
- * AC15 predicate: every task in the array is recurring-derived (and the
- * array is non-empty — an empty plan should NOT auto-approve, since
- * there's nothing for the heartbeat to execute and approving a zero-task
- * plan only adds noise to the dashboard's "approved this week" feed).
- */
-function isPlanAllRecurringDerived(tasks: readonly WeeklyTask[]): boolean {
-  return tasks.length > 0 && tasks.every(isRecurringDerivedTask);
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -362,10 +299,10 @@ export async function materializeRecurringForWeek(
   //                                              identical to the prior
   //                                              run.
   if (!existing && materialized.length === 0) {
-    return { weekKey, unchanged: true, addedTaskIds: [], autoApproved: false };
+    return { weekKey, unchanged: true, addedTaskIds: [] };
   }
   if (existing && newTasks.length === 0) {
-    return { weekKey, unchanged: true, addedTaskIds: [], autoApproved: false };
+    return { weekKey, unchanged: true, addedTaskIds: [] };
   }
 
   // Build the merged plan. Existing tasks pass through verbatim so the
@@ -374,33 +311,12 @@ export async function materializeRecurringForWeek(
     ? [...existing.tasks, ...newTasks]
     : [...newTasks];
 
-  // AC15 — auto-approve plans containing only recurring-derived tasks so
-  // unattended weeks execute through the existing approval gate. The
-  // flip fires when:
-  //   - we're creating a fresh plan whose tasks are all recurring, OR
-  //   - we're merging into an existing UN-approved plan whose post-merge
-  //     task list is all recurring.
-  // A plan that is already approved keeps its historical `approvedAt`
-  // intact; a mixed (manual + recurring) plan never auto-approves.
-  const wasApproved = existing?.approved === true;
-  const autoApproveNow =
-    !wasApproved && isPlanAllRecurringDerived(mergedTasks);
-
   const merged: WeeklyPlan = existing
-    ? autoApproveNow
-      ? {
-          ...existing,
-          tasks: mergedTasks,
-          approved: true,
-          approvedAt: now.toISOString(),
-        }
-      : { ...existing, tasks: mergedTasks }
+    ? { ...existing, tasks: mergedTasks }
     : {
         week: weekKey,
         month: monthFromMondayUtc(weekMondayUtc, tz),
         tasks: mergedTasks,
-        approved: autoApproveNow,
-        ...(autoApproveNow ? { approvedAt: now.toISOString() } : {}),
         createdAt: now.toISOString(),
       };
 
@@ -410,6 +326,5 @@ export async function materializeRecurringForWeek(
     weekKey,
     unchanged: false,
     addedTaskIds: newTasks.map((t) => t.id),
-    autoApproved: autoApproveNow,
   };
 }

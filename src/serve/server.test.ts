@@ -1677,7 +1677,7 @@ describe('GET /api/agents/:slug/plan', () => {
     // No weekly plans yet — empty array + null latest approved.
     assert.ok(Array.isArray(body.plan.weeklyPlans));
     assert.equal(body.plan.weeklyPlans.length, 0);
-    assert.equal(body.plan.latestApproved, null);
+    assert.equal(body.plan.latestPlan, null);
   });
 
   it('returns weekly plan data from weekly-plan-store when present', async () => {
@@ -1729,9 +1729,8 @@ describe('GET /api/agents/:slug/plan', () => {
     assert.equal(body.plan.weeklyPlans[1].week, '2026-W16');
     assert.equal(body.plan.weeklyPlans[0].approved, true);
     assert.equal(body.plan.weeklyPlans[1].approved, false);
-    assert.ok(body.plan.latestApproved);
-    assert.equal(body.plan.latestApproved.week, '2026-W15');
-    assert.equal(body.plan.latestApproved.approved, true);
+    assert.ok(body.plan.latestPlan);
+    assert.equal(body.plan.latestPlan.week, '2026-W16');
     // Verify tasks survive JSON round-trip.
     assert.equal(body.plan.weeklyPlans[0].tasks[0].title, 'Ship essay');
   });
@@ -2136,7 +2135,6 @@ describe('GET /api/agents/:slug/calendar', () => {
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.calendar.week, '2026-W17');
-    assert.equal(body.calendar.approved, true);
     assert.equal(body.calendar.tasks.length, 1);
     const task = body.calendar.tasks[0];
     assert.equal(task.title, 'Wednesday task');

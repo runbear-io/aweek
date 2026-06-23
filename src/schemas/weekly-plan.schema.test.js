@@ -50,14 +50,6 @@ describe('weekly plan schema', () => {
       assert.equal(result.valid, true);
     });
 
-    it('should default approved to true', () => {
-      const { task } = makeTask();
-      const plan = createWeeklyPlan('2026-W16', '2026-04', [task]);
-      assert.equal(plan.approved, true);
-      const result = validateWeeklyPlan(plan);
-      assert.equal(result.valid, true);
-    });
-
     it('should accept approved plan with approvedAt timestamp', () => {
       const { task } = makeTask();
       const plan = createWeeklyPlan('2026-W16', '2026-04', [task]);
@@ -134,17 +126,6 @@ describe('weekly plan schema', () => {
       assert.equal(result.valid, false);
     });
 
-    it('should reject plan without approved field', () => {
-      const { task } = makeTask();
-      const result = validateWeeklyPlan({
-        week: '2026-W16',
-        month: '2026-04',
-        tasks: [task],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-      assert.equal(result.valid, false);
-    });
   });
 
   describe('invalid inputs — format violations', () => {

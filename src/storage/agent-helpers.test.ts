@@ -180,7 +180,6 @@ describe('getAgentChoices', () => {
     assert.equal(choice.name, 'ada');
     assert.equal(choice.paused, true);
     assert.equal(choice.latestWeek, '2026-W16');
-    assert.equal(choice.approved, true);
     assert.equal(choice.taskCount, 0);
     assert.match(choice.label, /ada .*\[paused\]/);
   });

@@ -237,7 +237,7 @@ export function horizontalRule(width: number, char = '─'): string {
  * @returns {string[]} Header lines
  */
 export function renderCalendarHeader(weeklyData: WeeklyData): string[] {
-  const { agentId, week, weekMonday, planExists, planApproved } = weeklyData;
+  const { agentId, week, weekMonday, planExists } = weeklyData;
   const lines: string[] = [];
 
   const endDate = new Date(weekMonday + 'T00:00:00Z');
@@ -247,13 +247,9 @@ export function renderCalendarHeader(weeklyData: WeeklyData): string[] {
   lines.push(`┌${'─'.repeat(62)}┐`);
   lines.push(`│ ${padTo(`📅 Weekly Calendar: ${agentId}`, 61)}│`);
   lines.push(`│ ${padTo(`Week ${week} (${weekMonday} → ${sundayDate})`, 61)}│`);
-
-  const statusParts: string[] = [];
-  if (!planExists) statusParts.push('No plan');
-  else if (!planApproved) statusParts.push('Plan pending approval');
-  else statusParts.push('Plan approved');
-
-  lines.push(`│ ${padTo(`Status: ${statusParts.join(' | ')}`, 61)}│`);
+  lines.push(
+    `│ ${padTo(`Status: ${planExists ? 'Plan present' : 'No plan'}`, 61)}│`,
+  );
   lines.push(`└${'─'.repeat(62)}┘`);
 
   return lines;

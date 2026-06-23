@@ -7,7 +7,7 @@
  *
  * Data sources (all read-only):
  *   - `AgentStore.load`           → `src/storage/agent-store.js`
- *   - `WeeklyPlanStore.load/loadAll/loadLatestApproved`
+ *   - `WeeklyPlanStore.load/loadAll`
  *                                 → `src/storage/weekly-plan-store.js`
  *   - `ActivityLogStore.listWeeks/load`
  *                                 → `src/storage/activity-log-store.js`
@@ -16,7 +16,7 @@
  *
  * Returned shape:
  *   {
- *     agentId, week, month, approved, timeZone, weekMonday, noPlan,
+ *     agentId, week, month, timeZone, weekMonday, noPlan,
  *     tasks: [{ id, title, prompt, status, priority, estimatedMinutes,
  *               objectiveId, track, runAt, completedAt, delegatedTo,
  *               slot: { dayKey, dayOffset, hour, minute, iso } | null }],
@@ -215,11 +215,11 @@ function summariseStatuses(tasks: WeeklyTask[]): CalendarCounts {
  * the on-disk failure (schema validation, parse error) so the dashboard
  * can surface it instead of silently degrading to "no plan".
  *
- * Fallback-strategy errors (the `loadLatestApproved` / `loadAll` probes
- * we run when no week was explicitly requested) stay swallowed — those
- * are best-effort. We only surface the failure for the *targeted* load
- * (the requested week, or the timezone-aware current week), because
- * that's the one a user expects to see.
+ * Fallback-strategy errors (the `loadAll` probe we run when no week was
+ * explicitly requested) stay swallowed — that's best-effort. We only
+ * surface the failure for the *targeted* load (the requested week, or
+ * the timezone-aware current week), because that's the one a user
+ * expects to see.
  */
 interface PlanResolution {
   plan: WeeklyPlan | null;
@@ -274,8 +274,6 @@ async function resolvePlan(
     }
   }
   if (direct) return { plan: direct, loadError: null };
-  const approved = await store.loadLatestApproved(agentId).catch(() => null);
-  if (approved) return { plan: approved, loadError: directLoadError };
   const all = await store.loadAll(agentId).catch(() => [] as WeeklyPlan[]);
   return {
     plan: all[all.length - 1] || null,
@@ -436,7 +434,6 @@ export interface AgentCalendarPayload {
   agentId: string;
   week: string | null;
   month: string | null;
-  approved: boolean;
   timeZone: string;
   weekMonday: string | null;
   noPlan: boolean;
@@ -643,7 +640,6 @@ export async function gatherAgentCalendar(
       agentId: slug,
       week: resolvedWeek,
       month: weekMonday ? monthFromMonday(weekMonday, timeZone) : null,
-      approved: false,
       timeZone,
       weekMonday: weekMonday ? weekMonday.toISOString() : null,
       noPlan: false,
@@ -667,7 +663,6 @@ export async function gatherAgentCalendar(
     agentId: slug,
     week: plan.week,
     month: plan.month || null,
-    approved: !!plan.approved,
     timeZone,
     weekMonday: weekMonday ? weekMonday.toISOString() : null,
     noPlan: false,

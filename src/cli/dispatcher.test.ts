@@ -116,21 +116,6 @@ describe('dispatchExec routing', () => {
 });
 
 describe('argument adapters', () => {
-  it('formatApprovalResult adapter unpacks {result, action} into positional args', () => {
-    // Minimal shape that formatApprovalResult accepts for "approve" decisions.
-    const result = {
-      success: true,
-      action: 'approve',
-      plan: {
-        week: '2026-W16',
-        tasks: [{ id: 't1', description: 'demo' }],
-      },
-    };
-    const text = REGISTRY.plan!.formatApprovalResult!({ result, action: 'approve' }) as string;
-    assert.equal(typeof text, 'string');
-    assert.match(text, /approve/i);
-  });
-
   it('formatAdjustmentResult adapter accepts {results} or the raw results', () => {
     const results = {
       goals: [],

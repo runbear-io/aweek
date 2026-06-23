@@ -166,40 +166,6 @@ describe('WeeklyPlanStore', () => {
   });
 
   // -------------------------------------------------------------------------
-  // loadLatestApproved
-  // -------------------------------------------------------------------------
-
-  it('should loadLatestApproved — return latest approved plan', async () => {
-    const freshAgent = 'agent-approved-wplan-00000005';
-    const { plan: p1 } = makeTestPlan('2026-W10', '2026-03');
-    p1.approved = true;
-    p1.approvedAt = new Date().toISOString();
-    const { plan: p2 } = makeTestPlan('2026-W11', '2026-03');
-    p2.approved = true;
-    p2.approvedAt = new Date().toISOString();
-    const { plan: p3 } = makeTestPlan('2026-W12', '2026-03');
-    // p3 not approved
-
-    await store.save(freshAgent, p1);
-    await store.save(freshAgent, p2);
-    await store.save(freshAgent, p3);
-
-    const latest = await store.loadLatestApproved(freshAgent);
-    assert.ok(latest);
-    assert.equal(latest.week, '2026-W11');
-    assert.equal(latest.approved, true);
-  });
-
-  it('should return null when no approved plan exists', async () => {
-    const freshAgent = 'agent-noapproved-wplan-00000006';
-    const { plan } = makeTestPlan('2026-W20', '2026-05');
-    await store.save(freshAgent, plan);
-
-    const result = await store.loadLatestApproved(freshAgent);
-    assert.equal(result, null);
-  });
-
-  // -------------------------------------------------------------------------
   // delete
   // -------------------------------------------------------------------------
 
@@ -243,25 +209,6 @@ describe('WeeklyPlanStore', () => {
       () => store.update(agentId, '1999-W01', (p) => p),
       { code: 'ENOENT' },
     );
-  });
-
-  // -------------------------------------------------------------------------
-  // approve (human-in-the-loop gate)
-  // -------------------------------------------------------------------------
-
-  it('should approve a weekly plan', async () => {
-    const { plan } = makeTestPlan('2026-W32');
-    await store.save(agentId, plan);
-    assert.equal(plan.approved, false);
-
-    const approved = await store.approve(agentId, '2026-W32');
-    assert.equal(approved.approved, true);
-    assert.ok(approved.approvedAt);
-
-    // Verify persisted
-    const loaded = await store.load(agentId, '2026-W32');
-    assert.equal(loaded.approved, true);
-    assert.ok(loaded.approvedAt);
   });
 
   // -------------------------------------------------------------------------
@@ -416,13 +363,12 @@ describe('WeeklyPlanStore', () => {
   it('should persist updates across new store instances', async () => {
     const freshAgent = 'agent-persist-upd-wplan-00000011';
     const { plan } = makeTestPlan('2026-W44');
+    plan.tasks[0]!.status = 'completed';
     await store.save(freshAgent, plan);
-    await store.approve(freshAgent, '2026-W44');
 
     const store2 = new WeeklyPlanStore(tmpDir);
     const loaded = await store2.load(freshAgent, '2026-W44');
-    assert.equal(loaded.approved, true);
-    assert.ok(loaded.approvedAt);
+    assert.equal(loaded.tasks[0]?.status, 'completed');
   });
 });
 
@@ -556,29 +502,6 @@ describe('WeeklyPlanStore — review task round-trips (Sub-AC 6a)', () => {
     assert.equal(savedTask.status, 'completed');
     assert.ok(savedTask.completedAt);
     assert.equal(savedTask.objectiveId, DAILY_REVIEW_OBJECTIVE_ID);
-  });
-
-  // ---------------------------------------------------------------------------
-  // approve preserves review tasks
-  // ---------------------------------------------------------------------------
-
-  it('approve does not strip review tasks from the plan', async () => {
-    const daily = createTask({ title: 'Thu daily review', prompt: 'Thu daily review' }, DAILY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-21T17:00:00Z' }) as WeeklyTask;
-    const weekly = createTask({ title: 'Week review', prompt: 'Week review' }, WEEKLY_REVIEW_OBJECTIVE_ID, { runAt: '2027-01-22T18:00:00Z' }) as WeeklyTask;
-    const plan = createWeeklyPlan('2027-W07', '2027-01', [daily, weekly]) as WeeklyPlan;
-    await reviewStore.save(AGENT, plan);
-
-    const approved = await reviewStore.approve(AGENT, '2027-W07');
-    assert.equal(approved.approved, true);
-    assert.equal(approved.tasks.length, 2, 'both review tasks must survive approve()');
-    assert.ok(
-      approved.tasks.some((t) => t.objectiveId === DAILY_REVIEW_OBJECTIVE_ID),
-      'daily-review task must be present after approve()',
-    );
-    assert.ok(
-      approved.tasks.some((t) => t.objectiveId === WEEKLY_REVIEW_OBJECTIVE_ID),
-      'weekly-review task must be present after approve()',
-    );
   });
 
   // ---------------------------------------------------------------------------

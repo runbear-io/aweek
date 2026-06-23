@@ -360,7 +360,7 @@ test('gatherAgentPlan returns the raw plan.md body', async () => {
     // Fresh fixtures have no weekly plans yet — verify empty defaults.
     assert.ok(Array.isArray(plan.weeklyPlans), 'weeklyPlans must be an array');
     assert.equal(plan.weeklyPlans.length, 0);
-    assert.equal(plan.latestApproved, null);
+    assert.equal(plan.latestPlan, null);
 
     const missing = await dataIndex.gatherAgentPlan({
       projectDir: root,
@@ -410,9 +410,8 @@ test('gatherAgentPlan includes weekly plan data from weekly-plan-store', async (
     assert.equal(plan.weeklyPlans[1].week, '2026-W16');
     assert.equal(plan.weeklyPlans[0].approved, true);
     assert.equal(plan.weeklyPlans[1].approved, false);
-    assert.ok(plan.latestApproved, 'expected a latestApproved plan');
-    assert.equal(plan.latestApproved.week, '2026-W15');
-    assert.equal(plan.latestApproved.approved, true);
+    assert.ok(plan.latestPlan, 'expected a latestPlan plan');
+    assert.equal(plan.latestPlan.week, '2026-W16');
     // Plan markdown still comes through unchanged.
     assert.equal(plan.hasPlan, true);
     assert.match(plan.markdown, /^# Fixture plan/);
@@ -579,7 +578,6 @@ test('gatherAgentCalendar renders an empty grid (noPlan:false, tasks:[]) when no
     // Monday 2026-04-20 UTC is the start of ISO week 2026-W17.
     assert.equal(cal.weekMonday, '2026-04-20T00:00:00.000Z');
     assert.equal(cal.month, '2026-04');
-    assert.equal(cal.approved, false);
     assert.equal(cal.loadError, null);
     assert.ok(
       cal.activityByTask && typeof cal.activityByTask === 'object',
@@ -685,7 +683,6 @@ test('gatherAgentCalendar synthesizes a virtual plan from recurring expansion wh
     assert.equal(cal.week, '2026-W17');
     assert.equal(cal.weekMonday, '2026-04-20T00:00:00.000Z');
     assert.equal(cal.month, '2026-04');
-    assert.equal(cal.approved, false);
     assert.equal(cal.loadError, null);
     assert.equal(
       cal.noPlan,
@@ -1218,7 +1215,7 @@ test('SPA contract: gatherAgentPlan matches AgentPlan typedef', async () => {
         hasPlan: 'boolean',
         markdown: 'string',
         weeklyPlans: 'array',
-        latestApproved: 'nullable-object',
+        latestPlan: 'nullable-object',
         watchlist: 'object',
         strategies: 'array',
       },
@@ -1344,7 +1341,6 @@ test('gatherAgentCalendar projects tasks + counts when a weekly plan exists', as
     });
     assert.equal(cal.agentId, agentId);
     assert.equal(cal.noPlan, false);
-    assert.equal(cal.approved, true);
     assert.equal(cal.week, '2026-W17');
     assert.equal(cal.tasks.length, 2);
 
@@ -1889,7 +1885,7 @@ test('gatherAllNotifications: filters pass through to the store; unreadCount sta
     });
     await store.send(agentId, {
       source: 'system',
-      systemEvent: 'plan-ready',
+      systemEvent: 'task-warnings',
       title: 'Plan ready',
       body: 'system',
       createdAt: '2026-04-22T10:00:00.000Z',
@@ -1904,7 +1900,7 @@ test('gatherAllNotifications: filters pass through to the store; unreadCount sta
     assert.equal(sysOnly.notifications.length, 2);
     assert.ok(sysOnly.notifications.every((n) => n.source === 'system'));
     // unreadCount is independent of the filter — 2 unread overall (the
-    // agent ping + the plan-ready system event); the budget-exhausted
+    // agent ping + the task-warnings system event); the budget-exhausted
     // event was marked read above.
     assert.equal(sysOnly.unreadCount, 2);
 
@@ -1920,10 +1916,10 @@ test('gatherAllNotifications: filters pass through to the store; unreadCount sta
     // Filter to a specific system event.
     const planOnly = await dataIndex.gatherAllNotifications({
       projectDir: root,
-      systemEvent: 'plan-ready',
+      systemEvent: 'task-warnings',
     });
     assert.equal(planOnly.notifications.length, 1);
-    assert.equal(planOnly.notifications[0].systemEvent, 'plan-ready');
+    assert.equal(planOnly.notifications[0].systemEvent, 'task-warnings');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

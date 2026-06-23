@@ -1,7 +1,7 @@
 ---
 name: plan
-description: Edit an agent's free-form planning markdown, adjust weekly tasks, and approve pending weekly plans from a single entry point
-trigger: aweek plan, adjust plan, edit plan, update plan, approve plan, review plan, approve weekly plan, reject plan, plan markdown, aweek add task, aweek add new task, aweek new task, aweek edit task, aweek update task, aweek change task, aweek remove task, aweek delete task, aweek drop task, aweek reschedule, aweek reschedule task, aweek reschedule everything, aweek move task, aweek change priority, aweek change prompt, aweek update prompt, aweek edit prompt, aweek tasks
+description: Edit an agent's free-form planning markdown and adjust weekly tasks from a single entry point
+trigger: aweek plan, adjust plan, edit plan, update plan, plan markdown, aweek add task, aweek add new task, aweek new task, aweek edit task, aweek update task, aweek change task, aweek remove task, aweek delete task, aweek drop task, aweek reschedule, aweek reschedule task, aweek reschedule everything, aweek move task, aweek change priority, aweek change prompt, aweek update prompt, aweek edit prompt, aweek tasks
 ---
 
 # aweek:plan
@@ -9,12 +9,13 @@ trigger: aweek plan, adjust plan, edit plan, update plan, approve plan, review p
 Single entry point for every planning operation on an aweek agent:
 
 - Edit the agent's free-form **planning markdown** (long-term goals, monthly plans, strategies, notes) at `.aweek/agents/<slug>/plan.md`.
-- Adjust weekly **tasks** (add / update) on the in-flight week.
-- **Approve / reject / edit** a pending weekly plan (human-in-the-loop gate).
+- Adjust weekly **tasks** (create / add / update) on the in-flight week.
 
 The planning markdown is the source of truth for long-term intent. It is intentionally free-form — the weekly generator reads it as context rather than enforcing a schema. If you find yourself wanting a structured field that `plan.md` can't express, add it as prose; the model will pick it up.
 
-Weekly plan logic lives in `src/skills/plan.js`, composed over the services in `src/services/plan-adjustments.js` and `src/services/plan-approval.js`. Markdown logic lives in `src/storage/plan-markdown-store.js`. Never write agent JSON or the plan file directly — always go through the skill module or the `plan-markdown` dispatcher.
+**Plans are always active.** There is no approval gate — every weekly plan is immediately eligible for the heartbeat the moment it lands on disk. Adjustments take effect on the next tick.
+
+Weekly plan logic lives in `src/skills/plan.ts`, composed over the services in `src/services/plan-adjustments.ts`. Markdown logic lives in `src/storage/plan-markdown-store.ts`. Never write agent JSON or the plan file directly — always go through the skill module or the `plan-markdown` dispatcher.
 
 ## Instructions
 
@@ -22,21 +23,14 @@ Follow this exact workflow when invoked. Use `AskUserQuestion` for every interac
 
 ### Step 1: Select an Agent
 
-List all agents and flag those with pending weekly plans:
+List all agents:
 
 ```bash
 echo '{"dataDir":".aweek/agents"}' \
   | aweek exec agent-helpers listAllAgents --input-json -
 ```
 
-Response is an array of `{ config }` records. For each, check the pending plan:
-
-```bash
-echo '{"agentId":"<AGENT_ID>","dataDir":".aweek/agents"}' \
-  | aweek exec plan reviewPlan --input-json -
-```
-
-`plan.reviewPlan` returns `{ success, plan, formatted, errors }`. When `success === false` with `errors: ["No pending ..."]`, there is no plan awaiting approval — drop the pending marker. Render a numbered list using agent name, role, and `pending: <week> (<N> tasks)` when present, then ask the user to pick one via `AskUserQuestion`.
+Response is an array of `{ config }` records. Render a numbered list using agent name and role, then ask the user to pick one via `AskUserQuestion`.
 
 If the list is empty, tell the user **"No agents found. Use /aweek:hire to create one first."** and stop.
 
@@ -46,8 +40,7 @@ Ask via `AskUserQuestion`:
 
 1. **Edit planning markdown** — open / show / replace the agent's `plan.md`.
 2. **Adjust weekly plan** — create a weekly plan, add tasks, update task status, etc.
-3. **Review pending plan** — approve / reject / edit a pending weekly plan (only offer when Step 1 found one). New plans auto-approve on creation; this branch is a rescue path for legacy unapproved plans.
-4. **Done**
+3. **Done**
 
 Route to the matching branch. After each branch finishes, loop back to Step 2 until the user picks **Done**.
 
@@ -113,7 +106,7 @@ Load existing weekly plans and show the active week with its tasks: `id · descr
 
 Use `AskUserQuestion` to pick the action, then collect required fields. Loop until done.
 
-- **`create`** → week (`YYYY-Www`, must NOT already exist on this agent), optional `month` (`YYYY-MM`, free-form tag linking the week to a monthly section of `plan.md`), optional seed tasks. Each task: description (required), optional `objectiveId` (free-form string, typically the monthly section heading it traces to), priority (`critical` / `high` / `medium` / `low`, default `medium`), `estimatedMinutes` (1-480), `track`, `runAt`. Newly created weekly plans land `approved: true` — tasks are immediately eligible for the heartbeat with no Branch C approval gate.
+- **`create`** → week (`YYYY-Www`, must NOT already exist on this agent), optional `month` (`YYYY-MM`, free-form tag linking the week to a monthly section of `plan.md`), optional seed tasks. Each task: description (required), optional `objectiveId` (free-form string, typically the monthly section heading it traces to), priority (`critical` / `high` / `medium` / `low`, default `medium`), `estimatedMinutes` (1-480), `track`, `runAt`. Newly created weekly plans are immediately eligible for the heartbeat — there is no approval gate.
 - **`add`** → week (must exist), description (required), optional `objectiveId`, optional `track`, optional `runAt`.
 - **`update`** → week, taskId, then at least one of: description, status (`pending` / `in-progress` / `completed` / `failed` / `delegated` / `skipped`), `track` (pass `null` to fall back to objectiveId pacing), `runAt` (pass `null` to clear).
 
@@ -147,7 +140,7 @@ Route based on the choice:
 
 Run an Ouroboros-style adaptive loop: every answer is scored across four weighted clarity dimensions, and the loop keeps drilling into the weakest one until the completion gate passes (overall ambiguity ≤ 0.20, every per-dimension floor met, two consecutive qualifying turns). Trigger-tailored questions seed the loop; once triggers are exhausted, follow-up questions target the weakest dimension.
 
-**Dimensions** (matching `src/skills/plan-ambiguity.js`):
+**Dimensions** (matching `src/skills/plan-ambiguity.ts`):
 
 | Key | Weight | Floor | Focuses on |
 |---|---|---|---|
@@ -216,34 +209,17 @@ After each answer lands:
      | aweek exec plan-ambiguity buildScoringPrompt --input-json -
    ```
    Returns `{ system, user }`.
-3. **Delegate scoring to a fresh subagent** (prevents self-grading bias — the main session tends to inflate scores on its own questions):
-   - Invoke the `Task` tool with:
-     - `subagent_type: "general-purpose"`
-     - `model: "haiku"` — fast, cheap, and isolated from the main session's conversation context. Scoring is pure prompt → JSON, no tools needed.
-     - `description: "Score plan-interview transcript"`
-     - `prompt`: the concatenation of the `system` and `user` strings from step 2, with a trailing line `"Return ONLY the JSON object — no prose, no code fences."`
-   - The subagent's final text response is the `raw` input for `parseScoreResponse` in step 4.
-   - Expected output shape (what the subagent must emit):
-     ```json
-     {
-       "goalClarity":         { "score": 0.00, "justification": "..." },
-       "taskSpecificity":     { "score": 0.00, "justification": "..." },
-       "prioritySequencing":  { "score": 0.00, "justification": "..." },
-       "constraintClarity":   { "score": 0.00, "justification": "..." }
-     }
-     ```
+3. **Delegate scoring to a fresh subagent** (prevents self-grading bias):
+   - Invoke the `Task` tool with `subagent_type: "general-purpose"`, `model: "haiku"`, and the concatenated `system` + `user` strings as the prompt. The subagent's final text response is the raw input for `parseScoreResponse`.
 4. Parse the JSON:
    ```bash
    echo '{"raw":"<LLM_JSON>"}' \
      | aweek exec plan-ambiguity parseScoreResponse --input-json -
    ```
-   If `ok: false`, retry the scoring step once with a reminder to return JSON only. If still bad, skip this turn's scoring (log the failure to the user as a one-line note) and do not advance the streak.
-5. Update the streak and write the scored turn back:
+5. Update the streak and persist:
    ```bash
    echo '{"prevStreak":<STATE.streak>,"breakdown":<BREAKDOWN>}' \
      | aweek exec plan-ambiguity updateStreak --input-json -
-   # overwrite the last turn with breakdownAfter + ambiguityAfter + streakAfter
-   # save again
    ```
 6. Check the gate:
    ```bash
@@ -254,57 +230,26 @@ After each answer lands:
 
 ##### P1-4: Safety rails
 
-- **Question cap = 8 total.** If the loop reaches 8 questions without `qualifies: true`, stop and ask via `AskUserQuestion`: *"Interview hit its question cap. Answer two more questions or continue with a lower-confidence plan?"* If the user chooses "continue", proceed to B2b and record the current breakdown alongside the plan so reviewers see that the plan started from unresolved ambiguity.
-- **Dialectic rhythm check (optional):** if the same dimension has been `weakestDimension` for 3 consecutive turns with no score improvement, rotate to the second-weakest dimension on the next turn to avoid drilling into a dead end.
-- **Scorer degradation:** if the self-scoring step fails to return valid JSON twice in a row, disable scoring for the rest of the interview — continue with trigger-tailored questions only — and flag the breakdown as `partial: true` when the interview closes.
+- **Question cap = 8 total.** If the loop reaches 8 questions without `qualifies: true`, stop and ask the user whether to answer two more questions or continue with a lower-confidence plan.
+- **Dialectic rhythm check:** if the same dimension has been `weakestDimension` for 3 consecutive turns with no score improvement, rotate to the second-weakest dimension on the next turn.
+- **Scorer degradation:** if self-scoring fails to return valid JSON twice in a row, disable scoring for the rest of the interview and flag the breakdown as `partial: true` when closing.
 
 ##### P1-5: Closure
 
-When `qualifies: true` OR the cap is reached AND the user chose to continue:
-
-> "Based on what you've shared: {brief recap of `STATE.turns`}. Here's how I'd approach this week — "
-
-Suggest tasks derived from the transcript before asking the user to confirm or adjust. Hold `STATE.lastBreakdown` as the interview context for the rest of this session. `clearInterviewState` once the plan is saved in B3 so the next `create` run starts fresh. Proceed to **B2b**.
+When `qualifies: true` OR the cap is reached AND the user chose to continue, recap and suggest tasks before B2b. `clearInterviewState` once the plan is saved in B3.
 
 ---
 
 #### Path 2 — Skip questions (escape hatch)
 
-No further `AskUserQuestion` interview steps are run. Instead:
-
-**B2a-skip-1: Generate assumptions**
-
 ```bash
 echo '{"triggers":<TRIGGERS_JSON>}' \
   | aweek exec plan generateSkipAssumptions --input-json -
-```
-
-Returns `Array<{ trigger, label, assumption }>` — one best-guess assumption per fired trigger.
-
-**B2a-skip-2: Format and display the assumptions block**
-
-```bash
 echo '{"assumptions":<ASSUMPTIONS_JSON>}' \
   | aweek exec plan formatAssumptionsBlock --input-json -
 ```
 
-Echo the returned markdown string verbatim so the user can read every assumption before deciding.
-
-**B2a-skip-3: Require explicit approval of the assumptions**
-
-Ask via `AskUserQuestion`:
-
-> **Apply these assumptions and continue?**
->
-> 1. **Yes, apply assumptions** — proceed to layout detection (B2b) using the assumptions above as planning context.
-> 2. **No, run the interview instead** — discard assumptions and fall back to Path 1 (ask one question per trigger).
-> 3. **Cancel** — return to Step 2 (operation picker).
-
-- On **Yes**: treat the assumptions as the collected interview context (no further questions), then proceed directly to **B2b**.
-- On **No**: discard the assumptions and re-enter Path 1 (full interview). Start from the first fired trigger.
-- On **Cancel**: return to Step 2.
-
-> **Important:** This path requires explicit user approval of the assumptions block before proceeding. Never silently skip to B2b — always show the formatted block and wait for the approval `AskUserQuestion`.
+Echo the returned markdown block verbatim, then ask the user via `AskUserQuestion` whether to apply the assumptions, run the full interview, or cancel.
 
 ---
 
@@ -317,34 +262,13 @@ echo '{"agentsDir":".aweek/agents","agentId":"<AGENT_ID>"}' \
   | aweek exec plan detectLayoutAmbiguity --input-json -
 ```
 
-The result is `{ mode, confident, ambiguityReason, themeScore, priorityScore, modeLabel }`.
+**If `confident === true`** — display a one-line note about the detected mode and continue collecting week/month/tasks.
 
-**If `confident === true`** — the detected `mode` is unambiguous. Display a one-line note (e.g. `"Detected layout: Theme Days — tasks will be spread round-robin across weekdays."`) and continue collecting week/month/tasks.
-
-**If `confident === false`** — the plan.md has conflicting or absent structural signals. Ask the user via `AskUserQuestion` before collecting any task details:
-
-> Choose a scheduling layout for this week's plan:
->
-> 1. **Theme Days** — tasks spread round-robin across weekdays (Mon: research, Tue: coding, …)
-> 2. **Priority Waterfall** — most critical tasks placed earliest in the week
-> 3. **Mixed / Flexible** — no strong scheduling preference
-
-Tailor the explanation to the `ambiguityReason`:
-- `'absent-signals'` → `"No scheduling pattern found in your plan.md — let's set one for this week."`
-- `'conflicting-signals'` → `"Your plan.md contains both day-theme and priority-stack language (themeScore: N, priorityScore: N) — which style should take precedence this week?"`
-
-Record the chosen layout preference as `layoutPreference` for this session. Continue to collect week, month, and seed tasks. When displaying the B3 confirmation batch, include the layout preference as a header line (e.g. `"Layout: Priority Waterfall"`).
-
-The layout preference is a session-only hint — it does not need to be written to any file.
+**If `confident === false`** — ask the user via `AskUserQuestion` to pick between Theme Days / Priority Waterfall / Mixed before collecting any task details.
 
 ### B2c: Space runAt for repeat actions
 
-When an objective needs the same action done multiple times within one day+hour (e.g. "publish 2 X.com posts on Monday morning"), emit a **separate task per repetition** with **distinct `runAt` minutes** instead of packing them into one task or sharing a `runAt`.
-
-- The heartbeat cron runs every 10 minutes by default. Two tasks sharing the same `runAt` — or sitting within 10 minutes of each other — will both be picked up on the same tick and fire back-to-back.
-- Default spacing: at least **10 minutes** between tasks in the same day+hour bucket. Pick `runAt` minutes from `{00, 10, 20, 30, 40, 50}` and assign each task in the bucket a distinct slot.
-- Overflow: if more than 6 tasks share the same day+hour (rare), just spread the `runAt` minutes evenly across the 60-minute window. Tasks stay within the assigned hour — do not push them into adjacent hours. Accept the burst risk.
-- Single-task buckets and tasks in different day+hour buckets are unaffected by this rule.
+When an objective needs the same action done multiple times within one day+hour, emit a **separate task per repetition** with **distinct `runAt` minutes** instead of sharing a `runAt`. Pick `runAt` minutes from `{00, 10, 20, 30, 40, 50}` so the heartbeat picks them up one tick apart.
 
 ### B3: Confirm the batch
 
@@ -357,43 +281,13 @@ echo '{"agentId":"<AGENT_ID>","weeklyAdjustments":[...],"dataDir":".aweek/agents
 
 ---
 
-## Branch C: Review a pending plan
-
-The approval gate. `plan.reviewPlan` already returned the pending plan from Step 1 — show it to the user and ask what to do.
-
-### C1: Display the pending plan
-
-Echo the `formatted` string from `reviewPlan`. It shows the week, status, and every task with id / description / track / priority / estimatedMinutes.
-
-### C2: Pick an action
-
-Ask via `AskUserQuestion`:
-
-1. **Approve** — flips `approved: true`, unblocking the heartbeat. Run:
-   ```bash
-   echo '{"agentId":"<AGENT_ID>","dataDir":".aweek/agents"}' \
-     | aweek exec plan approve --input-json -
-   ```
-2. **Reject** — *destructive*. Confirm first. Runs `plan reject`, which deletes the plan so the next generation cycle starts fresh.
-3. **Edit** — collect adjustments as in Branch B (but without the `create` action — the plan already exists), then run:
-   ```bash
-   echo '{"agentId":"<AGENT_ID>","adjustments":[...],"dataDir":".aweek/agents"}' \
-     | aweek exec plan edit --input-json -
-   ```
-4. **Back** — return to Step 2.
-
-Always echo the `formatted` field from the response so the user can see what happened.
-
----
-
 ## Destructive-operation gate
 
-Two actions MUST collect an explicit `AskUserQuestion` confirmation before the skill module sets `confirmed: true`:
+One action MUST collect an explicit `AskUserQuestion` confirmation before the skill module proceeds:
 
 | Operation                             | Branch |
 |---------------------------------------|--------|
 | Reseed plan.md from the template      | A      |
-| Reject a pending weekly plan          | C      |
 
 The underlying adapters refuse to run without `confirmed: true` — do not bypass the gate.
 
@@ -402,6 +296,7 @@ The underlying adapters refuse to run without `confirmed: true` — do not bypas
 - `/aweek:hire` — create a new agent + seed its `plan.md`.
 - `/aweek:calendar` — visualize the active weekly plan as a day × hour grid.
 - `/aweek:summary` — cross-agent status dashboard.
+- `/aweek:recurring` — manage per-agent recurring task rules that the heartbeat materializes into weekly plans automatically (no `create` needed even on weeks with no hand-authored plan).
 
 ## Data locations
 

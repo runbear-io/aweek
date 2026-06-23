@@ -44,7 +44,7 @@ export interface AgentPlanPayload {
   hasPlan: boolean;
   markdown: string;
   weeklyPlans: WeeklyPlan[];
-  latestApproved: WeeklyPlan | null;
+  latestPlan: WeeklyPlan | null;
   /** Watchlist surface. `hasWatchlist` is false when the file is missing or unreadable. */
   watchlist: { hasWatchlist: boolean; markdown: string };
   /** Per-strategy documents from `.aweek/agents/<slug>/strategies/*.md`. */
@@ -87,12 +87,12 @@ export async function gatherAgentPlan(
   // single week file is malformed; we catch so a bad row doesn't null
   // out the whole response. `loadAll` already sorts by week key.
   const weeklyPlanStore = new WeeklyPlanStore(agentsDir);
-  const [weeklyPlans, latestApproved, { watchlist, strategies }] =
-    await Promise.all([
-      weeklyPlanStore.loadAll(slug).catch(() => [] as WeeklyPlan[]),
-      weeklyPlanStore.loadLatestApproved(slug).catch(() => null),
-      readWatchlistAndStrategies(join(agentsDir, slug)),
-    ]);
+  const [weeklyPlans, { watchlist, strategies }] = await Promise.all([
+    weeklyPlanStore.loadAll(slug).catch(() => [] as WeeklyPlan[]),
+    readWatchlistAndStrategies(join(agentsDir, slug)),
+  ]);
+  const latestPlan: WeeklyPlan | null =
+    weeklyPlans.length > 0 ? weeklyPlans[weeklyPlans.length - 1] ?? null : null;
 
   return {
     slug,
@@ -100,7 +100,7 @@ export async function gatherAgentPlan(
     hasPlan: body.trim().length > 0,
     markdown: body,
     weeklyPlans,
-    latestApproved,
+    latestPlan,
     watchlist,
     strategies,
   };

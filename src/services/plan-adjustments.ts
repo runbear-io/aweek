@@ -93,8 +93,6 @@ interface AgentWeeklyPlan {
   week: string;
   month?: string | null;
   tasks: AgentTaskShape[];
-  approved?: boolean;
-  approvedAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -962,7 +960,7 @@ export function formatAdjustmentSummary(results: ResultsShape): string {
       // `create` returns the freshly-built weekly plan (keyed on `week`,
       // populated `tasks` array). `add`/`update` return the task object.
       if (result.week && Array.isArray(result.tasks)) {
-        lines.push(`    - Created weekly plan ${result.week} (${result.tasks.length} task(s)) — pending approval`);
+        lines.push(`    - Created weekly plan ${result.week} (${result.tasks.length} task(s))`);
       } else {
         lines.push(`    - ${result.id}: ${result.title || '(updated)'}`);
       }

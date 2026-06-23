@@ -1,29 +1,21 @@
 /**
  * Plan skill logic — consolidated entry point for the `/aweek:plan` skill.
  *
- * The `/aweek:plan` skill (see `skills/aweek-plan.md`) is the consolidated
- * replacement for the old `/aweek:adjust-goal` and `/aweek:approve-plan`
- * skills. It covers two related workflows that both operate on an agent's
- * goals / monthly objectives / weekly tasks:
+ * The `/aweek:plan` skill (see `skills/plan/SKILL.md`) covers two related
+ * workflows that both operate on an agent's goals / monthly objectives /
+ * weekly tasks:
  *
  *   1. **Adjustments** — add / update / remove goals, monthly objectives,
  *      and weekly tasks at any time. Backed by
- *      `src/services/plan-adjustments.js`.
+ *      `src/services/plan-adjustments.ts`.
  *
- *   2. **Weekly plan approval** — review a newly generated weekly plan and
- *      approve / reject / edit it. The first approval activates the
- *      heartbeat system. Backed by `src/services/plan-approval.js`.
+ *   2. **Plan markdown editing** — read / write the agent's free-form
+ *      `plan.md` body via the plan-markdown store.
  *
- * This module exists to give the `/aweek:plan` skill markdown a single
- * import surface so it can pick the right operation based on the user's
- * interactive selection without reaching into two different service
- * modules.
- *
- * Destructive operation safety:
- *   - `reject` deletes a pending weekly plan. Per project constraints
- *     every destructive skill operation must require explicit user
- *     confirmation before executing. `reject` enforces this by requiring
- *     `confirmed: true`.
+ * Plans no longer carry a human-in-the-loop approval gate — every weekly
+ * plan is implicitly active the moment it lands on disk. The pending /
+ * approve / reject / edit branch that used to live here has been removed
+ * along with `src/services/plan-approval.ts`.
  */
 
 import {
@@ -52,30 +44,6 @@ import {
 } from './plan-interview-triggers.js';
 
 import { readPlan } from '../storage/plan-markdown-store.js';
-import { WeeklyPlanStore } from '../storage/weekly-plan-store.js';
-import { resolveDataDir } from '../storage/agent-helpers.js';
-
-import {
-  // Approval pipeline (approve / reject / edit of a pending weekly plan)
-  APPROVAL_DECISIONS,
-  findPendingPlan,
-  formatPlanForReview,
-  validateDecision,
-  validateEdits,
-  applyEdits,
-  processApproval,
-  formatApprovalResult,
-  loadPlanForReview,
-  approve as approveImpl,
-  reject as rejectImpl,
-  edit as editImpl,
-} from '../services/plan-approval.js';
-import type {
-  ProcessApprovalParams,
-  ProcessApprovalResult,
-  LoadPlanForReviewParams,
-  LoadPlanForReviewResult,
-} from '../services/plan-approval.js';
 
 // ---------------------------------------------------------------------------
 // Adjustment entry points
@@ -107,103 +75,6 @@ export async function adjustPlan(params: AdjustPlanParams = {} as AdjustPlanPara
     } as AdjustGoalsResult);
   }
   return adjustGoals(params);
-}
-
-// ---------------------------------------------------------------------------
-// Approval entry points
-// ---------------------------------------------------------------------------
-
-/**
- * Approve an agent's pending weekly plan.
- */
-export function approve(
-  params?: Omit<ProcessApprovalParams, 'decision'>,
-): Promise<ProcessApprovalResult> {
-  return approveImpl(params);
-}
-
-/** Params for {@link reject}. */
-export interface RejectParams extends Omit<ProcessApprovalParams, 'decision'> {
-  confirmed?: boolean;
-  rejectionReason?: string;
-}
-
-/**
- * Reject an agent's pending weekly plan.
- *
- * **Destructive** — requires `confirmed: true`.
- */
-export function reject(params: RejectParams = {} as RejectParams): Promise<ProcessApprovalResult> {
-  if (!params || params.confirmed !== true) {
-    return Promise.resolve({
-      success: false,
-      errors: [
-        'Rejection requires explicit confirmation. Pass `confirmed: true` after the user confirms the destructive operation.',
-      ],
-    } as ProcessApprovalResult);
-  }
-
-  // Strip the skill-layer flag before handing off to the service.
-  const { confirmed: _confirmed, ...serviceParams } = params;
-  void _confirmed;
-  return rejectImpl(serviceParams);
-}
-
-/**
- * Edit an agent's pending weekly plan (add / remove / update tasks).
- */
-export function edit(
-  params?: Omit<ProcessApprovalParams, 'decision'>,
-): Promise<ProcessApprovalResult> {
-  return editImpl(params);
-}
-
-/** Result of {@link autoApprovePlan}. */
-export interface AutoApprovePlanResult extends ProcessApprovalResult {
-  noPendingPlanRemains: boolean;
-}
-
-/**
- * Autonomously approve a freshly-generated weekly plan without user interaction.
- *
- * **Do not call this from user-invoked flows.** This is for the autonomous
- * next-week planner chain only.
- */
-export async function autoApprovePlan(
-  params: Omit<ProcessApprovalParams, 'decision'> = {} as Omit<ProcessApprovalParams, 'decision'>,
-): Promise<AutoApprovePlanResult> {
-  // Step 1: Approve immediately — no AskUserQuestion, no notification dispatch.
-  const approvalResult = await approveImpl(params);
-  if (!approvalResult.success) {
-    return { ...approvalResult, noPendingPlanRemains: false };
-  }
-
-  // Step 2: Verify no pending-approval state remains after the write.
-  const weeklyPlanStore = new WeeklyPlanStore(resolveDataDir((params as { dataDir?: string }).dataDir));
-  let remainingPlans: Awaited<ReturnType<typeof weeklyPlanStore.loadAll>> = [];
-  try {
-    remainingPlans = await weeklyPlanStore.loadAll((params as { agentId: string }).agentId);
-  } catch {
-    remainingPlans = [];
-  }
-  const noPendingPlanRemains = findPendingPlan(remainingPlans) === null;
-
-  return {
-    ...approvalResult,
-    noPendingPlanRemains,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Plan review (helper for the interactive skill flow)
-// ---------------------------------------------------------------------------
-
-/**
- * Load an agent's pending weekly plan and return a human-readable summary
- * so the skill can show it to the user before asking for a decision.
- */
-export function reviewPlan(params: LoadPlanForReviewParams): Promise<LoadPlanForReviewResult> {
-  return loadPlanForReview(params);
 }
 
 // ---------------------------------------------------------------------------
@@ -275,14 +146,4 @@ export {
   applyGoalAdjustment,
   applyMonthlyAdjustment,
   applyWeeklyAdjustment,
-  // Approval pipeline
-  APPROVAL_DECISIONS,
-  findPendingPlan,
-  formatPlanForReview,
-  validateDecision,
-  validateEdits,
-  applyEdits,
-  processApproval,
-  formatApprovalResult,
-  loadPlanForReview,
 };

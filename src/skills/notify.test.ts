@@ -207,7 +207,7 @@ describe('validateSendParams', () => {
           senderSlug: STATIC_SENDER,
           title: 'x',
           body: 'y',
-          options: { systemEvent: 'plan-ready' },
+          options: { systemEvent: 'task-warnings' },
         }),
       /reserved for source="system"/,
     );
@@ -427,14 +427,14 @@ describe('sendNotification — happy path', () => {
         body: 'Approve the next-week plan.',
         options: {
           source: 'system',
-          systemEvent: 'plan-ready',
-          dedupKey: `plan-ready:${SENDER_ID}:2026-W17`,
+          systemEvent: 'task-warnings',
+          dedupKey: `task-warnings:${SENDER_ID}:2026-W17`,
         },
       },
       { agentStore, notificationStore },
     );
     assert.equal(sent.source, 'system');
-    assert.equal(sent.systemEvent, 'plan-ready');
+    assert.equal(sent.systemEvent, 'task-warnings');
   });
 });
 
@@ -532,8 +532,8 @@ describe('sendNotification — idempotency through storage', () => {
         body: 'first emit',
         options: {
           source: 'system',
-          systemEvent: 'plan-ready',
-          dedupKey: `plan-ready:${SENDER_ID}:2026-W17`,
+          systemEvent: 'task-warnings',
+          dedupKey: `task-warnings:${SENDER_ID}:2026-W17`,
         },
       },
       { agentStore, notificationStore },
@@ -547,8 +547,8 @@ describe('sendNotification — idempotency through storage', () => {
         body: 'second emit',
         options: {
           source: 'system',
-          systemEvent: 'plan-ready',
-          dedupKey: `plan-ready:${SENDER_ID}:2026-W17`,
+          systemEvent: 'task-warnings',
+          dedupKey: `task-warnings:${SENDER_ID}:2026-W17`,
         },
       },
       { agentStore, notificationStore },
@@ -590,15 +590,15 @@ describe('formatNotificationResult', () => {
       id: 'notif-sys00001',
       agentId: 'bob-00000001',
       source: 'system',
-      systemEvent: 'plan-ready',
+      systemEvent: 'task-warnings',
       title: 'Plan ready',
       body: 'Approve.',
       createdAt: '2026-04-17T10:00:00.000Z',
       read: false,
-      dedupKey: 'plan-ready:bob:2026-W17',
+      dedupKey: 'task-warnings:bob:2026-W17',
     });
-    assert.ok(output.includes('System Event: plan-ready'));
-    assert.ok(output.includes('Dedup Key: plan-ready:bob:2026-W17'));
+    assert.ok(output.includes('System Event: task-warnings'));
+    assert.ok(output.includes('Dedup Key: task-warnings:bob:2026-W17'));
   });
 
   it('includes a bare-string link', () => {

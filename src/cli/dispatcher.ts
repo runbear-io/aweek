@@ -144,10 +144,6 @@ const REGISTRY_LITERAL = Object.freeze({
   },
   plan: {
     adjustPlan: plan.adjustPlan,
-    reviewPlan: plan.reviewPlan,
-    approve: plan.approve,
-    reject: plan.reject,
-    edit: plan.edit,
     // Returns { mode, confident, ambiguityReason, themeScore, priorityScore,
     // modeLabel }. When confident===false the skill triggers an
     // AskUserQuestion interview to resolve the layout preference.
@@ -169,14 +165,6 @@ const REGISTRY_LITERAL = Object.freeze({
       plan.formatAssumptionsBlock(input?.assumptions ?? []),
     formatAdjustmentResult: (input: any) =>
       plan.formatAdjustmentResult(input?.results ?? input),
-    // formatApprovalResult takes (result, action). Adapter unpacks the
-    // JSON object into positional args so the CLI input stays a plain object.
-    formatApprovalResult: (input: any) =>
-      plan.formatApprovalResult(input?.result, input?.action),
-    // Autonomous approval — used exclusively by the weekly-review → next-week
-    // planner chain. Immediately sets approved:true, skips AskUserQuestion, and
-    // returns noPendingPlanRemains:true when the write was persisted correctly.
-    autoApprovePlan: plan.autoApprovePlan,
   },
   manage: {
     listPausedAgents: manage.listPausedAgents,

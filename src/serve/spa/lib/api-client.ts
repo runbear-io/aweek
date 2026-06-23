@@ -148,8 +148,6 @@ export interface AgentProfile {
 export interface WeeklyPlan {
   /** ISO week key, e.g. `"2026-W15"`. */
   week: string;
-  approved: boolean;
-  approvedAt?: string | null;
   tasks: ReadonlyArray<Record<string, unknown>>;
   [key: string]: unknown;
 }
@@ -173,7 +171,8 @@ export interface AgentPlan {
   markdown: string;
   /** Sorted ascending by week. */
   weeklyPlans: WeeklyPlan[];
-  latestApproved: WeeklyPlan | null;
+  /** Most recent weekly plan on disk, or null when none exist. */
+  latestPlan: WeeklyPlan | null;
   /** Watchlist from `.aweek/agents/<slug>/watchlist.md`. */
   watchlist: { hasWatchlist: boolean; markdown: string };
   /** Per-strategy docs from `.aweek/agents/<slug>/strategies/*.md`. */
@@ -267,7 +266,6 @@ export interface AgentCalendar {
   /** ISO week key, e.g. `"2026-W17"`. */
   week: string | null;
   month: string | null;
-  approved: boolean;
   /** IANA zone or `"UTC"`. */
   timeZone: string;
   /** Monday 00:00 as ISO timestamp. */
@@ -979,7 +977,7 @@ export interface FetchAllNotificationsOptions extends RequestOptions {
   /** Filter by source (`'agent' | 'system'`). */
   source?: 'agent' | 'system';
   /** Filter by system event id. */
-  systemEvent?: 'budget-exhausted' | 'repeated-task-failure' | 'plan-ready';
+  systemEvent?: 'budget-exhausted' | 'repeated-task-failure';
   /** Filter by read flag. */
   read?: boolean;
   /** Cap the response (applied after the reverse-chronological sort). */

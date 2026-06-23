@@ -98,6 +98,11 @@ export interface WeeklyTask {
  * Canonical shape of a weekly plan — mirrors `weeklyPlanSchema` in
  * `src/schemas/weekly-plan.schema.js`. Required vs. optional matches the
  * schema's `required` array exactly.
+ *
+ * `approved` / `approvedAt` are vestigial — they remain typed as optional
+ * fields so legacy on-disk plan files still validate, but no code path
+ * sets or reads them. Every weekly plan is implicitly active the moment
+ * it lands on disk.
  */
 export interface WeeklyPlan {
   /** ISO week format `YYYY-Www`. */
@@ -105,9 +110,9 @@ export interface WeeklyPlan {
   /** Parent month this plan belongs to (`YYYY-MM`). */
   month: string;
   tasks: WeeklyTask[];
-  /** Human-in-the-loop approval gate. */
-  approved: boolean;
-  /** ISO-8601 date-time when the plan was approved. */
+  /** @deprecated No longer gated on. Present only for backward-compat reads. */
+  approved?: boolean;
+  /** @deprecated No longer set or read. Kept for backward-compat reads. */
   approvedAt?: string;
   /** ISO-8601 date-time. */
   createdAt?: string;
@@ -198,34 +203,15 @@ export class WeeklyPlanStore {
     return all.filter((p) => p.month === month);
   }
 
-  /** Load the most recently approved weekly plan. */
-  async loadLatestApproved(agentId: string): Promise<WeeklyPlan | null> {
-    const all = await this.loadAll(agentId);
-    const approved = all.filter((p) => p.approved);
-    if (approved.length === 0) return null;
-    // Sorted by week key; last is latest
-    return approved[approved.length - 1] ?? null;
-  }
-
   /**
-   * Load every approved weekly plan, sorted oldest-week-first.
-   *
-   * The heartbeat scans this list (instead of just the latest week) so
-   * tasks that are due **today** still get picked up even when the user
-   * has already approved next week's plan ahead of time, and so the
-   * stale-sweep flips past-due pending tasks in any prior week — not
-   * just the latest approved one — to `skipped`. See
-   * `src/heartbeat/run.ts` (`_sweepStaleTasks`) and
-   * `src/heartbeat/task-selector.ts` (`selectNextTask`,
-   * `selectTasksForTick`).
+   * Load the most recent weekly plan for an agent (or null when none
+   * exist). `loadAll` is sorted ascending by week key, so the last
+   * element is the latest week on disk.
    */
-  async loadAllApproved(agentId: string): Promise<WeeklyPlan[]> {
+  async loadLatest(agentId: string): Promise<WeeklyPlan | null> {
     const all = await this.loadAll(agentId);
-    // `loadAll` is already sorted ascending by week key via `list()`, so
-    // the approved subset stays in oldest-first order — the natural
-    // priority order for cross-week task selection ("finish W19 before
-    // dipping into W20").
-    return all.filter((p) => p.approved);
+    if (all.length === 0) return null;
+    return all[all.length - 1] ?? null;
   }
 
   /** Delete a weekly plan. */
@@ -247,19 +233,6 @@ export class WeeklyPlanStore {
     const updated = updater(current);
     updated.updatedAt = new Date().toISOString();
     return this.save(agentId, updated);
-  }
-
-  /**
-   * Approve a weekly plan. Sets approved=true and records approvedAt.
-   * This is the human-in-the-loop gate — first approval triggers
-   * heartbeat activation.
-   */
-  async approve(agentId: string, week: string): Promise<WeeklyPlan> {
-    return this.update(agentId, week, (plan) => {
-      plan.approved = true;
-      plan.approvedAt = new Date().toISOString();
-      return plan;
-    });
   }
 
   /**

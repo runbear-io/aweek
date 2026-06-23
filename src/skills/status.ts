@@ -61,9 +61,9 @@ export function getMondayDate(date: Date = new Date(), tz?: string): string {
  */
 export function computeTaskCounts(
   plan: any,
-): { total: number; byStatus: Record<string, number>; approved: boolean } {
+): { total: number; byStatus: Record<string, number> } {
   if (!plan || !plan.tasks) {
-    return { total: 0, byStatus: {}, approved: false };
+    return { total: 0, byStatus: {} };
   }
   const byStatus: Record<string, number> = {};
   for (const task of plan.tasks) {
@@ -72,7 +72,6 @@ export function computeTaskCounts(
   return {
     total: plan.tasks.length,
     byStatus,
-    approved: !!plan.approved,
   };
 }
 
@@ -124,7 +123,7 @@ export async function buildAgentStatus({
     state = 'running';
   } else if (agentConfig.budget?.paused) {
     state = 'paused';
-  } else if (taskCounts.total > 0 && taskCounts.approved) {
+  } else if (taskCounts.total > 0) {
     const pending = (taskCounts.byStatus['pending'] || 0) + (taskCounts.byStatus['in-progress'] || 0);
     state = pending > 0 ? 'active' : 'idle';
   }
@@ -147,7 +146,6 @@ export async function buildAgentStatus({
     state,
     plan: {
       week,
-      approved: taskCounts.approved,
       tasks: taskCounts,
     },
     activity: {
@@ -278,7 +276,7 @@ export function formatAgentStatus(agentStatus: any): string {
     if (t.byStatus['failed']) parts.push(`${t.byStatus['failed']} failed`);
     if (t.byStatus['delegated']) parts.push(`${t.byStatus['delegated']} delegated`);
     if (t.byStatus['skipped']) parts.push(`${t.byStatus['skipped']} skipped`);
-    lines.push(`  Plan: ${s.plan.week} ${s.plan.approved ? '(approved)' : '(pending approval)'} — ${t.total} tasks: ${parts.join(', ')}`);
+    lines.push(`  Plan: ${s.plan.week} — ${t.total} tasks: ${parts.join(', ')}`);
   } else {
     lines.push(`  Plan: No weekly plan for ${s.plan.week}`);
   }

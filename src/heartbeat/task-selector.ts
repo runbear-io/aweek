@@ -352,7 +352,7 @@ export function filterEligibleTasks(
  * whose only pending tasks are future-scheduled contribute no pick
  * this tick.
  *
- * Returns `[]` if the plan is not approved or has no eligible tasks.
+ * Returns `[]` if the plan has no eligible tasks.
  *
  * @param {object} plan - A weekly plan object (from WeeklyPlanStore)
  * @param {object} [opts]
@@ -364,7 +364,6 @@ export function selectTasksForTickFromPlan(
   { nowMs = Date.now(), maxAgeMs }: SelectTickOptions = {},
 ): TickPick[] {
   if (!plan) return [];
-  if (!plan.approved) return [];
   if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return [];
 
   const eligibleOpts: SelectTickOptions =
@@ -402,7 +401,7 @@ export function selectTasksForTickFromPlan(
 
 /**
  * Select the top-priority pending task from a weekly plan.
- * Returns null if the plan is not approved or has no pending tasks.
+ * Returns null if the plan has no pending tasks.
  *
  * Equivalent to `selectTasksForTickFromPlan(plan)[0]`. Retained for
  * callers that only need a single selection; the heartbeat tick runner
@@ -481,7 +480,9 @@ export function isAllTasksFinished(plan: WeeklyPlan | null | undefined): boolean
 
 /**
  * Select the next pending task for an agent from the store.
- * Loads the latest approved plan and selects the highest-priority pending task.
+ * Loads every weekly plan and selects the highest-priority pending task,
+ * walking oldest-first so a still-pending task in last week's plan gets
+ * picked before next week's plan steals priority.
  *
  * This is the main entry point used by the heartbeat system.
  *
@@ -496,16 +497,12 @@ export async function selectNextTask(
   if (!store) throw new Error('store is required');
   if (!agentId) throw new Error('agentId is required');
 
-  // Walk approved plans oldest-first so a still-pending task in last
-  // week's plan gets picked before next week's plan steals priority.
-  // Without this, approving W20 ahead of time would mask every due W19
-  // task because `loadLatestApproved` returns W20 (latest by key) and
-  // W20's tasks all have future `runAt` → `isRunAtReady` rejects them
-  // → tick outcome "no_pending_tasks" even though W19 has live work.
-  const approved = await store.loadAllApproved(agentId);
-  if (approved.length === 0) return null;
+  // Walk plans oldest-first so a still-pending task in last week's plan
+  // gets picked before next week's plan steals priority.
+  const plans = await store.loadAll(agentId);
+  if (plans.length === 0) return null;
 
-  for (const plan of approved) {
+  for (const plan of plans) {
     const result = selectNextTaskFromPlan(plan);
     if (!result) continue;
     return {
@@ -519,7 +516,7 @@ export async function selectNextTask(
 }
 
 /**
- * Load the latest approved plan and select one task per track.
+ * Load every weekly plan and select one task per track.
  *
  * Heartbeat's multi-track entry point — the tick runner drains every
  * returned pick serially within a single tick.
@@ -544,10 +541,10 @@ export async function selectTasksForTick(
   // first plan that produces any (per-tick drains run within a single
   // plan, so mixing weeks in one tick would muddle the trackKey
   // namespace).
-  const approved = await store.loadAllApproved(agentId);
-  if (approved.length === 0) return { picks: [], week: null, plan: null };
+  const plans = await store.loadAll(agentId);
+  if (plans.length === 0) return { picks: [], week: null, plan: null };
 
-  for (const plan of approved) {
+  for (const plan of plans) {
     const picks = selectTasksForTickFromPlan(plan);
     if (picks.length > 0) {
       return { picks, week: plan.week, plan };

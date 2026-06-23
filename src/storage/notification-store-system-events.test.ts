@@ -1,15 +1,15 @@
 /**
  * Convergence test for AC 7: every notification source — agent-initiated
  * (via the `notify` skill / `aweek exec notify send`) AND each of the three
- * v1 system events (budget-exhausted, repeated-task-failure, plan-ready) —
+ * v1 system events (budget-exhausted, repeated-task-failure) —
  * MUST persist into the same {@link NotificationStore} so that the
  * dashboard inbox, the global feed, and any future delivery channel see
  * them through one canonical surface.
  *
  * The other notification tests in this directory pin behaviour for one
  * source at a time (e.g. `repeated-failure-notifier.test.ts`,
- * `plan-ready-notifier.test.ts`, `budget-enforcer.test.ts`). This file is
- * the *integration* harness: it drives all four sources against ONE
+ * `budget-enforcer.test.ts`). This file is
+ * the *integration* harness: it drives all three sources against ONE
  * `NotificationStore` instance, ONE temp data dir, ONE subscribed delivery
  * channel — and asserts:
  *
@@ -46,14 +46,13 @@ import { createAgentConfig, createTask, createWeeklyPlan } from '../models/agent
 import { sendNotification } from '../skills/notify.js';
 import { enforceBudget } from '../services/budget-enforcer.js';
 import { maybeEmitRepeatedFailureNotification } from '../services/repeated-failure-notifier.js';
-import { emitPlanReadyNotification } from '../services/plan-ready-notifier.js';
 
 const AGENT_ID = 'integration-tester';
 const WEEK = '2026-W16';
 const MONTH = '2026-04';
 const WEEK_MONDAY = '2026-04-13';
 
-describe('AC 7 — all four notification sources converge on one NotificationStore', () => {
+describe('AC 7 — all three notification sources converge on one NotificationStore', () => {
   let tmpDir: string;
   let agentStore: AgentStore;
   let usageStore: UsageStore;
@@ -77,7 +76,6 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
   let agentNotificationId: string;
   let budgetNotificationId: string | null;
   let repeatedFailureNotificationId: string | undefined;
-  let planReadyNotificationId: string | null;
 
   before(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'notification-system-events-test-'));
@@ -162,32 +160,13 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
       repeatedFailureNotificationId = repeatedOutcome.notificationId;
     }
 
-    // ---------------------------------------------------------------------
-    // Source 4 — plan-ready system event.
-    //   Build a pending (approved=false) plan and emit through the same
-    //   NotificationStore. This is the convergence point the
-    //   weekly-plan-generator wires up in production via
-    //   generateAndSaveWeeklyPlan.
-    // ---------------------------------------------------------------------
-    const planReadyOutcome = await emitPlanReadyNotification(
-      notificationStore,
-      AGENT_ID,
-      {
-        week: '2026-W17',
-        month: MONTH,
-        approved: false,
-        tasks: [{ id: 'task-x' }, { id: 'task-y' }],
-      },
-    );
-    assert.equal(planReadyOutcome.emitted, true, 'plan-ready emitter must emit on the first pending plan');
-    planReadyNotificationId = planReadyOutcome.notificationId;
   });
 
   after(async () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('persists all four notifications into the same per-agent feed file', async () => {
+  it('persists all three notifications into the same per-agent feed file', async () => {
     // Read the on-disk file directly. AC 7 fails if any emitter sneaks
     // around the store and writes to a sibling file.
     const filePath = join(tmpDir, AGENT_ID, 'notifications.json');
@@ -203,16 +182,14 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
       ids.includes(repeatedFailureNotificationId),
       'repeated-task-failure notification missing from on-disk feed',
     );
-    assert.ok(planReadyNotificationId, 'plan-ready emitter should have returned a notification id');
-    assert.ok(ids.includes(planReadyNotificationId), 'plan-ready notification missing from on-disk feed');
 
-    // Total count: exactly four entries in this scenario. Catches the
+    // Total count: exactly three entries in this scenario. Catches the
     // (otherwise silent) regression where a system event accidentally
     // splits onto a sibling file.
-    assert.equal(onDisk.length, 4, `expected exactly four notifications on disk, got ${onDisk.length}`);
+    assert.equal(onDisk.length, 3, `expected exactly three notifications on disk, got ${onDisk.length}`);
   });
 
-  it('preserves source and systemEvent discriminators verbatim across all four code paths', async () => {
+  it('preserves source and systemEvent discriminators verbatim across all three code paths', async () => {
     const feed = await notificationStore.load(AGENT_ID);
     const byId = new Map(feed.map((n) => [n.id, n]));
 
@@ -220,9 +197,6 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
     const budgetN = budgetNotificationId ? byId.get(budgetNotificationId) : undefined;
     const repeatedN = repeatedFailureNotificationId
       ? byId.get(repeatedFailureNotificationId)
-      : undefined;
-    const planReadyN = planReadyNotificationId
-      ? byId.get(planReadyNotificationId)
       : undefined;
 
     assert.ok(agentN, 'agent-initiated notification not loaded back');
@@ -236,10 +210,6 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
     assert.ok(repeatedN, 'repeated-failure notification not loaded back');
     assert.equal(repeatedN.source, 'system');
     assert.equal(repeatedN.systemEvent, 'repeated-task-failure');
-
-    assert.ok(planReadyN, 'plan-ready notification not loaded back');
-    assert.equal(planReadyN.source, 'system');
-    assert.equal(planReadyN.systemEvent, 'plan-ready');
   });
 
   it('attributes every notification to the same sender (agentId) regardless of source', async () => {
@@ -254,13 +224,12 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
     }
   });
 
-  it('exposes all four notifications through the global feed (loadAll)', async () => {
+  it('exposes all three notifications through the global feed (loadAll)', async () => {
     const all = await notificationStore.loadAll();
     const ids = all.map((n) => n.id);
     assert.ok(ids.includes(agentNotificationId));
     assert.ok(budgetNotificationId && ids.includes(budgetNotificationId));
     assert.ok(repeatedFailureNotificationId && ids.includes(repeatedFailureNotificationId));
-    assert.ok(planReadyNotificationId && ids.includes(planReadyNotificationId));
 
     // Each entry on the global feed must carry the owning `agent` slug so
     // the dashboard's inbox can render sender attribution.
@@ -271,21 +240,20 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
 
   it('counts every emission as unread until the user marks it read', async () => {
     const summary = await notificationStore.summary(AGENT_ID);
-    assert.equal(summary.total, 4);
-    assert.equal(summary.unread, 4);
+    assert.equal(summary.total, 3);
+    assert.equal(summary.unread, 3);
     assert.equal(summary.bySource.agent, 1);
-    assert.equal(summary.bySource.system, 3);
+    assert.equal(summary.bySource.system, 2);
     assert.equal(summary.bySystemEvent['budget-exhausted'], 1);
     assert.equal(summary.bySystemEvent['repeated-task-failure'], 1);
-    assert.equal(summary.bySystemEvent['plan-ready'], 1);
 
     const totalUnread = await notificationStore.totalUnreadCount();
-    assert.equal(totalUnread, 4);
+    assert.equal(totalUnread, 3);
   });
 
   it('fans out every freshly persisted emission to subscribed delivery channels', () => {
     // The single channel registered in `before` must have observed every
-    // fresh emission — agent + all three system events. AC 17's subscribe
+    // fresh emission — agent + both system events. AC 17's subscribe
     // API is the seam future Slack/email/push integrations will hook into,
     // so this assertion is the load-bearing check that they will receive
     // system-event notifications without re-architecting.
@@ -299,11 +267,7 @@ describe('AC 7 — all four notification sources converge on one NotificationSto
       repeatedFailureNotificationId && observedIds.includes(repeatedFailureNotificationId),
       'channel did not observe the repeated-task-failure emission',
     );
-    assert.ok(
-      planReadyNotificationId && observedIds.includes(planReadyNotificationId),
-      'channel did not observe the plan-ready emission',
-    );
-    assert.equal(channelObserved.length, 4, 'channel must see exactly four fresh emissions');
+    assert.equal(channelObserved.length, 3, 'channel must see exactly three fresh emissions');
   });
 
   it('routes every source through one canonical baseDir (no sibling notification files)', async () => {

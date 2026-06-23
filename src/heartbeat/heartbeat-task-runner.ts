@@ -6,7 +6,7 @@
  * heartbeat tick:
  *
  *   1. Acquires the agent lock (via scheduler)
- *   2. Selects the next pending task from the latest approved weekly plan
+ *   2. Selects the next pending task from the agent's weekly plans
  *   3. Marks the task as "in-progress" in the plan file
  *   4. Returns a TaskTickResult describing what was selected (or why nothing was)
  *   5. Releases the lock (always, even on error)
@@ -42,7 +42,6 @@ export type TaskTickOutcome =
   | 'task_selected'
   | 'no_pending_tasks'
   | 'all_tasks_finished'
-  | 'no_approved_plan'
   | 'no_weekly_plans'
   | 'skipped'
   | 'error';
@@ -71,7 +70,7 @@ export interface RunHeartbeatTickOptions extends TickAgentOptions {
 
 /**
  * @typedef {object} TaskTickResult
- * @property {'task_selected'|'no_pending_tasks'|'all_tasks_finished'|'no_approved_plan'|'no_weekly_plans'|'skipped'|'error'} outcome
+ * @property {'task_selected'|'no_pending_tasks'|'all_tasks_finished'|'no_weekly_plans'|'skipped'|'error'} outcome
  * @property {string} agentId
  * @property {object} [task]         - The selected task (when outcome === 'task_selected')
  * @property {number} [taskIndex]    - Original index in plan.tasks
@@ -83,10 +82,10 @@ export interface RunHeartbeatTickOptions extends TickAgentOptions {
  *
  * outcome === 'no_weekly_plans' identifies "shell" agents — typically freshly
  * hired via `hireAllSubagents` — that have a valid subagent `.md` + aweek JSON
- * wrapper but no weekly plan files on disk yet. These are distinct from
- * `no_approved_plan` agents (which DO have plans, just none approved); the
- * resume path is to author + approve a plan via `/aweek:plan`, not to approve
- * an existing draft.
+ * wrapper but no weekly plan files on disk yet AND no recurring-task rules to
+ * auto-materialize one. The resume path is to author a plan via `/aweek:plan`,
+ * or to add a recurring task so the heartbeat materializes one on the next
+ * tick.
  */
 
 /**
@@ -94,7 +93,7 @@ export interface RunHeartbeatTickOptions extends TickAgentOptions {
  *
  * This is the glue between `scheduler.runHeartbeat(agentId, callback)` and
  * the task-selector module. The returned callback:
- *   - reads the latest approved weekly plan via `selectNextTask`
+ *   - reads the agent's weekly plans via `selectNextTask`
  *   - marks the selected task as 'in-progress' in the store
  *   - returns a structured TaskTickResult
  *
@@ -220,17 +219,10 @@ export async function tickAgent(
     // Agents created via `hireAllSubagents` (or the `select-some` variant of
     // the `/aweek:init` post-setup menu) land on disk as "shells": a valid
     // aweek JSON wrapper + a `.claude/agents/<slug>.md` subagent file, but
-    // NO weekly plan files under `.aweek/agents/<slug>/weekly-plans/`. Ticking
-    // such an agent through `selectNextTask` would work (it returns null, and
-    // we'd fall through to the `no_approved_plan` branch), but conflating
-    // "shell" with "has plans, none approved" hides an actionable distinction:
-    //
-    //   - Shell  → resume path: author + approve a plan (`/aweek:plan`).
-    //   - Has unapproved plan → resume path: `/aweek:approve-plan`.
-    //
-    // Detect it explicitly here so the outcome string and reason can name the
-    // shell case, surface `hasWeeklyPlans: false`, and still record a skipped
-    // execution for dedup parity with the other skipped branches.
+    // NO weekly plan files under `.aweek/agents/<slug>/weekly-plans/`. Surface
+    // this case as its own outcome so the dashboard can suggest the resume
+    // path (`/aweek:plan` to author a plan, or add a recurring rule so the
+    // heartbeat materializes one on the next tick).
     const weeklyPlanListing = await _listWeeklyPlanWeeksSafe(weeklyPlanStore, agentId);
     if (weeklyPlanListing.ok && weeklyPlanListing.weeks.length === 0) {
       await _recordExecution(executionStore, agentId, now, 'skipped');
@@ -238,29 +230,29 @@ export async function tickAgent(
         outcome: 'no_weekly_plans',
         agentId,
         reason:
-          `Agent "${agentId}" has no weekly plan entries — it appears to be a freshly hired shell. ` +
-          `Author and approve a weekly plan before the heartbeat can select tasks.`,
+          `Agent "${agentId}" has no weekly plan entries. ` +
+          `Author a weekly plan via /aweek:plan, or add a recurring task so the heartbeat auto-materializes one.`,
         hasWeeklyPlans: false,
         tickedAt,
       };
     }
 
-    // Step 1: Select next pending task from latest approved plan
+    // Step 1: Select next pending task across the agent's weekly plans
     const selection = await selectNextTask(weeklyPlanStore, agentId);
 
-    // No approved plan at all
     if (selection === null) {
-      // Distinguish: no approved plan vs all tasks finished
-      // selectNextTask returns null for both cases, so we probe further
-      const plan = await _loadLatestApprovedSafe(weeklyPlanStore, agentId);
+      // Plans exist but none surfaced an eligible task. Probe the latest
+      // plan so the outcome can distinguish "all done" from "future runAt".
+      const plan = await _loadLatestSafe(weeklyPlanStore, agentId);
 
       if (!plan) {
-        // Record even no-plan executions to prevent repeated checks in same window
+        // Defensive: weekly-plan listing said there were files but the
+        // direct load failed. Record + return a generic empty outcome.
         await _recordExecution(executionStore, agentId, now, 'skipped');
         return {
-          outcome: 'no_approved_plan',
+          outcome: 'no_pending_tasks',
           agentId,
-          reason: 'No approved weekly plan found for agent',
+          reason: 'No weekly plan could be loaded for this agent',
           tickedAt,
         };
       }
@@ -429,17 +421,14 @@ export async function runHeartbeatTickAll(
 }
 
 /**
- * Safely load the latest approved plan (returns null on any error).
- * @param {import('../storage/weekly-plan-store.js').WeeklyPlanStore} store
- * @param {string} agentId
- * @returns {Promise<object|null>}
+ * Safely load the latest weekly plan (returns null on any error).
  */
-async function _loadLatestApprovedSafe(
+async function _loadLatestSafe(
   store: WeeklyPlanStore,
   agentId: string,
-): Promise<Awaited<ReturnType<WeeklyPlanStore['loadLatestApproved']>> | null> {
+): Promise<Awaited<ReturnType<WeeklyPlanStore['loadLatest']>> | null> {
   try {
-    return await store.loadLatestApproved(agentId);
+    return await store.loadLatest(agentId);
   } catch {
     return null;
   }
@@ -448,13 +437,11 @@ async function _loadLatestApprovedSafe(
 /**
  * Safely list the weekly plan weeks for an agent.
  *
- * Used by the shell-agent guard to distinguish "no weekly plan files at all"
- * (shell) from "has weekly plan files but none approved" (draft pending
- * approval). The `ok: false` branch lets callers skip the shell guard and
- * fall through to the downstream plan-approval branches when the store is
- * unavailable — graceful degradation per the `graceful_degradation`
- * principle: a missing `.list` method or a filesystem hiccup must not block
- * the tick.
+ * Used by the shell-agent guard to detect "no weekly plan files at all"
+ * (the shell case). The `ok: false` branch lets callers skip the guard
+ * and continue when the store is unavailable — graceful degradation per
+ * the `graceful_degradation` principle: a missing `.list` method or a
+ * filesystem hiccup must not block the tick.
  *
  * @param {import('../storage/weekly-plan-store.js').WeeklyPlanStore} store
  * @param {string} agentId

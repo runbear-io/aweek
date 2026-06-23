@@ -182,7 +182,7 @@ describe('materializeRecurringForWeek', () => {
   // -------------------------------------------------------------------------
 
   describe('first run', () => {
-    it('creates a valid WeeklyPlan with the recurring tasks pending (AC15: auto-approved since all-recurring)', async () => {
+    it('creates a valid WeeklyPlan with the recurring tasks pending', async () => {
       await recurringTaskStore.save(AGENT_ID, buildBiweeklyMonWedTask());
       await materializeRecurringForWeek({
         weeklyPlanStore,
@@ -195,15 +195,6 @@ describe('materializeRecurringForWeek', () => {
 
       const plan = await weeklyPlanStore.load(AGENT_ID, WEEK_KEY);
       assert.equal(plan.week, WEEK_KEY);
-      // AC15 — every task on a fresh plan is recurring-derived, so the
-      // human-in-the-loop gate is bypassed and the plan auto-approves
-      // so unattended weeks execute through the heartbeat.
-      assert.equal(plan.approved, true, 'plan auto-approves when all tasks are recurring (AC15)');
-      assert.equal(
-        plan.approvedAt,
-        '2026-05-04T00:00:00.000Z',
-        'approvedAt stamped from `now` on auto-approve',
-      );
       assert.equal(plan.tasks.length, 2);
       for (const t of plan.tasks) {
         assert.equal(t.status, 'pending');
@@ -224,174 +215,6 @@ describe('materializeRecurringForWeek', () => {
         tz: TZ,
       });
       assert.equal(await weeklyPlanStore.exists(AGENT_ID, WEEK_KEY), false);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // AC15 — auto-approval of recurring-only plans
-  // -------------------------------------------------------------------------
-
-  describe('AC15 — auto-approval of recurring-only plans', () => {
-    it('sets approved: true + approvedAt + reports autoApproved: true on a fresh recurring-only plan', async () => {
-      await recurringTaskStore.save(AGENT_ID, buildBiweeklyMonWedTask());
-
-      const r = await materializeRecurringForWeek({
-        weeklyPlanStore,
-        recurringTaskStore,
-        agentId: AGENT_ID,
-        weekKey: WEEK_KEY,
-        tz: TZ,
-        now: new Date('2026-05-04T00:00:00.000Z'),
-      });
-      assert.equal(r.unchanged, false);
-      assert.equal(r.autoApproved, true, 'fresh recurring-only plan auto-approves');
-      assert.equal(r.addedTaskIds.length, 2);
-
-      const plan = await weeklyPlanStore.load(AGENT_ID, WEEK_KEY);
-      assert.equal(plan.approved, true);
-      assert.equal(plan.approvedAt, '2026-05-04T00:00:00.000Z');
-    });
-
-    it('flips an existing un-approved recurring-only plan to approved: true on merge', async () => {
-      // Seed a plan that already exists (perhaps from a pre-AC15 run that
-      // wrote `approved: false`) containing one recurring-derived task.
-      // Then add the rule and trigger materialization for the same week.
-      const seedPlan: WeeklyPlan = {
-        week: WEEK_KEY,
-        month: '2026-05',
-        approved: false,
-        tasks: [
-          {
-            id: 'task-rec-legacy-rule-20260504T0900',
-            title: 'Legacy recurring task',
-            prompt: 'Pre-AC15 recurring task that was never approved.',
-            status: 'pending',
-          },
-        ],
-        createdAt: '2026-05-01T00:00:00.000Z',
-      };
-      await weeklyPlanStore.save(AGENT_ID, seedPlan);
-
-      await recurringTaskStore.save(AGENT_ID, buildBiweeklyMonWedTask());
-
-      const r = await materializeRecurringForWeek({
-        weeklyPlanStore,
-        recurringTaskStore,
-        agentId: AGENT_ID,
-        weekKey: WEEK_KEY,
-        tz: TZ,
-        now: new Date('2026-05-04T08:30:00.000Z'),
-      });
-      assert.equal(r.unchanged, false);
-      assert.equal(r.autoApproved, true, 'merge into un-approved recurring-only plan flips approved');
-      assert.equal(r.addedTaskIds.length, 2);
-
-      const plan = await weeklyPlanStore.load(AGENT_ID, WEEK_KEY);
-      assert.equal(plan.approved, true);
-      assert.equal(plan.approvedAt, '2026-05-04T08:30:00.000Z');
-      assert.equal(plan.tasks.length, 3, 'legacy + 2 new occurrences');
-    });
-
-    it('does NOT auto-approve a plan that contains any hand-crafted task', async () => {
-      const seedPlan: WeeklyPlan = {
-        week: WEEK_KEY,
-        month: '2026-05',
-        approved: false,
-        tasks: [
-          {
-            id: 'task-hand-crafted-1',
-            title: 'Manual task',
-            prompt: 'Hand-crafted, not from a recurrence rule.',
-            status: 'pending',
-          },
-        ],
-        createdAt: '2026-05-01T00:00:00.000Z',
-      };
-      await weeklyPlanStore.save(AGENT_ID, seedPlan);
-
-      await recurringTaskStore.save(AGENT_ID, buildBiweeklyMonWedTask());
-
-      const r = await materializeRecurringForWeek({
-        weeklyPlanStore,
-        recurringTaskStore,
-        agentId: AGENT_ID,
-        weekKey: WEEK_KEY,
-        tz: TZ,
-      });
-      assert.equal(r.unchanged, false);
-      assert.equal(r.autoApproved, false, 'mixed plans never auto-approve');
-
-      const plan = await weeklyPlanStore.load(AGENT_ID, WEEK_KEY);
-      assert.equal(plan.approved, false, 'human-in-the-loop gate still required for mixed plans');
-      assert.equal(plan.approvedAt, undefined);
-    });
-
-    it('does NOT re-stamp approvedAt on a plan that was already approved', async () => {
-      const existingApprovedAt = '2026-05-03T07:00:00.000Z';
-      const seedPlan: WeeklyPlan = {
-        week: WEEK_KEY,
-        month: '2026-05',
-        approved: true,
-        approvedAt: existingApprovedAt,
-        tasks: [],
-        createdAt: '2026-05-01T00:00:00.000Z',
-      };
-      await weeklyPlanStore.save(AGENT_ID, seedPlan);
-
-      await recurringTaskStore.save(AGENT_ID, buildBiweeklyMonWedTask());
-
-      const r = await materializeRecurringForWeek({
-        weeklyPlanStore,
-        recurringTaskStore,
-        agentId: AGENT_ID,
-        weekKey: WEEK_KEY,
-        tz: TZ,
-        now: new Date('2026-05-04T12:00:00.000Z'),
-      });
-      assert.equal(r.autoApproved, false, 'already-approved plan does not re-trigger auto-approval');
-
-      const plan = await weeklyPlanStore.load(AGENT_ID, WEEK_KEY);
-      assert.equal(plan.approved, true);
-      assert.equal(
-        plan.approvedAt,
-        existingApprovedAt,
-        'historical approvedAt preserved across re-materialization',
-      );
-    });
-
-    it('stays idempotent — second run on an auto-approved plan is byte-identical', async () => {
-      await recurringTaskStore.save(AGENT_ID, buildBiweeklyMonWedTask());
-
-      const opts = {
-        weeklyPlanStore,
-        recurringTaskStore,
-        agentId: AGENT_ID,
-        weekKey: WEEK_KEY,
-        tz: TZ,
-        now: new Date('2026-05-04T00:00:00.000Z'),
-      };
-      const r1 = await materializeRecurringForWeek(opts);
-      assert.equal(r1.autoApproved, true);
-      assert.equal(r1.unchanged, false);
-
-      const bytes1 = await readFile(planPath());
-      const mtime1 = (await stat(planPath())).mtimeMs;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-
-      // Second run with a different `now` — must still be a no-op
-      // because the plan is already approved and no new occurrences are
-      // pending.
-      const r2 = await materializeRecurringForWeek({
-        ...opts,
-        now: new Date('2026-05-04T23:59:59.000Z'),
-      });
-      assert.equal(r2.unchanged, true, 'second run on auto-approved plan is a no-op');
-      assert.equal(r2.autoApproved, false, 'no transition fired on the second run');
-
-      const bytes2 = await readFile(planPath());
-      const mtime2 = (await stat(planPath())).mtimeMs;
-      assert.equal(bytes1.equals(bytes2), true, 'bytes unchanged');
-      assert.equal(mtime2, mtime1, 'mtime unchanged');
     });
   });
 

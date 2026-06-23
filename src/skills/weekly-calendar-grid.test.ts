@@ -631,7 +631,7 @@ describe('renderMarkdownGrid — pipe-table output', () => {
 
     // Meta paragraph
     assert.equal(lines[0], '**Agent One — Week 2026-W17**');
-    assert.match(lines[1], /Status: Approved \| Tasks: 2 \| TZ: UTC/);
+    assert.match(lines[1], /Tasks: 2 \| TZ: UTC/);
     // Header + separator
     const headerIdx = lines.findIndex((l: string) => l.startsWith('| Hour |'));
     assert.ok(headerIdx > 0, 'expected header row');

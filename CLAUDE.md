@@ -47,7 +47,7 @@ Skill markdown lives in `skills/<name>/SKILL.md`. Each step shells out to `aweek
 | `aweek setup` | `skills/setup/SKILL.md` | Explicitly bootstrap a project: create `.aweek/`, optionally install the launchd heartbeat (cron fallback off-macOS), then route into `aweek hire`. Auto-called by every other skill on first run — users rarely need this directly |
 | `aweek teardown` | `skills/teardown/SKILL.md` | Remove the heartbeat and/or `.aweek/` data from a project. Both operations are destructive and confirmation-gated |
 | `aweek hire` | `skills/hire/SKILL.md` | Identity-only agent creation. Adopts an unhired `.claude/agents/<slug>.md` or writes a new one with three fields (name, description, system prompt). Goals/plans are added later via `aweek plan`. Auto-bootstraps on first run |
-| `aweek plan` | `skills/plan/SKILL.md` | Single entry point for goal/monthly/weekly adjustments **and** pending weekly plan approval. Auto-bootstraps on first run |
+| `aweek plan` | `skills/plan/SKILL.md` | Single entry point for editing the agent's planning markdown and adjusting weekly tasks. Plans are always active — there is no approval gate. Auto-bootstraps on first run |
 | `aweek manage` | `skills/manage/SKILL.md` | Lifecycle ops: resume, top-up, pause, delete. Identity edits go through the `.claude/agents/<slug>.md` file directly. Auto-bootstraps on first run |
 | `aweek summary` | `skills/summary/SKILL.md` | Compact dashboard table across all agents with optional drill-down |
 | `aweek query` | `skills/query/SKILL.md` | Filter the roster by role / status / persona keyword / budget and return the matching slug list for downstream skills |
@@ -107,7 +107,7 @@ Long-term goals, monthly plans, and strategies live in a per-agent free-form mar
 
 Only weekly tasks remain structured:
 
-- `weekly-plan.schema.js` — weekly tasks keyed by `YYYY-Www`. `objectiveId` is a free-form string (typically the H3 heading a task traces to in `plan.md`, e.g. `"2026-04"`). Plans start `approved: false` and only activate the heartbeat after the first `aweek plan` approval. (The AJV schema definitions in `src/schemas/*.js` stay raw `.js`; their typed wrappers re-export `JSONSchemaType<T>` bindings to TS consumers.)
+- `weekly-plan.schema.js` — weekly tasks keyed by `YYYY-Www`. `objectiveId` is a free-form string (typically the H3 heading a task traces to in `plan.md`, e.g. `"2026-04"`). Plans are implicitly active on save — there is no human-in-the-loop approval gate. The legacy `approved` / `approvedAt` fields are still accepted by the schema as optional properties (so historic on-disk plans keep validating) but no code path sets or reads them. (The AJV schema definitions in `src/schemas/*.js` stay raw `.js`; their typed wrappers re-export `JSONSchemaType<T>` bindings to TS consumers.)
 
 Persistence is split across stores in `src/storage/` (agent, weekly-plan, monthly-plan, goal, inbox, usage, activity-log, artifact, execution).
 

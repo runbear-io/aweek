@@ -407,7 +407,7 @@ describe('NotificationStore — query', () => {
       AGENT_A,
       notif(AGENT_A, {
         source: 'system',
-        systemEvent: 'plan-ready',
+        systemEvent: 'task-warnings',
       }),
     );
     const sys = await store.query(AGENT_A, { source: 'system' });
@@ -427,12 +427,12 @@ describe('NotificationStore — query', () => {
       AGENT_A,
       notif(AGENT_A, {
         source: 'system',
-        systemEvent: 'plan-ready',
+        systemEvent: 'task-warnings',
       }),
     );
-    const planReady = await store.query(AGENT_A, { systemEvent: 'plan-ready' });
-    assert.equal(planReady.length, 1);
-    assert.equal(planReady[0]?.systemEvent, 'plan-ready');
+    const taskWarnings = await store.query(AGENT_A, { systemEvent: 'task-warnings' });
+    assert.equal(taskWarnings.length, 1);
+    assert.equal(taskWarnings[0]?.systemEvent, 'task-warnings');
   });
 
   it('filters by read state', async () => {
@@ -484,7 +484,7 @@ describe('NotificationStore — summary', () => {
     });
     const c = notif(AGENT_A, {
       source: 'system',
-      systemEvent: 'plan-ready',
+      systemEvent: 'task-warnings',
     });
     await store.append(AGENT_A, a);
     await store.append(AGENT_A, b);
@@ -497,7 +497,7 @@ describe('NotificationStore — summary', () => {
     assert.equal(s.bySource.agent, 1);
     assert.equal(s.bySource.system, 2);
     assert.equal(s.bySystemEvent['budget-exhausted'], 1);
-    assert.equal(s.bySystemEvent['plan-ready'], 1);
+    assert.equal(s.bySystemEvent['task-warnings'], 1);
   });
 });
 
@@ -567,7 +567,7 @@ describe('NotificationStore — loadAll', () => {
       AGENT_C,
       notif(AGENT_C, {
         source: 'system',
-        systemEvent: 'plan-ready',
+        systemEvent: 'task-warnings',
       }),
     );
     const sysOnly = await store.loadAll({ source: 'system' });

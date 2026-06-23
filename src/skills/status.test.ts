@@ -37,11 +37,8 @@ function makeAgent(name: string, overrides: any = {}): any {
   return { ...config, ...overrides };
 }
 
-function makePlan(week: string, tasks: any[] = [], approved = true): any {
-  const plan = createWeeklyPlan(week, '2026-04', tasks);
-  plan.approved = approved;
-  if (approved) plan.approvedAt = new Date().toISOString();
-  return plan;
+function makePlan(week: string, tasks: any[] = []): any {
+  return createWeeklyPlan(week, '2026-04', tasks);
 }
 
 function makeTask(id: string, status = 'pending'): any {
@@ -108,17 +105,16 @@ describe('status getMondayDate', () => {
 describe('computeTaskCounts', () => {
   it('returns zeros for null plan', () => {
     const result = computeTaskCounts(null);
-    assert.deepEqual(result, { total: 0, byStatus: {}, approved: false });
+    assert.deepEqual(result, { total: 0, byStatus: {} });
   });
 
   it('returns zeros for plan with no tasks', () => {
-    const result = computeTaskCounts({ tasks: [], approved: true });
-    assert.deepEqual(result, { total: 0, byStatus: {}, approved: true });
+    const result = computeTaskCounts({ tasks: [] });
+    assert.deepEqual(result, { total: 0, byStatus: {} });
   });
 
   it('counts tasks by status correctly', () => {
     const plan = {
-      approved: true,
       tasks: [
         { status: 'completed' },
         { status: 'completed' },
@@ -133,12 +129,6 @@ describe('computeTaskCounts', () => {
     assert.equal(result.byStatus['pending'], 1);
     assert.equal(result.byStatus['in-progress'], 1);
     assert.equal(result.byStatus['failed'], 1);
-    assert.equal(result.approved, true);
-  });
-
-  it('reflects unapproved plan', () => {
-    const plan = { tasks: [{ status: 'pending' }], approved: false };
-    assert.equal(computeTaskCounts(plan).approved, false);
   });
 });
 
@@ -205,7 +195,6 @@ describe('buildAgentStatus', () => {
     });
 
     assert.equal(status.state, 'active');
-    assert.equal(status.plan.approved, true);
     assert.equal(status.plan.tasks.total, 3);
     assert.equal(status.plan.tasks.byStatus['completed'], 1);
     assert.equal(status.plan.tasks.byStatus['pending'], 1);
@@ -463,7 +452,6 @@ describe('formatAgentStatus', () => {
     assert.ok(text.includes('2 completed'));
     assert.ok(text.includes('2 pending'));
     assert.ok(text.includes('1 in-progress'));
-    assert.ok(text.includes('(approved)'));
     assert.ok(text.includes('50%'));
     assert.ok(text.includes('3 log entries'));
     assert.ok(text.includes('2 messages'));

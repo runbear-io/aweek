@@ -224,14 +224,6 @@ describe('selectNextTaskFromPlan', () => {
     assert.equal(result.index, 1); // original index in tasks array
   });
 
-  it('returns null for unapproved plan', () => {
-    const plan = makePlan({
-      approved: false,
-      tasks: [makeTask()],
-    });
-    assert.equal(selectNextTaskFromPlan(plan), null);
-  });
-
   it('returns null for null plan', () => {
     assert.equal(selectNextTaskFromPlan(null), null);
   });
@@ -531,25 +523,22 @@ describe('selectNextTask (store integration)', () => {
     assert.equal(result.week, '2026-W16');
   });
 
-  it('skips unapproved plans', async () => {
+  it('walks plans oldest-first so back-logged work runs before newer plans', async () => {
     const agentId = `agent-test-${uid()}`;
-    const approvedPlan = makePlan({
+    const olderPlan = makePlan({
       week: '2026-W15',
-      approved: true,
-      approvedAt: new Date().toISOString(),
-      tasks: [makeTask({ description: 'approved-task' })],
+      tasks: [makeTask({ description: 'older-task' })],
     });
-    const unapprovedPlan = makePlan({
+    const newerPlan = makePlan({
       week: '2026-W16',
-      approved: false,
-      tasks: [makeTask({ description: 'unapproved-task' })],
+      tasks: [makeTask({ description: 'newer-task' })],
     });
-    await store.save(agentId, approvedPlan);
-    await store.save(agentId, unapprovedPlan);
+    await store.save(agentId, olderPlan);
+    await store.save(agentId, newerPlan);
 
     const result = await selectNextTask(store, agentId);
     assert.ok(result);
-    assert.equal(result.task.title, 'approved-task');
+    assert.equal(result.task.title, 'older-task');
     assert.equal(result.week, '2026-W15');
   });
 
@@ -605,12 +594,11 @@ describe('selectNextTaskForWeek', () => {
     assert.equal(result, null);
   });
 
-  it('returns null for unapproved plan at that week', async () => {
+  it('returns null when all tasks in the week are completed', async () => {
     const agentId = `agent-test-${uid()}`;
     const plan = makePlan({
       week: '2026-W16',
-      approved: false,
-      tasks: [makeTask()],
+      tasks: [makeTask({ status: 'completed' })],
     });
     await store.save(agentId, plan);
 
@@ -710,10 +698,9 @@ describe('task-selector — track-based selection', () => {
     assert.equal(picks[1].task.id, 'task-low');
   });
 
-  it('returns empty array for unapproved plan', () => {
+  it('returns empty array when all tasks are completed', () => {
     const plan = makePlan({
-      approved: false,
-      tasks: [makeTask({ track: 'x-com' })],
+      tasks: [makeTask({ track: 'x-com', status: 'completed' })],
     });
     assert.deepEqual(selectTasksForTickFromPlan(plan), []);
   });

@@ -108,7 +108,7 @@ interface PlanSectionProps {
 
 interface WeeklyPlanRowProps {
   week: WeeklyPlan;
-  isLatestApproved: boolean;
+  isLatest: boolean;
 }
 
 interface WatchlistSectionProps {
@@ -117,10 +117,6 @@ interface WatchlistSectionProps {
 
 interface StrategiesSectionProps {
   strategies: AgentStrategyEntry[];
-}
-
-interface ApprovalBadgeProps {
-  approved: boolean;
 }
 
 interface EmptyProps {
@@ -279,7 +275,7 @@ function WeeklyPlansList({ plan }: PlanSectionProps): React.ReactElement | null 
             <WeeklyPlanRow
               key={week.week}
               week={week}
-              isLatestApproved={plan.latestApproved?.week === week.week}
+              isLatest={plan.latestPlan?.week === week.week}
             />
           ))}
         </ul>
@@ -290,7 +286,7 @@ function WeeklyPlansList({ plan }: PlanSectionProps): React.ReactElement | null 
 
 function WeeklyPlanRow({
   week,
-  isLatestApproved,
+  isLatest,
 }: WeeklyPlanRowProps): React.ReactElement {
   return (
     <li
@@ -301,9 +297,9 @@ function WeeklyPlanRow({
         <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-semibold text-foreground">
           {week.week}
         </code>
-        {isLatestApproved ? (
+        {isLatest ? (
           <Badge variant="default" className="tracking-widest">
-            latest approved
+            latest
           </Badge>
         ) : null}
         <span className="text-xs text-muted-foreground">
@@ -311,19 +307,7 @@ function WeeklyPlanRow({
           {(week.tasks || []).length === 1 ? '' : 's'}
         </span>
       </div>
-      <ApprovalBadge approved={!!week.approved} />
     </li>
-  );
-}
-
-function ApprovalBadge({ approved }: ApprovalBadgeProps): React.ReactElement {
-  return (
-    <Badge
-      variant={approved ? 'secondary' : 'outline'}
-      className="tracking-widest"
-    >
-      {approved ? 'approved' : 'pending'}
-    </Badge>
   );
 }
 

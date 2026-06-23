@@ -162,7 +162,6 @@ export async function queryAgents({
       matchedOn,
       weeklyPlan: {
         week: s.plan?.week || null,
-        approved: !!s.plan?.approved,
         tasks: s.plan?.tasks || { total: 0, byStatus: {} },
       },
       budget: {

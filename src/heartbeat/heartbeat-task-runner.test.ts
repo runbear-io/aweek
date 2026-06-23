@@ -143,15 +143,14 @@ describe('tickAgent', () => {
     assert.ok(result.tickedAt);
   });
 
-  it('returns no_approved_plan when only unapproved plans exist', async () => {
+  it('returns no_pending_tasks when all plans have no pending tasks', async () => {
     const agentId = `agent-${uid()}`;
     await store.save(agentId, makePlan({
-      approved: false,
-      tasks: [makeTask()],
+      tasks: [makeTask({ status: 'completed' })],
     }));
 
     const result = await tickAgent(agentId, { weeklyPlanStore: store });
-    assert.equal(result.outcome, 'no_approved_plan');
+    assert.equal(result.outcome, 'all_tasks_finished');
   });
 
   it('selects highest-priority pending task and marks it in-progress', async () => {
@@ -272,16 +271,10 @@ describe('tickAgent', () => {
 
   it('handles error gracefully and returns error outcome', async () => {
     const agentId = `agent-${uid()}`;
-    // Create a store with a broken path to trigger an error. The
-    // selector now drives task selection through `loadAllApproved`
-    // (see `src/heartbeat/task-selector.ts:selectNextTask`), so the
-    // mock has to fail there to reproduce the load-error path; the
-    // `loadLatestApproved` fallback is only consulted by the
-    // post-selection status probe (`_loadLatestApprovedSafe`) — both
-    // throw the same message so the outcome reason copy stays stable.
+    // Create a store with a broken loadAll to trigger an error path.
     const brokenStore = {
-      loadAllApproved: async () => { throw new Error('disk on fire'); },
-      loadLatestApproved: async () => { throw new Error('disk on fire'); },
+      loadAll: async () => { throw new Error('disk on fire'); },
+      loadLatest: async () => { throw new Error('disk on fire'); },
     };
 
     // tickAgent catches errors thrown by selectNextTask
@@ -692,19 +685,16 @@ describe('tickAgent with executionStore (deduplication)', () => {
     assert.equal(records[0].status, 'skipped');
   });
 
-  it('records skipped execution when agent has unapproved weekly plans', async () => {
-    // Distinct from the shell case above: here the agent has weekly plans on
-    // disk (just none approved). That should still record a skipped execution
-    // but surface outcome=no_approved_plan so the resume path routes to
-    // `/aweek:approve-plan` rather than `/aweek:plan`.
+  it('records skipped execution when all tasks are finished', async () => {
+    // An agent with plans on disk but all tasks completed records a skipped
+    // execution with outcome=all_tasks_finished.
     const agentId = `agent-${uid()}`;
     await store.save(agentId, makePlan({
-      approved: false,
-      tasks: [makeTask()],
+      tasks: [makeTask({ status: 'completed' })],
     }));
 
     const result = await tickAgent(agentId, { weeklyPlanStore: store, executionStore: execStore });
-    assert.equal(result.outcome, 'no_approved_plan');
+    assert.equal(result.outcome, 'all_tasks_finished');
 
     const records = await execStore.load(agentId);
     assert.equal(records.length, 1);
@@ -733,7 +723,8 @@ describe('tickAgent with executionStore (deduplication)', () => {
   it('records failed execution on error', async () => {
     const agentId = `agent-${uid()}`;
     const brokenStore = {
-      loadLatestApproved: async () => { throw new Error('boom'); },
+      loadAll: async () => { throw new Error('boom'); },
+      loadLatest: async () => { throw new Error('boom'); },
     };
 
     const result = await tickAgent(agentId, {
@@ -753,7 +744,8 @@ describe('tickAgent with executionStore (deduplication)', () => {
     // failing path and records a second `failed` audit row.
     const agentId = `agent-${uid()}`;
     const brokenStore = {
-      loadLatestApproved: async () => { throw new Error('boom'); },
+      loadAll: async () => { throw new Error('boom'); },
+      loadLatest: async () => { throw new Error('boom'); },
     };
 
     const r1 = await tickAgent(agentId, {
@@ -1545,18 +1537,16 @@ describe('tickAgent shell-agent guard (AC 11 Sub-AC 2)', () => {
     assert.equal(result.hasWeeklyPlans, false);
   });
 
-  it('does NOT short-circuit when the agent has an unapproved plan', async () => {
+  it('does NOT short-circuit when the agent has a plan with pending tasks', async () => {
     // Shell guard must only fire when the weekly-plans listing is EMPTY. An
-    // agent with a single unapproved plan still has weekly plan entries and
-    // should surface as no_approved_plan so the user can approve it.
+    // agent with a plan that has pending tasks proceeds to task selection.
     const agentId = `agent-${uid()}`;
     await store.save(agentId, makePlan({
-      approved: false,
       tasks: [makeTask()],
     }));
 
     const result = await tickAgent(agentId, { weeklyPlanStore: store });
-    assert.equal(result.outcome, 'no_approved_plan');
+    assert.equal(result.outcome, 'task_selected');
     assert.notEqual(result.outcome, 'no_weekly_plans');
   });
 
@@ -1604,37 +1594,35 @@ describe('tickAgent shell-agent guard (AC 11 Sub-AC 2)', () => {
     assert.notEqual(records[0].idempotencyKey, records[1].idempotencyKey);
   });
 
-  it('gracefully degrades when store.list throws — falls through to no_approved_plan', async () => {
+  it('gracefully degrades when store.list throws — falls through to no_pending_tasks', async () => {
     // If the list probe fails for any reason (filesystem error, missing
-    // method), the shell guard must NOT block the tick. The existing
-    // no_approved_plan branch should still run.
+    // method), the shell guard must NOT block the tick. The selector
+    // runs and returns null → no_pending_tasks.
     const agentId = `agent-${uid()}`;
 
     const brokenStore = {
       list: async () => { throw new Error('disk melted'); },
-      loadAllApproved: async () => [],
-      loadLatestApproved: async () => null,
+      loadAll: async () => [],
+      loadLatest: async () => null,
     };
 
     const result = await tickAgent(agentId, { weeklyPlanStore: brokenStore });
-    // Falls through to the existing no_approved_plan branch because the
-    // shell detection could not prove the shell state.
-    assert.equal(result.outcome, 'no_approved_plan');
+    // Falls through to selector with empty plan list → no_pending_tasks.
+    assert.equal(result.outcome, 'no_pending_tasks');
   });
 
-  it('gracefully degrades when store has no list method — falls through to no_approved_plan', async () => {
+  it('gracefully degrades when store has no list method — falls through to no_pending_tasks', async () => {
     const agentId = `agent-${uid()}`;
 
     const legacyStore = {
-      // No list() method at all — older store shape. `loadAllApproved`
-      // and `loadLatestApproved` both return "no approved plans" so the
-      // selector and the status probe agree that there's nothing to run.
-      loadAllApproved: async () => [],
-      loadLatestApproved: async () => null,
+      // No list() method at all — older store shape. loadAll returns empty
+      // so the selector finds nothing to run.
+      loadAll: async () => [],
+      loadLatest: async () => null,
     };
 
     const result = await tickAgent(agentId, { weeklyPlanStore: legacyStore });
-    assert.equal(result.outcome, 'no_approved_plan');
+    assert.equal(result.outcome, 'no_pending_tasks');
   });
 
   it('runs BEFORE task selection — does not mark anything in-progress', async () => {

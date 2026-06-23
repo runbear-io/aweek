@@ -1071,18 +1071,6 @@ describe('heartbeat → CLI edge cases (subagent-first)', () => {
     assert.equal(tick.result.task, undefined);
   });
 
-  it('heartbeat tick with unapproved plan produces no CLI session', async () => {
-    const agentId = makeSubagentRef();
-    await store.save(agentId, makePlan({
-      approved: false,
-      tasks: [makeTask()],
-    }));
-
-    const tick = await runHeartbeatTick(agentId, { scheduler, weeklyPlanStore: store });
-    assert.equal(tick.status, 'completed');
-    assert.equal(tick.result.outcome, 'no_approved_plan');
-  });
-
   it('heartbeat tick with empty task list produces no CLI session', async () => {
     const agentId = makeSubagentRef();
     await store.save(agentId, makePlan({

@@ -386,18 +386,18 @@ describe('renderCalendarHeader', () => {
     assert.ok(text.includes('2026-04-19')); // Sunday
   });
 
-  it('shows plan approved status', () => {
+  it('shows plan present status', () => {
     const data = makeWeeklyData({ planApproved: true });
     const lines = renderCalendarHeader(data);
     const text = lines.join('\n');
-    assert.ok(text.includes('Plan approved'));
+    assert.ok(text.includes('Plan present'));
   });
 
-  it('shows plan pending approval status', () => {
+  it('shows plan present status when plan exists but not approved', () => {
     const data = makeWeeklyData({ planExists: true, planApproved: false });
     const lines = renderCalendarHeader(data);
     const text = lines.join('\n');
-    assert.ok(text.includes('Plan pending approval'));
+    assert.ok(text.includes('Plan present'));
   });
 
   it('shows no plan status', () => {

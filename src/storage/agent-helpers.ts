@@ -77,7 +77,6 @@ export interface AgentIdentityFragment {
 interface WeeklyPlanLite {
   week?: string;
   tasks?: unknown[];
-  approved?: boolean;
 }
 
 /**
@@ -122,7 +121,6 @@ export interface AgentChoice {
   paused: boolean;
   latestWeek: string | null;
   taskCount: number;
-  approved: boolean;
   label: string;
 }
 
@@ -292,7 +290,6 @@ export async function getAgentChoices(
         paused: !!config.budget?.paused,
         latestWeek: latest?.week || null,
         taskCount: latest?.tasks?.length || 0,
-        approved: !!latest?.approved,
         label: '',
       };
       entry.label = formatAgentChoice(entry);

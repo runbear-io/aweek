@@ -101,16 +101,17 @@ export const notificationLinkSchema = {
  * Valid system event identifiers — only meaningful when `source === 'system'`.
  *
  * Kept as a permissive enum so future system events can be added without a
- * schema migration. v1 emits exactly the three documented in the task spec:
+ * schema migration. Current events:
  *
  *   - `budget-exhausted`     — budget enforcer paused the agent
  *   - `repeated-task-failure` — same weekly-task ID failed 2 consecutive times
- *   - `plan-ready`           — next-week weekly plan is awaiting approval
+ *   - `task-warnings`        — post-execution verifier flagged outcome concerns
+ *
+ * `plan-ready` was retired alongside the weekly-plan approval gate.
  */
 export const NOTIFICATION_SYSTEM_EVENTS = [
   'budget-exhausted',
   'repeated-task-failure',
-  'plan-ready',
   'task-warnings',
 ];
 

@@ -194,7 +194,7 @@ export const weeklyTaskSchema = {
 export const weeklyPlanSchema = {
   $id: 'aweek://schemas/weekly-plan',
   type: 'object',
-  required: ['week', 'month', 'tasks', 'approved'],
+  required: ['week', 'month', 'tasks'],
   properties: {
     week: {
       type: 'string',
@@ -210,10 +210,11 @@ export const weeklyPlanSchema = {
       type: 'array',
       items: { $ref: 'aweek://schemas/weekly-task' },
     },
-    approved: {
-      type: 'boolean',
-      description: 'Human-in-the-loop approval gate',
-    },
+    // `approved` / `approvedAt` are no longer required (and no longer
+    // gated on anywhere). They remain accepted in the schema so existing
+    // on-disk plan files written under the old contract continue to
+    // validate cleanly; new plans omit them.
+    approved: { type: 'boolean' },
     approvedAt: { type: 'string', format: 'date-time' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },

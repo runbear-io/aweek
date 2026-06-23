@@ -277,7 +277,7 @@ describe('fetchAgentPlan()', () => {
           hasPlan: true,
           markdown: '# Plan',
           weeklyPlans: [],
-          latestApproved: null,
+          latestPlan: null,
         },
       },
     });

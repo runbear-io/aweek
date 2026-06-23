@@ -399,7 +399,6 @@ export function renderGrid({ agent, plan, opts = {} }: { agent: any; plan: any; 
 
   // Title
   const title = `${agent.identity?.name || agent.id} — Week ${plan.week}`;
-  const status = plan.approved ? 'Approved' : 'Pending';
   lines.push(`┌${'─'.repeat(totalWidth - 2)}┐`);
   lines.push(`│ ${pad(title, totalWidth - 4)} │`);
   const displayTz = useLocalTz ? tz : 'UTC';
@@ -408,7 +407,7 @@ export function renderGrid({ agent, plan, opts = {} }: { agent: any; plan: any; 
   const reviewSlotCount = allPlanTasks.length - workTaskCount;
   const reviewSuffix = reviewSlotCount > 0 ? ` | Reviews: ${reviewSlotCount}` : '';
   lines.push(
-    `│ ${pad(`Status: ${status} | Tasks: ${workTaskCount}${reviewSuffix} | TZ: ${displayTz}`, totalWidth - 4)} │`,
+    `│ ${pad(`Tasks: ${workTaskCount}${reviewSuffix} | TZ: ${displayTz}`, totalWidth - 4)} │`,
   );
   lines.push(`├${'─'.repeat(hourWidth)}${'┬' + '─'.repeat(cellWidth)}`.repeat(1).slice(0, 0) +
     `├${'─'.repeat(hourWidth)}${dayKeys.map(() => `┬${'─'.repeat(cellWidth)}`).join('')}┤`);
@@ -572,14 +571,13 @@ export function renderMarkdownGrid({ agent, plan, opts = {} }: { agent: any; pla
 
   // Meta paragraph above the table
   const title = `${agent.identity?.name || agent.id} — Week ${plan.week}`;
-  const status = plan.approved ? 'Approved' : 'Pending';
   const displayTz = useLocalTz ? tz : 'UTC';
   const allPlanTasks = plan.tasks || [];
   const workTaskCount = allPlanTasks.filter((t: any) => !isReviewObjectiveId(t.objectiveId)).length;
   const reviewSlotCount = allPlanTasks.length - workTaskCount;
   const reviewSuffix = reviewSlotCount > 0 ? ` | Reviews: ${reviewSlotCount}` : '';
   lines.push(`**${title}**`);
-  lines.push(`Status: ${status} | Tasks: ${workTaskCount}${reviewSuffix} | TZ: ${displayTz}`);
+  lines.push(`Tasks: ${workTaskCount}${reviewSuffix} | TZ: ${displayTz}`);
   lines.push('');
 
   // Table header + separator
@@ -751,11 +749,8 @@ export async function loadAndRenderGrid(params: LoadAndRenderGridParams): Promis
         };
       }
     } else {
-      plan = await weeklyPlanStore.loadLatestApproved(agentId);
-      if (!plan) {
-        const plans = await weeklyPlanStore.loadAll(agentId).catch(() => []);
-        plan = plans[plans.length - 1];
-      }
+      const plans = await weeklyPlanStore.loadAll(agentId).catch(() => []);
+      plan = plans[plans.length - 1];
     }
 
     if (!plan) {
@@ -773,13 +768,12 @@ export async function loadAndRenderGrid(params: LoadAndRenderGridParams): Promis
 /**
  * List all agents with their latest plan week.
  */
-export async function listAgentsForCalendar(dataDir?: string): Promise<Array<{ id: string; name: string; latestWeek: string | null; taskCount: number; approved: boolean }>> {
+export async function listAgentsForCalendar(dataDir?: string): Promise<Array<{ id: string; name: string; latestWeek: string | null; taskCount: number }>> {
   const choices = await getAgentChoices({ dataDir });
-  return choices.map(({ id, name, latestWeek, taskCount, approved }: any) => ({
+  return choices.map(({ id, name, latestWeek, taskCount }: any) => ({
     id,
     name,
     latestWeek,
     taskCount,
-    approved,
   }));
 }

@@ -63,7 +63,6 @@ describe('notification schema — constants', () => {
     assert.deepStrictEqual(NOTIFICATION_SYSTEM_EVENTS, [
       'budget-exhausted',
       'repeated-task-failure',
-      'plan-ready',
       'task-warnings',
     ]);
   });

@@ -42,13 +42,15 @@ import { maybeEmitRepeatedFailureNotification } from '../services/repeated-failu
 import { verifyTaskOutcome } from '../services/task-verifier.js';
 import { maybeEmitTaskWarningsNotification } from '../services/task-warning-notifier.js';
 import { loadConfig } from '../storage/config-store.js';
-import { detectSystemTimeZone, mondayOfWeek } from '../time/zone.js';
+import { currentWeekKey, detectSystemTimeZone, mondayOfWeek } from '../time/zone.js';
 import { WEEKLY_REVIEW_OBJECTIVE_ID, DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
 import { generateWeeklyReview, nextISOWeek } from '../services/weekly-review-orchestrator.js';
 import { generateDailyReview, utcToLocalDate } from '../services/daily-review-writer.js';
 import { MonthlyPlanStore } from '../storage/monthly-plan-store.js';
 import type { MonthlyPlan } from '../storage/monthly-plan-store.js';
 import { generateWeeklyPlan } from '../services/weekly-plan-generator.js';
+import { materializeRecurringForWeek } from '../services/recurring-materializer.js';
+import { RecurringTaskStore } from '../storage/recurring-task-store.js';
 import { readPlan } from '../storage/plan-markdown-store.js';
 import { loadAgentEnv } from '../storage/agent-env-store.js';
 
@@ -157,6 +159,32 @@ export async function runHeartbeatForAgent(
 
   const scheduler = createScheduler({ lockDir });
 
+  // Step 0.5: Materialize recurring tasks for the current week. Eagerly
+  // expands recurring rules into the live weekly plan (creating one if
+  // none exists) so recurring tasks fire even on weeks the user hasn't
+  // hand-authored a plan for. Best-effort: a malformed recurring rule
+  // or missing config tz falls back to UTC and only logs.
+  try {
+    let tzForMaterialize = 'UTC';
+    try {
+      const cfg = await loadConfig(agentsDir);
+      if (cfg?.timeZone) tzForMaterialize = cfg.timeZone;
+    } catch {
+      /* keep UTC */
+    }
+    const weekKey = currentWeekKey(tzForMaterialize);
+    const recurringTaskStore = new RecurringTaskStore(agentsDir);
+    await materializeRecurringForWeek({
+      weeklyPlanStore,
+      recurringTaskStore,
+      agentId,
+      weekKey,
+      tz: tzForMaterialize,
+    });
+  } catch (err) {
+    console.warn(`[${agentId}] recurring materialize warning: ${errMsg(err)}`);
+  }
+
   // Step 0.9: Sweep stale pending tasks.
   //
   // Any pending task whose `runAt` is older than the 60-minute window is
@@ -243,7 +271,7 @@ export async function runHeartbeatForAgent(
     // Walk approved plans oldest-first (same priority as the initial
     // selectTasksForTick call): finish W19's tracks before borrowing
     // from W20. Returns the first plan that has any unfired pick left.
-    const approvedPlans = await weeklyPlanStore.loadAllApproved(agentId);
+    const approvedPlans = await weeklyPlanStore.loadAll(agentId);
     if (approvedPlans.length === 0) break;
     let plan: WeeklyPlan | null = null;
     let nextPick: TickPick | undefined;
@@ -389,12 +417,8 @@ export async function chainNextWeekPlanner(
       options: { planMarkdown, tz },
     });
 
-    // Auto-approve: this is the autonomous chain — no human gate is needed.
-    // The review that triggered this chain already confirmed the week is done.
-    plan.approved = true;
-    plan.approvedAt = new Date().toISOString();
-
-    // Persist the auto-approved plan.
+    // Persist the generated plan. Plans no longer carry an approval gate —
+    // tasks are immediately eligible for the heartbeat on save.
     await weeklyPlanStore.save(
       agentId,
       plan as unknown as Parameters<WeeklyPlanStore['save']>[1],
@@ -402,7 +426,7 @@ export async function chainNextWeekPlanner(
 
     console.log(
       `[${agentId}] auto-chained next-week plan for ${nextWeek}: ` +
-        `${meta.totalTasks} tasks (${meta.reviewTasksAdded} review slots, auto-approved)`,
+        `${meta.totalTasks} tasks (${meta.reviewTasksAdded} review slots)`,
     );
 
     return { nextWeek, chained: true };
@@ -1061,7 +1085,7 @@ async function _sweepStaleTasks({
   // microseconds.
   let plans: WeeklyPlan[];
   try {
-    plans = await weeklyPlanStore.loadAllApproved(agentId);
+    plans = await weeklyPlanStore.loadAll(agentId);
   } catch (err) {
     console.warn(`[${agentId}] stale-sweep: load failed: ${errMsg(err)}`);
     return;

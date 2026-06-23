@@ -231,10 +231,6 @@ interface StatusLegendProps {
   counts: CalendarCounts | null | undefined;
 }
 
-interface ApprovalBadgeProps {
-  approved: boolean;
-}
-
 interface EmptyProps {
   message: string;
 }
@@ -395,7 +391,8 @@ export function AgentCalendarPage({
               </strong>
               . Run{' '}
               <code className="not-italic text-foreground">/aweek:plan</code> to
-              draft and approve a weekly plan.
+              draft a weekly plan, or add a recurring task and the heartbeat
+              will materialize one automatically.
             </CardContent>
           </Card>
         )}
@@ -1065,7 +1062,6 @@ function CalendarHeader({
           {activeWeek}
         </code>
       ) : null}
-      <ApprovalBadge approved={calendar.approved} />
       <span>
         · TZ{' '}
         <code className="rounded bg-muted px-1 py-0.5 text-[10px] text-foreground">
@@ -1265,29 +1261,6 @@ function formatMobileDayLabel(
   ];
   const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   return `${weekdays[date.getUTCDay()]}, ${months[date.getUTCMonth()]} ${date.getUTCDate()}`;
-}
-
-/**
- * Approved → calm default badge. Pending → amber "needs your approval"
- * warning so an un-approved plan can't be skimmed past — the heartbeat
- * silently no-ops on unapproved plans, so this badge is the user's only
- * in-app signal that scheduled work is parked.
- */
-function ApprovalBadge({
-  approved,
-}: ApprovalBadgeProps): React.ReactElement {
-  return (
-    <Badge
-      variant={approved ? 'default' : 'outline'}
-      className={
-        approved
-          ? 'tracking-widest'
-          : 'tracking-widest border-transparent bg-amber-500 text-amber-50 hover:bg-amber-500/90 dark:bg-amber-400 dark:text-amber-950 dark:hover:bg-amber-400/90'
-      }
-    >
-      {approved ? 'approved' : 'pending'}
-    </Badge>
-  );
 }
 
 /**
