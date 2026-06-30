@@ -51,20 +51,22 @@ beforeEach(async () => {
 });
 
 describe('showConfig', () => {
-  it('returns 3 knobs grouped across Configuration / Scheduler', async () => {
+  it('returns 4 knobs grouped across Configuration / Scheduler', async () => {
     const result = await showConfig({ dataDir });
-    assert.equal(result.knobs.length, 3);
+    assert.equal(result.knobs.length, 4);
     const categories = result.knobs.map((k) => k.category);
     assert.deepEqual(categories, [
       'Configuration',
       'Scheduler',
       'Scheduler',
+      'Configuration',
     ]);
     const keys = result.knobs.map((k) => k.key);
     assert.deepEqual(keys, [
       'timeZone',
       'heartbeatIntervalSec',
       'staleTaskWindowMs',
+      'runner',
     ]);
   });
 
@@ -73,7 +75,7 @@ describe('showConfig', () => {
     const editable = result.knobs.filter((k) => k.editable);
     assert.deepEqual(
       editable.map((k) => k.key),
-      ['timeZone', 'heartbeatIntervalSec', 'staleTaskWindowMs'],
+      ['timeZone', 'heartbeatIntervalSec', 'staleTaskWindowMs', 'runner'],
     );
     for (const k of result.knobs) {
       assert.equal(k.editable, true);
@@ -121,13 +123,25 @@ describe('showConfig', () => {
 });
 
 describe('listEditableFields', () => {
-  it('exposes timeZone, staleTaskWindowMs, and heartbeatIntervalSec', () => {
+  it('exposes timeZone, staleTaskWindowMs, heartbeatIntervalSec, and runner', () => {
     const keys = listEditableFields().map((f) => f.key);
     assert.deepEqual(keys, [
       'timeZone',
       'staleTaskWindowMs',
       'heartbeatIntervalSec',
+      'runner',
     ]);
+  });
+
+  it('runner validator accepts claude/gemini (case-insensitive) and rejects others', () => {
+    const runner = listEditableFields().find((f) => f.key === 'runner')!;
+    assert.equal(runner.validate('claude').ok, true);
+    assert.equal(runner.validate('hermes').ok, true);
+    const gem = runner.validate('  GEMINI ');
+    assert.equal(gem.ok, true);
+    if (gem.ok) assert.equal(gem.normalized, 'gemini');
+    assert.equal(runner.validate('').ok, false);
+    assert.equal(runner.validate('gpt').ok, false);
   });
 
   it('timeZone validator rejects empty / non-IANA strings, accepts canonical zones', () => {

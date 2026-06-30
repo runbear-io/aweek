@@ -271,4 +271,55 @@ describe('config-store', () => {
       }
     });
   });
+
+  describe('runner', () => {
+    it('defaults to claude when absent', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        const cfg = await loadConfig(dataDir);
+        assert.equal(cfg.runner, 'claude');
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    });
+
+    it('round-trips a gemini runner through saveConfig / loadConfig', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        await saveConfig(dataDir, { runner: 'gemini' });
+        const cfg = await loadConfig(dataDir);
+        assert.equal(cfg.runner, 'gemini');
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    });
+
+    it('saveConfig rejects an unknown runner', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        await assert.rejects(
+          () => saveConfig(dataDir, { runner: 'gpt' as never }),
+          /Invalid runner/,
+        );
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    });
+
+    it('falls back to claude on an invalid on-disk runner', async () => {
+      const { base, dataDir } = await tempDataDir();
+      try {
+        await writeFile(
+          configPath(dataDir),
+          JSON.stringify({ timeZone: 'UTC', runner: 'nonsense' }),
+          'utf8',
+        );
+        const cfg = await loadConfig(dataDir);
+        assert.equal(cfg.runner, 'claude');
+        assert.equal(cfg.timeZone, 'UTC');
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    });
+  });
 });

@@ -108,6 +108,13 @@ export async function gatherAppConfig(
           description:
             'IANA time zone used for scheduling, week-key derivation, and calendar display. Set in .aweek/config.json.',
         },
+        {
+          key: 'runner',
+          label: 'Execution Runner',
+          value: config.runner,
+          description:
+            "Coding-agent CLI the heartbeat uses to run agent tasks: 'claude' (Claude Code), 'gemini' (Gemini CLI), or 'hermes' (Hermes Agent). Set in .aweek/config.json; an agent can override it per-agent. Edit via /aweek:config.",
+        },
       ],
     },
     {

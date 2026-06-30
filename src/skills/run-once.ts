@@ -31,6 +31,8 @@ import { runWithHeartbeatLock } from '../heartbeat/heartbeat-lock.js';
 import { executeSessionWithTracking } from '../execution/session-executor.js';
 import { loadAgentEnv } from '../storage/agent-env-store.js';
 import { extractResources } from '../heartbeat/run.js';
+import { loadConfig } from '../storage/config-store.js';
+import { resolveRunner } from '../execution/runner.js';
 
 /**
  * Build the in-memory ephemeral task. Kept as a helper so tests can assert
@@ -115,6 +117,17 @@ export async function execute(opts: RunOnceOpts = {}): Promise<any> {
   const subagentRef = config.subagentRef || agentId;
   const task = buildAdHocTask({ prompt: opts.prompt, title: opts.title });
 
+  // Resolve the runner the same way the heartbeat does: per-agent field
+  // wins, else the project-wide config, else 'claude'. Best-effort config
+  // read so a missing/corrupt config.json can't break a debug run.
+  let configRunner: unknown;
+  try {
+    configRunner = (await loadConfig(agentsDir)).runner;
+  } catch {
+    configRunner = undefined;
+  }
+  const runner = resolveRunner(config.runner, configRunner);
+
   // Step 4: Wrap the actual run in the per-agent heartbeat lock so a manual
   // dispatch can never collide with a concurrent cron tick. The callback
   // body owns every side effect (env load, executor, activity log).
@@ -149,6 +162,7 @@ export async function execute(opts: RunOnceOpts = {}): Promise<any> {
           usageStore,
           env: agentEnv,
           agentsDir,
+          runner,
           dangerouslySkipPermissions: true,
         },
       );

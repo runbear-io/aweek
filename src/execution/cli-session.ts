@@ -30,7 +30,16 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-/** Default CLI binary name */
+import {
+  DEFAULT_RUNNER,
+  GEMINI_SYSTEM_MD_ENV,
+  RUNNER_BINARY,
+  type RunnerKind,
+} from './runner.js';
+import { readFile } from 'node:fs/promises';
+import { resolveSubagentFile, parseSubagentBody } from '../subagents/subagent-file.js';
+
+/** Default CLI binary name (Claude runner). */
 const DEFAULT_CLI = 'claude';
 
 /** Default session timeout: 30 minutes (in ms) */
@@ -96,6 +105,22 @@ export interface BuildCliArgsOpts {
   model?: string;
   /** Skip permission prompts */
   dangerouslySkipPermissions?: boolean;
+  /**
+   * Which coding-agent CLI to build argv for. Defaults to
+   * {@link DEFAULT_RUNNER} (`'claude'`). `'gemini'` produces the Gemini
+   * CLI argv shape; `'hermes'` produces the Hermes one-shot argv shape.
+   */
+  runner?: RunnerKind;
+  /**
+   * Subagent identity (the system-prompt body of
+   * `.claude/agents/<slug>.md`) for runners that cannot load it via a flag
+   * or env var. Used by {@link buildHermesCliArgs} — Hermes has no
+   * `--agent` / system-prompt flag / env, so identity is embedded at the
+   * head of the one-shot prompt. Ignored by the Claude and Gemini
+   * builders (those inject identity via `--agent` and `GEMINI_SYSTEM_MD`
+   * respectively).
+   */
+  systemPromptText?: string;
 }
 
 /**
@@ -110,7 +135,13 @@ export type SpawnFn = (
 ) => ChildProcess;
 
 export interface LaunchSessionOpts {
-  /** CLI binary path/name (default: 'claude') */
+  /**
+   * Which coding-agent CLI runs the task. Defaults to
+   * {@link DEFAULT_RUNNER} (`'claude'`). Selects both the default binary
+   * (overridable via `cli`) and the argv / system-prompt-injection shape.
+   */
+  runner?: RunnerKind;
+  /** CLI binary path/name (default: per-runner — `'claude'` / `'gemini'`). */
   cli?: string;
   /** Working directory for the CLI process */
   cwd?: string;
@@ -323,6 +354,138 @@ export function buildCliArgs(
 }
 
 /**
+ * Build CLI arguments array for the `gemini` command.
+ *
+ * The Gemini CLI has no `--agent` and no `--append-system-prompt`, so the
+ * mapping from aweek's subagent model differs from Claude's:
+ *
+ *   gemini --output-format stream-json --prompt PROMPT [--yolo] [--skip-trust] [--model M]
+ *
+ * - `--output-format stream-json` emits one JSON event per line (the same
+ *   NDJSON discipline Claude's `stream-json` uses). The terminal
+ *   `{type:"result"}` event carries token usage under `stats` (NOT
+ *   `usage`), which {@link parseGeminiTokenUsage} reads.
+ * - `--prompt PROMPT` runs non-interactively. Because Gemini can't take a
+ *   separate system-prompt flag, the per-tick **runtime context** is
+ *   prepended to the task prompt here; the subagent's **identity** is
+ *   supplied out-of-band via the `GEMINI_SYSTEM_MD` env var that
+ *   {@link launchSession} sets to the `.claude/agents/<slug>.md` path.
+ * - `--yolo` auto-approves every tool call — the Gemini equivalent of
+ *   Claude's `--dangerously-skip-permissions`. Emitted only when
+ *   `dangerouslySkipPermissions` is set (heartbeat ticks always set it;
+ *   there's no human at a headless tick to answer an approval prompt).
+ * - `--skip-trust` trusts the workspace folder for this session, so a
+ *   first-run "do you trust this folder?" dialog can't hang a headless
+ *   tick. Tied to the same headless signal as `--yolo`.
+ * - `--model M` only when a Gemini model is explicitly requested. We never
+ *   forward a Claude model alias (e.g. `opus`) to Gemini — leaving it off
+ *   lets the Gemini CLI pick its own default.
+ *
+ * The subagent slug is validated for symmetry with {@link buildCliArgs}
+ * even though Gemini doesn't consume it directly (it flows into the
+ * `GEMINI_SYSTEM_MD` path that `launchSession` resolves).
+ */
+export function buildGeminiCliArgs(
+  subagentRef: string,
+  task: TaskContext,
+  opts: BuildCliArgsOpts = {},
+): string[] {
+  assertSubagentRef(subagentRef);
+  const runtimeContext = buildRuntimeContext(task);
+  const userPrompt = buildTaskPrompt(task);
+  const prompt = `${runtimeContext}\n\n---\n\n${userPrompt}`;
+
+  const args: string[] = [
+    '--output-format', 'stream-json',
+    '--prompt', prompt,
+  ];
+
+  if (opts.dangerouslySkipPermissions) {
+    args.push('--yolo', '--skip-trust');
+  }
+
+  if (opts.model) {
+    args.push('--model', opts.model);
+  }
+
+  return args;
+}
+
+/**
+ * Build CLI arguments array for the `hermes` (Hermes Agent) command.
+ *
+ * Hermes has no `--agent`, no system-prompt flag, and no system-prompt
+ * env var, so BOTH the subagent identity and the per-tick scheduling
+ * context are embedded directly in the one-shot prompt:
+ *
+ *   hermes --oneshot PROMPT [--yolo --accept-hooks] [--model M]
+ *
+ * - `--oneshot PROMPT` (alias `-z`) runs non-interactively and prints only
+ *   the final response text to stdout (no banner / spinner / session line).
+ *   PROMPT = `systemPromptText` (the subagent `.md` body, when known) +
+ *   the runtime context + the task prompt.
+ * - `--yolo` bypasses every dangerous-command approval prompt and
+ *   `--accept-hooks` auto-approves unseen shell hooks without a TTY — the
+ *   pair is the Hermes equivalent of Claude's
+ *   `--dangerously-skip-permissions`, emitted only when
+ *   `dangerouslySkipPermissions` is set so a headless heartbeat tick can
+ *   never block on an approval it has no human to answer. (One-shot mode
+ *   already auto-bypasses approvals, but we pass `--yolo` explicitly so
+ *   the no-permission contract is independent of one-shot's defaults.)
+ * - `--model M` only when a Hermes model is explicitly requested; a Claude
+ *   model alias is never forwarded.
+ *
+ * Hermes one-shot output carries no token-usage / cost metadata, so
+ * {@link parseTokenUsageForRunner} returns `null` for this runner — usage
+ * tracking degrades gracefully (the session still runs and is logged).
+ */
+export function buildHermesCliArgs(
+  subagentRef: string,
+  task: TaskContext,
+  opts: BuildCliArgsOpts = {},
+): string[] {
+  assertSubagentRef(subagentRef);
+  const runtimeContext = buildRuntimeContext(task);
+  const userPrompt = buildTaskPrompt(task);
+  const identity =
+    typeof opts.systemPromptText === 'string' && opts.systemPromptText.length > 0
+      ? `${opts.systemPromptText}\n\n---\n\n`
+      : '';
+  const prompt = `${identity}${runtimeContext}\n\n---\n\n${userPrompt}`;
+
+  const args: string[] = ['--oneshot', prompt];
+
+  if (opts.dangerouslySkipPermissions) {
+    args.push('--yolo', '--accept-hooks');
+  }
+
+  if (opts.model) {
+    args.push('--model', opts.model);
+  }
+
+  return args;
+}
+
+/**
+ * Dispatch to the per-runner argv builder. The runner defaults to
+ * {@link DEFAULT_RUNNER}.
+ */
+export function buildRunnerCliArgs(
+  subagentRef: string,
+  task: TaskContext,
+  opts: BuildCliArgsOpts = {},
+): string[] {
+  const runner = opts.runner ?? DEFAULT_RUNNER;
+  if (runner === 'gemini') {
+    return buildGeminiCliArgs(subagentRef, task, opts);
+  }
+  if (runner === 'hermes') {
+    return buildHermesCliArgs(subagentRef, task, opts);
+  }
+  return buildCliArgs(subagentRef, task, opts);
+}
+
+/**
  * Spawn a Claude Code CLI session for an agent task.
  *
  * This is the main entry point. It:
@@ -345,14 +508,48 @@ export async function launchSession(
   assertSubagentRef(subagentRef);
   if (!task) throw new Error('task is required');
 
-  const cli = opts.cli || DEFAULT_CLI;
+  const runner: RunnerKind = opts.runner ?? DEFAULT_RUNNER;
+  const cli = opts.cli || RUNNER_BINARY[runner];
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnFn: SpawnFn = opts.spawnFn || (nodeSpawn as unknown as SpawnFn);
   const executionLogWriter = opts.executionLogWriter || null;
 
-  const cliArgs = buildCliArgs(subagentRef, task, {
+  // Resolve runner-specific identity injection (neither Gemini nor Hermes
+  // has Claude's native `--agent`). The subagent `.claude/agents/<slug>.md`
+  // stays the single source of truth; we resolve it across project + user
+  // scope and inject it by whichever mechanism the runner supports:
+  //   - gemini: point GEMINI_SYSTEM_MD at the .md file path (system prompt).
+  //   - hermes: no flag/env, so embed the .md body at the head of the
+  //     one-shot prompt (passed via systemPromptText).
+  // Best-effort: any resolve/read failure leaves identity uninjected and
+  // the run still proceeds with the prompt-embedded runtime context.
+  let runnerEnv: NodeJS.ProcessEnv = {};
+  let systemPromptText: string | undefined;
+  if (runner === 'gemini' || runner === 'hermes') {
+    try {
+      const resolved = await resolveSubagentFile(subagentRef, {
+        ...(opts.cwd ? { projectDir: opts.cwd } : {}),
+      });
+      if (resolved.exists) {
+        const mdPath =
+          resolved.location === 'user' ? resolved.userPath : resolved.projectPath;
+        if (runner === 'gemini') {
+          runnerEnv = { [GEMINI_SYSTEM_MD_ENV]: mdPath };
+        } else {
+          const body = parseSubagentBody(await readFile(mdPath, 'utf8'));
+          if (body) systemPromptText = body;
+        }
+      }
+    } catch {
+      // Best-effort — see comment above.
+    }
+  }
+
+  const cliArgs = buildRunnerCliArgs(subagentRef, task, {
+    runner,
     model: opts.model,
     dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+    ...(systemPromptText ? { systemPromptText } : {}),
   });
 
   const startedAt = new Date().toISOString();
@@ -365,7 +562,7 @@ export async function launchSession(
 
     const spawnOpts: SpawnOptions = {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...opts.env },
+      env: { ...process.env, ...opts.env, ...runnerEnv },
     };
 
     if (opts.cwd) {
@@ -955,4 +1152,66 @@ export function parseTokenUsage(stdout: unknown): TokenUsage | null {
     }
     return null;
   }
+}
+
+/**
+ * Parse token usage from the Gemini CLI's `--output-format stream-json`.
+ *
+ * Gemini emits one JSON event per line. The terminal event is
+ * `{ "type": "result", "status": "success", "stats": { … } }` and the
+ * token counts live under `stats` (NOT `usage`, which is where the Claude
+ * runner puts them — hence a separate parser):
+ *
+ *   stats.input_tokens   → prompt tokens
+ *   stats.output_tokens  → candidate (completion) tokens
+ *   stats.total_tokens   → input + output (+ cached/thoughts when present)
+ *
+ * Gemini's stream-json carries no per-run dollar cost, so `costUsd` is 0.
+ * We scan lines bottom-up so the final `result` event wins even if an
+ * earlier line happens to carry a `stats` block.
+ */
+export function parseGeminiTokenUsage(stdout: unknown): TokenUsage | null {
+  if (!stdout || typeof stdout !== 'string') return null;
+
+  const lines = stdout.trim().split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (parsed.type !== 'result') continue;
+    const stats = parsed.stats as Record<string, unknown> | undefined;
+    if (!stats) continue;
+
+    const inputTokens = (stats.input_tokens as number | undefined) ?? 0;
+    const outputTokens = (stats.output_tokens as number | undefined) ?? 0;
+    const totalTokens =
+      (stats.total_tokens as number | undefined) ?? inputTokens + outputTokens;
+    return { inputTokens, outputTokens, totalTokens, costUsd: 0 };
+  }
+  return null;
+}
+
+/**
+ * Parse token usage from a session's stdout using the parser that matches
+ * the runner that produced it. Defaults to {@link DEFAULT_RUNNER}.
+ */
+export function parseTokenUsageForRunner(
+  runner: RunnerKind,
+  stdout: unknown,
+): TokenUsage | null {
+  if (runner === 'gemini') {
+    return parseGeminiTokenUsage(stdout);
+  }
+  if (runner === 'hermes') {
+    // Hermes one-shot (`--oneshot`) prints only the final response text —
+    // no usage / cost metadata to parse. Usage tracking degrades to
+    // "untracked" for this runner.
+    return null;
+  }
+  return parseTokenUsage(stdout);
 }

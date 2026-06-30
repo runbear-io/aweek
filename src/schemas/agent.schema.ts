@@ -162,6 +162,13 @@ export const agentConfigSchema: JSONSchemaType<Agent> = {
       nullable: true,
       description: 'Per-agent weekly token budget limit. Synced to budget.weeklyTokenLimit on creation.',
     },
+    runner: {
+      type: 'string',
+      enum: ['claude', 'gemini', 'hermes'],
+      nullable: true,
+      description:
+        "Per-agent override for the coding-agent CLI that runs this agent's tasks. Absent → inherit .aweek/config.json runner (default 'claude').",
+    },
     budget: { $ref: 'aweek://schemas/budget' },
     inbox: { $ref: 'aweek://schemas/inbox-queue' },
     createdAt: { type: 'string', format: 'date-time' },

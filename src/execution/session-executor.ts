@@ -21,7 +21,8 @@
 
 import { mkdir } from 'node:fs/promises';
 
-import { launchSession, parseTokenUsage } from './cli-session.js';
+import { launchSession, parseTokenUsageForRunner } from './cli-session.js';
+import { DEFAULT_RUNNER } from './runner.js';
 import type {
   ExecutionLogWriter,
   LaunchSessionOpts,
@@ -314,8 +315,13 @@ export async function executeSessionWithTracking(
     }
   }
 
-  // Step 2: Parse token usage from session output
-  const tokenUsage = parseTokenUsage(sessionResult.stdout);
+  // Step 2: Parse token usage from session output. The wire shape differs
+  // per runner (Claude → `usage`, Gemini → `stats`), so dispatch on the
+  // runner that actually ran the session.
+  const tokenUsage = parseTokenUsageForRunner(
+    launchOpts.runner ?? DEFAULT_RUNNER,
+    sessionResult.stdout,
+  );
 
   // Step 3: Create and persist usage record (if we have usage data and a store)
   let usageRecord: UsageRecord | null = null;
