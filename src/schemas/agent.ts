@@ -42,6 +42,8 @@
 // ---------------------------------------------------------------------------
 
 /** Placeholder shape for a single agent goal — refined in `goal.ts` later. */
+import type { RunnerKind } from '../execution/runner.js';
+
 export type GoalPlaceholder = Record<string, unknown>;
 
 /** Placeholder shape for a single monthly plan — refined in `monthly-plan.ts` later. */
@@ -117,6 +119,13 @@ export interface Agent {
   monthlyPlans?: MonthlyPlanPlaceholder[];
   /** Per-agent weekly token budget; synced to `budget.weeklyTokenLimit` on creation. */
   weeklyTokenBudget?: number;
+  /**
+   * Per-agent override for the coding-agent CLI that runs this agent's
+   * tasks: `'claude'` or `'gemini'`. Absent → inherit the project-wide
+   * `.aweek/config.json` `runner`, which itself defaults to `'claude'`.
+   * See `src/execution/runner.ts` `resolveRunner`.
+   */
+  runner?: RunnerKind;
   budget: Budget;
   inbox?: InboxMessagePlaceholder[];
   /** ISO-8601 date-time. */

@@ -26,6 +26,7 @@ import {
   type AweekConfig,
 } from '../storage/config-store.js';
 import { DEFAULT_TZ, isValidTimeZone } from '../time/zone.js';
+import { DEFAULT_RUNNER, isRunnerKind, RUNNER_KINDS } from '../execution/runner.js';
 
 // All knobs surfaced by this module are config-backed today. The previous
 // `lockDir` / `maxLockAgeMs` read-only entries were dropped — those remain
@@ -116,6 +117,17 @@ export async function showConfig({ dataDir }: ShowConfigOpts = {}): Promise<Show
       defaultValue: String(DEFAULT_STALE_TASK_WINDOW_MS),
       description:
         'Tasks whose runAt is older than this window are skipped on the next heartbeat instead of dispatched late.',
+    },
+    {
+      key: 'runner',
+      label: 'Execution Runner',
+      category: 'Configuration',
+      source: 'config',
+      editable: true,
+      value: config.runner,
+      defaultValue: DEFAULT_RUNNER,
+      description:
+        "Coding-agent CLI the heartbeat uses to run agent tasks: 'claude' (Claude Code), 'gemini' (Gemini CLI), or 'hermes' (Hermes Agent). An individual agent can override this in its .aweek/agents/<slug>.json `runner` field.",
     },
   ];
   return {
@@ -273,6 +285,22 @@ export function listEditableFields(): EditableFieldSpec[] {
             reason: `${intN} s is out of range. Heartbeat interval must be an integer between 60 (1 min) and 86400 (24 h).`,
           };
         return { ok: true, normalized: intN };
+      },
+    },
+    {
+      key: 'runner',
+      label: 'Execution Runner',
+      description: `Coding-agent CLI the heartbeat uses to run agent tasks. One of: ${RUNNER_KINDS.join(', ')}. 'claude' uses the Claude Code CLI (the default); 'gemini' uses the Gemini CLI (gemini -p, identity via GEMINI_SYSTEM_MD); 'hermes' uses the Hermes Agent CLI (hermes --oneshot, identity embedded in the prompt). gemini and hermes both run in no-permission (yolo) mode under the heartbeat.`,
+      defaultValue: DEFAULT_RUNNER,
+      validate(raw: string) {
+        const v = String(raw ?? '').trim().toLowerCase();
+        if (!v) return { ok: false, reason: 'Runner cannot be empty.' };
+        if (!isRunnerKind(v))
+          return {
+            ok: false,
+            reason: `"${v}" is not a supported runner. Choose one of: ${RUNNER_KINDS.join(', ')}.`,
+          };
+        return { ok: true, normalized: v };
       },
     },
   ];

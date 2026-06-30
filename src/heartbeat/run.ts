@@ -42,6 +42,7 @@ import { maybeEmitRepeatedFailureNotification } from '../services/repeated-failu
 import { verifyTaskOutcome } from '../services/task-verifier.js';
 import { maybeEmitTaskWarningsNotification } from '../services/task-warning-notifier.js';
 import { loadConfig } from '../storage/config-store.js';
+import { resolveRunner, type RunnerKind } from '../execution/runner.js';
 import { currentWeekKey, detectSystemTimeZone, mondayOfWeek } from '../time/zone.js';
 import { WEEKLY_REVIEW_OBJECTIVE_ID, DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
 import { generateWeeklyReview, nextISOWeek } from '../services/weekly-review-orchestrator.js';
@@ -70,6 +71,13 @@ interface ExecutionContext {
   agentStore: AgentStore;
   inboxStore: InboxStore;
   notificationStore: NotificationStore;
+  /**
+   * The coding-agent CLI to run this agent's tasks with, already resolved
+   * via `resolveRunner(agent.runner, config.runner)`. Threaded into
+   * `executeSessionWithTracking` so the spawn + token-usage parse use the
+   * matching backend.
+   */
+  runner: RunnerKind;
 }
 
 interface TaskSelection {
@@ -233,6 +241,18 @@ export async function runHeartbeatForAgent(
   const config = await agentStore.load(agentId);
   const subagentRef = config.subagentRef || agentId;
 
+  // Resolve the execution runner once per tick: per-agent `runner` wins,
+  // else the project-wide `.aweek/config.json` runner, else 'claude'.
+  // Best-effort — a config read failure falls back to the agent field
+  // (or the default) rather than aborting the tick.
+  let configRunner: unknown;
+  try {
+    configRunner = (await loadConfig(agentsDir)).runner;
+  } catch {
+    configRunner = undefined;
+  }
+  const runner = resolveRunner(config.runner, configRunner);
+
   const execCtx: ExecutionContext = {
     agentId,
     subagentRef,
@@ -245,6 +265,7 @@ export async function runHeartbeatForAgent(
     agentStore,
     inboxStore,
     notificationStore,
+    runner,
   };
 
   const firstResult = await executeOneSelection(
@@ -766,6 +787,7 @@ async function executeOneSelection(
     usageStore,
     activityLogStore,
     agentStore,
+    runner,
   } = ctx;
   const { task, week } = selection;
 
@@ -811,6 +833,7 @@ async function executeOneSelection(
         usageStore,
         env: agentEnv,
         agentsDir,
+        runner,
         // Heartbeat ticks run without a TTY — there's no human to
         // approve permission prompts, so default-gate would silently
         // block every tool call. Safety guards belong in the

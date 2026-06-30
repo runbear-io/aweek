@@ -171,4 +171,23 @@ describe('agent.schema — subagentRef refactor', () => {
       assert.equal(result.valid, true, JSON.stringify(result.errors));
     });
   });
+
+  describe('runner field', () => {
+    it('is optional — config without a runner validates', () => {
+      const result = validateAgentConfig(makeValidConfig());
+      assert.equal(result.valid, true, JSON.stringify(result.errors));
+    });
+
+    it('accepts claude, gemini, and hermes', () => {
+      for (const runner of ['claude', 'gemini', 'hermes']) {
+        const result = validateAgentConfig(makeValidConfig({ runner }));
+        assert.equal(result.valid, true, `${runner}: ${JSON.stringify(result.errors)}`);
+      }
+    });
+
+    it('rejects an unknown runner', () => {
+      const result = validateAgentConfig(makeValidConfig({ runner: 'gpt' }));
+      assert.equal(result.valid, false);
+    });
+  });
 });

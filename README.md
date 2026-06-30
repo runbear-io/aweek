@@ -67,7 +67,7 @@ Walk away. Come back Monday morning to a status report and next week's draft pla
 ## How it works (in 3 lines)
 
 1. **Skills** (invoked via `aweek [name]`) shell out to a tiny `aweek` CLI for every state change.
-2. **Heartbeat** is a 10-minute launchd user agent per project. It picks the next pending task per agent and runs it in a fresh Claude Code CLI session.
+2. **Heartbeat** is a 10-minute launchd user agent per project. It picks the next pending task per agent and runs it in a fresh coding-agent CLI session — Claude Code by default, or the [Gemini CLI](https://github.com/google-gemini/gemini-cli) / Hermes Agent when you set the runner (see below).
 3. **Storage** is plain files: `.aweek/agents/<slug>.json` for scheduling, `.claude/agents/<slug>.md` for identity. No DB.
 
 Every mutation is schema-validated and atomic. **2,000+ tests** guard the data layer.
@@ -90,6 +90,23 @@ claude --plugin-dir .
 `/reload-plugins` picks up edits without restarting.
 
 **Requirements:** macOS 10.15 (Catalina) or newer, Node.js 20+. Linux and Windows aren't supported yet — the heartbeat installs as a launchd user agent.
+
+## Choosing the runner (Claude Code, Gemini, or Hermes)
+
+By default the heartbeat runs each task with the **Claude Code** CLI. You can switch a project (or a single agent) to the **Gemini CLI** or the **Hermes Agent** instead:
+
+```bash
+aweek config          # pick the `runner` knob → claude | gemini | hermes
+```
+
+`runner` is the project-wide default in `.aweek/config.json`; an individual agent can override it with its own `runner` field in `.aweek/agents/<slug>.json` (per-agent wins). Either way the agent's `.claude/agents/<slug>.md` stays the single source of truth for identity — for Gemini it's injected as the system prompt via the `GEMINI_SYSTEM_MD` env var; for Hermes it's embedded at the head of the one-shot prompt.
+
+Under the heartbeat, `gemini` and `hermes` both run in no-permission (YOLO) mode — there's no TTY at a scheduled tick to answer approval prompts (`gemini --yolo --skip-trust`, `hermes --yolo --accept-hooks`).
+
+- `gemini` requires the [`gemini` CLI](https://github.com/google-gemini/gemini-cli) on your `PATH` and Gemini auth (e.g. `GEMINI_API_KEY` or OAuth login).
+- `hermes` requires the [`hermes` CLI](https://hermes.nousresearch.com) on your `PATH` and a provider configured via `hermes setup`. Note: Hermes one-shot mode reports no token usage, so weekly-budget accounting is skipped for Hermes agents.
+
+aweek doesn't manage Gemini or Hermes credentials.
 
 ## Per-agent secrets
 

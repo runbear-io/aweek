@@ -12,9 +12,21 @@ skill renders the same knobs the Settings page does (time zone, stale task
 window, plus the hardcoded heartbeat / lock constants) and provides a
 destructive-write gate around any field that's actually editable.
 
-Today the editable fields are `timeZone`, `staleTaskWindowMs`, and
-`heartbeatIntervalSec`. Lock directory and max lock age are intentionally
-not surfaced — those are implementation details of `src/lock/lock-manager.ts`.
+Today the editable fields are `timeZone`, `staleTaskWindowMs`,
+`heartbeatIntervalSec`, and `runner`. Lock directory and max lock age are
+intentionally not surfaced — those are implementation details of
+`src/lock/lock-manager.ts`.
+
+`runner` selects the coding-agent CLI the heartbeat uses to run agent
+tasks: `claude` (Claude Code, the default), `gemini` (Gemini CLI), or
+`hermes` (Hermes Agent). It is the project-wide default; an individual
+agent can override it via its own `runner` field in
+`.aweek/agents/<slug>.json`. Under the heartbeat both `gemini` and
+`hermes` run in no-permission (yolo) mode. Switching requires that CLI on
+PATH with its own auth configured (`gemini`: `GEMINI_API_KEY` / OAuth;
+`hermes`: `hermes setup`) — aweek does not manage their credentials. Note
+that `hermes` one-shot runs report no token usage, so weekly-budget
+accounting is skipped for Hermes agents.
 
 `heartbeatIntervalSec` is config-backed AND the skill auto-rotates the
 live launchd plist (or crontab line) in the same flow as the config

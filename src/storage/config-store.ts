@@ -11,6 +11,12 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { DEFAULT_TZ, isValidTimeZone } from '../time/zone.js';
+import {
+  DEFAULT_RUNNER,
+  isRunnerKind,
+  RUNNER_KINDS,
+  type RunnerKind,
+} from '../execution/runner.js';
 
 const CONFIG_FILENAME = 'config.json';
 
@@ -60,6 +66,14 @@ export interface AweekConfig {
    * re-run `/aweek:init` to rewrite the launchd plist or crontab line.
    */
   heartbeatIntervalSec: number;
+  /**
+   * Which coding-agent CLI the heartbeat uses to run agent tasks
+   * project-wide. `'claude'` (default) or `'gemini'`. An individual agent
+   * can override this with its own `runner` field; see
+   * `src/execution/runner.ts` `resolveRunner`. Default
+   * {@link DEFAULT_RUNNER} (`'claude'`).
+   */
+  runner: RunnerKind;
   /**
    * Sticky record of the user's most recent heartbeat-install decision.
    * Written by `ensureProjectReady` after the first prompt so subsequent
@@ -137,6 +151,7 @@ export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigR
     timeZone: DEFAULT_TZ,
     staleTaskWindowMs: DEFAULT_STALE_TASK_WINDOW_MS,
     heartbeatIntervalSec: DEFAULT_HEARTBEAT_INTERVAL_SEC,
+    runner: DEFAULT_RUNNER,
   };
   let raw: string;
   try {
@@ -190,6 +205,17 @@ export async function loadConfigWithStatus(dataDir: string): Promise<LoadConfigR
       } else {
         process.stderr.write(
           `aweek: ${CONFIG_FILENAME} has invalid heartbeatIntervalSec ${JSON.stringify(hbCandidate)}; falling back to ${DEFAULT_HEARTBEAT_INTERVAL_SEC}\n`,
+        );
+        degraded = true;
+      }
+    }
+    const runnerCandidate = (parsed as { runner?: unknown }).runner;
+    if (runnerCandidate !== undefined) {
+      if (isRunnerKind(runnerCandidate)) {
+        out.runner = runnerCandidate;
+      } else {
+        process.stderr.write(
+          `aweek: ${CONFIG_FILENAME} has invalid runner ${JSON.stringify(runnerCandidate)}; falling back to ${DEFAULT_RUNNER}\n`,
         );
         degraded = true;
       }
@@ -302,6 +328,11 @@ export async function saveConfig(
   ) {
     throw new TypeError(
       `Invalid heartbeatIntervalSec in config: ${JSON.stringify(config.heartbeatIntervalSec)} (must be an integer between 60 and 86400 seconds)`,
+    );
+  }
+  if (config.runner != null && !isRunnerKind(config.runner)) {
+    throw new TypeError(
+      `Invalid runner in config: ${JSON.stringify(config.runner)} (must be one of: ${RUNNER_KINDS.join(', ')})`,
     );
   }
   if (

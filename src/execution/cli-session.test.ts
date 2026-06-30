@@ -13,16 +13,25 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { Writable } from 'node:stream';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildRuntimeContext,
   buildTaskPrompt,
   buildCliArgs,
+  buildGeminiCliArgs,
+  buildHermesCliArgs,
+  buildRunnerCliArgs,
   buildProjectClaudeCliArgs,
   launchSession,
   buildSessionConfig,
   parseTokenUsage,
+  parseGeminiTokenUsage,
+  parseTokenUsageForRunner,
   spawnProjectClaudeSession,
 } from './cli-session.js';
+import { GEMINI_SYSTEM_MD_ENV } from './runner.js';
 import type {
   BuildSessionAgentConfig,
   BuildSessionSelectedTask,
@@ -1412,5 +1421,339 @@ describe('Sub-AC 5: --append-system-prompt flag wiring (banner end-to-end)', () 
       !args!.includes('--append-system-prompt'),
       'empty-string banner is treated identically to undefined',
     );
+  });
+});
+
+// ===========================================================================
+// Gemini runner — buildGeminiCliArgs / buildRunnerCliArgs
+// ===========================================================================
+describe('buildGeminiCliArgs', () => {
+  it('emits the gemini stream-json non-interactive argv shape', () => {
+    const args = buildGeminiCliArgs(SUBAGENT_REF, makeTask());
+    assert.deepEqual(args.slice(0, 2), ['--output-format', 'stream-json']);
+    const pIdx = args.indexOf('--prompt');
+    assert.ok(pIdx >= 0, 'has --prompt');
+    // Prompt carries BOTH the runtime context and the task prompt (gemini has
+    // no separate --append-system-prompt flag).
+    const prompt = args[pIdx + 1]!;
+    assert.ok(prompt.includes('## aweek Runtime Context'));
+    assert.ok(prompt.includes('## Task:'));
+  });
+
+  it('never emits a claude-only flag (--agent / --print / --append-system-prompt)', () => {
+    const args = buildGeminiCliArgs(SUBAGENT_REF, makeTask());
+    assert.ok(!args.includes('--agent'));
+    assert.ok(!args.includes('--print'));
+    assert.ok(!args.includes('--append-system-prompt'));
+  });
+
+  it('adds --yolo and --skip-trust when dangerouslySkipPermissions is set', () => {
+    const args = buildGeminiCliArgs(SUBAGENT_REF, makeTask(), {
+      dangerouslySkipPermissions: true,
+    });
+    assert.ok(args.includes('--yolo'));
+    assert.ok(args.includes('--skip-trust'));
+  });
+
+  it('omits --yolo / --skip-trust by default', () => {
+    const args = buildGeminiCliArgs(SUBAGENT_REF, makeTask());
+    assert.ok(!args.includes('--yolo'));
+    assert.ok(!args.includes('--skip-trust'));
+  });
+
+  it('passes --model only when a model is given', () => {
+    assert.ok(!buildGeminiCliArgs(SUBAGENT_REF, makeTask()).includes('--model'));
+    const args = buildGeminiCliArgs(SUBAGENT_REF, makeTask(), {
+      model: 'gemini-2.5-pro',
+    });
+    const mIdx = args.indexOf('--model');
+    assert.ok(mIdx >= 0);
+    assert.equal(args[mIdx + 1], 'gemini-2.5-pro');
+  });
+
+  it('throws on an empty subagentRef (symmetry with buildCliArgs)', () => {
+    assert.throws(() => buildGeminiCliArgs('', makeTask()), /subagentRef is required/);
+  });
+});
+
+describe('buildRunnerCliArgs', () => {
+  it('dispatches to the claude builder by default', () => {
+    const args = buildRunnerCliArgs(SUBAGENT_REF, makeTask());
+    assert.ok(args.includes('--agent'));
+    assert.ok(args.includes('--print'));
+  });
+
+  it('dispatches to the claude builder for runner="claude"', () => {
+    const args = buildRunnerCliArgs(SUBAGENT_REF, makeTask(), { runner: 'claude' });
+    assert.ok(args.includes('--agent'));
+  });
+
+  it('dispatches to the gemini builder for runner="gemini"', () => {
+    const args = buildRunnerCliArgs(SUBAGENT_REF, makeTask(), { runner: 'gemini' });
+    assert.ok(args.includes('--output-format'));
+    assert.ok(!args.includes('--agent'));
+  });
+
+  it('dispatches to the hermes builder for runner="hermes"', () => {
+    const args = buildRunnerCliArgs(SUBAGENT_REF, makeTask(), { runner: 'hermes' });
+    assert.ok(args.includes('--oneshot'));
+    assert.ok(!args.includes('--agent'));
+  });
+});
+
+// ===========================================================================
+// Gemini runner — launchSession binary + GEMINI_SYSTEM_MD injection
+// ===========================================================================
+describe('launchSession (gemini runner)', () => {
+  it('spawns the gemini binary by default and injects GEMINI_SYSTEM_MD from the subagent .md', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aweek-gemini-'));
+    try {
+      const agentsDir = join(dir, '.claude', 'agents');
+      mkdirSync(agentsDir, { recursive: true });
+      const mdPath = join(agentsDir, `${SUBAGENT_REF}.md`);
+      writeFileSync(mdPath, '---\nname: Research Bot\n---\nYou research things.\n');
+
+      const mockSpawn = createMockSpawn({ stdout: '', exitCode: 0 });
+      await launchSession('agent-test', SUBAGENT_REF, makeTask(), {
+        runner: 'gemini',
+        cwd: dir,
+        spawnFn: mockSpawn,
+      });
+      const call = mockSpawn.lastCall();
+      assert.ok(call);
+      assert.equal(call!.cmd, 'gemini', 'default gemini binary');
+      assert.ok(call!.args.includes('--output-format'));
+      assert.equal(
+        call!.opts.env?.[GEMINI_SYSTEM_MD_ENV],
+        mdPath,
+        'GEMINI_SYSTEM_MD points at the subagent .md',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits GEMINI_SYSTEM_MD when the subagent .md is absent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aweek-gemini-'));
+    try {
+      const mockSpawn = createMockSpawn({ stdout: '', exitCode: 0 });
+      await launchSession('agent-test', SUBAGENT_REF, makeTask(), {
+        runner: 'gemini',
+        cwd: dir,
+        spawnFn: mockSpawn,
+      });
+      const call = mockSpawn.lastCall();
+      assert.ok(call);
+      assert.equal(call!.opts.env?.[GEMINI_SYSTEM_MD_ENV], undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still spawns the claude binary for the default runner', async () => {
+    const mockSpawn = createMockSpawn({ stdout: '', exitCode: 0 });
+    await launchSession('agent-test', SUBAGENT_REF, makeTask(), {
+      spawnFn: mockSpawn,
+    });
+    const call = mockSpawn.lastCall();
+    assert.ok(call);
+    assert.equal(call!.cmd, 'claude');
+    assert.equal(call!.opts.env?.[GEMINI_SYSTEM_MD_ENV], undefined);
+  });
+});
+
+// ===========================================================================
+// Gemini runner — parseGeminiTokenUsage / parseTokenUsageForRunner
+// ===========================================================================
+describe('parseGeminiTokenUsage', () => {
+  it('reads token counts from the result event stats block', () => {
+    const lines = [
+      JSON.stringify({ type: 'init', session_id: 's1', model: 'gemini-2.5-pro' }),
+      JSON.stringify({ type: 'message', role: 'assistant', content: 'hi', delta: true }),
+      JSON.stringify({
+        type: 'result',
+        status: 'success',
+        stats: { input_tokens: 120, output_tokens: 45, total_tokens: 165, tool_calls: 1 },
+      }),
+    ].join('\n');
+    const usage = parseGeminiTokenUsage(lines);
+    assert.ok(usage);
+    assert.equal(usage!.inputTokens, 120);
+    assert.equal(usage!.outputTokens, 45);
+    assert.equal(usage!.totalTokens, 165);
+    assert.equal(usage!.costUsd, 0);
+  });
+
+  it('derives total when total_tokens is absent', () => {
+    const line = JSON.stringify({
+      type: 'result',
+      status: 'success',
+      stats: { input_tokens: 10, output_tokens: 7 },
+    });
+    const usage = parseGeminiTokenUsage(line);
+    assert.ok(usage);
+    assert.equal(usage!.totalTokens, 17);
+  });
+
+  it('returns null when there is no result event', () => {
+    const line = JSON.stringify({ type: 'init', session_id: 's1' });
+    assert.equal(parseGeminiTokenUsage(line), null);
+  });
+
+  it('returns null on non-string / empty input', () => {
+    assert.equal(parseGeminiTokenUsage(null), null);
+    assert.equal(parseGeminiTokenUsage(''), null);
+  });
+});
+
+describe('parseTokenUsageForRunner', () => {
+  it('uses the gemini stats parser for runner="gemini"', () => {
+    const line = JSON.stringify({
+      type: 'result',
+      status: 'success',
+      stats: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+    });
+    const usage = parseTokenUsageForRunner('gemini', line);
+    assert.ok(usage);
+    assert.equal(usage!.totalTokens, 7);
+  });
+
+  it('uses the claude usage parser for runner="claude"', () => {
+    const line = JSON.stringify({
+      type: 'result',
+      usage: { input_tokens: 5, output_tokens: 6 },
+      total_cost_usd: 0.01,
+    });
+    const usage = parseTokenUsageForRunner('claude', line);
+    assert.ok(usage);
+    assert.equal(usage!.inputTokens, 5);
+    assert.equal(usage!.outputTokens, 6);
+  });
+
+  it('returns null for runner="hermes" (one-shot has no usage metadata)', () => {
+    // Even if the stdout happened to look claude-shaped, hermes has no
+    // usage to report.
+    const line = JSON.stringify({
+      type: 'result',
+      usage: { input_tokens: 5, output_tokens: 6 },
+    });
+    assert.equal(parseTokenUsageForRunner('hermes', line), null);
+    assert.equal(parseTokenUsageForRunner('hermes', 'just some text'), null);
+  });
+});
+
+// ===========================================================================
+// Hermes runner — buildHermesCliArgs
+// ===========================================================================
+describe('buildHermesCliArgs', () => {
+  it('emits the hermes one-shot argv shape with the prompt as --oneshot value', () => {
+    const args = buildHermesCliArgs(SUBAGENT_REF, makeTask());
+    const idx = args.indexOf('--oneshot');
+    assert.ok(idx >= 0, 'has --oneshot');
+    const prompt = args[idx + 1]!;
+    assert.ok(prompt.includes('## aweek Runtime Context'));
+    assert.ok(prompt.includes('## Task:'));
+  });
+
+  it('embeds systemPromptText (subagent identity) at the head of the prompt', () => {
+    const args = buildHermesCliArgs(SUBAGENT_REF, makeTask(), {
+      systemPromptText: 'You are Research Bot. You cite sources.',
+    });
+    const prompt = args[args.indexOf('--oneshot') + 1]!;
+    assert.ok(prompt.startsWith('You are Research Bot. You cite sources.'));
+    // Identity comes BEFORE the runtime context.
+    assert.ok(
+      prompt.indexOf('You are Research Bot') < prompt.indexOf('## aweek Runtime Context'),
+    );
+  });
+
+  it('adds --yolo and --accept-hooks when dangerouslySkipPermissions is set', () => {
+    const args = buildHermesCliArgs(SUBAGENT_REF, makeTask(), {
+      dangerouslySkipPermissions: true,
+    });
+    assert.ok(args.includes('--yolo'));
+    assert.ok(args.includes('--accept-hooks'));
+  });
+
+  it('omits --yolo / --accept-hooks by default', () => {
+    const args = buildHermesCliArgs(SUBAGENT_REF, makeTask());
+    assert.ok(!args.includes('--yolo'));
+    assert.ok(!args.includes('--accept-hooks'));
+  });
+
+  it('never emits a claude/gemini-only flag', () => {
+    const args = buildHermesCliArgs(SUBAGENT_REF, makeTask());
+    assert.ok(!args.includes('--agent'));
+    assert.ok(!args.includes('--append-system-prompt'));
+    assert.ok(!args.includes('--output-format'));
+  });
+
+  it('passes --model only when a model is given', () => {
+    assert.ok(!buildHermesCliArgs(SUBAGENT_REF, makeTask()).includes('--model'));
+    const args = buildHermesCliArgs(SUBAGENT_REF, makeTask(), { model: 'anthropic/claude-sonnet-4.6' });
+    assert.equal(args[args.indexOf('--model') + 1], 'anthropic/claude-sonnet-4.6');
+  });
+
+  it('throws on an empty subagentRef', () => {
+    assert.throws(() => buildHermesCliArgs('', makeTask()), /subagentRef is required/);
+  });
+});
+
+// ===========================================================================
+// Hermes runner — launchSession binary + identity embedding + yolo mode
+// ===========================================================================
+describe('launchSession (hermes runner)', () => {
+  it('spawns hermes with --oneshot, embeds the .md identity, and runs in yolo mode', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aweek-hermes-'));
+    try {
+      const agentsDir = join(dir, '.claude', 'agents');
+      mkdirSync(agentsDir, { recursive: true });
+      writeFileSync(
+        join(agentsDir, `${SUBAGENT_REF}.md`),
+        '---\nname: Research Bot\n---\nYou research things and cite sources.\n',
+      );
+
+      const mockSpawn = createMockSpawn({ stdout: 'final answer text', exitCode: 0 });
+      await launchSession('agent-test', SUBAGENT_REF, makeTask(), {
+        runner: 'hermes',
+        cwd: dir,
+        dangerouslySkipPermissions: true,
+        spawnFn: mockSpawn,
+      });
+      const call = mockSpawn.lastCall();
+      assert.ok(call);
+      assert.equal(call!.cmd, 'hermes');
+      // Headless no-permission mode under the heartbeat.
+      assert.ok(call!.args.includes('--yolo'));
+      assert.ok(call!.args.includes('--accept-hooks'));
+      // Identity (from the .md body) embedded in the one-shot prompt.
+      const prompt = call!.args[call!.args.indexOf('--oneshot') + 1]!;
+      assert.ok(prompt.includes('You research things and cite sources.'));
+      // No GEMINI env leakage on the hermes path.
+      assert.equal(call!.opts.env?.[GEMINI_SYSTEM_MD_ENV], undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still runs (without embedded identity) when the subagent .md is absent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aweek-hermes-'));
+    try {
+      const mockSpawn = createMockSpawn({ stdout: '', exitCode: 0 });
+      await launchSession('agent-test', SUBAGENT_REF, makeTask(), {
+        runner: 'hermes',
+        cwd: dir,
+        dangerouslySkipPermissions: true,
+        spawnFn: mockSpawn,
+      });
+      const call = mockSpawn.lastCall();
+      assert.ok(call);
+      assert.equal(call!.cmd, 'hermes');
+      const prompt = call!.args[call!.args.indexOf('--oneshot') + 1]!;
+      // Falls back to runtime context only — no identity prefix.
+      assert.ok(prompt.startsWith('## aweek Runtime Context'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

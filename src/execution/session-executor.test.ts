@@ -196,6 +196,36 @@ describe('executeSessionWithTracking', () => {
     assert.equal(result.tokenUsage.costUsd, 0.08);
   });
 
+  it('tracks Gemini usage from the result-event stats block (runner="gemini")', async () => {
+    const stdout = [
+      JSON.stringify({ type: 'init', session_id: 'g1', model: 'gemini-2.5-pro' }),
+      JSON.stringify({
+        type: 'result',
+        status: 'success',
+        stats: { input_tokens: 900, output_tokens: 300, total_tokens: 1200 },
+      }),
+    ].join('\n');
+    const mockSpawn = createMockSpawn({ stdout });
+
+    const result = await executeSessionWithTracking(
+      'agent-test',
+      SUBAGENT_REF,
+      makeTask(),
+      { spawnFn: mockSpawn, usageStore, runner: 'gemini' },
+    );
+
+    // Spawned the gemini binary, not claude.
+    assert.equal(mockSpawn.lastCall()?.cmd, 'gemini');
+    // Token usage parsed from `stats` (gemini), with cost 0.
+    assert.ok(result.tokenUsage);
+    assert.equal(result.tokenUsage.inputTokens, 900);
+    assert.equal(result.tokenUsage.outputTokens, 300);
+    assert.equal(result.tokenUsage.totalTokens, 1200);
+    assert.equal(result.tokenUsage.costUsd, 0);
+    // And it was persisted exactly like a Claude run.
+    assert.equal(result.usageTracked, true);
+  });
+
   it('invokes claude CLI with --agent <slug> (no --system-prompt)', async () => {
     const mockSpawn = createMockSpawn({ stdout: makeCliOutput() });
 

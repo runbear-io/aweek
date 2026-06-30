@@ -327,10 +327,26 @@ export {
   buildRuntimeContext,
   buildTaskPrompt,
   buildCliArgs,
+  buildGeminiCliArgs,
+  buildHermesCliArgs,
+  buildRunnerCliArgs,
   launchSession,
   buildSessionConfig,
   parseTokenUsage,
+  parseGeminiTokenUsage,
+  parseTokenUsageForRunner,
 } from './execution/cli-session.js';
+// Execution runner abstraction — selects the coding-agent CLI (Claude / Gemini)
+// that runs an agent's tasks. See src/execution/runner.ts.
+export {
+  DEFAULT_RUNNER,
+  RUNNER_KINDS,
+  RUNNER_BINARY,
+  GEMINI_SYSTEM_MD_ENV,
+  isRunnerKind,
+  resolveRunner,
+} from './execution/runner.js';
+export type { RunnerKind } from './execution/runner.js';
 // Inter-agent task delegation skill
 export {
   validateDelegationParams,
