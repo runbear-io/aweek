@@ -63,6 +63,7 @@ import {
   startSlackBridge,
   SLACK_SYSTEM_PROMPT_BANNER,
   type CreateSlackBackendFn,
+  type CreateRunnerSlackBackendFn,
   type SlackBridgeOptions,
   type SlackUsageRecorder,
 } from './slack-bridge.js';
@@ -1109,3 +1110,74 @@ async function snapshotTree(root: string): Promise<string[]> {
 
 const _silenceUnused: SlackBridgeOptions | undefined = undefined;
 void _silenceUnused;
+
+// ── Runner dispatch (config.runner selects the Slack backend) ──────────────
+describe('startSlackBridge — runner dispatch from config.runner', () => {
+  it('uses the Gemini/Hermes runner backend when config.runner is non-Claude', async () => {
+    const { adapter, emit } = makeFakeAdapter();
+    const resultSink: { fn: ((r: ResultInfo) => void) | null } = { fn: null };
+    let runnerCalls = 0;
+    let runnerKind: string | null = null;
+
+    const createRunnerBackend: CreateRunnerSlackBackendFn = async (opts) => {
+      runnerCalls += 1;
+      runnerKind = opts.runner;
+      resultSink.fn = opts.onResult ?? null;
+      return makeFakeBackend({
+        events: [{ type: 'text_delta', text: 'gemini reply' }, { type: 'done' }],
+        result: { isError: false, usage: { inputTokens: 3, outputTokens: 2 } },
+        resultSink,
+      });
+    };
+
+    // No `createBackend` override → the bridge reads the resolved runner and
+    // dispatches to the runner backend. `resolveRunnerKind` stands in for
+    // reading `.aweek/config.json`.
+    startSlackBridge({
+      adapter,
+      projectRoot: '/tmp/fake-project',
+      dataDir: '/tmp/fake-project/.aweek/agents',
+      createRunnerBackend,
+      resolveRunnerKind: async () => 'gemini',
+      recordUsage: async () => undefined,
+      log: () => {},
+    });
+
+    await emit(THREAD_MSG);
+
+    assert.equal(runnerCalls, 1, 'runner backend factory used for config.runner=gemini');
+    assert.equal(runnerKind, 'gemini');
+  });
+
+  it('uses the Claude backend when config.runner resolves to claude', async () => {
+    const { adapter, emit } = makeFakeAdapter();
+    const resultSink: { fn: ((r: ResultInfo) => void) | null } = { fn: null };
+    let claudeCalls = 0;
+    let runnerCalls = 0;
+
+    const createBackend: CreateSlackBackendFn = async (opts) => {
+      claudeCalls += 1;
+      resultSink.fn = opts.onResult ?? null;
+      return makeFakeBackend({ events: [{ type: 'done' }], result: { isError: false, usage: { inputTokens: 0, outputTokens: 0 } }, resultSink });
+    };
+    const createRunnerBackend: CreateRunnerSlackBackendFn = async () => {
+      runnerCalls += 1;
+      return makeFakeBackend({ events: [{ type: 'done' }], result: { isError: false, usage: { inputTokens: 0, outputTokens: 0 } }, resultSink });
+    };
+
+    startSlackBridge({
+      adapter,
+      projectRoot: '/tmp/fake-project',
+      dataDir: '/tmp/fake-project/.aweek/agents',
+      createBackend,
+      createRunnerBackend,
+      resolveRunnerKind: async () => 'claude',
+      recordUsage: async () => undefined,
+      log: () => {},
+    });
+
+    await emit(THREAD_MSG);
+    assert.equal(claudeCalls, 1, 'Claude backend used when runner=claude');
+    assert.equal(runnerCalls, 0, 'runner backend must NOT be used for claude');
+  });
+});

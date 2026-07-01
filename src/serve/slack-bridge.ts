@@ -71,6 +71,13 @@ import {
   type CreatePersistedSlackBackendOptions,
 } from '../channels/slack/backend-factory.js';
 import {
+  createRunnerSlackBackend,
+  type CreateRunnerSlackBackendOptions,
+  type RunnerBackendKind,
+} from '../channels/slack/project-runner-backend.js';
+import { loadConfig } from '../storage/config-store.js';
+import { DEFAULT_RUNNER, resolveRunner, type RunnerKind } from '../execution/runner.js';
+import {
   appendSlackUsageRecord,
   createSlackUsageRecord,
   type SlackUsageRecord,
@@ -104,6 +111,15 @@ export const SLACK_SYSTEM_PROMPT_BANNER =
  */
 export type CreateSlackBackendFn = (
   opts: CreatePersistedSlackBackendOptions,
+) => Promise<Backend>;
+
+/**
+ * Backend factory signature for the non-Claude runners, compatible with
+ * {@link createRunnerSlackBackend}. Selected by the bridge when
+ * `.aweek/config.json` `runner` resolves to `'gemini'` / `'hermes'`.
+ */
+export type CreateRunnerSlackBackendFn = (
+  opts: CreateRunnerSlackBackendOptions,
 ) => Promise<Backend>;
 
 /**
@@ -186,8 +202,24 @@ export interface SlackBridgeOptions {
    * leave this unset.
    */
   systemPromptAppend?: string;
-  /** Test seam — override the backend factory. */
+  /**
+   * Test seam — override the Claude backend factory. When set, it is used
+   * for EVERY thread regardless of `config.runner` (so existing
+   * Claude-path tests stay runner-agnostic).
+   */
   createBackend?: CreateSlackBackendFn;
+  /**
+   * Test seam — override the Gemini / Hermes backend factory. Used only
+   * when `config.runner` resolves to a non-Claude runner AND `createBackend`
+   * is not set. Production callers leave this unset.
+   */
+  createRunnerBackend?: CreateRunnerSlackBackendFn;
+  /**
+   * Test seam — force the resolved runner instead of reading
+   * `.aweek/config.json`. Production callers leave this unset; the bridge
+   * then resolves the project-wide `runner` via `loadConfig`.
+   */
+  resolveRunnerKind?: () => Promise<RunnerKind> | RunnerKind;
   /** Test seam — override the usage recorder. */
   recordUsage?: SlackUsageRecorder;
   /**
@@ -314,6 +346,22 @@ export function startSlackBridge(opts: SlackBridgeOptions): SlackBridgeHandle {
   const log = opts.log ?? defaultLog;
   const createBackend: CreateSlackBackendFn =
     opts.createBackend ?? (createPersistedSlackBackend as CreateSlackBackendFn);
+  const createRunnerBackend: CreateRunnerSlackBackendFn =
+    opts.createRunnerBackend ?? (createRunnerSlackBackend as CreateRunnerSlackBackendFn);
+  // Resolve the project-wide Slack runner. Slack is project-level (no
+  // per-agent subagent), so only the `.aweek/config.json` `runner`
+  // applies. Read per thread-creation (cached with the backend) so a
+  // config edit is picked up by new threads without an `aweek serve`
+  // restart. Best-effort — a missing/corrupt config falls back to Claude.
+  const resolveRunnerKind =
+    opts.resolveRunnerKind ??
+    (async (): Promise<RunnerKind> => {
+      try {
+        return resolveRunner(undefined, (await loadConfig(opts.dataDir)).runner);
+      } catch {
+        return DEFAULT_RUNNER;
+      }
+    });
   const recordUsage: SlackUsageRecorder =
     opts.recordUsage ?? (appendSlackUsageRecord as SlackUsageRecorder);
   const loadReportThreadFn: SlackReportThreadLoader =
@@ -393,7 +441,25 @@ export function startSlackBridge(opts: SlackBridgeOptions): SlackBridgeHandle {
       },
     };
 
-    const backend = await createBackend(factoryOpts);
+    // Runner dispatch. An explicit `createBackend` test override forces the
+    // Claude path (runner-agnostic); otherwise the project-wide config
+    // runner decides. `claude` → the Claude Code backend; `gemini` /
+    // `hermes` → the runner backend (spawns that CLI, keeps memory via the
+    // transcript store). The `factoryOpts` shape is shared by both
+    // factories — the runner factory just also takes the `runner` kind.
+    const runner: RunnerKind = opts.createBackend
+      ? 'claude'
+      : await resolveRunnerKind();
+
+    let backend: Backend;
+    if (runner === 'gemini' || runner === 'hermes') {
+      backend = await createRunnerBackend({
+        ...factoryOpts,
+        runner: runner as RunnerBackendKind,
+      });
+    } else {
+      backend = await createBackend(factoryOpts);
+    }
     backends.set(ctx.threadKey, backend);
     return backend;
   };

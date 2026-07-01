@@ -113,7 +113,9 @@ The CLI that actually runs a task is pluggable via `src/execution/runner.ts` (`R
 
 `parseTokenUsageForRunner(runner, stdout)` dispatches to the matching parser (or `null` for hermes). Both `gemini` and `hermes` run in their respective no-permission/YOLO modes under the heartbeat because `executeOneSelection` (and `run-once`) always pass `dangerouslySkipPermissions: true` — there's no TTY at a scheduled tick to answer an approval prompt.
 
-Gemini / Hermes auth follow each CLI's own rules (Gemini: `GEMINI_API_KEY` or OAuth; Hermes: `hermes setup` / provider config under `~/.hermes`) — aweek does not manage their credentials. The Slack inbound bridge remains Claude-only (`ProjectClaudeBackend`).
+Gemini / Hermes auth follow each CLI's own rules (Gemini: `GEMINI_API_KEY` or OAuth; Hermes: `hermes setup` / provider config under `~/.hermes`) — aweek does not manage their credentials.
+
+**The inbound Slack bridge honours the runner too.** `aweek serve`'s Slack bridge (`src/serve/slack-bridge.ts`) resolves the project-wide runner (`resolveRunner(undefined, config.runner)` — Slack is project-level, so no per-agent override) and picks the backend per thread: `claude` → `ProjectClaudeBackend` (spawns `claude`, resumes by session id); `gemini` / `hermes` → `ProjectRunnerBackend` (`src/channels/slack/project-runner-backend.ts`), which spawns that CLI via the shared `streamCliRunnerTurn` and translates its output into agentchannels `AgentStreamEvent`s. Because Gemini/Hermes have no clean "resume a headless run by id" flag, the runner backend keeps per-thread **memory** by persisting the conversation transcript to `.aweek/channels/slack/transcripts/<encodedThreadKey>.json` (`src/storage/slack-transcript-store.ts`, 40-message cap, 24h idle TTL, lazy GC) and replaying it into each prompt. Slack's isolation contract still holds: the runner backend writes only under `.aweek/channels/slack/` (its own transcript + the shared `usage.json`), never the per-agent tree, and takes no heartbeat lock / budget. First-turn report-context injection and the Slack usage bucket work identically to the Claude path (Gemini reports real token usage from its `result` `stats`; Hermes reports none).
 
 **Dashboard chat panel honours the runner too.** The Interactive Chat Panel (`POST /api/chat` → `streamAgentTurn` in `src/serve/data/chat.ts`) resolves the runner the same way — `resolveRunner(agent.runner, config.runner)` in the handler (`server.ts`). `claude` uses the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk` `query()`); `gemini` / `hermes` delegate to `streamCliRunnerTurn` (`src/serve/chat-cli-runner.ts` — a serve-layer module kept OUT of the read-only `src/serve/data/` layer because it spawns a process), which spawns the CLI (Gemini `--output-format stream-json`, Hermes `--oneshot`), injects identity the same way (Gemini via `GEMINI_SYSTEM_MD`, Hermes embedded in the prompt), runs YOLO (`--yolo --skip-trust` / `--yolo --accept-hooks`), and translates the CLI output into the same `ChatStreamEvent` stream the Agent SDK path emits. Gemini reports live token usage from its `result` event's `stats`; Hermes one-shot has none, so chat usage for Hermes is untracked (matching the heartbeat). So the runner abstraction now spans heartbeat, `run-once`, AND the dashboard chat panel.
 
@@ -191,6 +193,10 @@ DST seams are handled explicitly: `localWallClockToUtc` returns the first instan
                            # idempotent on `id`, last-writer-wins on the rename swap
   threads/
     <encodedThreadKey>.json # { threadKey, claudeSessionId, lastUsedAt } per thread;
+                           # 24h idle TTL, lazy GC on read (CLAUDE runner)
+  transcripts/
+    <encodedThreadKey>.json # { threadKey, messages[], lastUsedAt } per thread — the
+                           # Gemini/Hermes memory layer (no CLI resume); 40-msg cap,
                            # 24h idle TTL, lazy GC on read
 ```
 

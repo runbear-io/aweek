@@ -101,6 +101,8 @@ aweek config          # pick the `runner` knob → claude | gemini | hermes
 
 `runner` is the project-wide default in `.aweek/config.json`; an individual agent can override it with its own `runner` field in `.aweek/agents/<slug>.json` (per-agent wins). Either way the agent's `.claude/agents/<slug>.md` stays the single source of truth for identity — for Gemini it's injected as the system prompt via the `GEMINI_SYSTEM_MD` env var; for Hermes it's embedded at the head of the one-shot prompt.
 
+The runner applies across every surface that runs an agent: the scheduled heartbeat, `aweek run-once`, the dashboard chat panel, and Slack conversations (`aweek serve`). Slack is project-level, so it uses the `.aweek/config.json` `runner`; because Gemini/Hermes can't resume a headless session by id, aweek keeps each Slack thread's memory by replaying the stored conversation transcript into every turn.
+
 Under the heartbeat, `gemini` and `hermes` both run in no-permission (YOLO) mode — there's no TTY at a scheduled tick to answer approval prompts (`gemini --yolo --skip-trust`, `hermes --yolo --accept-hooks`).
 
 - `gemini` requires the [`gemini` CLI](https://github.com/google-gemini/gemini-cli) on your `PATH` and Gemini auth (e.g. `GEMINI_API_KEY` or OAuth login).
