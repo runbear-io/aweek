@@ -76,6 +76,9 @@ import {
 } from './data/threads.js';
 import { UsageStore } from '../storage/usage-store.js';
 import { AgentStore } from '../storage/agent-store.js';
+import { loadConfig } from '../storage/config-store.js';
+import { resolveRunner } from '../execution/runner.js';
+import type { SpawnFn } from '../execution/cli-session.js';
 import {
   ChatConversationStore,
   createChatMessage,
@@ -284,6 +287,13 @@ export interface RawServeOptions {
    * `normaliseServeOptions` ignores this field.
    */
   runQuery?: AgentSdkRunner;
+  /**
+   * Test-only seam for the non-Claude chat runners (Gemini / Hermes) —
+   * an injectable spawn forwarded to `streamCliRunnerTurn`. Lets the chat
+   * handler integration tests drive deterministic CLI output without a
+   * real `gemini` / `hermes` binary. Programmatic test path only.
+   */
+  chatCliSpawn?: SpawnFn;
   /**
    * Test-only seam for the shared weekly usage store. Lets the chat
    * handler integration tests verify the budget wire-up against an in-
@@ -504,6 +514,12 @@ interface RequestContext {
    */
   runQuery?: AgentSdkRunner;
   /**
+   * Optional test-only injectable spawn for the Gemini / Hermes chat
+   * runners, forwarded to `streamAgentTurn` → `streamCliRunnerTurn`.
+   * Production callers leave this undefined.
+   */
+  chatCliSpawn?: SpawnFn;
+  /**
    * Optional test-only chat-usage store override. When unset the chat
    * handler builds a real {@link UsageStore} rooted at `<dataDir>/agents`
    * — the same path the heartbeat reads — so chat token spend lands in
@@ -555,6 +571,8 @@ export async function startServer(options: RawServeOptions = {}): Promise<Server
   // and is read directly off the raw options so production cold-paths
   // never load it (and CI tests can pin a deterministic fake).
   const runQuery = options.runQuery;
+  // Same seam for the Gemini / Hermes chat runners — an injectable spawn.
+  const chatCliSpawn = options.chatCliSpawn;
   // Same shape, different seam: tests pin an in-memory chat usage store
   // here. Production callers leave this unset and the handler constructs
   // a real `UsageStore` from `<dataDir>/agents` per request.
@@ -591,6 +609,7 @@ export async function startServer(options: RawServeOptions = {}): Promise<Server
         dataDir,
         buildDir,
         runQuery,
+        chatCliSpawn,
         chatUsageStore,
         chatBudgetUsageStore,
         chatBudgetAgentStore,
@@ -2307,14 +2326,37 @@ async function handleChatStream(
   // assistant uuid) can be routed back onto the right assistant message.
   const toolUseToAssistant = new Map<string, string>();
 
+  // Resolve the execution runtime for this chat turn. Precedence mirrors
+  // the heartbeat's `resolveRunner`: the agent's own `runner` field wins,
+  // else the project-wide `.aweek/config.json` `runner`, else 'claude'.
+  // So the Interactive Chat Panel runs whatever runtime the config selects
+  // (Gemini / Hermes spawn their CLI; Claude uses the Agent SDK). All
+  // reads are best-effort — a missing config/agent falls back to 'claude'.
+  let agentRunnerField: unknown;
+  try {
+    agentRunnerField = ((await budgetAgentStore.load(slug)) as { runner?: unknown })
+      .runner;
+  } catch {
+    agentRunnerField = undefined;
+  }
+  let configRunnerField: unknown;
+  try {
+    configRunnerField = (await loadConfig(chatStoresBaseDir)).runner;
+  } catch {
+    configRunnerField = undefined;
+  }
+  const chatRunner = resolveRunner(agentRunnerField, configRunnerField);
+
   try {
     const streamParams: Parameters<typeof streamAgentTurn>[0] = {
       slug,
       messages,
       cwd: ctx.projectDir,
       signal: abortCtrl.signal,
+      runner: chatRunner,
     };
     if (ctx.runQuery !== undefined) streamParams.runQuery = ctx.runQuery;
+    if (ctx.chatCliSpawn !== undefined) streamParams.spawnCli = ctx.chatCliSpawn;
     if (systemPromptAppend !== undefined) {
       streamParams.systemPromptAppend = systemPromptAppend;
     }

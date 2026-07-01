@@ -113,7 +113,9 @@ The CLI that actually runs a task is pluggable via `src/execution/runner.ts` (`R
 
 `parseTokenUsageForRunner(runner, stdout)` dispatches to the matching parser (or `null` for hermes). Both `gemini` and `hermes` run in their respective no-permission/YOLO modes under the heartbeat because `executeOneSelection` (and `run-once`) always pass `dangerouslySkipPermissions: true` — there's no TTY at a scheduled tick to answer an approval prompt.
 
-Gemini / Hermes auth follow each CLI's own rules (Gemini: `GEMINI_API_KEY` or OAuth; Hermes: `hermes setup` / provider config under `~/.hermes`) — aweek does not manage their credentials. The Slack inbound bridge remains Claude-only (`ProjectClaudeBackend`); the runner abstraction is heartbeat/run-once scoped.
+Gemini / Hermes auth follow each CLI's own rules (Gemini: `GEMINI_API_KEY` or OAuth; Hermes: `hermes setup` / provider config under `~/.hermes`) — aweek does not manage their credentials. The Slack inbound bridge remains Claude-only (`ProjectClaudeBackend`).
+
+**Dashboard chat panel honours the runner too.** The Interactive Chat Panel (`POST /api/chat` → `streamAgentTurn` in `src/serve/data/chat.ts`) resolves the runner the same way — `resolveRunner(agent.runner, config.runner)` in the handler (`server.ts`). `claude` uses the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk` `query()`); `gemini` / `hermes` delegate to `streamCliRunnerTurn` (`src/serve/chat-cli-runner.ts` — a serve-layer module kept OUT of the read-only `src/serve/data/` layer because it spawns a process), which spawns the CLI (Gemini `--output-format stream-json`, Hermes `--oneshot`), injects identity the same way (Gemini via `GEMINI_SYSTEM_MD`, Hermes embedded in the prompt), runs YOLO (`--yolo --skip-trust` / `--yolo --accept-hooks`), and translates the CLI output into the same `ChatStreamEvent` stream the Agent SDK path emits. Gemini reports live token usage from its `result` event's `stats`; Hermes one-shot has none, so chat usage for Hermes is untracked (matching the heartbeat). So the runner abstraction now spans heartbeat, `run-once`, AND the dashboard chat panel.
 
 ### Plan model
 

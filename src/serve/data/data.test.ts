@@ -110,7 +110,19 @@ const ALLOWED_IMPORT_PREFIXES = [
  * other module under `src/serve/data/`.
  */
 const PER_FILE_EXTRA_IMPORTS: Record<string, readonly string[]> = {
-  'chat.ts': ['@anthropic-ai/claude-agent-sdk'],
+  // `chat.ts` drives the Anthropic Agent SDK for the Claude runner and,
+  // when `.aweek/config.json` selects a non-Claude runtime, delegates to
+  // `../chat-cli-runner.js` — a serve-layer (NOT data-layer) module that
+  // spawns the Gemini / Hermes CLI. That process-spawning concern lives
+  // outside `src/serve/data/` precisely so this read-only layer stays
+  // spawn-free; `chat.ts` only needs the type-safe delegate + the runner
+  // vocabulary + token-usage-parse types, hence the narrow carve-outs.
+  'chat.ts': [
+    '@anthropic-ai/claude-agent-sdk',
+    '../chat-cli-runner.js',
+    '../../execution/runner.js',
+    '../../execution/cli-session.js',
+  ],
   // `calendar.ts` lazily expands per-agent recurring rules into the
   // requested ISO week so the dashboard's "render every week" promise
   // holds for agents without an on-disk weekly-plan file. The expander

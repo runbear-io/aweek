@@ -23,6 +23,7 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 
 import {
   DEFAULT_PORT,
@@ -4853,3 +4854,124 @@ describe('POST /api/chat — thread persistence (Sub-AC 1 of AC 12)', () => {
   });
 });
 
+
+// ── POST /api/chat — runner selected from .aweek/config.json ───────────────
+//
+// The Interactive Chat Panel must run whatever runtime the project config
+// selects. When `.aweek/config.json` sets `runner: 'gemini'` (or 'hermes'),
+// the handler spawns that CLI via `chatCliSpawn` instead of the Claude
+// Agent SDK. These tests write a real config.json and assert the injected
+// spawn was invoked with the right binary and its output reaches the wire.
+describe('POST /api/chat — runner from .aweek/config.json', () => {
+  let projectDir;
+  let buildDir;
+  let handle;
+
+  afterEach(async () => {
+    if (handle) await handle.close();
+    if (projectDir) await rm(projectDir, { recursive: true, force: true });
+    if (buildDir) await rm(buildDir, { recursive: true, force: true });
+    handle = projectDir = buildDir = undefined;
+  });
+
+  /** Recording fake spawn: emits the given stdout lines then closes 0. */
+  function makeRecordingSpawn(stdoutLines) {
+    const calls = [];
+    const fn = (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      const child = new EventEmitter();
+      const stdout = new Readable({ read() {} });
+      const stderr = new Readable({ read() {} });
+      child.stdout = stdout;
+      child.stderr = stderr;
+      child.kill = () => {
+        setImmediate(() => child.emit('close', null));
+        return true;
+      };
+      setImmediate(() => {
+        for (const line of stdoutLines) stdout.push(line + '\n');
+        stdout.push(null);
+        stderr.push(null);
+        setImmediate(() => child.emit('close', 0));
+      });
+      return child;
+    };
+    fn.calls = calls;
+    return fn;
+  }
+
+  it('spawns the gemini CLI when config.runner is "gemini"', async () => {
+    projectDir = await makeProject('aweek-serve-chat-runner-');
+    buildDir = await makeBuildDir();
+    await writeFile(
+      join(projectDir, '.aweek', 'config.json'),
+      JSON.stringify({ timeZone: 'UTC', runner: 'gemini' }),
+    );
+    const spawnFn = makeRecordingSpawn([
+      JSON.stringify({ type: 'message', role: 'assistant', content: 'hi from gemini', delta: true }),
+      JSON.stringify({ type: 'result', status: 'success', stats: { input_tokens: 3, output_tokens: 4 } }),
+    ]);
+    // runQuery would throw if the Agent SDK path were taken — it must not be.
+    handle = await startServer({
+      projectDir,
+      buildDir,
+      port: 0,
+      host: '127.0.0.1',
+      chatCliSpawn: spawnFn,
+      runQuery: () => {
+        throw new Error('Agent SDK path must not run when config.runner=gemini');
+      },
+    });
+
+    const res = await httpPostStream(`${handle.url}api/chat`, {
+      slug: 'writer',
+      threadId: 'thread-1',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(spawnFn.calls.length, 1, 'expected the gemini CLI to be spawned once');
+    assert.equal(spawnFn.calls[0].cmd, 'gemini');
+    assert.ok(spawnFn.calls[0].args.includes('--yolo'), 'gemini must run in YOLO mode');
+    const frames = res.body
+      .split('\n')
+      .filter((l) => l.startsWith('data: '))
+      .map((l) => JSON.parse(l.slice('data: '.length)));
+    const delta = frames.find((f) => f.type === 'text-delta');
+    assert.ok(delta && delta.delta === 'hi from gemini', 'gemini reply must reach the SSE wire');
+  });
+
+  it('spawns the hermes CLI when config.runner is "hermes"', async () => {
+    projectDir = await makeProject('aweek-serve-chat-runner-');
+    buildDir = await makeBuildDir();
+    await writeFile(
+      join(projectDir, '.aweek', 'config.json'),
+      JSON.stringify({ timeZone: 'UTC', runner: 'hermes' }),
+    );
+    const spawnFn = makeRecordingSpawn(['hermes says hi']);
+    handle = await startServer({
+      projectDir,
+      buildDir,
+      port: 0,
+      host: '127.0.0.1',
+      chatCliSpawn: spawnFn,
+    });
+
+    const res = await httpPostStream(`${handle.url}api/chat`, {
+      slug: 'writer',
+      threadId: 'thread-1',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(spawnFn.calls[0].cmd, 'hermes');
+    assert.ok(spawnFn.calls[0].args.includes('--oneshot'));
+    assert.ok(spawnFn.calls[0].args.includes('--yolo'));
+    const frames = res.body
+      .split('\n')
+      .filter((l) => l.startsWith('data: '))
+      .map((l) => JSON.parse(l.slice('data: '.length)));
+    const delta = frames.find((f) => f.type === 'text-delta');
+    assert.ok(delta && delta.delta === 'hermes says hi');
+  });
+});

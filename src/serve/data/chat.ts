@@ -46,6 +46,10 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 
+import { DEFAULT_RUNNER, type RunnerKind } from '../../execution/runner.js';
+import type { SpawnFn } from '../../execution/cli-session.js';
+import { streamCliRunnerTurn } from '../chat-cli-runner.js';
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /**
@@ -178,6 +182,21 @@ export interface StreamAgentTurnParams {
    * sets `systemPrompt`, so the SDK falls back to its default.
    */
   systemPromptAppend?: string;
+  /**
+   * The coding-agent runtime that runs this turn, resolved from the
+   * per-agent `runner` field and `.aweek/config.json` `runner` by the
+   * chat handler. `'claude'` (or omitted) uses the Claude Agent SDK path
+   * below; `'gemini'` / `'hermes'` delegate to {@link streamCliRunnerTurn}
+   * so the chat panel talks to the configured CLI runtime, mirroring the
+   * heartbeat. See `src/execution/runner.ts`.
+   */
+  runner?: RunnerKind;
+  /**
+   * Test seam for the non-Claude CLI runners — an injectable spawn passed
+   * through to {@link streamCliRunnerTurn}. Ignored on the Claude path
+   * (that uses `runQuery`). Production callers leave it unset.
+   */
+  spawnCli?: SpawnFn;
 }
 
 // ── Implementation ───────────────────────────────────────────────────
@@ -230,8 +249,8 @@ export async function* streamAgentTurn(
   const runner: AgentSdkRunner =
     params.runQuery ?? (await getDefaultAgentSdkRunner());
 
-  // Compose the Agent SDK prompt. In this sub-AC we collapse the thread
-  // into the latest user turn; full multi-turn replay via
+  // Compose the prompt. In this sub-AC we collapse the thread into the
+  // latest user turn; full multi-turn replay via
   // `streamInput`/`AsyncIterable<SDKUserMessage>` lands when the
   // chat-conversation store ships.
   const prompt = formatPromptFromMessages(params.messages);
@@ -239,6 +258,26 @@ export async function* streamAgentTurn(
   // Bail early if the caller already aborted before we started — saves
   // an SDK round-trip on a no-op turn.
   if (params.signal?.aborted) return;
+
+  // Runner dispatch. `claude` (or an absent runner) uses the Claude Agent
+  // SDK path below; `gemini` / `hermes` are spawned as their own CLI and
+  // their output is translated into the same ChatStreamEvent sequence, so
+  // the chat panel honours the runtime configured in `.aweek/config.json`.
+  const runnerKind: RunnerKind = params.runner ?? DEFAULT_RUNNER;
+  if (runnerKind === 'gemini' || runnerKind === 'hermes') {
+    yield* streamCliRunnerTurn({
+      runner: runnerKind,
+      prompt,
+      slug: params.slug,
+      ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+      ...(params.systemPromptAppend !== undefined
+        ? { systemPromptAppend: params.systemPromptAppend }
+        : {}),
+      ...(params.spawnCli !== undefined ? { spawnFn: params.spawnCli } : {}),
+    });
+    return;
+  }
 
   const options: AgentSdkOptions = {};
   if (params.cwd !== undefined) options.cwd = params.cwd;
