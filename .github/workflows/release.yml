@@ -36,6 +36,16 @@ jobs:
             exit 1
           fi
 
+      # Trusted publishing (OIDC): npm mints a short-lived credential from the
+      # `id-token: write` permission above and exchanges it with the registry,
+      # so no long-lived NPM_TOKEN secret is needed. Requires npm >= 11.5.1
+      # (setup-node's Node 22 ships npm 10), so upgrade first. Provenance is
+      # attested automatically for trusted-publisher runs.
+      #
+      # One-time setup on npmjs.com is required for this to work: on the
+      # `aweek` package → Settings → Trusted Publisher, add this GitHub
+      # workflow (repo `runbear-io/aweek`, workflow `release.yml`).
+      - name: Upgrade npm to an OIDC-capable version
+        run: npm install -g npm@latest
+
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
