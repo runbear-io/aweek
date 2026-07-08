@@ -43,7 +43,7 @@ import { verifyTaskOutcome } from '../services/task-verifier.js';
 import { maybeEmitTaskWarningsNotification } from '../services/task-warning-notifier.js';
 import { loadConfig } from '../storage/config-store.js';
 import { resolveRunner, type RunnerKind } from '../execution/runner.js';
-import { currentWeekKey, detectSystemTimeZone, mondayOfWeek } from '../time/zone.js';
+import { currentWeekKey, detectSystemTimeZone, mondayOfWeek, localParts } from '../time/zone.js';
 import { WEEKLY_REVIEW_OBJECTIVE_ID, DAILY_REVIEW_OBJECTIVE_ID } from '../schemas/weekly-plan.schema.js';
 import { generateWeeklyReview, nextISOWeek } from '../services/weekly-review-orchestrator.js';
 import { generateDailyReview, utcToLocalDate } from '../services/daily-review-writer.js';
@@ -96,6 +96,19 @@ interface ChainNextWeekResult {
   nextWeek: string | null;
   chained: boolean;
   reason?: string;
+}
+
+/**
+ * Minimal store bundle needed to generate + persist a weekly plan. A subset
+ * of {@link ExecutionContext} (which structurally satisfies it), so both the
+ * post-review auto-chain and the Sunday safety-net can share one generator
+ * without the full per-task execution context.
+ */
+interface PlanGenDeps {
+  agentId: string;
+  agentsDir: string;
+  weeklyPlanStore: WeeklyPlanStore;
+  agentStore: AgentStore;
 }
 
 interface SweepStaleArgs {
@@ -167,31 +180,46 @@ export async function runHeartbeatForAgent(
 
   const scheduler = createScheduler({ lockDir });
 
+  // Resolve the configured IANA zone once for the tick's date-sensitive
+  // early steps (recurring materialize + Sunday plan safety-net). Best-effort
+  // — a config read failure falls back to UTC.
+  let tickTz = 'UTC';
+  try {
+    const cfg = await loadConfig(agentsDir);
+    if (cfg?.timeZone) tickTz = cfg.timeZone;
+  } catch {
+    /* keep UTC */
+  }
+
   // Step 0.5: Materialize recurring tasks for the current week. Eagerly
   // expands recurring rules into the live weekly plan (creating one if
   // none exists) so recurring tasks fire even on weeks the user hasn't
   // hand-authored a plan for. Best-effort: a malformed recurring rule
   // or missing config tz falls back to UTC and only logs.
   try {
-    let tzForMaterialize = 'UTC';
-    try {
-      const cfg = await loadConfig(agentsDir);
-      if (cfg?.timeZone) tzForMaterialize = cfg.timeZone;
-    } catch {
-      /* keep UTC */
-    }
-    const weekKey = currentWeekKey(tzForMaterialize);
+    const weekKey = currentWeekKey(tickTz);
     const recurringTaskStore = new RecurringTaskStore(agentsDir);
     await materializeRecurringForWeek({
       weeklyPlanStore,
       recurringTaskStore,
       agentId,
       weekKey,
-      tz: tzForMaterialize,
+      tz: tickTz,
     });
   } catch (err) {
     console.warn(`[${agentId}] recurring materialize warning: ${errMsg(err)}`);
   }
+
+  // Step 0.6: Sunday plan safety-net. On Sundays (configured zone), ensure a
+  // weekly plan exists for the upcoming week — and backfill the current week
+  // if it was never planned — so the week ahead always starts with tasks even
+  // when the post-review auto-chain (chainNextWeekPlanner) never fired. Runs
+  // before task selection so a freshly-created current-week plan is eligible
+  // this same tick. Best-effort; never aborts the tick.
+  await ensureWeeklyPlansForSunday(
+    { agentId, agentsDir, weeklyPlanStore, agentStore },
+    tickTz,
+  );
 
   // Step 0.9: Sweep stale pending tasks.
   //
@@ -351,110 +379,193 @@ export async function chainNextWeekPlanner(
   currentWeek: string,
   ctx: ExecutionContext,
 ): Promise<ChainNextWeekResult> {
-  const { agentId, agentsDir, weeklyPlanStore, agentStore } = ctx;
   let nextWeek: string | null = null;
 
   try {
     nextWeek = nextISOWeek(currentWeek);
-
-    // Idempotency: skip if a plan for next week already exists on disk.
-    // Prevents overwriting a plan the user (or a prior chain run) has already
-    // created and possibly approved.
-    let alreadyExists = false;
-    try {
-      await weeklyPlanStore.load(agentId, nextWeek);
-      alreadyExists = true;
-    } catch {
-      // ENOENT or parse error → plan doesn't exist; proceed with generation.
+    const result = await generateWeeklyPlanIfMissing(nextWeek, ctx);
+    if (!result.created) {
+      // Idempotent no-op: a plan for next week already exists (user-authored
+      // or from a prior chain run). Never overwrite it.
+      console.log(
+        `[${ctx.agentId}] next-week plan for ${nextWeek} already exists — skipping auto-chain`,
+      );
+      return { nextWeek, chained: false, reason: result.reason };
     }
-
-    if (alreadyExists) {
-      console.log(`[${agentId}] next-week plan for ${nextWeek} already exists — skipping auto-chain`);
-      return { nextWeek, chained: false, reason: 'plan_already_exists' };
-    }
-
-    // Load agent config for goals.
-    let goals: unknown[] = [];
-    try {
-      const agentConfig = await agentStore.load(agentId);
-      goals = Array.isArray(agentConfig.goals) ? agentConfig.goals : [];
-    } catch {
-      // Graceful: missing goals → plan will have only review tasks.
-    }
-
-    // Resolve the configured IANA time zone from .aweek/config.json.
-    // loadConfig accepts agentsDir and walks up one level to .aweek/config.json.
-    let tz = 'UTC';
-    try {
-      const aweekConfig = await loadConfig(agentsDir);
-      if (aweekConfig?.timeZone) tz = aweekConfig.timeZone;
-    } catch {
-      // Graceful: fall back to UTC.
-    }
-
-    // Derive next week's month from its Monday date so we know which monthly
-    // plan to look up. mondayOfWeek returns a UTC Date; slice gives YYYY-MM.
-    const nextMondayUtc = mondayOfWeek(nextWeek, tz);
-    const nextMonth =
-      `${nextMondayUtc.getUTCFullYear()}-${String(nextMondayUtc.getUTCMonth() + 1).padStart(2, '0')}`;
-
-    // Load the monthly plan. Prefer the exact month for next week; fall back
-    // to the currently active plan; fall back to empty objectives.
-    const monthlyPlanStore = new MonthlyPlanStore(agentsDir);
-    let monthlyPlan: MonthlyPlan = {
-      month: nextMonth,
-      objectives: [],
-      status: 'active',
-    };
-    try {
-      monthlyPlan = await monthlyPlanStore.load(agentId, nextMonth);
-    } catch {
-      try {
-        const active = await monthlyPlanStore.loadActive(agentId);
-        if (active) monthlyPlan = active;
-      } catch {
-        // Graceful: empty objectives → plan has only review tasks.
-      }
-    }
-
-    // Load plan.md for advisor brief composition.
-    let planMarkdown = null;
-    try {
-      planMarkdown = await readPlan(agentsDir, agentId);
-    } catch {
-      // Graceful: plan.md absence falls back to objective descriptions.
-    }
-
-    // Generate the next week's plan.
-    // Cast at the boundary: generateWeeklyPlan declares its own structurally
-    // identical local Goal/MonthlyPlan/WeeklyPlan interfaces (not imported from
-    // ../storage/*), so explicit casts bridge the two parallel type universes
-    // without introducing `any`.
-    const { plan, meta } = generateWeeklyPlan({
-      week: nextWeek,
-      month: nextMonth,
-      goals: goals as unknown as Parameters<typeof generateWeeklyPlan>[0]['goals'],
-      monthlyPlan: monthlyPlan as unknown as Parameters<typeof generateWeeklyPlan>[0]['monthlyPlan'],
-      options: { planMarkdown, tz },
-    });
-
-    // Persist the generated plan. Plans no longer carry an approval gate —
-    // tasks are immediately eligible for the heartbeat on save.
-    await weeklyPlanStore.save(
-      agentId,
-      plan as unknown as Parameters<WeeklyPlanStore['save']>[1],
-    );
-
-    console.log(
-      `[${agentId}] auto-chained next-week plan for ${nextWeek}: ` +
-        `${meta.totalTasks} tasks (${meta.reviewTasksAdded} review slots)`,
-    );
-
     return { nextWeek, chained: true };
   } catch (err) {
     const m = errMsg(err);
-    console.warn(`[${agentId}] next-week planner chain error: ${m}`);
+    console.warn(`[${ctx.agentId}] next-week planner chain error: ${m}`);
     return { nextWeek, chained: false, reason: m };
+  }
+}
+
+/**
+ * Generate and persist a weekly plan for `week` if — and only if — one does
+ * not already exist on disk. Shared generation core behind both the
+ * post-weekly-review auto-chain ({@link chainNextWeekPlanner}) and the
+ * Sunday safety-net ({@link ensureWeeklyPlansForSunday}).
+ *
+ * Idempotent: when a plan for `week` already exists it returns
+ * `{ created: false, reason: 'plan_already_exists' }` and writes nothing.
+ *
+ * Best-effort on its INPUTS — missing goals / monthly plan / plan.md each
+ * degrade to an empty-objective plan carrying only the review slots — but
+ * NOT on the final `save`: a persistence failure propagates so callers can
+ * surface it. Deterministic given the same agent state.
+ */
+async function generateWeeklyPlanIfMissing(
+  week: string,
+  deps: PlanGenDeps,
+): Promise<{ created: boolean; reason?: string }> {
+  const { agentId, agentsDir, weeklyPlanStore, agentStore } = deps;
+
+  // Idempotency: skip if a plan for `week` already exists on disk.
+  let alreadyExists = false;
+  try {
+    await weeklyPlanStore.load(agentId, week);
+    alreadyExists = true;
+  } catch {
+    // ENOENT or parse error → plan doesn't exist; proceed with generation.
+  }
+  if (alreadyExists) {
+    return { created: false, reason: 'plan_already_exists' };
+  }
+
+  // Load agent config for goals.
+  let goals: unknown[] = [];
+  try {
+    const agentConfig = await agentStore.load(agentId);
+    goals = Array.isArray(agentConfig.goals) ? agentConfig.goals : [];
+  } catch {
+    // Graceful: missing goals → plan will have only review tasks.
+  }
+
+  // Resolve the configured IANA time zone from .aweek/config.json.
+  // loadConfig accepts agentsDir and walks up one level to .aweek/config.json.
+  let tz = 'UTC';
+  try {
+    const aweekConfig = await loadConfig(agentsDir);
+    if (aweekConfig?.timeZone) tz = aweekConfig.timeZone;
+  } catch {
+    // Graceful: fall back to UTC.
+  }
+
+  // Derive the week's month from its Monday date so we know which monthly
+  // plan to look up. mondayOfWeek returns a UTC Date; slice gives YYYY-MM.
+  const mondayUtc = mondayOfWeek(week, tz);
+  const month =
+    `${mondayUtc.getUTCFullYear()}-${String(mondayUtc.getUTCMonth() + 1).padStart(2, '0')}`;
+
+  // Load the monthly plan. Prefer the exact month; fall back to the currently
+  // active plan; fall back to empty objectives.
+  const monthlyPlanStore = new MonthlyPlanStore(agentsDir);
+  let monthlyPlan: MonthlyPlan = {
+    month,
+    objectives: [],
+    status: 'active',
+  };
+  try {
+    monthlyPlan = await monthlyPlanStore.load(agentId, month);
+  } catch {
+    try {
+      const active = await monthlyPlanStore.loadActive(agentId);
+      if (active) monthlyPlan = active;
+    } catch {
+      // Graceful: empty objectives → plan has only review tasks.
+    }
+  }
+
+  // Load plan.md for advisor brief composition.
+  let planMarkdown = null;
+  try {
+    planMarkdown = await readPlan(agentsDir, agentId);
+  } catch {
+    // Graceful: plan.md absence falls back to objective descriptions.
+  }
+
+  // Generate the plan.
+  // Cast at the boundary: generateWeeklyPlan declares its own structurally
+  // identical local Goal/MonthlyPlan/WeeklyPlan interfaces (not imported from
+  // ../storage/*), so explicit casts bridge the two parallel type universes
+  // without introducing `any`.
+  const { plan, meta } = generateWeeklyPlan({
+    week,
+    month,
+    goals: goals as unknown as Parameters<typeof generateWeeklyPlan>[0]['goals'],
+    monthlyPlan: monthlyPlan as unknown as Parameters<typeof generateWeeklyPlan>[0]['monthlyPlan'],
+    options: { planMarkdown, tz },
+  });
+
+  // Persist the generated plan. Plans no longer carry an approval gate —
+  // tasks are immediately eligible for the heartbeat on save.
+  await weeklyPlanStore.save(
+    agentId,
+    plan as unknown as Parameters<WeeklyPlanStore['save']>[1],
+  );
+
+  console.log(
+    `[${agentId}] generated weekly plan for ${week}: ` +
+      `${meta.totalTasks} tasks (${meta.reviewTasksAdded} review slots)`,
+  );
+
+  return { created: true };
+}
+
+/**
+ * Sunday safety-net: guarantee a weekly plan exists for the upcoming week
+ * (and backfill the current week if it was never created) whenever the
+ * heartbeat fires on a Sunday in the configured zone.
+ *
+ * The normal path for next-week plan creation is {@link chainNextWeekPlanner},
+ * which fires only after a *successful* weekly-review task. If that review
+ * never runs — the agent was paused, the budget was exhausted, this week's
+ * plan was hand-deleted, or the agent was hired mid-week with no plan at all
+ * — the next Monday would dawn with `no_weekly_plans` and nothing would
+ * execute. This step closes that gap: by end-of-week the plan for the week
+ * ahead is always on disk.
+ *
+ * Gated on the local weekday so it costs nothing Monday–Saturday. Plan
+ * generation is deterministic and cheap (no CLI/LLM call), and each week is
+ * created only when missing, so a Sunday with multiple heartbeat ticks writes
+ * at most once per week. Best-effort throughout — every failure degrades to a
+ * warning and never aborts the tick.
+ *
+ * @param deps  Minimal store bundle (satisfied by the tick's ExecutionContext
+ *              or an ad-hoc subset).
+ * @param tz    Configured IANA zone (already resolved by the caller).
+ * @param now   Injectable clock for deterministic tests; defaults to now.
+ */
+export async function ensureWeeklyPlansForSunday(
+  deps: PlanGenDeps,
+  tz: string,
+  now: Date = new Date(),
+): Promise<void> {
+  try {
+    // ISO 8601 weekday: 1 = Monday … 7 = Sunday.
+    if (localParts(now, tz).weekday !== 7) return;
+
+    const currentWeek = currentWeekKey(tz, now);
+    const nextWeek = nextISOWeek(currentWeek);
+
+    // Current week first (backfill a week that was never planned), then the
+    // upcoming week (the primary intent — a plan ready before Monday).
+    for (const week of [currentWeek, nextWeek]) {
+      try {
+        const result = await generateWeeklyPlanIfMissing(week, deps);
+        if (result.created) {
+          console.log(
+            `[${deps.agentId}] Sunday safety-net: generated weekly plan for ${week}`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[${deps.agentId}] Sunday plan safety-net warning for ${week}: ${errMsg(err)}`,
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(`[${deps.agentId}] Sunday plan safety-net warning: ${errMsg(err)}`);
   }
 }
 
